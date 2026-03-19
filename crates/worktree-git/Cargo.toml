@@ -1,0 +1,17 @@
+[package]
+name = "worktree-git"
+version = "0.1.0"
+edition = "2021"
+description = "Git compatibility layer for Worktree — import, export, and remote bridge"
+
+[dependencies]
+worktree-protocol = { path = "../worktree-protocol" }
+git2 = "0.19"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1"
