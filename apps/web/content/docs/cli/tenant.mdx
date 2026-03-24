@@ -1,0 +1,96 @@
+---
+title: Tenant Management
+description: Commands for creating, switching, and inspecting isolated tenants in W0rkTree.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree supports a robust multi-tenant architecture. Tenants provide strict data, access, and configuration isolation, making it possible to securely host multiple organizations, business units, or distinct projects on a single server or cluster.
+
+## wt tenant create
+
+Create a new tenant.
+
+```bash
+wt tenant create <name> [--description <text>]
+```
+
+| Option | Description |
+|---|---|
+| `--description <text>` | Optional description for the tenant |
+
+**Example:**
+
+```bash
+$ wt tenant create acme-corp
+✓ Tenant 'acme-corp' created successfully.
+ID: tnt_1a2b3c4d5e
+```
+
+<Callout type="info">
+Creating a tenant automatically assigns the creator as the `tenant.admin`.
+</Callout>
+
+## wt tenant switch
+
+Switch your active CLI context to a different tenant.
+
+```bash
+wt tenant switch <name-or-id>
+```
+
+**Example:**
+
+```bash
+$ wt tenant switch acme-corp
+✓ Active tenant changed to 'acme-corp' (tnt_1a2b3c4d5e)
+```
+
+<Callout type="warn">
+Commands run after switching tenants will execute within the context of the newly selected tenant, utilizing its specific configuration and access models.
+</Callout>
+
+## wt tenant list
+
+List all tenants you have access to.
+
+```bash
+wt tenant list [--format <table|json>]
+```
+
+**Example:**
+
+```bash
+$ wt tenant list
+ID               NAME          ROLE           TREES
+tnt_1a2b3c4d5e   acme-corp     tenant.admin   12
+tnt_9z8y7x6w5v   startup-inc   tenant.member  3
+```
+
+## wt tenant inspect
+
+View detailed information about a specific tenant, including its configuration and statistics.
+
+```bash
+wt tenant inspect [<name-or-id>]
+```
+
+If no name or ID is provided, it inspects the currently active tenant.
+
+**Example:**
+
+```bash
+$ wt tenant inspect acme-corp
+Name: acme-corp
+ID: tnt_1a2b3c4d5e
+Created: 2023-10-27T14:32:00Z
+Status: Active
+
+Storage:
+  Total Size: 45.2 GB
+  Objects: 1,245,892
+
+Configuration:
+  Authentication: SSO (SAML)
+  Default License Policy: Strict
+```

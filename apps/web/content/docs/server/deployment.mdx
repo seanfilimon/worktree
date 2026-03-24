@@ -1,0 +1,98 @@
+---
+title: Deployment
+description: Deploy the W0rkTree server in production environments.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+## Production Checklist
+
+- [ ] Enable TLS/HTTPS
+- [ ] Set `host` to `0.0.0.0` for external access
+- [ ] Configure authentication
+- [ ] Set up monitoring and alerting
+- [ ] Configure backup strategy
+- [ ] Set appropriate resource limits
+- [ ] Configure tenant isolation and storage boundaries
+
+## Tenant Isolation Strategies
+
+When deploying W0rkTree for multiple teams or customers, you must decide on an isolation strategy:
+
+- **Logical Isolation (Default):** All tenants share the same database and storage backends, but data is strictly separated by `Tenant ID` at the application and protocol level. This is the most cost-effective approach.
+- **Physical Storage Isolation:** Tenants share the same server process but are configured to write to separate storage buckets (e.g., different AWS S3 buckets per tenant) using `isolated_storage` in the tenant config.
+- **Dedicated Instances:** For the strictest compliance requirements, you can deploy entirely separate W0rkTree Server clusters for specific tenants.
+
+## Multi-Server Scaling
+
+The W0rkTree Server is designed to scale horizontally. When deploying multiple instances behind a load balancer:
+
+1. **Shared Storage:** All instances must point to the same shared object storage (e.g., S3, GCS) and metadata database (PostgreSQL/Redis).
+2. **Stateless Operations:** Most sync protocol operations are stateless and can be routed to any node.
+3. **Staged Snapshot Routing:** For real-time staged visibility, clients collaborating on the same branch should ideally be routed to the same node (e.g., via sticky sessions or consistent hashing on the branch ID) to minimize inter-node broadcast latency.
+
+## Deployment Options
+
+<Tabs items={['Docker', 'Kubernetes', 'Systemd']}>
+<Tab value="Docker">
+```bash
+docker pull worktree/server:latest
+docker run -d \
+  --name worktree-server \
+  -p 7433:7433 \
+  -v /data/worktree:/var/lib/worktree \
+  worktree/server:latest
+```
+</Tab>
+<Tab value="Kubernetes">
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worktree-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worktree-server
+  template:
+    metadata:
+      labels:
+        app: worktree-server
+    spec:
+      containers:
+        - name: worktree-server
+          image: worktree/server:latest
+          ports:
+            - containerPort: 7433
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/worktree
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: worktree-data
+```
+</Tab>
+<Tab value="Systemd">
+```ini
+[Unit]
+Description=W0rkTree Server
+After=network.target
+
+[Service]
+Type=simple
+User=worktree
+ExecStart=/usr/local/bin/wt server start --host 0.0.0.0 --port 7433
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Always run the server behind a reverse proxy (nginx, Caddy) in production for TLS termination and rate limiting.
+</Callout>

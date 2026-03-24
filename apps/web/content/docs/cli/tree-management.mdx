@@ -1,0 +1,97 @@
+---
+title: Tree Management
+description: Commands for creating, listing, and managing trees, including tree-scoped configurations.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## wt tree create
+
+Create a new tree within the repository.
+
+```bash
+wt tree create <name> [--from <tree>] [--owner <team>]
+```
+
+| Option | Description |
+|---|---|
+| `--from <tree>` | Fork from an existing tree |
+| `--owner <team>` | Assign a team as the tree owner |
+
+## wt tree list
+
+List all trees in the repository.
+
+```bash
+wt tree list [--format <table|json>]
+```
+
+**Example:**
+
+```bash
+$ wt tree list
+NAME        OWNER       BRANCHES   LAST ACTIVITY
+main        core-team   3          2 hours ago
+frontend    ui-team     5          10 minutes ago
+backend     api-team    4          1 hour ago
+```
+
+## wt tree delete
+
+Delete a tree from the repository.
+
+```bash
+wt tree delete <name> [--force]
+```
+
+<Callout type="warn">
+Deleting a tree is **destructive** and removes all branches and history. Use `--force` to skip confirmation.
+</Callout>
+
+## wt tree switch
+
+Switch to a different tree as your active workspace.
+
+```bash
+wt tree switch <name>
+```
+
+## Tree Configuration (`.wt-tree/`)
+
+Every tree can contain a `.wt-tree/` directory at its root for tree-scoped configuration. This allows trees to define their own behavior, policies, and overrides independently from the global or tenant configuration.
+
+### Tree Access Overrides
+
+You can define declarative access overrides for a specific tree using `.wt-tree/access.toml`:
+
+```toml
+[overrides]
+block_tenant_admins = false
+
+[[grants]]
+role = "tree.admin"
+entity = "@frontend-lead"
+```
+
+### Tree License Config
+
+Enforce license compliance at the tree level with `.wt-tree/license.toml`:
+
+```toml
+[policy]
+allowed_licenses = ["MIT", "Apache-2.0", "BSD-3-Clause"]
+forbidden_licenses = ["GPL-3.0"]
+enforce_on_push = true
+```
+
+### Tree-Scoped Branch Protection
+
+Protect specific branches within the tree using `.wt-tree/branches.toml`:
+
+```toml
+[[protection]]
+pattern = "main"
+require_merge_request = true
+required_approvals = 2
+block_force_push = true
+```

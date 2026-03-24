@@ -1,0 +1,36 @@
+---
+title: W0rkTree Server
+description: The central daemon that powers W0rkTree's synchronization, multi-tenancy, IAM, and license enforcement.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+The **W0rkTree Server** (`worktree-server`) is the remote central daemon that manages repositories across multiple tenants, enforces IAM and licensing rules, and handles client synchronization. 
+
+<Callout type="info">
+  **Server vs. Background Process:** Do not confuse the central W0rkTree Server with the local Background Process (`bgprocess`). The local background process watches your filesystem and automatically tracks changes on your machine, while the Server is the remote authority that manages collaboration, access control, and synchronization between multiple users.
+</Callout>
+
+## Overview
+
+The server operates as a long-running daemon that:
+
+- **Manages Multi-Tenancy:** Provides logical and physical isolation between different organizations and trees.
+- **Enforces Access Control (IAM):** Evaluates declarative `.wt-access.toml` policies and RBAC on every operation.
+- **Enforces License Compliance:** Validates SPDX licenses and grants to prevent incompatible code merges.
+- **Aggregates Staged Snapshots:** Streams real-time in-flight changes between connected clients.
+- **Handles Merge Requests:** Manages the lifecycle and code review process for branch merges.
+- **Handles Synchronization:** Facilitates the delta-compressed sync protocol between local instances and the central store.
+
+## Quick Links
+
+<Cards>
+  <Card title="Installation" description="Install and set up the W0rkTree server on your platform." href="/docs/server/installation" />
+  <Card title="Configuration" description="Configure the server daemon, storage, and networking." href="/docs/server/configuration" />
+  <Card title="Architecture" description="Deep dive into the server's internal design and crate structure." href="/docs/server/architecture" />
+  <Card title="Background Process" description="Learn about the local bgprocess daemon." href="/docs/server/bgprocess" />
+  <Card title="Tenants" description="Manage multi-tenancy and workspace isolation." href="/docs/server/tenants" />
+  <Card title="IAM Enforcement" description="How the server evaluates access policies." href="/docs/server/iam-enforcement" />
+  <Card title="License Enforcement" description="How the server blocks incompatible open-source code." href="/docs/server/license-enforcement" />
+</Cards>

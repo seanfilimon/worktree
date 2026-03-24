@@ -1,0 +1,83 @@
+---
+title: Tenant Management
+description: Managing multi-tenancy, isolated workspaces, and resource limits on the W0rkTree Server.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The W0rkTree Server is built with **first-class multi-tenancy**. A single server instance or cluster can securely host multiple independent organizations, departments, or projects, ensuring strict data isolation and resource management.
+
+## What is a Tenant?
+
+In W0rkTree, a **Tenant** is the highest-level boundary of isolation. Every repository (tree), user, access policy, and commit belongs to exactly one tenant.
+
+- **Logical Isolation:** Data is strictly separated by a `Tenant ID` in the database and storage layers. Cross-tenant access is impossible without explicit [License Grants](/docs/licensing/grants) or cross-tenant sharing policies.
+- **Physical Isolation (Optional):** For stricter compliance, tenants can be configured to use dedicated storage buckets or database shards.
+- **Independent Configuration:** Each tenant manages its own identity providers (OAuth/SAML), access roles, storage limits, and visibility settings.
+
+## Tenant Lifecycle
+
+Server administrators manage the lifecycle of tenants using the W0rkTree Admin CLI or API.
+
+### 1. Creation
+
+When a tenant is created, the server initializes its root namespace and sets up the initial administrator account.
+
+```bash
+wt admin tenant create --name "Acme Corp" --admin acme-admin@example.com
+```
+
+### 2. Configuration & Quotas
+
+Administrators can enforce resource limits to prevent a single tenant from exhausting server capacity (noisy neighbor problem).
+
+```bash
+# Set storage quota to 500GB
+wt admin tenant config set tenant_abc123 storage.quota_gb 500
+
+# Limit concurrent active connections
+wt admin tenant config set tenant_abc123 limits.max_connections 1000
+
+# Configure how long staged snapshots are kept
+wt admin tenant config set tenant_abc123 storage.staged_retention_days 7
+```
+
+### 3. Suspension
+
+If a tenant violates terms of service, runs out of credits, or requests temporary deactivation, administrators can suspend the tenant.
+
+```bash
+wt admin tenant suspend tenant_abc123 --reason "Billing overdue"
+```
+
+While suspended:
+- All sync protocol connections are rejected.
+- Webhooks and integrations are paused.
+- Staged snapshots are frozen.
+- No data is deleted.
+
+### 4. Deletion
+
+Deleting a tenant permanently removes all associated trees, branches, commits, and user data.
+
+```bash
+wt admin tenant delete tenant_abc123 --force
+```
+
+<Callout type="warning">
+  Tenant deletion is a destructive, asynchronous operation. The server immediately marks the tenant as deleted to block access, but the physical deletion of underlying storage objects is handled by a background garbage collection job.
+</Callout>
+
+## Tenant Types (Tiers)
+
+When deploying W0rkTree as a SaaS platform or large enterprise service, you can categorize tenants into different tiers to apply default configurations automatically:
+
+- **Free / Hobby:** Low storage quotas, strict rate limits, shared storage pools.
+- **Pro / Team:** Higher quotas, longer staged snapshot retention, SLA guarantees.
+- **Enterprise:** Unlimited quotas, physical storage isolation (dedicated buckets), custom SSO integrations, dedicated support.
+
+## Cross-Tenant Collaboration
+
+While tenants are isolated by default, W0rkTree supports secure B2B collaboration. A tenant can issue a **Grant** to allow another specific tenant to clone, read, or sync a tree. 
+
+When cross-tenant access occurs, the server evaluates the IAM policies of *both* the source tenant (who owns the data) and the destination tenant (who is accessing it) to ensure the operation is permitted by both parties.

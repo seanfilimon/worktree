@@ -1,0 +1,90 @@
+---
+title: Tree Operations
+description: Create, list, and manage trees programmatically using the SDK.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Create a Tree
+
+```rust
+use worktree_sdk::Repository;
+
+let repo = Repository::open(".").await?;
+let tree = repo.create_tree("frontend")
+    .owner("ui-team")
+    .await?;
+```
+
+## List Trees
+
+```rust
+let trees = repo.list_trees().await?;
+for tree in trees {
+    println!("{}: {} branches", tree.name(), tree.branch_count());
+}
+```
+
+## Open a Tree
+
+```rust
+let tree = repo.tree("frontend").await?;
+```
+
+## Read Files
+
+```rust
+let content = tree.read_file("src/index.tsx").await?;
+println!("{}", String::from_utf8(content)?);
+```
+
+## List Files
+
+```rust
+let entries = tree.list_dir("src/").await?;
+for entry in entries {
+    println!("{} ({})", entry.name(), entry.kind());
+}
+```
+
+## Configure a Tree (`.wt-tree/`)
+
+Read and modify the tree's configuration programmatically:
+
+```rust
+let mut config = tree.config().await?;
+config.set("build.command", "pnpm build");
+config.save().await?;
+```
+
+## Tree Licensing
+
+Programmatically manage SPDX license assignments and grants (`.wt-license.toml`):
+
+```rust
+let mut licensing = tree.licensing().await?;
+licensing.set_default("MIT");
+licensing.assign_path("vendor/**", "Apache-2.0");
+licensing.save().await?;
+```
+
+## Tree Access Control
+
+Modify the declarative access configuration (`.wt-access.toml`) for a tree:
+
+```rust
+let mut access = tree.access().await?;
+access.grant_role("maintainer", "team:core");
+access.grant_role("developer", "team:frontend");
+access.save().await?;
+```
+
+## Delete a Tree
+
+```rust
+repo.delete_tree("experiments").force(true).await?;
+```
+
+<Callout type="warn">
+Deleting a tree is destructive and removes all branches and history within it.
+</Callout>

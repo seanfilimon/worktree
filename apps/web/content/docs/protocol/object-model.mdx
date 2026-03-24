@@ -1,0 +1,100 @@
+---
+title: Object Model
+description: Core object types — blob, tree, snapshot, commit, manifest, delta, tag, and branch — with BLAKE3 content-addressable storage.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+W0rkTree uses a **content-addressable object store** where every object is identified by its BLAKE3 hash. This provides deduplication, integrity verification, and efficient comparison.
+
+## Object Types
+
+### Blob
+
+Raw file content. A blob is simply the bytes of a file, addressed by its BLAKE3 hash.
+
+```
+BLAKE3("Hello W0rkTree\n") → wt:a3f2b1c8d4e5f6...
+```
+
+### Tree
+
+A directory listing that maps names to object references (blobs or other trees).
+
+```json
+{
+  "entries": [
+    { "name": "index.html", "type": "blob", "hash": "wt:a3f2b1c8..." },
+    { "name": "src", "type": "tree", "hash": "wt:b4c3d2e1..." }
+  ]
+}
+```
+
+### Snapshot
+
+An immutable point-in-time capture of a tree state. References a root tree object and includes metadata.
+
+### Commit
+
+A metadata wrapper around a snapshot with parent references, author information, timestamp, and message.
+
+```json
+{
+  "snapshot": "wt:e7d1f2a4...",
+  "parents": ["wt:b9c3d5e6..."],
+  "author": "user@example.com",
+  "timestamp": "2025-01-15T10:30:00Z",
+  "message": "Add homepage"
+}
+```
+
+### Manifest (Large File)
+
+Manifests are used to efficiently store and address large files by breaking them into smaller, content-addressed chunks.
+
+```json
+{
+  "size": 104857600,
+  "chunk_size": 4194304,
+  "chunks": [
+    "wt:c1a2b3c4...",
+    "wt:c2d3e4f5..."
+  ]
+}
+```
+
+### Delta
+
+Deltas represent a minimal set of changes between two objects (typically blobs or trees) to optimize storage and network transfer.
+
+### Tag
+
+An immutable pointer to a specific object (usually a snapshot), along with metadata such as an annotation, author, and timestamp.
+
+```json
+{
+  "object": "wt:e7d1f2a4...",
+  "type": "snapshot",
+  "name": "v1.0.0",
+  "tagger": "release-bot@example.com",
+  "message": "Release v1.0.0"
+}
+```
+
+### Branch
+
+A mutable reference to a snapshot that represents the tip of a line of development. Branches are lightweight and heavily used in the Staged Sync and Push protocols.
+
+## Object Identity
+
+Objects are immutable once created. The same content always produces the same hash, enabling:
+
+- **Deduplication** — identical files across trees are stored once
+- **Integrity** — any corruption is immediately detectable
+- **Efficient comparison** — equal hashes mean equal content without byte comparison
+
+<Callout type="info">
+W0rkTree uses BLAKE3 instead of SHA-1 (Git) for faster hashing and resistance to collision attacks.
+</Callout>

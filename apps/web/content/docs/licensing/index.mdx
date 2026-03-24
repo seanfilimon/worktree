@@ -1,0 +1,37 @@
+---
+title: License Compliance Overview
+description: Built-in license tracking and enforcement in W0rkTree.
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+# License Compliance
+
+W0rkTree includes a built-in **License Compliance Engine** that enforces open-source and commercial licensing rules at the protocol level. Unlike post-commit scanning tools that only alert you *after* a violation has occurred, W0rkTree prevents incompatible code from being merged or synced in the first place.
+
+In modern software development, combining code from various sources (internal libraries, open-source dependencies, contractor deliverables) creates significant legal risk. W0rkTree mitigates this by making licenses a first-class citizen of the version control system.
+
+## Core Concepts
+
+### 1. Per-Path SPDX Assignment
+Licenses in W0rkTree aren't just a `LICENSE` file at the root of your repository. W0rkTree allows you to assign strict [SPDX](https://spdx.dev/) license identifiers to specific trees, branches, or even individual file paths. 
+
+### 2. Server-Side Enforcement
+When a developer attempts to merge a branch, link a tree, or push a commit, the W0rkTree Server evaluates the licenses of both the source code and the destination workspace. If the licenses are incompatible (e.g., trying to merge GPLv3 code into a proprietary closed-source tree without an exception), the server **rejects the operation**.
+
+### 3. License Grants
+For scenarios where dual-licensing or specific B2B agreements exist, administrators can create explicit **License Grants**. A grant acts as an exception, permitting the flow of code between otherwise incompatible license domains based on a verified legal agreement.
+
+## Explore Licensing Documentation
+
+<Cards>
+  <Card title="📄 SPDX Assignment" href="/docs/licensing/spdx">
+    Learn how to assign and manage SPDX license identifiers across your trees and paths.
+  </Card>
+  <Card title="🤝 License Grants" href="/docs/licensing/grants">
+    Understand how to model commercial agreements, dual-licenses, and explicit exception grants.
+  </Card>
+  <Card title="🛡️ Server Enforcement" href="/docs/server/license-enforcement">
+    Deep dive into how the W0rkTree Server calculates compatibility and blocks license violations.
+  </Card>
+</Cards>

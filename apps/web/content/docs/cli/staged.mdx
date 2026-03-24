@@ -1,0 +1,84 @@
+---
+title: Staged Visibility
+description: Commands for viewing and managing staged, uncommitted changes across your team.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree's flagship feature is **Staged Snapshot Visibility**. Instead of changes remaining hidden on a developer's local machine until they commit and push, W0rkTree automatically tracks and streams uncommitted (staged) changes to the server in real-time. This provides unprecedented visibility into work-in-progress across your entire team.
+
+## wt staged
+
+View all staged changes currently tracked by the background worker.
+
+```bash
+wt staged [--tree <name>] [--user <username>] [--format <table|json>]
+```
+
+| Option | Description |
+|---|---|
+| `--tree <name>` | Show staged changes only for a specific tree |
+| `--user <username>` | Show staged changes for a specific user (requires appropriate access) |
+| `--format` | Output format (default: `table`) |
+
+**Example:**
+
+```bash
+$ wt staged
+USER       TREE       BRANCH       LAST UPDATED   CHANGES
+@alice     frontend   feature/ui   2 mins ago     +45 -12 (3 files)
+@bob       backend    api/auth     15 mins ago    +120 -5 (1 file)
+@charlie   frontend   bug/login    1 hour ago     +2 -2 (1 file)
+```
+
+<Callout type="info">
+The `wt staged` command streams this data directly from the server. It does not pull the actual file contents to your local machine unless you explicitly request a diff.
+</Callout>
+
+## wt staged diff
+
+View the actual code differences for a staged snapshot.
+
+```bash
+wt staged diff <user> [<tree>] [<branch>]
+```
+
+**Example:**
+
+```bash
+$ wt staged diff @alice frontend feature/ui
+diff --git a/src/components/Button.tsx b/src/components/Button.tsx
+index 83a0f9c..1b9d4e2 100644
+--- a/src/components/Button.tsx
++++ b/src/components/Button.tsx
+@@ -10,6 +10,7 @@
+ export const Button = ({ children, variant = 'primary' }: Props) => {
+   return (
+     <button className={`btn btn-${variant}`}>
++      <span className="icon-wrapper" />
+       {children}
+     </button>
+   );
+```
+
+## wt staged clear
+
+Clear your own locally staged changes, discarding uncommitted work.
+
+```bash
+wt staged clear [--tree <name>] [--force]
+```
+
+<Callout type="warn">
+This is a destructive action. It will permanently delete uncommitted work from your local machine and remove the staged snapshot from the server. Use `--force` to skip confirmation.
+</Callout>
+
+## Understanding Staged Snapshots
+
+When the background worker (`wt track start`) is running:
+
+1.  Every save triggers a fast local snapshot.
+2.  The worker securely streams a lightweight delta of this snapshot to the W0rkTree server.
+3.  The server holds these changes in a temporary, highly optimized "Staged" store.
+4.  Other team members with sufficient access can query this store (`wt staged`) to see what everyone is working on.
+5.  When a developer runs `wt snapshot` (or `wt commit`), the staged snapshot is promoted to a permanent, immutable point in the repository history, and the temporary staged state is cleared.

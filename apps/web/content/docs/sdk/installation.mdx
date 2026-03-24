@@ -1,0 +1,39 @@
+---
+title: Installation
+description: Add the W0rkTree SDK to your Rust project.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Add Dependency
+
+Add `worktree-sdk` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+worktree-sdk = "0.1.0"
+```
+
+## Feature Flags
+
+| Feature | Default | Description |
+|---|---|---|
+| `async` | ✅ | Async API using tokio |
+| `sync` | ❌ | Blocking synchronous API |
+| `git` | ✅ | Git compatibility features |
+| `serde` | ✅ | Serialization support |
+
+Enable specific features:
+
+```toml
+[dependencies]
+worktree-sdk = { version = "0.1.0", features = ["async", "git"] }
+```
+
+## Minimum Supported Rust Version
+
+The SDK requires **Rust 1.75** or later.
+
+<Callout type="info">
+The SDK is available as a Rust crate. Language bindings for Python and TypeScript are planned for the `0.8.0` release.
+</Callout>

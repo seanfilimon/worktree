@@ -1,0 +1,104 @@
+---
+title: Access Operations
+description: Manage roles, permissions, and declarative access control programmatically using the SDK.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree uses a declarative Identity and Access Management (IAM) model. The SDK provides high-level abstractions for reading, writing, and evaluating access policies, roles, and tenant grants.
+
+## Managing Declarative Access
+
+Access in W0rkTree is primarily managed via `.wt-access.toml` files. The SDK allows you to parse, modify, and commit these configurations programmatically.
+
+```rust
+use worktree_sdk::iam::{AccessConfig, Role, Policy};
+
+let mut tree = repo.tree("frontend").await?;
+let mut access_cfg = tree.read_access_config().await?;
+
+// Add a new policy
+access_cfg.add_policy(
+    Policy::new("tree:/src/")
+        .role("developer")
+        .add_subject("team:contractors")
+);
+
+// Save and commit the changes
+tree.write_access_config(&access_cfg).await?;
+tree.commit().message("Update access policies for contractors").await?;
+```
+
+## Role Management
+
+You can define and assign custom roles using the SDK.
+
+```rust
+let custom_role = Role::builder("qa_engineer")
+    .description("QA team read and approve access")
+    .add_permission("tree:read")
+    .add_permission("branch:read")
+    .add_permission("staged:read")
+    .add_permission("merge_request:approve")
+    .build();
+
+access_cfg.add_role(custom_role);
+```
+
+## Evaluating Permissions
+
+You can evaluate whether a specific subject (user, service account) has permission to perform an action on a given resource. The SDK evaluates the full IAM hierarchy, including tenant-level rules, tree configurations, and ABAC conditions.
+
+```rust
+use worktree_sdk::iam::Permission;
+
+let allowed = repo.iam().check_permission(
+    "user:alice@example.com", 
+    Permission::from("branch:write"), 
+    "wt://acme-corp/frontend/main"
+).await?;
+
+if allowed {
+    println!("Alice can write to the main branch.");
+} else {
+    println!("Access denied.");
+}
+```
+
+<Callout type="info">
+  Permission evaluations performed via the SDK are evaluated locally against the synchronized tree state. To ensure you are evaluating against the latest remote state, perform a sync operation first.
+</Callout>
+
+## Cross-Tenant Grants
+
+The SDK supports creating and accepting cross-tenant grants, enabling secure B2B collaboration.
+
+### Issuing a Grant
+
+```rust
+use worktree_sdk::iam::Grant;
+
+let grant = Grant::builder()
+    .tree("wt://acme-corp/ui-library")
+    .grantee("tenant:partner-agency")
+    .access_level("read-only")
+    .expires_in_days(90)
+    .build();
+
+repo.iam().issue_grant(grant).await?;
+```
+
+### Accepting a Grant
+
+When another tenant issues a grant to your tenant, you must accept it before the linked tree becomes available in your workspace.
+
+```rust
+let pending_grants = repo.iam().list_pending_grants().await?;
+
+for grant in pending_grants {
+    if grant.issuer() == "tenant:acme-corp" {
+        repo.iam().accept_grant(grant.id()).await?;
+        println!("Accepted grant for {}", grant.tree_uri());
+    }
+}
+```

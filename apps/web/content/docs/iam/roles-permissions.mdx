@@ -1,0 +1,103 @@
+---
+title: Roles & Permissions
+description: Reference for IAM roles and permissions in W0rkTree.
+---
+
+# Roles & Permissions
+
+W0rkTree's Identity and Access Management (IAM) system uses a combination of Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC) to secure your codebase. This page covers the roles and permissions available in the RBAC model.
+
+## Core Concepts
+
+In W0rkTree, access is granted by assigning a **Role** to a **Subject** (User, Group, or Machine Identity) within a specific **Scope** (Tenant, Project, Tree, or Branch).
+
+- **Permission**: A discrete action that can be performed (e.g., `tree:read`, `branch:write`).
+- **Role**: A collection of permissions (e.g., `Viewer`, `Developer`, `Maintainer`).
+- **Scope**: The boundary where the role assignment applies.
+- **Subject**: The entity receiving the role.
+
+## Built-in Roles
+
+W0rkTree provides several built-in roles that cover the most common use cases. These roles cannot be modified, but you can create custom roles if you need different permission combinations.
+
+### Viewer
+The Viewer role provides read-only access to resources.
+- `tree:read`
+- `branch:read`
+- `commit:read`
+- `staged:read`
+
+### Developer
+The Developer role is the standard role for contributors. It allows reading and writing to branches, creating commits, and opening merge requests.
+- All `Viewer` permissions
+- `branch:write`
+- `branch:create`
+- `commit:write`
+- `staged:write`
+- `merge_request:create`
+
+### Maintainer
+The Maintainer role is for repository or project leaders. It allows managing branches, approving merge requests, and managing tree configuration.
+- All `Developer` permissions
+- `branch:delete`
+- `branch:protect`
+- `merge_request:approve`
+- `merge_request:merge`
+- `tree:config:write`
+
+### Admin
+The Admin role provides full administrative access to the scope it is assigned to, including managing access and permissions for others.
+- All `Maintainer` permissions
+- `iam:read`
+- `iam:write`
+- `tenant:manage` (if assigned at the tenant scope)
+
+## Permissions Reference
+
+Permissions in W0rkTree follow the format `resource:action`.
+
+### Tree Permissions
+- `tree:read`: View tree metadata and existence.
+- `tree:create`: Create a new tree.
+- `tree:delete`: Delete a tree.
+- `tree:config:read`: Read tree configuration (e.g., `.wt-tree/config.toml`).
+- `tree:config:write`: Modify tree configuration.
+
+### Branch Permissions
+- `branch:read`: View branches and their history.
+- `branch:write`: Push changes to a branch.
+- `branch:create`: Create a new branch.
+- `branch:delete`: Delete a branch.
+- `branch:protect`: Modify branch protection rules.
+
+### Staged Visibility Permissions
+- `staged:read`: View staged snapshots (in-flight changes).
+- `staged:write`: Publish staged snapshots.
+
+### IAM Permissions
+- `iam:read`: View role assignments and access policies.
+- `iam:write`: Modify role assignments and access policies.
+
+## Custom Roles
+
+If the built-in roles do not meet your needs, you can define custom roles using [Declarative Access](./declarative-access). Custom roles are defined in your configuration and can combine any set of available permissions.
+
+```toml
+[roles.qa_engineer]
+name = "QA Engineer"
+description = "Can read code and approve merge requests"
+permissions = [
+  "tree:read",
+  "branch:read",
+  "staged:read",
+  "merge_request:approve"
+]
+```
+
+## Scopes and Inheritance
+
+Role assignments in W0rkTree are scoped and inherit downwards through the hierarchy:
+
+**Tenant** -> **Project** (Optional) -> **Tree** -> **Branch**
+
+If a user is assigned the `Developer` role at the Tenant level, they have `Developer` access to all Projects, Trees, and Branches within that Tenant. If they are assigned `Viewer` at the Tree level, they only have `Viewer` access to that specific tree and its branches.

@@ -1,0 +1,86 @@
+---
+title: Staged Operations
+description: Query, subscribe to, and manage in-flight staged snapshots using the SDK.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree introduces the concept of **Staged Snapshots**, which provide real-time visibility into uncommitted, in-flight changes across your team. The SDK allows you to query these snapshots, publish your own local changes, and subscribe to real-time streams of activity.
+
+## Querying Staged Snapshots
+
+You can inspect the current uncommitted changes of any tree or branch, even if those changes have not yet been formalized into a commit.
+
+```rust
+use worktree_sdk::Repository;
+
+let repo = Repository::open(".").await?;
+let tree = repo.tree("frontend").await?;
+
+// Fetch the current staged state
+let staged = tree.staged_snapshot().await?;
+
+println!("Uncommitted changes: {}", staged.stats().files_changed);
+
+for change in staged.diff().changes() {
+    println!("{}: {}", change.kind(), change.path());
+}
+```
+
+## Publishing Staged Changes
+
+By default, the W0rkTree background daemon automatically publishes your local uncommitted changes to the server as staged snapshots. However, you can also trigger this manually via the SDK.
+
+```rust
+// Force publish the current working directory state to the server
+tree.publish_staged().await?;
+```
+
+<Callout type="info">
+  Publishing a staged snapshot does not create a permanent commit in the tree's history. It simply updates the volatile "in-flight" state on the server, allowing collaborators to see what you are currently working on.
+</Callout>
+
+## Real-Time Subscriptions
+
+One of the most powerful features of the W0rkTree SDK is the ability to subscribe to staged snapshots in real-time. This is ideal for building editor integrations, live-collaboration tools, or real-time dashboards.
+
+```rust
+use futures::StreamExt;
+
+// Subscribe to real-time changes on the current tree
+let mut stream = tree.subscribe_staged().await?;
+
+println!("Listening for real-time file changes...");
+
+while let Some(event) = stream.next().await {
+    match event.kind() {
+        StagedEventKind::Modified => println!("Modified: {}", event.path()),
+        StagedEventKind::Added => println!("Added: {}", event.path()),
+        StagedEventKind::Deleted => println!("Deleted: {}", event.path()),
+    }
+}
+```
+
+## Discarding Staged Changes
+
+You can discard uncommitted changes from the staged snapshot, effectively reverting the working directory back to the last committed state.
+
+```rust
+// Discard all staged changes in the tree
+tree.discard_staged().all().await?;
+
+// Discard changes only for a specific path
+tree.discard_staged().path("src/experimental/").await?;
+```
+
+## Accessing Other Users' Staged State
+
+If you have the appropriate IAM permissions (`staged:read`), you can query the staged snapshots of other collaborators on the same branch.
+
+```rust
+let collaborator_staged = tree.staged_snapshot()
+    .for_user("alice@example.com")
+    .await?;
+
+println!("Alice is currently editing {} files", collaborator_staged.stats().files_changed);
+```

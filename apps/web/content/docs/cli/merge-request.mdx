@@ -1,0 +1,87 @@
+---
+title: Merge Requests
+description: Commands for creating, reviewing, approving, and merging code changes.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree integrates code review directly into the CLI and protocol via Merge Requests (MRs). This allows developers to propose changes, gather approvals according to tree policies, and merge without ever leaving the terminal.
+
+## wt merge-request create
+
+Create a new merge request to propose merging a source branch into a target branch.
+
+```bash
+wt merge-request create [--source <branch>] [--target <branch>] [--title <string>] [--body <string>]
+```
+
+| Option | Description |
+|---|---|
+| `--source <branch>` | The branch containing your changes (defaults to current branch) |
+| `--target <branch>` | The branch to merge into (defaults to `main` or tree default) |
+| `--title <string>` | Title of the merge request |
+| `--body <string>` | Description of the changes |
+| `--reviewer <user>` | Request a review from a specific user or team |
+
+**Example:**
+
+```bash
+$ wt merge-request create --target main --title "feat: add user authentication"
+✓ Merge Request !42 created successfully.
+Target: main <- feature/auth
+URL: https://wt.example.com/acme/frontend/mr/42
+```
+
+## wt merge-request list
+
+List open merge requests for the current tree or across the tenant.
+
+```bash
+wt merge-request list [--tree <name>] [--author <user>] [--status <open|merged|closed>]
+```
+
+**Example:**
+
+```bash
+$ wt merge-request list --status open
+ID    TITLE                          AUTHOR      TARGET    STATUS
+!42   feat: add user authentication  @alice      main      Open (1 approval)
+!45   fix: resolve navigation bug    @bob        main      Open (Needs review)
+```
+
+## wt merge-request approve
+
+Approve an open merge request.
+
+```bash
+wt merge-request approve <id> [--comment <string>]
+```
+
+<Callout type="info">
+Approvals are cryptographically signed and evaluated against the branch protection rules defined in `.wt-tree/branches.toml`. If a branch requires 2 approvals from the `tree.admin` role, W0rkTree enforces this at the protocol level.
+</Callout>
+
+## wt merge-request merge
+
+Merge an approved merge request into its target branch.
+
+```bash
+wt merge-request merge <id> [--squash] [--delete-source]
+```
+
+| Option | Description |
+|---|---|
+| `--squash` | Squash all commits in the MR into a single commit on the target branch |
+| `--delete-source` | Delete the source branch after a successful merge |
+| `--force` | Bypass branch protection rules (requires `tree.admin` role) |
+
+**Example:**
+
+```bash
+$ wt merge-request merge !42 --squash --delete-source
+Evaluating merge request !42...
+✓ Approvals met (2/2 required)
+✓ CI checks passed
+✓ Merged !42 into 'main'.
+✓ Source branch 'feature/auth' deleted.
+```

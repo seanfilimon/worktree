@@ -1,0 +1,40 @@
+---
+title: W0rkTree SDK
+description: Programmatic access to W0rkTree — build custom integrations, editor plugins, and automation tools.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+The **W0rkTree SDK** (`worktree-sdk`) provides a high-level Rust API for embedding W0rkTree capabilities in your own applications. It powers both the CLI and the Admin Panel, ensuring feature parity across all interfaces.
+
+<Callout type="info">
+The SDK API is not yet stable during the `0.x` series. Pin your version and review changelogs before upgrading.
+</Callout>
+
+## Overview
+
+Use the SDK to:
+
+- **Manage repositories** programmatically — create, open, and configure
+- **Perform version control operations** — commit, branch, diff, merge
+- **Build editor integrations** — VS Code, IntelliJ, Neovim plugins
+- **Automate CI/CD workflows** — custom pipeline steps with full W0rkTree access
+- **Create monitoring tools** — real-time dashboards and health checks
+- **Manage multi-tenancy** — create, configure, and isolate tenants
+- **Enforce licensing** — assign SPDX licenses and issue grants
+- **View staged visibility** — track in-flight changes and real-time edits
+- **Administer access** — configure IAM roles and declarative access
+
+## Quick Links
+
+<Cards>
+  <Card title="Installation" description="Add the SDK to your Rust project and configure features." href="/docs/sdk/installation" />
+  <Card title="Connecting" description="Connect to local or remote W0rkTree servers." href="/docs/sdk/connecting" />
+  <Card title="Tree Operations" description="Create, list, and manage trees programmatically." href="/docs/sdk/tree-operations" />
+  <Card title="Snapshot Operations" description="Create, inspect, and compare snapshots." href="/docs/sdk/snapshot-operations" />
+  <Card title="Tenant Operations" description="Manage isolated tenants and configure limits." href="/docs/sdk/tenant-operations" />
+  <Card title="License Operations" description="Check compliance and manage license grants." href="/docs/sdk/license-operations" />
+  <Card title="Staged Operations" description="Subscribe to and query real-time staged snapshots." href="/docs/sdk/staged-operations" />
+  <Card title="Access Operations" description="Manage roles, permissions, and declarative access." href="/docs/sdk/access-operations" />
+</Cards>

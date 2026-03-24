@@ -1,0 +1,75 @@
+---
+title: Snapshot Operations
+description: Create, inspect, and compare snapshots using the SDK.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Create a Snapshot
+
+```rust
+let tree = repo.tree("frontend").await?;
+let snapshot = tree.commit()
+    .message("Add navigation component")
+    .await?;
+
+println!("Committed: {}", snapshot.id());
+```
+
+## List Snapshots
+
+```rust
+let log = tree.log()
+    .limit(10)
+    .branch("main")
+    .await?;
+
+for entry in log {
+    println!("{} — {}", entry.id().short(), entry.message());
+}
+```
+
+## Inspect a Snapshot
+
+```rust
+let snapshot = tree.snapshot("wt:a3f2b1c8").await?;
+println!("Author: {}", snapshot.author());
+println!("Date: {}", snapshot.timestamp());
+println!("Message: {}", snapshot.message());
+println!("Files changed: {}", snapshot.stats().files_changed);
+```
+
+## Compare Snapshots
+
+```rust
+let diff = tree.diff("main", "feature/nav").await?;
+for change in diff.changes() {
+    println!("{}: {}", change.kind(), change.path());
+}
+```
+
+## Revert a Snapshot
+
+```rust
+let revert_snapshot = tree.revert("wt:a3f2b1c8")
+    .message("Revert 'Add navigation component'")
+    .await?;
+
+println!("Reverted in: {}", revert_snapshot.id());
+```
+
+## Staged Snapshots
+
+Staged snapshots represent in-flight, uncommitted changes. You can query the current staged state or publish it to the server.
+
+```rust
+let staged = tree.staged_snapshot().await?;
+println!("Uncommitted changes: {}", staged.stats().files_changed);
+
+// Publish the current staged snapshot to the server for visibility
+tree.publish_staged().await?;
+```
+
+<Callout type="info">
+Snapshot IDs can be abbreviated to the shortest unique prefix, just like Git commit hashes.
+</Callout>

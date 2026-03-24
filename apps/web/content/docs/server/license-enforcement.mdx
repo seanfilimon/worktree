@@ -1,0 +1,54 @@
+---
+title: License Enforcement
+description: How the W0rkTree Server enforces license compliance during syncs, merges, and cross-tenant operations.
+---
+
+# License Enforcement
+
+W0rkTree's built-in License Compliance Engine is strictly enforced by the central W0rkTree Server. Unlike traditional CI/CD pipelines that check for compliance *after* code has been pushed or merged, the W0rkTree Server acts as a proactive gatekeeper, preventing IP contamination before it ever enters your repository.
+
+## Enforcement Points
+
+The server evaluates license compatibility during several critical operations:
+
+### 1. Syncing (Push)
+When a developer pushes (syncs) new commits to the server, the server analyzes any newly added files or modifications to `.wt-license.toml` and `.wt-tree/config.toml`. If a new file or dependency is introduced with a license that conflicts with the tree's defined outbound license, the sync is immediately rejected.
+
+### 2. Merging and Branching
+During a merge request, the server verifies that the source branch's licenses are compatible with the target branch. This is crucial when merging upstream open-source changes into a customized, restrictively licensed internal fork.
+
+### 3. Tree Linking (Dependencies)
+When linking a tree as a dependency of another tree—especially across organizational or tenant boundaries—the server ensures the child tree's license permits usage by the parent tree. For example, an attempt to link a `GPL-3.0-only` tree into a `LicenseRef-Proprietary` tree will be blocked at the protocol level.
+
+### 4. Exporting and Forking
+When a user or tenant attempts to fork, clone, or export a tree, the server verifies that the requester has the legal right to do so based on the tree's SPDX license and any explicitly issued Grants.
+
+## The Compatibility Engine
+
+The W0rkTree Server maintains a sophisticated internal compatibility matrix based on the [SPDX standard](https://spdx.dev/). It understands the nuances of software licensing, including:
+
+- **Permissive Licenses:** (e.g., `MIT`, `Apache-2.0`) Can generally be merged or linked into any tree, including proprietary ones.
+- **Weak Copyleft:** (e.g., `LGPL-3.0-only`) Can be linked, but modifications to the library itself must remain open.
+- **Strong Copyleft:** (e.g., `GPL-3.0-only`) Cannot be merged into or linked with a closed-source proprietary tree.
+- **Network Copyleft:** (e.g., `AGPL-3.0-only`) Strict enforcement even across API boundaries.
+- **Proprietary:** (e.g., `LicenseRef-Internal`) Strict restrictions preventing unauthorized external distribution or cross-tenant linking.
+
+## Handling Violations
+
+If a license violation is detected, the server aborts the transaction atomically. The operation leaves no partial state, and the server returns a detailed, human-readable error to the client:
+
+```text
+$ wt sync
+Sync failed: License Compliance Violation
+
+The following paths contain licenses incompatible with the target tree (LicenseRef-Proprietary):
+- vendor/awesome-lib/ (GPL-3.0-only)
+
+Resolution: Remove the incompatible dependency, change the target tree license, or obtain a commercial License Grant.
+```
+
+## Overriding with Grants
+
+In the real world, strict SPDX rules often have commercial exceptions. If an organization has purchased a commercial license for an otherwise incompatible open-source library (dual-licensing), they can utilize **License Grants**.
+
+When evaluating compatibility, the server first checks its database for active Grants. If a valid, unexpired Grant exists from the owning tenant to the consuming tenant, the server bypasses the standard SPDX compatibility check for that specific path and allows the operation to proceed seamlessly.

@@ -1,0 +1,83 @@
+---
+title: SPDX License Assignment
+description: How W0rkTree uses SPDX identifiers for per-path license tracking and compliance.
+---
+
+# SPDX License Assignment
+
+W0rkTree integrates directly with the **SPDX (Software Package Data Exchange)** standard to manage and enforce open-source and proprietary licenses across your codebase. Unlike traditional version control where a single `LICENSE` file loosely governs an entire repository, W0rkTree allows for granular, per-path license assignments that are strictly enforced by the server.
+
+This ensures that whenever code is merged, imported, or shared across nested trees, license compatibility is automatically verified, preventing accidental IP contamination.
+
+## What is SPDX?
+
+[SPDX](https://spdx.dev/) is an open standard for communicating software bill of material information, including licenses, copyrights, and security references. W0rkTree relies on standard SPDX license identifiers (e.g., `MIT`, `Apache-2.0`, `GPL-3.0-only`) to parse, compare, and validate licenses.
+
+## Assigning Licenses
+
+Licenses in W0rkTree are declared in your tree's configuration file (`.wt-tree/config.toml`) or via a dedicated `.wt-license.toml` file for more complex scenarios.
+
+### 1. Tree-Level Assignment
+
+The most common approach is assigning a default license to an entire tree. All files and child directories within this tree will inherit this license unless explicitly overridden.
+
+```toml
+# .wt-tree/config.toml
+[licensing]
+default_license = "MIT"
+```
+
+### 2. Path-Level Assignment
+
+In monorepos or nested trees, you often have vendor directories, third-party modules, or specific proprietary packages that require different licenses. You can assign licenses to specific paths using glob patterns:
+
+```toml
+# .wt-license.toml
+[[assignments]]
+path = "vendor/**"
+license = "Apache-2.0"
+
+[[assignments]]
+path = "src/proprietary/**"
+license = "LicenseRef-Proprietary-AcmeCorp"
+
+[[assignments]]
+path = "scripts/tools.sh"
+license = "GPL-3.0-or-later"
+```
+
+### 3. Custom License References
+
+If you are using a proprietary or commercial license that is not part of the standard SPDX list, you can use the `LicenseRef-` prefix as mandated by the SPDX specification. W0rkTree allows you to define these custom references so the compliance engine understands how to handle them.
+
+```toml
+[licensing.custom_refs]
+"LicenseRef-Proprietary-AcmeCorp" = { compatibility = ["internal-only"], url = "https://acme.corp/legal/license" }
+```
+
+## How Inheritance Works
+
+W0rkTree evaluates licenses using a closest-match hierarchy:
+
+1. **Exact File Match:** A license assigned to a specific file path (e.g., `src/main.rs`).
+2. **Directory/Glob Match:** A license assigned to a glob pattern that matches the file (e.g., `src/**`).
+3. **Tree Default:** The `default_license` defined in the current tree's `.wt-tree/config.toml`.
+4. **Parent Tree Default:** If a nested tree has no default license, it inherits the default from its parent tree.
+
+## Auditing and Reporting
+
+Because every file in W0rkTree has a definitively resolvable SPDX license, generating a Software Bill of Materials (SBOM) or a compliance report is completely deterministic and instantaneous.
+
+You can query the current license state of any path using the W0rkTree CLI:
+
+```bash
+# Check the license of a specific file
+wt license check src/utils/parser.rs
+
+# Generate a license report for the entire tree
+wt license report --format spdx-json > sbom.json
+```
+
+## Next Steps
+
+Once you have assigned licenses to your codebase, you can define rules for how those licenses interact. Continue to the [License Enforcement](/docs/licensing/enforcement) and [License Grants](/docs/licensing/grants) documentation to learn how the W0rkTree server prevents incompatible code from being merged.

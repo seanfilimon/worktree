@@ -1,0 +1,36 @@
+---
+title: W0rkTree Protocol
+description: Core protocol specification — data model, object formats, wire protocol, and operation semantics.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+The **W0rkTree Protocol** (`worktree-protocol`) defines the canonical data model, serialization formats, and wire protocol used by all W0rkTree components. It is the foundational crate with zero external dependencies beyond `serde`.
+
+<Callout type="info">
+The protocol is versioned independently from the CLI and server. See [Protocol Versioning](/docs/protocol/versioning) for details.
+</Callout>
+
+## Overview
+
+The protocol specification covers:
+
+- **Two-Runtime Model** — the async interaction between the local background process and the remote server
+- **Staged vs. Pushed State** — the distinct data models for real-time uncommitted changes vs. permanent immutable history
+- **IAM Protocol** — declarative access control, role definitions, and scope resolution (tenant, tree, path)
+- **Object Model** — the core object types (including Manifests, Deltas, Tags) and their BLAKE3-addressed storage
+- **Tree Structure** — how nested trees work with independent histories, tree-scoped configurations, and access overrides
+- **Wire Format** — `b"WT01"` envelope, Bincode serialization, and zstd compression for client-server communication
+- **Operation Semantics** — how diffs, merges, and snapshots behave
+
+## Quick Links
+
+<Cards>
+  <Card title="Sync Protocol" description="Staged sync, branch push/pull, delta sync, and offline mode." href="/docs/protocol/sync-protocol" />
+  <Card title="IAM Protocol" description="IAM evaluation, policy model, and ABAC conditions." href="/docs/protocol/iam-protocol" />
+  <Card title="Object Model" description="Core object types, content-addressable storage, and identity." href="/docs/protocol/object-model" />
+  <Card title="Tree Structure" description="Nested trees, path resolution, and cross-tree references." href="/docs/protocol/tree-structure" />
+  <Card title="Wire Format" description="Binary serialization, transport frames, and versioning." href="/docs/protocol/wire-format" />
+  <Card title="Diff & Merge" description="How diffs are computed and merges are resolved." href="/docs/protocol/diff-semantics" />
+</Cards>

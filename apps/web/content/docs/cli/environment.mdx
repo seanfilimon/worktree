@@ -1,0 +1,48 @@
+---
+title: Environment Variables
+description: Environment variables for configuring W0rkTree CLI behavior.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `WT_HOME` | W0rkTree home directory | `~/.worktree` |
+| `WT_CONFIG` | Global configuration file path | `$WT_HOME/config.toml` |
+| `WT_SERVER_URL` | Default remote server URL | — |
+| `WT_TOKEN` | Authentication token for remote access | — |
+| `WT_LOG_LEVEL` | Log level (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
+| `WT_DATA_DIR` | Directory for local data storage | `$WT_HOME/data` |
+| `WT_TRANSPORT` | Primary transport protocol (`quic` or `grpc`) | `quic` |
+| `WT_SYNC_AUTO` | Enable automatic background sync | `true` |
+| `WT_NO_COLOR` | Disable colored output when `1` or `true` | — |
+| `WT_EDITOR` | Preferred editor for commit messages | `$EDITOR` |
+| `WT_PAGER` | Pager for long output | `less` |
+| `WT_TRACK_INTERVAL` | Auto-tracking interval in seconds | `10` |
+| `WT_GIT_PATH` | Path to Git binary | auto-detected |
+
+<Callout type="info">
+Environment variables always take precedence over config file values. You can set them permanently in `~/.worktree/config.toml`.
+</Callout>
+
+## Config File
+
+The global config file lives at `~/.worktree/config.toml`:
+
+```toml
+[user]
+name = "Your Name"
+email = "you@example.com"
+
+[defaults]
+server_url = "https://wt.example.com"
+log_level = "info"
+editor = "code --wait"
+pager = "less -R"
+
+[tracking]
+interval = 10
+auto_start = true
+```

@@ -1,0 +1,54 @@
+---
+title: Merge Requests
+description: How the W0rkTree Server manages the lifecycle, code reviews, and CI/CD integration of merge requests.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# Server-Side Merge Requests
+
+Unlike traditional Git, where Pull Requests or Merge Requests are implemented by the hosting platform (e.g., GitHub, GitLab), W0rkTree implements **Merge Requests natively within the protocol and server**.
+
+This means that branch protection rules, required reviews, and status checks are enforced natively at the API level by the W0rkTree Server itself, not just by a web UI layer.
+
+## The Merge Request Lifecycle
+
+A Merge Request in W0rkTree transitions through several states, tracked directly in the server's metadata store:
+
+1. **Draft:** The MR is created but not yet ready for review. CI/CD pipelines may run, but review notifications are suppressed.
+2. **Open:** The MR is ready for review. Reviewers are notified, and branch protection rules begin evaluation.
+3. **Approved:** The required number of reviewers with the correct IAM roles have approved the MR.
+4. **Merged:** The server has successfully integrated the source branch into the target branch.
+5. **Closed:** The MR was abandoned or rejected without merging.
+
+## Code Reviews and IAM Enforcement
+
+When an MR is opened, the server evaluates the target tree's `.wt-access.toml` to determine who is eligible to approve it.
+
+- **Required Approvals:** You can configure a branch to require a specific number of approvals.
+- **Path-Based Ownership:** W0rkTree natively supports code owners via its IAM engine. If an MR touches a specific path (e.g., `src/crypto/`), the server can mandate that at least one approval comes from a user who explicitly holds the `Maintainer` role for that specific path.
+
+```bash
+# Example of approving an MR via the CLI
+wt mr approve 1042 --message "Looks good to me. The cryptography checks out."
+```
+
+## Status Checks and CI/CD
+
+The W0rkTree Server acts as the source of truth for CI/CD status checks. External CI systems use the W0rkTree API to report the status of builds, tests, and static analysis.
+
+If a branch is protected by a rule requiring specific status checks (e.g., `ci/test-backend`), the server will strictly reject any attempt to merge the MR until the CI system has posted a `success` status for that check on the latest staged snapshot.
+
+## Linked Branch Merging
+
+One of W0rkTree's flagship features is **Linked Branches**—the ability to merge changes across multiple isolated trees atomically.
+
+If a developer opens an MR for a Linked Branch (e.g., a feature that touches both the `frontend` tree and the `backend` tree), the W0rkTree Server coordinates the merge as a single, unified atomic transaction.
+
+1. The server verifies approvals and status checks for *both* trees based on their respective IAM and protection rules.
+2. If both sets of requirements are satisfied, the server applies the merge commits to both trees simultaneously.
+3. If the merge fails in one tree (e.g., due to a last-minute conflict), the entire transaction is rejected, preventing the broader application from entering an inconsistent, partially-deployed state.
+
+<Callout type="info">
+  Because the W0rkTree Server handles the atomic commit natively, cross-team deployments are vastly simplified. You no longer need to manually choreograph merging the backend pull request first, waiting for CI, and then merging the frontend pull request.
+</Callout>

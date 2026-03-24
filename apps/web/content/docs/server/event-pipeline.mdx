@@ -1,0 +1,55 @@
+---
+title: Event Pipeline
+description: Understanding the four-stage event pipeline that powers W0rkTree's automatic change tracking.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+W0rkTree's auto-tracking system is powered by an **event-driven pipeline** that transforms raw filesystem changes into versioned snapshots without manual intervention.
+
+## Pipeline Stages
+
+### Stage 1: Filesystem Watcher
+
+A platform-native file watcher monitors the working directory for changes:
+
+- Uses `inotify` on Linux, `FSEvents` on macOS, and `ReadDirectoryChanges` on Windows
+- Applies `.wtignore` rules to filter irrelevant paths
+- Batches rapid successive changes (configurable debounce window, default 200ms)
+
+### Stage 2: Event Engine
+
+The event engine classifies batched filesystem events:
+
+- **Content changes** — file modifications, creations, deletions
+- **Structural changes** — directory renames, moves, permission changes
+- **Dependency triggers** — changes to files referenced by other trees
+- **Access change events** — modifications to `.wt-access.toml` files that trigger IAM policy re-evaluation
+- **License check events** — additions of new dependencies or changes to `.wt-license.toml` that require compliance verification
+
+### Stage 3: Snapshot Builder
+
+Constructs a new tree state from classified events:
+
+- Computes content hashes using BLAKE3
+- Updates the Merkle DAG incrementally
+- Generates a minimal diff against the previous snapshot
+- Validates against configured rules (max file size, forbidden patterns)
+- Evaluates **IAM access controls** to ensure the operation is permitted
+- Evaluates **license compliance** rules against any new files
+
+### Stage 4: Auto-Snapshot Commit & Staged Events
+
+If the snapshot passes validation, it is committed to the local object store:
+
+- Creates a new commit object referencing the snapshot
+- Updates the current branch pointer
+- Writes to the event log for sync purposes
+- **Staged Snapshot Events** — emits a real-time event to the central server, updating the "in-flight" staged visibility for collaborators
+- Triggers registered post-commit hooks
+
+<Callout type="info">
+Auto-snapshots are **lightweight and local** — they don't push to a remote server or notify other users. Think of them as continuous local checkpoints.
+</Callout>

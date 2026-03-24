@@ -1,0 +1,44 @@
+---
+title: IAM Overview
+description: Identity and Access Management in W0rkTree.
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+# Identity and Access Management (IAM)
+
+W0rkTree's Identity and Access Management (IAM) is built directly into the core protocol and server architecture. Unlike traditional version control systems that rely on the hosting platform (e.g., GitHub, GitLab) for access control, W0rkTree natively understands users, roles, permissions, and multi-tenant isolation.
+
+Every operation in W0rkTree—from reading a tree to merging a branch or viewing a staged snapshot—is evaluated against the server's IAM engine before execution.
+
+## Core Concepts
+
+### 1. Multi-Tenancy
+W0rkTree is designed for enterprise and SaaS environments with native multi-tenancy. A single server instance can host multiple isolated organizations (tenants), each with their own users, data, and access policies, completely securely and invisibly to one another.
+
+### 2. Principals
+A principal is any entity that can authenticate and make requests to a W0rkTree server.
+- **Users:** Human users authenticated via OAuth2, OIDC, or email/password.
+- **Service Accounts:** Automated systems, CI/CD pipelines, or background processes using API keys or short-lived tokens.
+
+### 3. Declarative Access
+Access control is defined using declarative configuration files (TOML) stored directly in your workspaces. This "Access as Code" approach allows you to version, review, and audit access policy changes using the exact same merge request workflow you use for source code.
+
+### 4. RBAC and ABAC
+W0rkTree combines Role-Based Access Control (RBAC) with Attribute-Based Access Control (ABAC):
+- **Roles** grant specific sets of permissions (e.g., `Reader`, `Writer`, `Maintainer`, `Admin`).
+- **Attributes** restrict *where* and *when* those permissions apply (e.g., "only on branch `main`", "only for files matching `src/frontend/**`").
+
+## Explore IAM Documentation
+
+<Cards>
+  <Card title="🏢 Tenant Model" href="/docs/iam/tenants">
+    Learn how W0rkTree isolates data, handles quotas, and manages users across multiple tenants.
+  </Card>
+  <Card title="🔐 Roles & Permissions" href="/docs/iam/roles-permissions">
+    Comprehensive reference for all built-in roles, custom roles, and granular system permissions.
+  </Card>
+  <Card title="📜 Declarative Access" href="/docs/iam/declarative-access">
+    Guide on writing and applying declarative TOML access configurations to control system entry.
+  </Card>
+</Cards>

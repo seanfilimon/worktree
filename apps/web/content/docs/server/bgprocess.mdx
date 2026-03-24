@@ -1,0 +1,61 @@
+---
+title: Background Process (Daemon)
+description: Managing the local W0rkTree background process lifecycle — start, stop, and monitor.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+<Callout type="warning">
+  **Clarification:** This page describes the **local Background Process** (also known as the daemon or worker) that runs on your development machine. It is **not** the central W0rkTree Server. The background process watches your local filesystem, generates staged snapshots, and handles auto-commits, while the W0rkTree Server handles remote synchronization, multi-tenancy, and IAM.
+</Callout>
+
+## Starting the Background Process
+
+```bash
+wt daemon start [--port <number>] [--host <address>] [--detach]
+```
+
+| Option | Description | Default |
+|---|---|---|
+| `--port` | Port to listen on | `7433` |
+| `--host` | Bind address | `127.0.0.1` |
+| `--detach` | Run in the background | `false` |
+
+## Stopping the Background Process
+
+```bash
+wt daemon stop [--graceful]
+```
+
+The `--graceful` flag waits for active connections to close before stopping.
+
+## Status Check
+
+```bash
+wt daemon status
+```
+
+Example output:
+
+```
+Status:        running
+PID:           52190
+Uptime:        4h 22m
+Listening:     http://127.0.0.1:7433
+Connections:   3 active, 47 total
+Repositories:  2 served
+Storage used:  1.2 GB
+```
+
+## Signal Handling
+
+| Signal | Behavior |
+|---|---|
+| `SIGTERM` | Graceful shutdown — finish active requests, then exit |
+| `SIGINT` | Immediate shutdown |
+| `SIGHUP` | Reload configuration without restart |
+
+<Callout type="info">
+On Windows, use `wt daemon stop` instead of signals.
+</Callout>

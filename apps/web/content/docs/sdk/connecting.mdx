@@ -1,0 +1,73 @@
+---
+title: Connecting
+description: Connect to local or remote W0rkTree servers using the SDK.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Local Repository
+
+Open a local W0rkTree repository:
+
+```rust
+use worktree_sdk::Repository;
+
+let repo = Repository::open("/path/to/repo").await?;
+```
+
+## Remote Server
+
+Connect to a remote W0rkTree server using an API key and a specific Tenant ID:
+
+```rust
+use worktree_sdk::{Client, Auth};
+
+let client = Client::connect("https://wt.example.com")
+    .tenant("tenant_abc123")
+    .auth(Auth::api_key("wt_api_..."))
+    .await?;
+
+let repo = client.repository("org/project").await?;
+```
+
+### OAuth2 Device Flow
+
+For interactive CLI tools or local applications, use the OAuth2 Device Flow to authenticate users via their browser:
+
+```rust
+let auth = Auth::device_flow()
+    .client_id("your-client-id")
+    .on_prompt(|url, code| {
+        println!("Please visit {} and enter code: {}", url, code);
+    })
+    .authenticate()
+    .await?;
+
+let client = Client::connect("https://wt.example.com")
+    .tenant("tenant_abc123")
+    .auth(auth)
+    .await?;
+```
+
+## Connection Options
+
+```rust
+let client = Client::connect("https://wt.example.com")
+    .auth(Auth::token("your-token"))
+    .timeout(Duration::from_secs(30))
+    .retry(3)
+    .compression(true)
+    .await?;
+```
+
+| Option | Description | Default |
+|---|---|---|
+| `tenant` | Target Tenant ID | Required |
+| `auth` | Authentication method (API Key, OAuth, Token) | None |
+| `timeout` | Connection timeout | 30s |
+| `retry` | Number of retry attempts | 0 |
+| `compression` | Enable wire compression | true |
+
+<Callout type="info">
+For local operations, no server connection is needed. The SDK works directly with the on-disk object store.
+</Callout>

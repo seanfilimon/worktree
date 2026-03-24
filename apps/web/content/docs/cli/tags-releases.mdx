@@ -1,0 +1,99 @@
+---
+title: Tags & Releases
+description: Commands for creating and managing tags and releases.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+Tags are immutable pointers to specific snapshots in your W0rkTree history, commonly used to mark release points (e.g., `v1.0.0`). Releases build upon tags by adding rich metadata, release notes, and compiled assets.
+
+## wt tag
+
+Manage tags within a tree.
+
+<Tabs items={['create', 'list', 'delete']}>
+<Tab value="create">
+
+Create a new tag pointing to the current or specified snapshot.
+
+```bash
+wt tag create <name> [<snapshot>] [-m "<message>"] [--tree <name>]
+```
+
+| Option | Description |
+|---|---|
+| `<snapshot>` | Optional snapshot ID to tag (defaults to current `HEAD`) |
+| `-m <message>` | Create an annotated tag with a message |
+| `--tree <name>` | Create the tag in a specific tree |
+
+**Example:**
+
+```bash
+$ wt tag create v1.2.0 -m "Release version 1.2.0"
+✓ Created tag 'v1.2.0' at snapshot 8f4a2b1c
+```
+
+</Tab>
+<Tab value="list">
+
+List existing tags in the repository.
+
+```bash
+wt tag list [--tree <name>] [--sort <key>] [--match <pattern>]
+```
+
+| Option | Description |
+|---|---|
+| `--sort <key>` | Sort by `name`, `date` (default), or `creator` |
+| `--match <pattern>` | Filter tags by glob pattern (e.g., `v1.*`) |
+
+</Tab>
+<Tab value="delete">
+
+Delete an existing tag.
+
+```bash
+wt tag delete <name> [--tree <name>]
+```
+
+<Callout type="warn">
+Deleting a tag does not delete the snapshot it points to. If the tag has already been pushed to the server, this command will also delete the tag remotely on the next sync.
+</Callout>
+
+</Tab>
+</Tabs>
+
+## wt release create
+
+Create a formal release based on a tag, attaching release notes and compiled assets.
+
+```bash
+wt release create <tag> [--title "<title>"] [--notes "<text>"] [--notes-file <path>] [--asset <file>] [--draft] [--pre-release]
+```
+
+| Option | Description |
+|---|---|
+| `<tag>` | The existing tag to promote to a release |
+| `--title <title>` | The title of the release |
+| `--notes <text>` | Markdown-formatted release notes |
+| `--notes-file <path>`| Path to a Markdown file containing release notes |
+| `--asset <file>` | Attach a compiled binary or archive to the release (can be used multiple times) |
+| `--draft` | Create the release as an unpublished draft |
+| `--pre-release` | Mark the release as a non-production pre-release |
+
+**Example:**
+
+```bash
+$ wt release create v2.0.0 \
+    --title "W0rkTree v2.0.0 (Stable)" \
+    --notes-file ./CHANGELOG.md \
+    --asset ./dist/worktree-linux-amd64.tar.gz \
+    --asset ./dist/worktree-darwin-arm64.tar.gz
+✓ Uploading assets... (2/2)
+✓ Release 'W0rkTree v2.0.0 (Stable)' published successfully.
+```
+
+<Callout type="info">
+Releases are automatically synced to the W0rkTree server and become visible in the web UI and via the API for downstream consumers.
+</Callout>

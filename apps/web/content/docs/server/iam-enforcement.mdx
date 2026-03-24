@@ -1,0 +1,71 @@
+---
+title: IAM Enforcement
+description: How the W0rkTree Server evaluates and enforces IAM policies on every operation.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# IAM Enforcement
+
+The W0rkTree Server is the central authority for all access control decisions. Every protocol operation—whether reading a tree, syncing a branch, or viewing a staged snapshot—must pass through the **IAM Enforcement Engine** before being executed.
+
+Unlike systems where access control is an afterthought or handled by a separate application layer, W0rkTree's IAM is deeply integrated into the core sync protocol and storage engine.
+
+## The Evaluation Pipeline
+
+When a client initiates an operation, the server evaluates the request through the following pipeline:
+
+### 1. Authentication & Principal Resolution
+The server first verifies the client's identity (e.g., via OAuth2 token, API Key, or session cookie) and resolves the **Principal**. This includes identifying the User, their Group memberships, and the specific **Tenant** they belong to.
+
+### 2. Scope Determination
+Every W0rkTree operation targets a specific resource (e.g., `wt://acme-corp/frontend/main`). The server extracts this URI and determines the full hierarchy of scopes:
+- Tenant (`acme-corp`)
+- Tree (`frontend`)
+- Branch (`main`)
+
+### 3. Policy Aggregation
+The server gathers all applicable IAM policies for the determined scopes. This includes:
+- Global tenant policies.
+- Declarative `.wt-access.toml` files found within the target tree.
+- Cross-tenant **Grants**, if the request originates from outside the owning tenant.
+
+### 4. Policy Evaluation (RBAC & ABAC)
+The engine evaluates the aggregated policies against the Principal and the requested operation (e.g., `branch:write`). 
+- **RBAC (Role-Based Access Control):** Does the Principal have a Role that includes the required permission?
+- **ABAC (Attribute-Based Access Control):** Do the conditions of the policy (e.g., time of day, IP allowlist, file path globs) match the current request context?
+
+### 5. Decision & Enforcement
+The engine returns a final `ALLOW` or `DENY` decision. If denied, the server immediately aborts the protocol handshake and returns an unauthorized error to the client, logging the denial in the Audit Log.
+
+## Declarative Access Parsing
+
+Because access rules are stored declaratively inside the codebase (`.wt-access.toml`), the server must extract and parse these rules *during* the sync process.
+
+When a client attempts to push a commit that modifies a `.wt-access.toml` file, the server performs a **dry-run evaluation**:
+1. It parses the new TOML file.
+2. It validates the syntax and ensures no circular role dependencies.
+3. It checks if the Principal pushing the change has the `tree:config:write` permission.
+4. It verifies that the new policies do not lock out all administrators (preventing a "bricked" tree).
+
+If the new configuration is valid, the commit is accepted, and the new IAM rules take effect immediately for all subsequent operations.
+
+<Callout type="warning">
+  The server strictly enforces the rule that you cannot grant a permission you do not already possess. A `Developer` cannot modify `.wt-access.toml` to grant themselves `Maintainer` access.
+</Callout>
+
+## Conflict Resolution
+
+When policies conflict across different scopes (e.g., a Tenant policy denies access, but a Tree policy allows it), the server uses a strict **Deny-Overrides** model:
+
+1. Explicit `DENY` rules always win over `ALLOW` rules.
+2. If no rule explicitly allows the operation, the default is `DENY`.
+3. Lower-level scopes (like a Branch) can restrict access further than higher-level scopes (like a Tree), but they cannot override an explicit `DENY` set by a parent.
+
+## Caching and Performance
+
+To ensure IAM enforcement doesn't slow down high-frequency operations (like real-time staged snapshot streaming), the server employs a highly optimized, multi-tiered cache:
+
+- **Token Cache:** Validates authentication tokens instantly without hitting the database.
+- **Policy DAG Cache:** The parsed `.wt-access.toml` rules are cached in memory as a Directed Acyclic Graph (DAG) for O(1) permission lookups.
+- **Invalidation:** Whenever a tree's access configuration changes, the server instantly invalidates the cache for that specific tree, ensuring stale policies are never used.

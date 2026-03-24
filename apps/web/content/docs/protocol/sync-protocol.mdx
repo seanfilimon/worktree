@@ -1,0 +1,59 @@
+---
+title: Sync Protocol
+description: The synchronization engine powering staged sync, branch operations, delta transfers, and offline mode.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree's synchronization protocol is designed to handle both continuous real-time collaboration (staged sync) and traditional explicit version control operations (push/pull). It is optimized for low latency, minimal bandwidth usage via delta compression, and robust offline capabilities.
+
+## Staged Sync
+
+The defining feature of W0rkTree's protocol is **Staged Sync**. When the background worker is active (`wt track start`), it continuously streams uncommitted local changes to the server.
+
+1. **Local Snapshots:** Every time a file is saved, the worker generates a lightweight local snapshot.
+2. **Delta Computation:** The worker computes the delta between the new snapshot and the last synchronized state.
+3. **Streaming:** These small deltas are serialized via Bincode, compressed with zstd, and streamed to the server.
+4. **Server Staging:** The server stores these changes in a temporary "staged" store associated with the user and branch, allowing other team members to view them in real-time (`wt staged`).
+
+<Callout type="info">
+Staged sync is unidirectional (client to server) by default, meaning your uncommitted changes are safely backed up and visible to the team, but you don't automatically pull other people's uncommitted work into your working directory unless explicitly requested.
+</Callout>
+
+## Branch Push
+
+While staged sync handles uncommitted work, **Pushing** promotes those changes to permanent, immutable history.
+
+When a user runs `wt snapshot` (or `wt commit`), the local state is finalized into a permanent snapshot object. Since the changes were likely already streamed to the server via staged sync, the `Push` operation is incredibly fast:
+
+1. The client sends the new snapshot and commit objects to the server.
+2. The server verifies it already has the required blob and tree objects in the staged store.
+3. The server updates the branch pointer (Ref Update) to the new snapshot.
+4. The server clears the temporary staged state for that user on that branch.
+
+If staged sync was disabled, the Push operation acts as a bulk transfer, sending all missing objects to the server in a compressed pack.
+
+## Branch Pull
+
+**Pulling** is the process of fetching new permanent history from the remote server.
+
+1. **Ref Negotiation:** The client and server exchange their current branch pointers.
+2. **Missing Object Calculation:** The server determines exactly which objects (commits, trees, blobs) the client lacks.
+3. **Transfer:** The server streams the missing objects.
+4. **Local Update:** The client updates its local branch pointers and optionally checks out the new state into the working directory.
+
+## Delta Sync
+
+To minimize network bandwidth, W0rkTree relies heavily on **Delta Sync**. Instead of transmitting entire files when a small change is made, the protocol only transmits the modified chunks.
+
+- **BLAKE3 Chunking:** Large files are chunked, and each chunk is hashed. If a file is modified, only the chunks with new hashes are transmitted.
+- **Tree Deltas:** When directories change, only the modified tree nodes are sent, leaving unchanged subdirectories entirely out of the network payload.
+
+## Offline Mode
+
+W0rkTree is fundamentally an offline-first system. The protocol gracefully handles network partitions and offline environments.
+
+- **Local Buffering:** If the connection to the server is lost, the background worker continues to track changes and buffer staged snapshots locally.
+- **Background Reconnection:** The worker continuously attempts to reconnect in the background using exponential backoff.
+- **Reconciliation:** Upon reconnection, the worker automatically computes the delta between the server's last known state and the client's current local state, flushing the buffered changes in a single optimized transfer.
+- **Local History:** All explicit operations (`wt snapshot`, `wt branch`, `wt log`) function perfectly while offline, as they operate on the local replica of the object store.

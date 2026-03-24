@@ -1,0 +1,19 @@
+{
+  "title": "Documentation",
+  "description": "W0rkTree documentation",
+  "pages": [
+    "index",
+    "---CLI---",
+    "...cli",
+    "---Protocol---",
+    "...protocol",
+    "---SDK---",
+    "...sdk",
+    "---Server---",
+    "...server",
+    "---IAM---",
+    "...iam",
+    "---Licensing---",
+    "...licensing"
+  ]
+}

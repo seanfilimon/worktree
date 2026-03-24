@@ -1,0 +1,84 @@
+---
+title: Installation
+description: Install and configure the W0rkTree server daemon.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Steps } from 'fumadocs-ui/components/steps';
+
+## System Requirements
+
+| Requirement | Minimum | Recommended |
+|---|---|---|
+| **OS** | Linux, macOS, Windows | Linux (Ubuntu 22.04+) |
+| **CPU** | 2 cores | 4+ cores |
+| **RAM** | 512 MB | 2+ GB |
+| **Disk** | 1 GB | SSD with 10+ GB |
+| **Rust** | 1.75+ (building from source only) | Latest stable |
+
+## Install
+
+<Tabs items={['macOS', 'Linux', 'Windows', 'From Source']}>
+<Tab value="macOS">
+```bash
+brew tap worktree-dev/tap
+brew install worktree-server
+```
+</Tab>
+<Tab value="Linux">
+```bash
+curl -fsSL https://get.worktree.dev/server | sh
+```
+
+For Debian/Ubuntu:
+```bash
+wget https://releases.worktree.dev/latest/worktree-server_amd64.deb
+sudo dpkg -i worktree-server_amd64.deb
+```
+</Tab>
+<Tab value="Windows">
+```powershell
+winget install worktree-server
+```
+</Tab>
+<Tab value="From Source">
+```bash
+git clone https://github.com/worktree-dev/worktree.git
+cd worktree
+cargo build --release -p worktree-server
+```
+</Tab>
+</Tabs>
+
+## Verify Installation
+
+```bash
+wt server --version
+```
+
+## Start the Server
+
+<Steps>
+### Start the daemon
+
+```bash
+wt server start --port 7433 --detach
+```
+
+### Verify it's running
+
+```bash
+wt server status
+```
+
+### Run diagnostics
+
+```bash
+wt doctor
+```
+</Steps>
+
+<Callout type="info">
+See the [Configuration](/docs/server/configuration) page for detailed server tuning options.
+</Callout>
