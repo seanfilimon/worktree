@@ -1,0 +1,47 @@
+---
+title: "Introducing W0rkTree"
+description: "We're excited to announce W0rkTree, a next-generation version control system built for modern development teams."
+author: "W0rkTree Team"
+date: "2025-01-15"
+image: "/blog/hello-world.png"
+tags: ["announcement", "release"]
+summary: "W0rkTree reimagines version control with nested trees, staged visibility, multi-tenancy, license compliance, and Rust-powered performance."
+---
+
+## A New Era of Version Control
+
+Today, we're thrilled to introduce **W0rkTree** — a version control system built from the ground up for modern development workflows.
+
+## Why W0rkTree?
+
+While Git has served us well for over a decade, modern development teams face challenges that Git wasn't designed to solve:
+
+- **Monorepo complexity** — Large codebases need better isolation between teams
+- **Manual workflows** — Staging and committing should be automatic
+- **Limited permissions** — Teams need fine-grained access control
+- **Dependency blindness** — Changes in one area should surface impacts elsewhere
+- **Lack of Identity** — No built-in way to manage organizations and cross-tenant collaboration
+- **Honor-System Licensing** — No way to technically enforce open-source or proprietary licenses
+
+## What's Different
+
+W0rkTree introduces several breakthrough concepts:
+
+### Nested Trees
+Each team gets their own isolated tree within the repository, with independent branches and history.
+
+### Automatic Tracking
+A background worker watches your filesystem and captures changes automatically, so you never lose work.
+
+### Staged Visibility
+W0rkTree syncs your in-progress work to the server as Staged Snapshots, giving your team real-time visibility into who is working on what without polluting your branch history.
+
+### Multi-Tenancy & Access Control
+W0rkTree natively understands Identity and Access Management (IAM), allowing you to securely share specific trees or branches with contractors, partners, or other tenants using declarative policy-as-code.
+
+### License Compliance
+W0rkTree enforces software licenses at the protocol level. If a developer tries to export or fork proprietary code without the proper license grant, the engine physically blocks it.
+
+## Get Started
+
+Visit our [Quick Start guide](/docs/quick-start) to try W0rkTree today.

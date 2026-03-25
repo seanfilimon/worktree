@@ -1,0 +1,51 @@
+---
+title: "How Auto Tracking Works Under the Hood"
+description: "A deep dive into W0rkTree's automatic tracking system — the background worker, filesystem watching, snapshot logic, and configuration options that make manual staging obsolete."
+author: "Sean Filimon"
+date: "2025-04-15"
+tags: ["deep-dive", "auto-tracking"]
+summary: "W0rkTree's automatic worker eliminates manual staging by watching your filesystem in real time, intelligently debouncing changes, and creating snapshots automatically. Here's how it all works under the hood."
+---
+
+## The End of Manual Staging
+
+Every Git user has experienced the pain: you fix a critical bug, test it, ship it — and then realize you forgot to `git add` that one file. Manual staging is a relic of an era when disk was expensive and developers worked on single files at a time. W0rkTree's auto-tracking system replaces this entire workflow with a local background worker (`worktree-worker` or `bgprocess`) that watches your working directory and captures every meaningful change automatically.
+
+The result is that you never lose work, you never forget to stage a file, and your entire editing history is preserved as a series of lightweight snapshots that you can browse, diff, and restore at any time.
+
+## The Worker Architecture
+
+At the heart of auto-tracking is `worktree-worker`, a long-running background process that starts when you open a W0rkTree repository. The worker is architected as a pipeline of three stages:
+
+- **Watcher layer** — Uses platform-native filesystem notification APIs (`ReadDirectoryChangesW` on Windows, `inotify` on Linux, `FSEvents` on macOS) to receive change events with minimal overhead. Recursive watches are registered per-tree, so only the trees you're actively working in consume resources.
+- **Aggregator layer** — Raw filesystem events are noisy. A single file save in most editors triggers a delete, create, and rename sequence. The aggregator collects events into a sliding window and collapses them into semantic operations: file created, file modified, file deleted, file moved. This stage also handles the critical debounce logic — it waits for a configurable quiet period (default 2 seconds) after the last event before emitting an aggregated changeset.
+- **Snapshot layer** — Once the aggregator emits a stable changeset, the snapshot layer computes BLAKE3 hashes for the affected files, compares them against the current tree state, and writes a new snapshot to the object store if anything has actually changed. Snapshots are cheap — they reuse unchanged blobs via content-addressable dedup, so a snapshot touching one file in a million-file tree costs almost nothing.
+
+The worker communicates with the CLI and GUI through a local Unix domain socket (or named pipe on Windows), exposing a simple JSON-RPC API for status queries, manual snapshot triggers, and configuration updates.
+
+## Trigger Logic and Snapshot Rules
+
+Naive filesystem watching would generate thousands of snapshots per hour during active development. W0rkTree uses a multi-layered trigger and debounce strategy to keep snapshot counts reasonable without missing any work:
+
+1. **Inactivity Timeout (`inactivity_timeout_secs`)** — After the last filesystem event, the worker waits for a quiet period before capturing a snapshot. This means rapid typing doesn't create a snapshot per keystroke, but stopping to think guarantees your work is saved.
+2. **Size Thresholds (`max_changed_files`, `max_changed_bytes`)** — If a massive change occurs (e.g., a refactoring script modifies 500 files), the worker triggers a snapshot immediately rather than waiting for inactivity.
+3. **Context Switches (`on_tree_switch`, `on_branch_switch`)** — The worker automatically captures your current state right before you switch branches or trees. You never have to manually stash or commit before moving to another task.
+4. **Content-level dedup** — If the BLAKE3 hash of a file matches the hash already stored in the current snapshot, the file is skipped entirely. This catches cases where an editor writes a file without actually changing its contents.
+
+## Configuration Options
+
+Auto-tracking behavior can be controlled globally or overridden in `.wt-tree/config.toml` at the tree level, giving each team independent control:
+
+- `auto_snapshot.enabled` — Toggle auto-tracking on or off (default: `true`).
+- `auto_snapshot.inactivity_timeout_secs` — Quiet period before a snapshot is taken (default: `300`).
+- `auto_snapshot.max_changed_files` — Force snapshot after this many files change (default: `100`).
+- `auto_snapshot.max_changed_bytes` — Force snapshot after this many bytes change (default: `10MB`).
+- `auto_snapshot.message_format` — Template for auto-generated snapshot messages.
+
+For CI environments or scripted workflows where auto-tracking isn't desirable, the worker can be started in passive mode (`wt worker --passive`), where it watches and indexes but does not create snapshots until explicitly told to.
+
+## From Staged Snapshots to Branch History
+
+Auto-tracking snapshots are not immediately part of your permanent branch history. As the local worker captures snapshots, they are securely synced to the W0rkTree server as **Staged Snapshots**.
+
+Staged snapshots are lightweight and ephemeral. They provide your team with visibility into your work-in-progress without polluting the official branch timeline. When you're ready to make your work official, you run `wt push`. This moves your staged snapshots into the permanent, canonical branch history. You get the safety of continuous backups, the collaboration of real-time visibility, and the cleanliness of intentional version history.

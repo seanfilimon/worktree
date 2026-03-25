@@ -1,0 +1,78 @@
+---
+title: "W0rkTree's Security Model"
+description: "A comprehensive look at how W0rkTree implements multi-layered security with hierarchical permissions, policy files, and cryptographic verification."
+author: "Sean Filimon"
+date: "2025-06-15"
+tags: ["security", "permissions"]
+summary: "W0rkTree's security model provides granular access control from tenant to path level, with policy-as-code, branch protection, audit logging, and cryptographic commit verification."
+---
+
+## Why VCS Security Needs a Rethink
+
+Git was designed for a world where trust was implicit — Linus built it for kernel developers who communicated via mailing lists. The result is a system where anyone with repository access can rewrite history, force-push over protected work, or read every file in the codebase. Bolt-on solutions like GitHub's branch protection rules help, but they live outside the repository itself. W0rkTree takes a fundamentally different approach by making security a first-class citizen of the data model.
+
+## The Threat Model
+
+Before diving into features, it's worth defining what W0rkTree protects against. Our threat model assumes that the network is hostile, endpoints may be compromised, and insiders may make mistakes or act maliciously. 
+
+W0rkTree mitigates 12 specific threats natively:
+- **Eavesdropping on sync:** Thwarted by mandatory TLS 1.3 / QUIC encryption.
+- **Unauthorized access:** Prevented by mandatory authentication and strict IAM.
+- **Code theft:** Blocked by protocol-level License Compliance enforcement.
+- **Secret leakage:** Stopped by pre-snapshot secret scanning.
+- **History tampering:** Prevented by BLAKE3 integrity verification and append-only history.
+- **Privilege escalation:** Thwarted by our scope hierarchy and permission ceiling model.
+- **Stolen credentials:** Mitigated by token expiry, refresh flows, and revocation.
+- **Insider threat:** Traceable via immutable audit logging and path-level access controls.
+- **Man-in-the-middle:** Blocked by TLS 1.3 and certificate pinning.
+- **Supply chain attack:** Prevented by snapshot signing and verification.
+- **Data exfiltration:** Mitigated by export restrictions and license grants.
+- **Denial of service:** Handled by rate limiting and storage quotas.
+
+## Transport Security: Secure by Default
+
+Git's native `git://` protocol has zero authentication and zero encryption. W0rkTree abandons this entirely. All communication between the local background process and the server is encrypted using **QUIC (which incorporates TLS 1.3)** as the primary transport, with gRPC over HTTP/2 with TLS as a fallback. 
+
+There is no unencrypted transport and no anonymous mode. For enterprise deployments, W0rkTree supports mutual TLS (mTLS) and certificate pinning to ensure that even compromised DNS or routing cannot lead to a man-in-the-middle attack.
+
+## The Permission Hierarchy
+
+W0rkTree implements a four-level permission hierarchy that maps directly to its nested tree architecture:
+
+**Tenant → Tree → Branch → Path**
+
+At the **tenant** level, organization-wide policies define defaults: who can create trees, what authentication methods are accepted, and what audit retention policies apply. These are inherited downward unless explicitly overridden.
+
+At the **tree** level, each team's isolated workspace carries its own access control list. A frontend team's tree can grant write access to frontend engineers and read-only access to everyone else — without affecting the backend tree's permissions at all. This is a natural consequence of the nested tree model rather than an afterthought.
+
+**Branch-level** permissions control who can create, push to, merge, or delete specific branches. Protected branches can require a minimum number of approvals, passing CI checks, or sign-off from specific roles before a merge proceeds.
+
+**Path-level** restrictions are the finest grain. Sensitive directories like `/secrets`, `/infrastructure`, or `/compliance` can be locked down to specific individuals or service accounts, even within a tree where broader write access exists.
+
+## Policy Files and Policy-as-Code
+
+W0rkTree stores security policies in versioned `.w0rktree/policy.toml` files within each tree. This means your security configuration is tracked, diffable, and auditable just like any other code change. A typical policy file defines branch protection rules, required reviewers by path pattern, and merge strategies:
+
+Policies are evaluated at the engine level — they cannot be bypassed by CLI flags or API calls. When a policy file changes, the diff is flagged for review by tenant administrators automatically.
+
+## Pre-Snapshot Secret Scanning
+
+Committing secrets is a massive liability. Third-party tools try to catch them in CI or via Git hooks, but hooks can be skipped with `--no-verify`. 
+
+In W0rkTree, **secret scanning is built into the background process**. When you create a snapshot, the engine automatically scans file content against configured patterns (e.g., AWS keys, Stripe tokens, private keys). If a secret is detected, the snapshot is aborted immediately. Because this happens locally before the data ever leaves your machine, the secret never enters the shared history.
+
+## Snapshot Signing and Cryptographic Verification
+
+W0rkTree supports **snapshot signing** using Ed25519 keys by default, with optional GPG compatibility for teams migrating from Git. When you create a snapshot, the background process computes the BLAKE3 hash of the contents and signs it with your private key. 
+
+On push, the server cryptographically verifies the signature. Branch protection policies can enforce that only signed snapshots from known, registered keys are accepted into protected branches, protecting your codebase from supply chain attacks.
+
+## Immutable Audit Logging
+
+Every mutation in W0rkTree — commits, merges, permission changes, policy updates, branch deletions, and even access denials — generates an immutable audit log entry. These entries are stored in an append-only log that is itself content-addressed using BLAKE3, making tampering computationally infeasible.
+
+The audit log captures not just what changed, but the full authorization context: which user, authenticated how, under which policy version, with what permissions resolved at the time of the operation. This makes compliance reporting straightforward — you can reconstruct exactly who had access to what at any point in history.
+
+## Defense in Depth
+
+W0rkTree's security model follows defense-in-depth principles. Even if a single layer is misconfigured, other layers provide protection. Tenant policies catch broad misconfigurations. Tree isolation prevents lateral access. Branch protection guards critical integration points. Path restrictions protect sensitive files. And the cryptographic audit trail ensures that any breach is detectable after the fact. For teams operating under SOC 2, HIPAA, or similar compliance frameworks, this layered model means version control is no longer the weakest link in the security chain.

@@ -1,0 +1,86 @@
+---
+title: "Staged Snapshots: The End of Surprise Merge Conflicts"
+description: "How W0rkTree eliminates development silos by making in-progress work securely visible to your team."
+author: "Sean Filimon"
+date: "2025-10-15"
+tags: ["features", "collaboration"]
+summary: "In Git, your work is invisible until you push. W0rkTree's Staged Snapshots securely sync your work-in-progress, giving your team real-time visibility into who is touching what—without permanently cluttering your branch history."
+---
+
+## The Git Black Hole
+
+If you've ever worked on a team using Git, you know the feeling: you spend three days carefully refactoring a core module. You test it, commit it, and type `git push`. Immediately, your terminal lights up with red text. **Merge conflict.** 
+
+Someone else was refactoring the exact same files at the exact same time.
+
+Git has a fundamental visibility gap: **all work is completely invisible until someone pushes.** A developer can work for days on a feature branch, and no one else in the organization knows until they open a Pull Request. Teams attempt to patch this gap with daily standups, constant Slack messages, Jira updates, and asking "Hey, is anyone touching the billing API today?" 
+
+This is a tooling failure. Version control should help you coordinate, not keep you in the dark.
+
+W0rkTree completely eliminates this problem with its flagship collaboration feature: **Staged Snapshots**.
+
+## What is a Staged Snapshot?
+
+In W0rkTree, we separate the concept of *syncing* from the concept of *committing to history*. 
+
+As you work, W0rkTree's local background worker automatically captures your changes and syncs them to the server as **Staged Snapshots**. These are ephemeral, low-stakes markers of your work-in-progress. They are attributed to your user, your branch, and your tree.
+
+The golden rule of W0rkTree collaboration is simple: **Staged ≠ Pushed. Visible ≠ Merged.**
+
+Staged snapshots are visible to your team, but they *do not* become part of your branch's permanent history until you explicitly run `wt push`. They exist entirely to answer one crucial question: *"What is everyone working on right now?"*
+
+## Early Conflict Detection
+
+Because W0rkTree knows what every developer has staged, it acts as an early warning system for your codebase. 
+
+Instead of finding out about a conflict at merge time, you find out immediately. If Alice is working on `billing-engine/src/pricing.rs` on her feature branch, and Bob tries to modify the same file on his branch, W0rkTree can proactively warn them. 
+
+When you run `wt status --team`, W0rkTree shows you a real-time feed of active development:
+
+```text
+Tree: billing-engine
+Branch: feature/stripe-integration
+
+Staged Activity:
+  Alice (alice@company.io) — 3 staged snapshots (latest: 2 min ago)
+    modified: src/pricing.rs, src/api.rs
+    branch: feature/discounts
+
+  You — 1 staged snapshot (latest: just now)
+    modified: src/pricing.rs
+    branch: feature/stripe-integration
+```
+
+If Bob runs `wt push`, the CLI will even warn him:
+
+```text
+⚠ Potential conflict detected:
+  alice@company.io has staged changes to src/pricing.rs on feature/discounts
+  Your push also modifies src/pricing.rs
+```
+
+This isn't a blocking error—Alice hasn't pushed yet—but it gives Bob the opportunity to message Alice *before* they create a catastrophic merge conflict.
+
+## Privacy When You Need It
+
+We know that developers don't always want their half-finished, experimental code broadcast to the team. Staged visibility is powerful, but you are always in control.
+
+- **Pause Syncing:** Running `wt sync pause` temporarily halts the background worker from broadcasting your staged snapshots. Your work becomes completely invisible until you run `wt sync resume`.
+- **Branch-Level Privacy:** Private feature branches ensure that only you (and tenant administrators) can see your staged activity. 
+- **Tree-Level Opt-Out:** You can disable auto-staging entirely for a specific tree via its `.wt-tree/config.toml` file.
+
+W0rkTree is also not a keystroke logger. We don't stream your cursor position like Google Docs. Granularity is strictly at the snapshot level—providing just enough context to coordinate, without micromanaging your workflow.
+
+## Deep Security and License Integration
+
+W0rkTree's staged visibility doesn't compromise on security. In fact, it's deeply integrated with our IAM (Identity and Access Management) and License Compliance engines.
+
+When your team views staged activity, they see *metadata*: who is working, on which branch, and which file paths are being touched. However, reading the *contents* of those staged files requires the proper permissions. 
+
+If Alice modifies a file governed by a proprietary license, Bob can see that Alice is modifying the file, but unless Bob has an explicit license grant to view that proprietary code, the W0rkTree server will block him from pulling the staged diffs. 
+
+## Moving Beyond Silos
+
+Staged snapshots represent a fundamental shift in how developers collaborate. By breaking down the silos inherent to Git's offline-first architecture, W0rkTree transforms version control from a multiplayer game played in separate rooms into a truly collaborative workspace.
+
+You no longer have to guess what your team is doing. You just look at the tree.

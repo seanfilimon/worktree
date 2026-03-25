@@ -1,0 +1,46 @@
+---
+title: "Git Compatibility: Import, Export, Bridge"
+description: "How W0rkTree maintains full Git compatibility through its import pipeline, export tools, and live bridge mode — so you can adopt W0rkTree without abandoning your existing workflows."
+author: "W0rkTree Team"
+date: "2025-06-01"
+tags: ["git", "compatibility"]
+summary: "W0rkTree provides a comprehensive Git compatibility layer including import conversion, export pipelines, remote bridging, and live mirror mode for seamless adoption."
+---
+
+## The Migration Problem
+
+Adopting a new version control system is terrifying. You have years of Git history, thousands of branches, CI/CD pipelines wired to Git remotes, and deployment scripts that parse Git refs. Asking teams to abandon all of that overnight is a non-starter. That's why W0rkTree was designed from day one with a comprehensive Git compatibility layer that lets you adopt incrementally — or even run both systems simultaneously.
+
+## Import: Converting Git History
+
+The `w0rktree import` command converts an entire Git repository into W0rkTree's native format. This isn't a shallow copy — it's a full structural conversion that preserves every commit, branch, tag, and merge in your history.
+
+During import, W0rkTree performs several transformations. Git's SHA-1 object hashes are re-computed as BLAKE3 content addresses. The flat file tree is analyzed for logical boundaries and suggested tree splits. Submodule references are converted into native nested tree links. Merge commits are preserved with full parent lineage so `w0rktree log` renders the same topology as `git log --graph`.
+
+The import process also generates a bidirectional ref map — a persistent mapping between Git commit SHAs and W0rkTree content addresses. This ref map is critical for the bridge and export features described below.
+
+## Export: Generating Git-Compatible Output
+
+Sometimes you need to go the other direction. The `w0rktree export` command flattens a W0rkTree repository (or a specific tree within it) back into a valid Git repository. Nested trees are collapsed into directories. W0rkTree-specific metadata like dependency links and permission policies are stored in a `.w0rktree/` metadata directory that Git will track as ordinary files.
+
+The round-trip guarantee is a core design principle: importing a Git repo and then exporting it produces a byte-identical Git history. No commits are rewritten, no author dates are shifted, no merge structures are altered. This guarantee is enforced by our CI suite, which tests round-trip fidelity against hundreds of real-world open-source repositories on every release.
+
+## Remote Bridge: Pushing and Pulling to Git Remotes
+
+The most powerful compatibility feature is the Git remote bridge. By configuring a bridge remote, W0rkTree can push to and pull from any Git remote — GitHub, GitLab, Bitbucket, or a bare server — as if it were a native Git client.
+
+Under the hood, the bridge maintains a shadow Git object store. When you run `w0rktree push bridge origin main`, W0rkTree converts the relevant commits to Git objects, updates the ref map, and performs a standard Git push over HTTPS or SSH. Incoming pulls work in reverse: Git objects are fetched, converted to W0rkTree's native format, and merged into your local tree.
+
+The bridge supports all standard Git remote operations including force pushes, tag synchronization, and shallow fetches. It even handles Git LFS pointers by converting them to W0rkTree's native large file chunking format.
+
+## Live Mirror Mode
+
+For teams that aren't ready to fully commit, live mirror mode runs the bridge continuously in the background. Every local W0rkTree commit is automatically mirrored to a configured Git remote within seconds. Team members who haven't switched yet continue using Git as normal — they see standard Git commits appear in their history. Meanwhile, W0rkTree users get the full benefit of nested trees, auto-tracking, and dependency graphs on their side.
+
+Live mirror mode uses the auto-tracking daemon's event system to trigger bridge synchronization. The latency between a W0rkTree commit and its appearance on the Git remote is typically under two seconds for repositories under 10 GB.
+
+## Ref Mapping and Consistency
+
+The ref map is the backbone that ties everything together. It's a persistent, append-only log stored in `.w0rktree/bridge/refmap` that records every correspondence between Git SHAs and W0rkTree addresses. This map enables features like `w0rktree blame --git-compat`, which outputs standard Git-format blame annotations that tools like GitHub's web UI can consume directly.
+
+W0rkTree's Git compatibility layer means adoption isn't a cliff — it's a ramp. Start with import, run in mirror mode, and transition teams at their own pace. Your Git history, your CI pipelines, and your muscle memory all come with you.

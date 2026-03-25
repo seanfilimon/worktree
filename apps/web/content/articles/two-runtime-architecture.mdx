@@ -1,0 +1,56 @@
+title: "The Two-Runtime Architecture: Why Version Control Needs a Background Worker"
+description: "Git relies on a single CLI executable to manage both local history and remote syncing. W0rkTree splits this into a continuous local worker and a smart multi-tenant server."
+author: "Sean Filimon"
+date: "2025-11-05"
+tags: ["architecture", "performance"]
+summary: "Git's architecture forces developers to manually manage the bridge between local and remote state. W0rkTree introduces a Two-Runtime Architecture—a continuous local background worker and a smart multi-tenant server—that handles synchronization automatically."
+---
+
+## The Limitations of a Single Executable
+
+When you use Git, you are interacting with a single, synchronous executable (`git`). When you run a command, it wakes up, inspects your `.git/` directory, performs a calculation, modifies some files, and goes back to sleep. 
+
+Because Git only runs when you explicitly invoke it, the burden of synchronization falls entirely on the developer. You have to remember to stage files, commit them, and push them to the server. You also have to remember to pull changes to see what your team is doing. The result is a highly disconnected workflow where the local repository and the remote server are almost always out of sync.
+
+W0rkTree fixes this fundamental disconnect by splitting version control into a **Two-Runtime Architecture**:
+1. The **Local Worker** (`worktree-bgprocess`)
+2. The **Remote Server** (`worktree-server`)
+
+## Runtime 1: The Local Worker (`worktree-bgprocess`)
+
+Instead of a passive executable that waits for your commands, W0rkTree installs a lightweight, highly optimized background process on your machine. This is your local VCS engine.
+
+The Local Worker is responsible for:
+- **Continuous Tracking:** It securely watches your file system for changes in real-time. There is no manual staging area or `git add`.
+- **Auto-Snapshots:** It automatically captures your work as local snapshots based on inactivity or file changes. 
+- **Out-of-Tree Storage:** Unlike Git, which pollutes your project folder with a massive `.git/` directory, the W0rkTree worker stores your local history and objects in a centralized, platform-appropriate location (e.g., `~/.local/share/w0rktree/`). Your working directory stays clean.
+- **Continuous Sync:** It securely communicates with the remote server using multiplexed QUIC (HTTP/3) to keep your local state continuously converged with your team.
+
+## Runtime 2: The Remote Server (`worktree-server`)
+
+If the Local Worker is the engine, the Remote Server is the brain of your organization. Git servers (even enterprise ones) are often just dumb storage endpoints that accept whatever you push to them. The W0rkTree server is a smart, stateful coordinator.
+
+The Remote Server handles:
+- **Multi-Tenancy:** It natively understands organizations, users, and teams, enforcing isolation and collaboration boundaries directly at the protocol level.
+- **Declarative Access Control:** It evaluates granular, file-level access policies (IAM) on every single operation.
+- **License Compliance:** It actively prevents unauthorized exfiltration of proprietary code, blocking unauthorized users from cloning or exporting restricted files.
+- **Canonical History & Branch Protection:** It acts as the ultimate source of truth, enforcing branch protection rules (like requiring signed snapshots or CI approvals) before accepting merges.
+
+## The Magic: Working Together
+
+The true power of the Two-Runtime Architecture becomes obvious when you look at how W0rkTree handles collaboration. 
+
+In Git, work is completely invisible to the team until you explicitly push it, resulting in surprise merge conflicts. 
+
+In W0rkTree, the Local Worker automatically captures your work-in-progress and syncs it to the Remote Server as a **Staged Snapshot**. 
+- The Remote Server receives this snapshot and makes its metadata visible to your authorized teammates. 
+- Your team can see what you are working on ("Alice is modifying `auth-service/src/oauth.rs`") in real-time.
+- **Crucially, Staged Snapshots are not pushed to the branch.** They do not pollute the branch's permanent history. 
+
+Staged snapshots exist purely for team visibility. You still retain full control over when to officially integrate your work by running `wt push`, which transitions those staged snapshots into canonical branch history.
+
+## A System That Works For You
+
+By decoupling the act of tracking code from the act of sharing it, W0rkTree eliminates the busywork of version control. The background worker handles the tedious tasks of staging, tracking, and syncing, while the server handles the complex tasks of security, visibility, and compliance. 
+
+You just write code, and W0rkTree handles the rest.

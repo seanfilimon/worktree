@@ -1,0 +1,72 @@
+---
+title: "Nested Trees: The Core Innovation Behind W0rkTree"
+description: "A deep dive into W0rkTree's nested tree architecture — the hierarchical model that replaces Git's flat repository with isolated, composable workspaces."
+author: "Sean Filimon"
+date: "2025-03-15"
+tags: ["deep-dive", "trees"]
+summary: "W0rkTree's nested tree model gives every team an isolated workspace with independent branches and history, all within a single repository. Here's how it works."
+---
+
+## The Problem with Flat Repositories
+
+Git treats a repository as a single, flat namespace. Every file, every branch, and every commit lives in the same pool. When you have 200 developers working across dozens of services in a monorepo, this model breaks down fast. One team's experimental branch pollutes another team's branch list. A force-push on `main` affects everyone. There's no isolation — just a shared bucket of refs and blobs.
+
+Git submodules were supposed to solve this, but they introduce their own pain: pinned SHAs that drift out of sync, nested `.git` directories, broken workflows when a submodule URL changes, and an update ceremony that nobody enjoys. They're bolted on, not built in.
+
+## How Nested Trees Work
+
+W0rkTree replaces the flat model with a **tree hierarchy**. A repository is no longer a single workspace — it's a root tree that contains child trees, which can contain their own children, recursively.
+
+Each tree is a first-class citizen with its own:
+
+- **Branch namespace** — `frontend/main` and `backend/main` are independent branches in independent trees, not naming conventions on a shared ref list.
+- **Commit history** — Each tree maintains its own DAG of commits. A commit in the `api` tree doesn't appear in the `web` tree's log.
+- **Configuration** — Trees can define their own ignore rules, tracking behavior, and permission policies via their local `.wt-tree/` directory.
+- **Working directory** — Each tree maps to a directory subtree on disk, but the mapping is logical, not just path-based.
+
+The root tree acts as an orchestrator. It knows about its children, can coordinate cross-tree operations, and maintains a global timeline for auditing — but it never forces child trees into lockstep.
+
+## Autonomy via `.wt-tree/` Configuration
+
+Because each tree is fully isolated, teams manage their own security and compliance without requiring global repository administrators. Every tree contains a `.wt-tree/` directory which houses:
+
+- **Tree-Specific Configuration (`config.toml`):** Teams can customize branch strategies, auto-snapshot intervals, and explicitly register paths for access control within their specific subtree.
+- **Declarative Access Control (`access/policies.toml`):** The backend team can grant a contractor read-only access to the `api` tree without giving them access to the root repository or the `frontend` tree. This is evaluated engine-side on every push.
+- **License Compliance:** A tree can declare its own software license (e.g., `license = "AGPL-3.0-only"`). If a public monorepo contains both MIT-licensed open-source trees and proprietary enterprise trees, W0rkTree enforces these boundaries at the protocol level, preventing unauthorized forks or exports of the proprietary subtrees.
+
+## The Content-Addressable DAG
+
+Under the hood, every tree stores its data in a **content-addressable DAG** (directed acyclic graph) hashed with BLAKE3. Tree nodes, blob nodes, and commit nodes all live in the same object store, deduplicated by content.
+
+When a child tree creates a commit, the parent tree records a **tree reference** — a lightweight pointer to the child's commit hash. This is conceptually similar to a Git submodule pin, but with a critical difference: the reference is updated automatically by the system, not manually by a developer. The parent always knows the current state of its children without anyone running `git submodule update`.
+
+This structure also enables **partial clone** by default. Because each tree's object graph is independent, you can clone just the trees you care about. A frontend developer doesn't need to download the ML team's training data to get started.
+
+## Comparing to Git's Model
+
+| Capability | Git | Git Submodules | W0rkTree Trees |
+|---|---|---|---|
+| Branch isolation | None | Per-repo only | Per-tree |
+| Independent history | No | Yes, but disconnected | Yes, coordinated |
+| Partial clone | Sparse checkout (limited) | Manual per-submodule | Native per-tree |
+| Cross-tree references | N/A | Pinned SHA (manual) | Auto-tracked refs |
+| Permission boundaries | None | Separate repo ACLs | Tree-level policies |
+| Atomic cross-tree commits | N/A | Not possible | Built-in |
+
+The key insight is that nested trees give you the **isolation of multiple repositories** with the **coordination of a single repository**. You don't have to choose between monorepo and multi-repo — W0rkTree gives you both.
+
+## Practical Implications
+
+Consider a typical product with a frontend app, a backend API, a shared library, and infrastructure config. In W0rkTree, each of these is a tree:
+
+```
+/product (root tree)
+  /frontend (tree: React app)
+  /backend (tree: Rust API)
+  /shared (tree: shared types and utils)
+  /infra (tree: Terraform configs)
+```
+
+The frontend team branches, commits, and iterates inside their tree without touching the backend. When `shared` publishes a new version, W0rkTree's dependency graph notifies both `frontend` and `backend` that an update is available. And when it's time to ship, a **linked branch** can coordinate an atomic merge across all four trees simultaneously.
+
+This isn't a workflow bolted onto version control — it's version control designed around how teams actually work.
