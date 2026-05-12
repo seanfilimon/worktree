@@ -41,13 +41,17 @@ func TestPostgresStore_AddAndList(t *testing.T) {
 		CreatedAt:  time.Now().UTC().Truncate(time.Microsecond),
 	}
 
-	if err := store.Add(ctx, snap); err != nil {
+	if result, err := store.Add(ctx, snap); err != nil {
 		t.Fatalf("Add: %v", err)
+	} else if result.Status != staged.AddStatusCreated {
+		t.Fatalf("Add status = %s, want created", result.Status)
 	}
 
 	// Idempotent second add must not error
-	if err := store.Add(ctx, snap); err != nil {
+	if result, err := store.Add(ctx, snap); err != nil {
 		t.Fatalf("Add (idempotent): %v", err)
+	} else if result.Status != staged.AddStatusAlreadyExists {
+		t.Fatalf("Add (idempotent) status = %s, want already_exists", result.Status)
 	}
 
 	all, err := store.List(ctx, staged.ListFilter{Tenant: "tenant-a"})
@@ -85,8 +89,8 @@ func TestPostgresStore_ListFilter(t *testing.T) {
 	snapA := staged.Snapshot{SnapshotID: "filter-test-a-" + t.Name(), Tenant: "filter-tenant", Worktree: "wt-a", TreeID: "t", Branch: "feat", ObjectIDs: []string{hash}, CreatedAt: time.Now().UTC()}
 	snapB := staged.Snapshot{SnapshotID: "filter-test-b-" + t.Name(), Tenant: "filter-tenant", Worktree: "wt-b", TreeID: "t", Branch: "main", ObjectIDs: []string{hash}, CreatedAt: time.Now().UTC()}
 
-	_ = store.Add(ctx, snapA)
-	_ = store.Add(ctx, snapB)
+	_, _ = store.Add(ctx, snapA)
+	_, _ = store.Add(ctx, snapB)
 
 	results, err := store.List(ctx, staged.ListFilter{Tenant: "filter-tenant", Worktree: "wt-a"})
 	if err != nil {

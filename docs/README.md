@@ -25,8 +25,10 @@ Welcome to the Worktree documentation! This directory contains comprehensive gui
 
 #### Worktree Server
 The current Rust crate is a local daemon/prototype server; the production remote authority is
-planned as a Go service. Recent prototype work added synchronous staged snapshot upload through
-`POST /staged`.
+implemented in `server-go/` as the active production-boundary work. Recent work added Rust/Go
+staged request compatibility, canonical staged idempotency, bearer auth, policy-backed IAM hooks,
+gRPC staged sync, Postgres/file metadata stores, embedded migrations, and Docker Compose with
+Postgres.
 
 - Architecture overview
 - Configuration options
@@ -65,9 +67,11 @@ The Worktree protocol enables efficient communication between clients and server
 
 - Binary protocol format
 - Message types and structure
-- Staged snapshot upload contract
+- Authenticated staged snapshot upload contract
+- gRPC `SyncService` staged create/list contract
+- Staged idempotency and conflict behavior
 - Streaming and chunked transfers
-- Authentication mechanisms
+- Bearer credential and policy-file demo auth
 - Error handling
 
 #### Server Architecture
@@ -77,7 +81,9 @@ Deep dive into the server's internal design:
 - Rust bgprocess/prototype boundary
 - Production Go server boundary
 - File watching and change detection
-- Staged snapshot storage
+- Staged snapshot storage in file or Postgres-backed stores
+- Canonical staged idempotency and upload validation
+- Shared REST/gRPC auth, IAM, and audit path
 - Caching strategies
 - Performance optimization
 
@@ -156,8 +162,8 @@ See the main [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines on:
 #### Docker Deployment
 
 ```bash
-docker pull worktree/server:latest
-docker run -d -p 8080:8080 worktree/server
+cd server-go
+docker compose up --build
 ```
 
 #### Kubernetes Deployment

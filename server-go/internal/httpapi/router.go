@@ -12,15 +12,19 @@ import (
 
 type RouterConfig struct {
 	Version       string
-	Authenticator auth.StaticAuthenticator
+	Authenticator auth.Authenticator
 	Authorizer    iam.Authorizer
 	Staged        *StagedService
+	Canonical     *CanonicalService
 	Metrics       *observability.Metrics
 }
 
 func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.Metrics == nil {
 		cfg.Metrics = observability.NewMetrics()
+	}
+	if cfg.Authenticator == nil {
+		cfg.Authenticator = auth.NewStaticAuthenticator("")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(cfg))
@@ -29,6 +33,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.Staged != nil {
 		mux.Handle("POST /staged", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Staged.HandleUpload)))
 		mux.Handle("GET /staged", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Staged.HandleList)))
+	}
+	if cfg.Canonical != nil {
+		mux.Handle("POST /api/push", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Canonical.HandlePush)))
+		mux.Handle("POST /api/pull", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Canonical.HandlePull)))
+		mux.Handle("POST /api/objects/check", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Canonical.HandleObjectsCheck)))
+		mux.Handle("GET /api/objects/{hash}", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Canonical.HandleObject)))
+		mux.Handle("PUT /api/objects/{hash}", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Canonical.HandleObject)))
+		mux.Handle("GET /api/refs", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Canonical.HandleListRefs)))
 	}
 	return requestIDMiddleware(metricsMiddleware(cfg.Metrics, mux))
 }

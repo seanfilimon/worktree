@@ -12,11 +12,15 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var ErrInvalidHash = errors.New("invalid BLAKE3 hash")
+var (
+	ErrInvalidHash   = errors.New("invalid BLAKE3 hash")
+	ErrObjectMissing = errors.New("object not found")
+)
 
 type ObjectStore interface {
 	Put(ctx context.Context, hash string, data []byte) error
 	Exists(ctx context.Context, hash string) (bool, error)
+	Get(ctx context.Context, hash string) ([]byte, error)
 }
 
 type LocalObjectStore struct {
@@ -53,6 +57,28 @@ func (s *LocalObjectStore) Put(ctx context.Context, hash string, data []byte) er
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func (s *LocalObjectStore) Get(ctx context.Context, hash string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	hash = strings.ToLower(hash)
+	if !IsValidHash(hash) {
+		return nil, ErrInvalidHash
+	}
+	data, err := os.ReadFile(s.objectPath(hash))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrObjectMissing
+		}
+		return nil, err
+	}
+	actual := blake3.Sum256(data)
+	if hex.EncodeToString(actual[:]) != hash {
+		return nil, fmt.Errorf("%w: stored content hash mismatch", ErrInvalidHash)
+	}
+	return data, nil
 }
 
 func (s *LocalObjectStore) Exists(ctx context.Context, hash string) (bool, error) {

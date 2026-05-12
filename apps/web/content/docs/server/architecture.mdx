@@ -8,28 +8,40 @@ import { Card, Cards } from 'fumadocs-ui/components/card';
 
 ## Overview
 
-The W0rkTree server is built on a **multi-tenant, event-driven architecture** that enables teams to work independently while maintaining a unified codebase. Every design decision prioritizes: **correctness first**, **speed by default**, and **collaboration without friction**.
+The production remote server is being implemented in Go under `server-go/`. The Rust
+`worktree-server` crate remains the local bgprocess/prototype server for filesystem watching and
+local demo flows. The remote server boundary is intentionally separate: it verifies uploaded
+objects, stores authoritative metadata, gates operations through IAM, and never watches a developer
+working directory.
 
-## Threading Model
+Current implemented remote-server slices include authenticated REST staged upload/list, authenticated
+gRPC staged upload/list, BLAKE3 object verification, canonical staged idempotency, file or Postgres
+staged metadata storage, audit recording, request metrics, embedded migrations, and Docker Compose
+with Postgres.
 
-The server uses `tokio` as its async runtime with a multi-threaded executor:
+## Runtime Model
 
-- **Main thread** — accepts connections, manages lifecycle
-- **Worker pool** — handles client requests (configurable, default: CPU cores)
-- **Watcher thread** — dedicated thread for filesystem event collection
-- **Background tasks** — garbage collection, cache eviction, metric aggregation
+The local Rust prototype uses `tokio` for localhost demo endpoints and watcher tasks. The Go remote
+server uses standard HTTP/gRPC servers:
+
+- **HTTP listener** — health, readiness, metrics, and REST staged endpoints on `WT_SERVER_HTTP_ADDR`
+- **gRPC listener** — `SyncService` on `WT_SERVER_GRPC_ADDR`, default `127.0.0.1:9877`
+- **Storage layer** — local BLAKE3 object store plus file or Postgres staged metadata store
+- **Auth path** — shared bearer-token principal extraction for REST and gRPC
+- **Audit path** — shared REST/gRPC audit recorder with token ID and auth method context
+- **IAM seam** — shared default-deny `Authorizer` interface for staged create/list decisions
 
 ## Component Architecture
 
 <Cards>
   <Card title="Client-Server Model" description="A local daemon handles auto-tracking and offline operations. The remote server manages synchronization, collaboration, and access control." />
   <Card title="Multi-Tenant Isolation" description="Logical and physical isolation between different organizations. Every resource belongs to a specific tenant with strict boundaries." />
-  <Card title="IAM Enforcement" description="A central engine evaluating declarative RBAC/ABAC access policies on every protocol operation." />
+  <Card title="IAM Enforcement" description="A default-deny Authorizer gates staged REST and gRPC operations now; JSON demo policies are supported while full RBAC/ABAC parity remains planned." />
   <Card title="License Compliance" description="Server-side SPDX license evaluation that prevents incompatible code from being merged or synced." />
   <Card title="Staged Snapshot Aggregation" description="Real-time aggregation of in-flight changes from connected clients for unified visibility." />
   <Card title="Merge Request System" description="Native server-side tracking of linked branch merges, reviews, and status checks." />
   <Card title="Event Sourcing" description="All mutations are recorded as an append-only event log. This enables time-travel debugging, audit trails, and CRDTs for real-time collaboration." />
-  <Card title="Pluggable Backends" description="The storage engine supports pluggable backends: local filesystem (default), S3-compatible object storage, and SQLite." />
+  <Card title="Pluggable Backends" description="Staged metadata uses a local file store for development or Postgres when WT_SERVER_DATABASE_URL is set; both enforce canonical staged idempotency." />
 </Cards>
 
 ## Data Flow
@@ -49,3 +61,8 @@ Object Store (local) → Delta Calculator → Compression → Wire Protocol → 
 ```
 
 The sync protocol is **incremental** — only objects the remote doesn't have are transferred.
+
+The implemented staged slice currently uploads added/modified object bytes for one snapshot. Go
+rejects unsafe paths, verifies declared BLAKE3 hash and size, authenticates the bearer principal,
+authorizes staged create/list, and stores the staged snapshot record idempotently. Have/want
+negotiation and branch push/pull are still planned.

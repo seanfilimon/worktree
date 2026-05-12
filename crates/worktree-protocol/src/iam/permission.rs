@@ -50,6 +50,12 @@ pub enum Permission {
     /// Pull from remotes.
     SyncPull,
 
+    // ── Staged visibility permissions ───────────────────────────────
+    /// Upload a staged snapshot to the server.
+    StagedCreate,
+    /// List staged snapshots visible to the requester.
+    StagedList,
+
     // ── Management permissions ──────────────────────────────────────
     /// Create, update, or deactivate accounts within the tenant.
     AccountManage,
@@ -83,6 +89,8 @@ static ALL_PERMISSIONS: &[Permission] = &[
     Permission::SnapshotRead,
     Permission::SyncPush,
     Permission::SyncPull,
+    Permission::StagedCreate,
+    Permission::StagedList,
     Permission::AccountManage,
     Permission::TeamManage,
     Permission::RoleManage,
@@ -114,6 +122,8 @@ impl Permission {
             Permission::SnapshotRead => "snapshot:read",
             Permission::SyncPush => "sync:push",
             Permission::SyncPull => "sync:pull",
+            Permission::StagedCreate => "staged:create",
+            Permission::StagedList => "staged:list",
             Permission::AccountManage => "account:manage",
             Permission::TeamManage => "team:manage",
             Permission::RoleManage => "role:manage",
@@ -171,7 +181,7 @@ mod tests {
 
     #[test]
     fn all_returns_every_variant() {
-        assert_eq!(Permission::all().len(), 20);
+        assert_eq!(Permission::all().len(), 22);
     }
 
     #[test]

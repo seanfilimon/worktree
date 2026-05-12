@@ -50,6 +50,7 @@ branch_strategy = "feature-branch"
         branches: vec![BranchState {
             name: "main".to_string(),
             tip: None,
+            remote_tip: None,
             created_at: now,
         }],
         current_branch: "main".to_string(),

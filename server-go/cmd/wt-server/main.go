@@ -14,11 +14,13 @@ import (
 
 	"github.com/ramizik/worktree/server-go/internal/audit"
 	"github.com/ramizik/worktree/server-go/internal/auth"
+	"github.com/ramizik/worktree/server-go/internal/canonical"
 	"github.com/ramizik/worktree/server-go/internal/config"
 	grpcserver "github.com/ramizik/worktree/server-go/internal/grpc"
 	worktreepb "github.com/ramizik/worktree/server-go/internal/grpc/worktreepb/worktree/v1"
 	"github.com/ramizik/worktree/server-go/internal/httpapi"
 	"github.com/ramizik/worktree/server-go/internal/iam"
+	"github.com/ramizik/worktree/server-go/internal/migrate"
 	"github.com/ramizik/worktree/server-go/internal/observability"
 	"github.com/ramizik/worktree/server-go/internal/server"
 	"github.com/ramizik/worktree/server-go/internal/staged"
@@ -36,6 +38,13 @@ func main() {
 		Level: cfg.LogLevel(),
 	}))
 	slog.SetDefault(log)
+
+	if cfg.RunMigrations && cfg.DatabaseURL != "" {
+		if err := migrate.Run(context.Background(), cfg.DatabaseURL); err != nil {
+			slog.Error("failed to run migrations", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	objectStore := storage.NewLocalObjectStore(cfg.StorageRoot)
 
@@ -55,11 +64,21 @@ func main() {
 	}
 	metrics := observability.NewMetrics()
 	auditRecorder := audit.NewFileRecorder(cfg.AuditPath)
+	authenticator, err := buildAuthenticator(cfg)
+	if err != nil {
+		slog.Error("failed to configure authentication", "error", err)
+		os.Exit(1)
+	}
+	authorizer, err := buildAuthorizer(cfg)
+	if err != nil {
+		slog.Error("failed to configure IAM", "error", err)
+		os.Exit(1)
+	}
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Version:       "dev",
-		Authenticator: auth.NewStaticAuthenticator(cfg.AuthToken),
-		Staged: httpapi.NewStagedService(objectStore, stagedStore, auditRecorder, iam.AllowAllAuthorizer{}, httpapi.StagedLimits{
+		Authenticator: authenticator,
+		Staged: httpapi.NewStagedService(objectStore, stagedStore, auditRecorder, authorizer, httpapi.StagedLimits{
 			MaxObjectBytes: cfg.MaxStagedObjectBytes,
 			MaxObjects:     cfg.MaxStagedObjects,
 		}),
@@ -68,8 +87,8 @@ func main() {
 
 	srv := server.NewHTTPServer(cfg, router)
 
-	syncSrv := grpcserver.NewSyncServer(objectStore, stagedStore, auditRecorder, iam.AllowAllAuthorizer{})
-	grpcS := grpc.NewServer()
+	syncSrv := grpcserver.NewSyncServer(objectStore, stagedStore, auditRecorder, authorizer)
+	grpcS := grpc.NewServer(grpc.UnaryInterceptor(grpcserver.AuthUnaryInterceptor(authenticator)))
 	worktreepb.RegisterSyncServiceServer(grpcS, syncSrv)
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -113,4 +132,42 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func buildAuthenticator(cfg config.Config) (auth.Authenticator, error) {
+	if cfg.AuthMode == "static-dev" {
+		return auth.NewStaticAuthenticator(cfg.AuthToken), nil
+	}
+	credentials := []auth.TokenCredential{}
+	if cfg.AuthCredentialsPath != "" {
+		loaded, err := auth.LoadTokenCredentialsFile(cfg.AuthCredentialsPath)
+		if err != nil {
+			return nil, err
+		}
+		credentials = append(credentials, loaded...)
+	}
+	if cfg.AuthToken != "" {
+		credentials = append(credentials, auth.TokenCredential{
+			TokenID: "env-token",
+			Secret:  cfg.AuthToken,
+			Tenant:  cfg.AuthTenant,
+			Account: cfg.AuthAccount,
+			Scopes:  cfg.AuthScopes,
+		})
+	}
+	return auth.NewBearerTokenAuthenticator(credentials), nil
+}
+
+func buildAuthorizer(cfg config.Config) (iam.Authorizer, error) {
+	if cfg.IAMMode == "allow-all-dev" {
+		return iam.AllowAllAuthorizer{}, nil
+	}
+	if cfg.IAMPolicyPath != "" {
+		rules, err := iam.LoadPolicyFile(cfg.IAMPolicyPath)
+		if err != nil {
+			return nil, err
+		}
+		return iam.NewPolicyAuthorizer(rules), nil
+	}
+	return iam.NewDefaultPolicyAuthorizer(), nil
 }

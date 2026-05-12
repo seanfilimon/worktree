@@ -37,6 +37,12 @@ services:
       WT_SERVER_LOG_LEVEL: "info"
       WT_SERVER_STORAGE_ROOT: "/data/wt-server"
       WT_SERVER_AUDIT_PATH: "/data/wt-server/audit/audit.jsonl"
+      WT_SERVER_AUTH_MODE: "bearer"
+      WT_SERVER_AUTH_TOKEN: "dev-secret"
+      WT_SERVER_AUTH_TENANT: "acme"
+      WT_SERVER_AUTH_ACCOUNT: "alice"
+      WT_SERVER_AUTH_SCOPES: "staged:*"
+      WT_SERVER_IAM_MODE: "policy"
     ports:
       - "8080:8080"
       - "9877:9877"

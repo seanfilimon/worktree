@@ -1,0 +1,18 @@
+{
+  "tokens": [
+    {
+      "token_id": "demo-alice",
+      "secret": "dev-secret",
+      "tenant": "acme",
+      "account": "alice",
+      "scopes": ["staged:*"]
+    },
+    {
+      "token_id": "demo-viewer",
+      "secret": "viewer-secret",
+      "tenant": "acme",
+      "account": "viewer",
+      "scopes": ["staged:list"]
+    }
+  ]
+}

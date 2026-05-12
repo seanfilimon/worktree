@@ -2,9 +2,10 @@ package staged
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -30,50 +31,79 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
-func (s *PostgresStore) Add(ctx context.Context, snap Snapshot) error {
-	if snap.CreatedAt.IsZero() {
-		snap.CreatedAt = time.Now().UTC()
-	}
+func (s *PostgresStore) Add(ctx context.Context, snap Snapshot) (AddResult, error) {
+	snap = NormalizeSnapshot(snap)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return AddResult{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO staged_snapshots (snapshot_id, tenant, worktree, tree_id, branch, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (snapshot_id) DO NOTHING
-	`, snap.SnapshotID, snap.Tenant, snap.Worktree, snap.TreeID, snap.Branch, snap.CreatedAt)
-	if err != nil {
-		return fmt.Errorf("insert staged_snapshot: %w", err)
+	var insertedID int64
+	err = tx.QueryRow(ctx, `
+		INSERT INTO staged_snapshots (snapshot_id, tenant, worktree, tree_id, branch, payload_hash, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (tenant, worktree, tree_id, branch, snapshot_id) DO NOTHING
+		RETURNING id
+	`, snap.SnapshotID, snap.Tenant, snap.Worktree, snap.TreeID, snap.Branch, snap.PayloadHash, snap.CreatedAt).Scan(&insertedID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return AddResult{}, fmt.Errorf("insert staged_snapshot: %w", err)
 	}
 
-	for _, objHash := range snap.ObjectIDs {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO staged_snapshot_objects (snapshot_id, object_hash)
-			VALUES ($1, $2)
-			ON CONFLICT (snapshot_id, object_hash) DO NOTHING
-		`, snap.SnapshotID, objHash)
+	if insertedID == 0 {
+		var existing Snapshot
+		var existingID int64
+		err = tx.QueryRow(ctx, `
+			SELECT id, snapshot_id, tenant, worktree, tree_id, branch, payload_hash, created_at
+			FROM staged_snapshots
+			WHERE tenant = $1 AND worktree = $2 AND tree_id = $3 AND branch = $4 AND snapshot_id = $5
+		`, snap.Tenant, snap.Worktree, snap.TreeID, snap.Branch, snap.SnapshotID).Scan(
+			&existingID, &existing.SnapshotID, &existing.Tenant, &existing.Worktree,
+			&existing.TreeID, &existing.Branch, &existing.PayloadHash, &existing.CreatedAt,
+		)
 		if err != nil {
-			return fmt.Errorf("insert staged_snapshot_object %s: %w", objHash, err)
+			return AddResult{}, fmt.Errorf("select existing staged_snapshot: %w", err)
+		}
+		if existing.PayloadHash != snap.PayloadHash {
+			return AddResult{}, ErrConflict
+		}
+		existingObjects, err := s.listObjects(ctx, tx, existingID)
+		if err != nil {
+			return AddResult{}, err
+		}
+		existing.Objects = existingObjects
+		existing = NormalizeSnapshot(existing)
+		if err := tx.Commit(ctx); err != nil {
+			return AddResult{}, err
+		}
+		return AddResult{Status: AddStatusAlreadyExists, Snapshot: existing}, nil
+	}
+
+	for _, obj := range snap.Objects {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO staged_snapshot_objects (staged_snapshot_id, snapshot_id, object_hash, path, size)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (staged_snapshot_id, path, object_hash) DO NOTHING
+		`, insertedID, snap.SnapshotID, obj.Hash, obj.Path, obj.Size)
+		if err != nil {
+			return AddResult{}, fmt.Errorf("insert staged_snapshot_object %s: %w", obj.Hash, err)
 		}
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return AddResult{}, err
+	}
+	return AddResult{Status: AddStatusCreated, Snapshot: snap}, nil
 }
 
 func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]Snapshot, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT s.snapshot_id, s.tenant, s.worktree, s.tree_id, s.branch, s.created_at,
-		       coalesce(array_agg(o.object_hash ORDER BY o.id) FILTER (WHERE o.object_hash IS NOT NULL), '{}') AS object_ids
+		SELECT s.id, s.snapshot_id, s.tenant, s.worktree, s.tree_id, s.branch, s.payload_hash, s.created_at
 		FROM staged_snapshots s
-		LEFT JOIN staged_snapshot_objects o ON o.snapshot_id = s.snapshot_id
 		WHERE ($1::text = '' OR s.tenant   = $1)
 		  AND ($2::text = '' OR s.worktree = $2)
 		  AND ($3::text = '' OR s.branch   = $3)
-		GROUP BY s.id
 		ORDER BY s.id DESC
 	`, filter.Tenant, filter.Worktree, filter.Branch)
 	if err != nil {
@@ -84,17 +114,48 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]Snapshot
 	var snapshots []Snapshot
 	for rows.Next() {
 		var snap Snapshot
-		var objectIDs []string
+		var snapshotID int64
 		if err := rows.Scan(
-			&snap.SnapshotID, &snap.Tenant, &snap.Worktree, &snap.TreeID,
-			&snap.Branch, &snap.CreatedAt, &objectIDs,
+			&snapshotID, &snap.SnapshotID, &snap.Tenant, &snap.Worktree, &snap.TreeID,
+			&snap.Branch, &snap.PayloadHash, &snap.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan staged_snapshot row: %w", err)
 		}
-		snap.ObjectIDs = objectIDs
-		snapshots = append(snapshots, snap)
+		objects, err := s.listObjects(ctx, s.pool, snapshotID)
+		if err != nil {
+			return nil, err
+		}
+		snap.Objects = objects
+		snapshots = append(snapshots, NormalizeSnapshot(snap))
 	}
 	return snapshots, rows.Err()
+}
+
+type objectQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func (s *PostgresStore) listObjects(ctx context.Context, q objectQuerier, stagedSnapshotID int64) ([]ObjectRef, error) {
+	rows, err := q.Query(ctx, `
+		SELECT path, object_hash, size
+		FROM staged_snapshot_objects
+		WHERE staged_snapshot_id = $1
+		ORDER BY path, object_hash
+	`, stagedSnapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("list staged_snapshot_objects: %w", err)
+	}
+	defer rows.Close()
+
+	objects := []ObjectRef{}
+	for rows.Next() {
+		var obj ObjectRef
+		if err := rows.Scan(&obj.Path, &obj.Hash, &obj.Size); err != nil {
+			return nil, fmt.Errorf("scan staged_snapshot_object row: %w", err)
+		}
+		objects = append(objects, obj)
+	}
+	return objects, rows.Err()
 }
 
 // Ensure PostgresStore satisfies Store at compile time.

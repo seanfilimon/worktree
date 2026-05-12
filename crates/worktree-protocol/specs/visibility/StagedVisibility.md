@@ -92,7 +92,10 @@ Staged snapshot visibility is exposed through multiple surfaces:
 | SDK | Query API | Programmatic access to staged snapshot metadata |
 | WebSocket | `/api/repositories/:id/staged/live` | Real-time stream of staged snapshot updates |
 | REST API | `GET /api/repositories/:id/staged` | List current staged snapshots |
-| Prototype REST API | `POST /staged` | Upload one local snapshot as staged work in the Rust prototype |
+| Prototype REST API | `POST /staged` | Upload one local snapshot as staged work in the Rust prototype and Go server |
+| Prototype REST API | `GET /staged` | List staged snapshots by tenant, worktree, and branch |
+| gRPC | `SyncService.StageSnapshot` | Upload one staged snapshot using protobuf bytes |
+| gRPC | `SyncService.ListStagedSnapshots` | List staged snapshots by tenant, worktree, and branch |
 
 ### CLI Examples
 
@@ -172,6 +175,18 @@ enum StagedStatus {
     Expired,     // Past retention window, pending GC
 }
 ```
+
+### Server-Side Idempotency
+
+Staged snapshot upload is idempotent on the canonical staged identity:
+
+- tenant
+- worktree
+- tree/tree_id
+- branch
+- snapshot_id
+
+A retry with the same identity and the same canonical object refs (path, hash, size) succeeds without creating duplicate staged metadata. A retry with the same identity but different object refs or branch/tree/worktree metadata is rejected as a conflict. Servers must persist a canonical payload hash that excludes `created_at` so network retries do not create duplicate team-visible activity.
 
 ### Server-Side Indexing
 
@@ -336,6 +351,11 @@ See [License Compliance Specification](../licensing/LicenseCompliance.md) for fu
 ## Implementation Status
 
 - **IMPLEMENTED**: Protocol `StagedSnapshot`, `StagedStatus`, and `StagedIndex` types; Rust prototype `POST /staged` upload endpoint; SDK `push_staged`; server-side JSON staged index persistence for prototype flows
-- **TODO**: Production Go server staged storage/indexing, IAM-gated query/list endpoints, CLI commands wired to real server data (`wt staged`, `wt status --team`)
+- **IMPLEMENTED**: Rust/Go staged request compatibility with `snapshot_id`, `tenant`, `worktree`, `tree_id`, `branch`, and `objects`
+- **IMPLEMENTED**: Go REST `POST /staged` and `GET /staged`
+- **IMPLEMENTED**: Go gRPC `SyncService.StageSnapshot` and `SyncService.ListStagedSnapshots`
+- **IMPLEMENTED**: Go file-store and Postgres staged metadata stores with canonical staged identity idempotency and conflict detection
+- **IMPLEMENTED**: Go bearer-auth principal path, gRPC auth interceptor, default-deny `Authorizer`, JSON demo credentials/policies, and audit records for `staged:create` and `staged:list`
+- **TODO**: CLI commands wired to remote server data (`wt staged`, `wt status --team`)
 - **PLANNED**: WebSocket streaming for real-time updates, admin panel dashboard, SDK event subscriptions, conflict detection advisory system
 - **DEFERRED**: Line-level granularity (intentionally deferred — snapshot-level is the right abstraction for now)

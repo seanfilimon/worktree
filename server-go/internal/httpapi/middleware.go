@@ -27,9 +27,9 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func authMiddleware(authenticator auth.StaticAuthenticator, next http.Handler) http.Handler {
+func authMiddleware(authenticator auth.Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principal, err := authenticator.Authenticate(r)
+		principal, err := authenticator.AuthenticateHTTP(r)
 		if err != nil {
 			if errors.Is(err, auth.ErrUnauthorized) {
 				writeError(w, http.StatusUnauthorized, "AuthenticationRequired", "valid bearer token required")

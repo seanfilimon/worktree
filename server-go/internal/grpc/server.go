@@ -3,6 +3,7 @@ package grpcserver
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,7 +36,7 @@ func NewSyncServer(objects storage.ObjectStore, staged stagedpkg.Store, recorder
 		recorder = audit.NoopRecorder{}
 	}
 	if authorizer == nil {
-		authorizer = iam.AllowAllAuthorizer{}
+		authorizer = iam.NewDefaultPolicyAuthorizer()
 	}
 	return &SyncServer{objects: objects, staged: staged, audit: recorder, authorizer: authorizer}
 }
@@ -50,18 +51,32 @@ func (s *SyncServer) StageSnapshot(ctx context.Context, req *worktreepb.StageSna
 		return nil, status.Error(codes.InvalidArgument, "at least one object is required")
 	}
 
-	principal := auth.Principal{}
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || !principal.Authenticated {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
 	resource := fmt.Sprintf("%s/%s/%s/%s", req.Tenant, req.Worktree, req.Branch, req.SnapshotId)
+	if principal.Tenant != "" && principal.Tenant != req.Tenant {
+		s.record(ctx, "staged:create", audit.DecisionDeny, "tenant mismatch", req.Tenant, principal.Account, resource)
+		return nil, status.Error(codes.PermissionDenied, "authenticated tenant does not match staged snapshot tenant")
+	}
 	decision, err := s.authorizer.Authorize(ctx, principal, "staged:create", resource)
 	if err != nil || decision == iam.Deny {
-		s.record(ctx, "staged:create", audit.DecisionDeny, "iam denied", req.Tenant, "", resource)
+		s.record(ctx, "staged:create", audit.DecisionDeny, "iam denied", req.Tenant, principal.Account, resource)
 		return nil, status.Error(codes.PermissionDenied, "access denied")
 	}
 
 	objectIDs := make([]string, 0, len(req.Objects))
+	objectRefs := make([]stagedpkg.ObjectRef, 0, len(req.Objects))
 	for _, obj := range req.Objects {
+		if !stagedpkg.IsValidRelativePath(obj.Path) {
+			return nil, status.Errorf(codes.InvalidArgument, "object path %q must be relative and must not traverse parents", obj.Path)
+		}
 		if !storage.IsValidHash(obj.Hash) {
 			return nil, status.Errorf(codes.InvalidArgument, "object hash %q is not a 64-character BLAKE3 hex digest", obj.Hash)
+		}
+		if obj.Size < 0 {
+			return nil, status.Errorf(codes.InvalidArgument, "object %q: size must be non-negative", obj.Path)
 		}
 		if int64(len(obj.Content)) != obj.Size {
 			return nil, status.Errorf(codes.InvalidArgument, "object %q: content length %d does not match size %d", obj.Path, len(obj.Content), obj.Size)
@@ -75,6 +90,7 @@ func (s *SyncServer) StageSnapshot(ctx context.Context, req *worktreepb.StageSna
 			return nil, status.Errorf(codes.Internal, "failed to store object: %v", err)
 		}
 		objectIDs = append(objectIDs, obj.Hash)
+		objectRefs = append(objectRefs, stagedpkg.ObjectRef{Path: obj.Path, Hash: obj.Hash, Size: int(obj.Size)})
 	}
 
 	snap := stagedpkg.Snapshot{
@@ -84,14 +100,19 @@ func (s *SyncServer) StageSnapshot(ctx context.Context, req *worktreepb.StageSna
 		TreeID:     req.TreeId,
 		Branch:     req.Branch,
 		ObjectIDs:  objectIDs,
+		Objects:    objectRefs,
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := s.staged.Add(ctx, snap); err != nil {
-		s.record(ctx, "staged:create", audit.DecisionDeny, "staged persistence failed", req.Tenant, "", resource)
+	if _, err := s.staged.Add(ctx, snap); err != nil {
+		if errors.Is(err, stagedpkg.ErrConflict) {
+			s.record(ctx, "staged:create", audit.DecisionDeny, "staged idempotency conflict", req.Tenant, principal.Account, resource)
+			return nil, status.Error(codes.AlreadyExists, "staged snapshot conflicts with an existing snapshot for the same identity")
+		}
+		s.record(ctx, "staged:create", audit.DecisionDeny, "staged persistence failed", req.Tenant, principal.Account, resource)
 		return nil, status.Errorf(codes.Internal, "failed to persist staged snapshot: %v", err)
 	}
 
-	s.record(ctx, "staged:create", audit.DecisionAllow, "", req.Tenant, "", resource)
+	s.record(ctx, "staged:create", audit.DecisionAllow, "", req.Tenant, principal.Account, resource)
 	return &worktreepb.StageSnapshotResponse{
 		Status:     "staged",
 		SnapshotId: req.SnapshotId,
@@ -101,9 +122,24 @@ func (s *SyncServer) StageSnapshot(ctx context.Context, req *worktreepb.StageSna
 
 // ListStagedSnapshots returns staged snapshots filtered by tenant, worktree, and/or branch.
 func (s *SyncServer) ListStagedSnapshots(ctx context.Context, req *worktreepb.ListStagedSnapshotsRequest) (*worktreepb.ListStagedSnapshotsResponse, error) {
-	decision, err := s.authorizer.Authorize(ctx, auth.Principal{}, "staged:list", "staged")
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || !principal.Authenticated {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if principal.Tenant != "" {
+		if req.Tenant != "" && req.Tenant != principal.Tenant {
+			s.record(ctx, "staged:list", audit.DecisionDeny, "tenant mismatch", req.Tenant, principal.Account, "staged")
+			return nil, status.Error(codes.PermissionDenied, "authenticated tenant does not match requested tenant")
+		}
+		req.Tenant = principal.Tenant
+	}
+	resource := "staged"
+	if req.Tenant != "" {
+		resource = fmt.Sprintf("%s/%s/%s/*", req.Tenant, req.Worktree, req.Branch)
+	}
+	decision, err := s.authorizer.Authorize(ctx, principal, "staged:list", resource)
 	if err != nil || decision == iam.Deny {
-		s.record(ctx, "staged:list", audit.DecisionDeny, "iam denied", req.Tenant, "", "staged")
+		s.record(ctx, "staged:list", audit.DecisionDeny, "iam denied", req.Tenant, principal.Account, resource)
 		return nil, status.Error(codes.PermissionDenied, "access denied")
 	}
 
@@ -113,7 +149,7 @@ func (s *SyncServer) ListStagedSnapshots(ctx context.Context, req *worktreepb.Li
 		Branch:   req.Branch,
 	})
 	if err != nil {
-		s.record(ctx, "staged:list", audit.DecisionDeny, "list failed", req.Tenant, "", "staged")
+		s.record(ctx, "staged:list", audit.DecisionDeny, "list failed", req.Tenant, principal.Account, resource)
 		return nil, status.Errorf(codes.Internal, "list failed: %v", err)
 	}
 
@@ -129,7 +165,7 @@ func (s *SyncServer) ListStagedSnapshots(ctx context.Context, req *worktreepb.Li
 			CreatedAt:  snap.CreatedAt.Format(time.RFC3339),
 		})
 	}
-	s.record(ctx, "staged:list", audit.DecisionAllow, "", req.Tenant, "", "staged")
+	s.record(ctx, "staged:list", audit.DecisionAllow, "", req.Tenant, principal.Account, resource)
 	return &worktreepb.ListStagedSnapshotsResponse{
 		Snapshots: records,
 		Count:     int32(len(records)),
@@ -137,13 +173,16 @@ func (s *SyncServer) ListStagedSnapshots(ctx context.Context, req *worktreepb.Li
 }
 
 func (s *SyncServer) record(ctx context.Context, action string, decision audit.Decision, reason, tenant, account, resource string) {
+	principal, _ := auth.PrincipalFromContext(ctx)
 	_ = s.audit.Record(ctx, audit.Event{
-		Event:    "access_decision",
-		Action:   action,
-		Decision: decision,
-		Reason:   reason,
-		Tenant:   tenant,
-		Account:  account,
-		Resource: resource,
+		Event:      "access_decision",
+		Action:     action,
+		Decision:   decision,
+		Reason:     reason,
+		Tenant:     tenant,
+		Account:    account,
+		TokenID:    principal.TokenID,
+		AuthMethod: principal.AuthMethod,
+		Resource:   resource,
 	})
 }

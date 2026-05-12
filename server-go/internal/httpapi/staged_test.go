@@ -18,13 +18,13 @@ import (
 )
 
 type stagedStoreStub struct {
-	add  func(context.Context, staged.Snapshot) error
+	add  func(context.Context, staged.Snapshot) (staged.AddResult, error)
 	list func(context.Context, staged.ListFilter) ([]staged.Snapshot, error)
 }
 
-func (s stagedStoreStub) Add(ctx context.Context, snapshot staged.Snapshot) error {
+func (s stagedStoreStub) Add(ctx context.Context, snapshot staged.Snapshot) (staged.AddResult, error) {
 	if s.add == nil {
-		return nil
+		return staged.AddResult{Status: staged.AddStatusCreated, Snapshot: snapshot}, nil
 	}
 	return s.add(ctx, snapshot)
 }
@@ -42,11 +42,11 @@ func TestStagedUploadPersistsVerifiedObject(t *testing.T) {
 	var recorded staged.Snapshot
 	auditRecorder := &auditRecorderStub{}
 	service := NewStagedService(objects, stagedStoreStub{
-		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+		add: func(ctx context.Context, snapshot staged.Snapshot) (staged.AddResult, error) {
 			recorded = snapshot
-			return nil
+			return staged.AddResult{Status: staged.AddStatusCreated, Snapshot: snapshot}, nil
 		},
-	}, auditRecorder, nil)
+	}, auditRecorder, iam.AllowAllAuthorizer{})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -98,11 +98,11 @@ func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 	root := t.TempDir()
 	objects := storage.NewLocalObjectStore(root)
 	service := NewStagedService(objects, stagedStoreStub{
-		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+		add: func(ctx context.Context, snapshot staged.Snapshot) (staged.AddResult, error) {
 			t.Fatal("staged store should not be called")
-			return nil
+			return staged.AddResult{}, nil
 		},
-	}, nil, nil)
+	}, nil, iam.AllowAllAuthorizer{})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	hash := blake3.Sum256([]byte("expected"))
@@ -138,11 +138,11 @@ func TestStagedUploadRejectsObjectSizeLimit(t *testing.T) {
 	objects := storage.NewLocalObjectStore(root)
 	auditRecorder := &auditRecorderStub{}
 	service := NewStagedService(objects, stagedStoreStub{
-		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+		add: func(ctx context.Context, snapshot staged.Snapshot) (staged.AddResult, error) {
 			t.Fatal("staged store should not be called")
-			return nil
+			return staged.AddResult{}, nil
 		},
-	}, auditRecorder, nil, StagedLimits{MaxObjectBytes: 4, MaxObjects: 10})
+	}, auditRecorder, iam.AllowAllAuthorizer{}, StagedLimits{MaxObjectBytes: 4, MaxObjects: 10})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("too-large")
@@ -181,11 +181,11 @@ func TestStagedUploadRejectsObjectCountLimit(t *testing.T) {
 	root := t.TempDir()
 	objects := storage.NewLocalObjectStore(root)
 	service := NewStagedService(objects, stagedStoreStub{
-		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+		add: func(ctx context.Context, snapshot staged.Snapshot) (staged.AddResult, error) {
 			t.Fatal("staged store should not be called")
-			return nil
+			return staged.AddResult{}, nil
 		},
-	}, nil, nil, StagedLimits{MaxObjectBytes: 100, MaxObjects: 1})
+	}, nil, iam.AllowAllAuthorizer{}, StagedLimits{MaxObjectBytes: 100, MaxObjects: 1})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file")
@@ -220,11 +220,11 @@ func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 	objects := storage.NewLocalObjectStore(root)
 	auditRecorder := &auditRecorderStub{}
 	service := NewStagedService(objects, stagedStoreStub{
-		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+		add: func(ctx context.Context, snapshot staged.Snapshot) (staged.AddResult, error) {
 			t.Fatal("staged store should not be called")
-			return nil
+			return staged.AddResult{}, nil
 		},
-	}, auditRecorder, nil)
+	}, auditRecorder, iam.AllowAllAuthorizer{})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -273,7 +273,7 @@ func TestStagedListFiltersToAuthenticatedTenant(t *testing.T) {
 				Branch:     "main",
 			}}, nil
 		},
-	}, auditRecorder, nil)
+	}, auditRecorder, iam.AllowAllAuthorizer{})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?worktree=api", nil)
 	req.Header.Set("X-WT-Tenant", "acme")
@@ -298,7 +298,7 @@ func TestStagedListRejectsTenantMismatch(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil, nil
 		},
-	}, nil, nil)
+	}, nil, iam.AllowAllAuthorizer{})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?tenant=other", nil)
 	req.Header.Set("X-WT-Tenant", "acme")

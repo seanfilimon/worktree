@@ -75,6 +75,12 @@ impl AutoCommitEngine {
     }
 }
 
+impl Default for AutoCommitEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,11 +152,5 @@ mod tests {
         let events = vec![code_event(3)];
         let msg = engine.evaluate(&events).unwrap();
         assert!(msg.contains('3'), "got: {msg}");
-    }
-}
-
-impl Default for AutoCommitEngine {
-    fn default() -> Self {
-        Self::new()
     }
 }

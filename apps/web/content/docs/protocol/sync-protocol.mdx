@@ -16,6 +16,13 @@ The defining feature of W0rkTree's protocol is **Staged Sync**. When the backgro
 3. **Streaming:** These small deltas are serialized via Bincode, compressed with zstd, and streamed to the server.
 4. **Server Staging:** The server stores these changes in a temporary "staged" store associated with the user and branch, allowing other team members to view them in real-time (`wt staged`).
 
+Current implementation status: Rust `push_staged` uploads one local snapshot to the Go-compatible
+REST `POST /staged` endpoint and sends `WT_SERVER_AUTH_TOKEN` as bearer auth when configured. The Go
+server also implements authenticated gRPC `SyncService.StageSnapshot` and
+`SyncService.ListStagedSnapshots` on port `9877`. Staged storage is idempotent on canonical staged
+identity and rejects conflicting retries. Full streaming, have/want negotiation, and branch push/pull
+are still planned.
+
 <Callout type="info">
 Staged sync is unidirectional (client to server) by default, meaning your uncommitted changes are safely backed up and visible to the team, but you don't automatically pull other people's uncommitted work into your working directory unless explicitly requested.
 </Callout>

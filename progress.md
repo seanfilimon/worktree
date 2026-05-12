@@ -5,6 +5,94 @@
 Target: production remote authority in `server-go/`, built from the language-neutral protocol
 contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
+### Phase A — Rust/Go staged contract compatibility
+**Files:** `crates/worktree-sdk/src/engine/sync.rs`, `server-go/internal/httpapi/staged.go`, `docs/protocol-spec.md`
+- Updated Rust staged upload requests to match the Go server contract:
+  `snapshot_id`, `tenant`, `worktree`, `tree_id`, `branch`, and `objects`.
+- Replaced the old `content_base64` JSON field with `content`; Go decodes it into `[]byte`.
+- Added `WT_SERVER_URL` for Rust client endpoint selection.
+- Added `WT_TENANT` for staged upload tenant selection.
+- Added serialization tests that reject the old field shape.
+
+### Phase B — Protocol contract hardening
+**Files:** `docs/protocol-spec.md`, `crates/worktree-protocol/specs/sync/Sync.md`, `crates/worktree-protocol/specs/visibility/StagedVisibility.md`, `crates/worktree-protocol/specs/iam/IAM.md`
+- Documented the staged REST compatibility request/response shape.
+- Added structured error codes for malformed JSON, invalid staged snapshots, invalid objects,
+  upload limits, auth failures, IAM denial, store/list failures, and unsupported methods.
+- Normalized server IAM action names around strings such as `staged:create` and `staged:list`.
+- Documented staged upload idempotency on canonical staged identity: tenant, worktree, tree/tree_id, branch, snapshot_id, and object refs (`path`, `hash`, `size`).
+- Documented conflict behavior for retries with the same staged identity but different payloads.
+
+### Phase C — Postgres staged metadata
+**Files:** `server-go/migrations/`, `server-go/internal/staged/postgres.go`, `server-go/internal/staged/store.go`, `server-go/cmd/wt-server/main.go`
+- Added migrations for `staged_snapshots`, `staged_snapshot_objects`, and `audit_events`.
+- Added `PostgresStagedStore` implementing the staged store interface.
+- Upgraded staged metadata to preserve canonical object refs (`path`, `hash`, `size`) and `payload_hash`.
+- Fixed staged idempotency for both the file store and Postgres store:
+  - identical retries return `already_exists` without adding duplicate metadata
+  - conflicting retries return `ErrConflict`
+  - Postgres uniqueness is scoped to tenant/worktree/tree/branch/snapshot identity instead of relying on bare `snapshot_id`
+- Made `main.go` choose Postgres when `WT_SERVER_DATABASE_URL` is set, otherwise falling back to the file store for local development.
+- Added an embedded migration runner that applies packaged SQL migrations when `WT_SERVER_RUN_MIGRATIONS=true`.
+
+### Phase D — IAM authorizer seam and initial policy authorizer
+**Files:** `server-go/internal/iam/authorizer.go`, `server-go/internal/httpapi/staged.go`, `server-go/internal/grpc/server.go`, `server-go/cmd/wt-server/main.go`
+- Added the `Authorizer` interface.
+- Added `AllowAllAuthorizer` and `DenyAllAuthorizer` for tests and explicit development mode.
+- Replaced production startup wiring so `AllowAllAuthorizer` is no longer the default.
+- Added an initial default-deny `PolicyAuthorizer` with wildcard action/resource matching and principal scope checks.
+- Added JSON policy rule loading via `WT_SERVER_IAM_POLICY_PATH` for demo-ready allow/deny behavior.
+- Wired authorizer checks into both `POST /staged` and `GET /staged`.
+- Wired the same authorizer into `SyncService.StageSnapshot` and `SyncService.ListStagedSnapshots`.
+- Shared the same action names with audit records: `staged:create` and `staged:list`.
+
+### Phase E — gRPC sync service
+**Files:** `server-go/proto/worktree/v1/sync.proto`, `server-go/internal/grpc/server.go`, `server-go/internal/grpc/auth_interceptor.go`, generated `worktreepb`
+- Added `SyncService` via buf-generated Go bindings.
+- Implemented `StageSnapshot`.
+- Implemented `ListStagedSnapshots`.
+- Shared object storage, staged storage, audit recorder, and IAM authorizer with REST.
+- Added a gRPC unary auth interceptor that reads bearer credentials from metadata, validates them, and injects `auth.Principal` into context.
+- Updated staged gRPC handlers to reject missing auth, enforce tenant match, pass the real principal into IAM, and audit the authenticated account.
+- Started the gRPC server on `WT_SERVER_GRPC_ADDR`, default `127.0.0.1:9877`.
+
+### Phase F — Docker and local production stack
+**Files:** `server-go/Dockerfile`, `server-go/docker-compose.yml`, `server-go/.env.example`
+- Added a two-stage Go Dockerfile.
+- Added Docker Compose with Postgres, a migration runner, and the server.
+- Exposed HTTP on `8080` and gRPC on `9877`.
+- Added demo bearer-auth environment in Compose: `WT_SERVER_AUTH_TOKEN=dev-secret`, tenant `acme`, account `alice`, scopes `staged:*`, IAM mode `policy`.
+- Added example credential and policy files under `server-go/examples/` for a multi-principal demo.
+- Added environment examples for server config, Postgres, Rust client URL, tenant selection, and auth.
+
+### Phase G — Production bearer auth for REST and gRPC
+**Files:** `server-go/internal/auth/auth.go`, `server-go/internal/httpapi/middleware.go`, `server-go/internal/grpc/auth_interceptor.go`, `server-go/internal/config/config.go`, `server-go/cmd/wt-server/main.go`
+- Added shared `auth.Authenticator` interface for HTTP and gRPC.
+- Added bearer-token authenticator that stores SHA-256 token hashes and compares credentials in constant time.
+- Added JSON credential file loading via `WT_SERVER_AUTH_CREDENTIALS_PATH`.
+- Extended `auth.Principal` with tenant, account, subject, token ID, auth method, scopes, and authenticated state.
+- Replaced direct static-auth usage in protected HTTP routes with the authenticator interface.
+- Added production config guards so `WT_SERVER_ENV=production` requires bearer auth and rejects `allow-all-dev` IAM mode.
+- Added `WT_SERVER_AUTH_MODE`, `WT_SERVER_IAM_MODE`, `WT_SERVER_AUTH_TENANT`, `WT_SERVER_AUTH_ACCOUNT`, `WT_SERVER_AUTH_SCOPES`, `WT_SERVER_AUTH_CREDENTIALS_PATH`, and `WT_SERVER_IAM_POLICY_PATH`.
+- Updated Rust SDK staged sync to send `Authorization: Bearer` when `WT_SERVER_AUTH_TOKEN` is set.
+- Kept static header-derived identity only as `static-dev` compatibility mode.
+
+### Phase H — Protocol staged permissions
+**Files:** `crates/worktree-protocol/src/iam/permission.rs`, `crates/worktree-protocol/src/iam/role.rs`, `crates/worktree-protocol/specs/iam/IAM.md`
+- Added protocol permissions `staged:create` and `staged:list`.
+- Updated built-in protocol roles so Viewer can list staged snapshots but cannot create them.
+- Updated Developer, Maintainer, Admin, and Owner role behavior for staged create/list.
+- Updated IAM spec status to reflect initial Go policy-backed decisions and production auth work.
+
+### Phase I — Canonical Push/Pull REST Endpoints
+**Files:** `crates/worktree-sdk/src/engine/sync.rs`
+- Refactored `StagedReq` to `CanonicalPushReq` and `StagedObjectUpload` to `CanonicalObjectUpload`.
+- Added `remote_tip` to enable Compare-And-Swap (CAS) negotiations on push.
+- Introduced `CanonicalPullReq` including `tenant`, `worktree`, `tree_id`, `branch`, and `remote_tip`.
+- Updated push flow to route to `/api/push` rather than legacy `/staged`.
+- Updated pull flow to route to `/api/pull` rather than legacy `/status`.
+- Updated serialization tests to assert that `CanonicalPushReq` conforms to the canonical shape expected by the Go Server.
+
 ### Step 1 — `docs(protocol): connect server roadmap to protocol contract`
 **Files:** `docs/protocol-spec.md`, `roadmap.md`
 - Connected the consolidated protocol spec to the Go server roadmap.
@@ -33,12 +121,13 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 - Added local content-addressed object storage with BLAKE3 verification.
 - Added `POST /staged` compatibility endpoint.
 - Added JSON staged metadata persistence for local development.
-- Added tests for object verification and staged upload behavior.
+- Later upgraded the file staged store to canonical identity idempotency with conflict detection.
+- Added tests for object verification, staged upload behavior, idempotent replay, and conflicting replay.
 - Updated docs to describe the Go endpoint as the current compatibility bridge.
 
 **Result:** `go test ./...` passes in `server-go` with workspace-local Go cache settings.
 
-### Step 4 — `feat(server-go): add initial auth tenant context`
+### Step 4 — `feat(server-go): add auth tenant context`
 **Files:**
 - `server-go/internal/auth/auth.go`
 - `server-go/internal/httpapi/middleware.go`
@@ -47,13 +136,15 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 - `docs/server-architecture.md`
 - `roadmap.md`
 
-- Added optional static bearer-token auth via `WT_SERVER_AUTH_TOKEN`.
-- Added request-scoped tenant/account principal from `X-WT-Tenant` and `X-WT-Account`.
+- Added the original static development auth path via `WT_SERVER_AUTH_TOKEN`.
+- Later upgraded protected endpoints to use the shared `auth.Authenticator` interface.
+- Added production bearer-token principal derivation from configured credentials.
+- Kept `X-WT-Tenant` / `X-WT-Account` identity only for `static-dev` compatibility; production bearer mode does not trust those headers.
 - Scoped auth middleware to protected endpoints instead of public health/readiness endpoints.
 - Added `/staged` tenant mismatch rejection when authenticated tenant context is present.
-- Added unit tests for static auth and staged tenant mismatch behavior.
+- Added unit tests for static auth, bearer auth, and staged tenant mismatch behavior.
 
-**Result:** `go test ./...` passes in `server-go`.
+**Result:** `go -C server-go test ./...` passes.
 
 ### Step 5 — `feat(server-go): list staged snapshots`
 **Files:**
@@ -66,8 +157,9 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
 - Added `Store.List` with tenant/worktree/branch filters.
 - Added `GET /staged` compatibility endpoint.
-- Scoped list results to `X-WT-Tenant` when present.
+- Scoped list results to the authenticated tenant when present.
 - Rejected explicit tenant query mismatches.
+- Updated list authorization to use a tenant-scoped staged resource instead of the old generic `staged` resource.
 - Added store and HTTP tests for listing and tenant filtering.
 
 **Result:** `go test ./...` passes in `server-go`.
@@ -207,3 +299,4 @@ shape.
 - Updated tests; added coverage for remove operations and idempotent insert
 
 **Also:** Added note to `CLAUDE.md` to keep `worktree-git` local impls in sync with protocol trait changes.
+\n### Step 4 — `feat(server): fix Two-Runtime architectural violation`\n**Files:**\n- `crates/worktree-server/src/storage/server_state.rs`\n- `crates/worktree-server/src/api/handlers.rs`\n- `crates/worktree-server/src/lib.rs`\n- `agents.md`\n\n- Created an independent server-side canonical storage for the local daemon using `ServerStateStore` instead of relying on the local working directory's SDK `.wt/state.json`.\n- Decoupled API handlers (`handle_init`, `handle_status`, `handle_snapshot`, and `handle_branch`) from the local `WorktreeEngine` allowing the daemon/prototype server HTTP endpoints to safely manage server canonical state locally.\n- Kept the `watcher_loop_blocking` correctly connected to the SDK `WorktreeEngine` to honor the bgprocess responsibilities, completely decoupling the background watcher from the server's remote API emulation.\n- Updated `agents.md` to reflect that the server-side canonical storage constraint has now been implemented.

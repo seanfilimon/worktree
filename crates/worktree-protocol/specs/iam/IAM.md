@@ -99,6 +99,30 @@ W0rkTree defines a comprehensive set of atomic permissions organized by category
 | `sync:push`  | Push local changes to the server                      |
 | `sync:pull`  | Pull remote changes from the server                   |
 
+### Staged Permissions
+
+| Permission      | Description                                      |
+|-----------------|--------------------------------------------------|
+| `staged:create` | Upload a staged snapshot to the server           |
+| `staged:list`   | List staged snapshots visible to the requester   |
+
+Production servers must evaluate these permissions for both REST and gRPC staged APIs. A Viewer may list staged snapshots but cannot create them; Developer and above may create and list staged snapshots subject to branch/tree policy ceilings.
+
+### Canonical Push/Pull Permissions
+
+| Permission       | Description                                                          |
+|------------------|----------------------------------------------------------------------|
+| `branch:push`    | Promote a snapshot chain into a canonical branch tip via `/api/push` |
+| `branch:pull`    | Read canonical snapshots and branch tip via `/api/pull`              |
+| `object:check`   | Query which object hashes the server is missing                      |
+| `object:write`   | Upload a content-addressed object blob via `PUT /api/objects/{hash}` |
+| `object:read`    | Download a content-addressed object blob via `GET /api/objects/{hash}` |
+| `ref:list`       | List canonical branch tips via `GET /api/refs`                       |
+
+`branch:push` supersedes the legacy `sync:push`; `branch:pull` supersedes `sync:pull`. The legacy names remain valid aliases until v2 to avoid breaking existing policy files. Server-side authorizer maps `sync:push → branch:push` and `sync:pull → branch:pull` transparently.
+
+Object-level permissions (`object:read`, `object:write`, `object:check`) are tenant-scoped — a principal can fetch/check/upload any object under tenants for which they hold the permission. Because objects are content-addressed and immutable, exposing `object:read` does not leak history structure; the principal still needs `branch:pull` to learn which hashes belong to a branch.
+
 ### Management Permissions
 
 | Permission      | Description                                        |
@@ -150,6 +174,12 @@ W0rkTree defines a comprehensive set of atomic permissions organized by category
 | `snapshot:restore`        |   ✓   |   ✓   |     ✓      |           |        |
 | `sync:push`               |   ✓   |   ✓   |     ✓      |     ✓     |        |
 | `sync:pull`               |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `branch:push`             |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `branch:pull`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `object:check`            |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `object:write`            |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `object:read`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `ref:list`                |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
 | `PolicyManage`            |   ✓   |   ✓   |     ✓      |           |        |
 | `RoleManage`              |   ✓   |   ✓   |            |           |        |
 | `TeamManage`              |   ✓   |   ✓   |            |           |        |
@@ -858,6 +888,8 @@ permissions = [
 - Declarative config parsing — Parse `.wt/access/*.toml` and `.wt-tree/access/*.toml`
 - Config validation — Local and server-side validation of policy files
 - Path registration — Parse `[[registered_path]]` from `config.toml`
+- Declarative config parsing — Parse `.wt/access/*.toml` and `.wt-tree/access/*.toml` into the Go policy repository
+- Complete Go policy evaluator parity — Extend initial policy-backed decisions to full RBAC/ABAC, teams, roles, and ceiling model parity
 
 ### Planned
 
@@ -866,6 +898,15 @@ permissions = [
 - Organization accounts — Multi-account tenants with team management
 - Audit logging — Detailed logs of all access decisions and policy changes
 - Policy simulation — Dry-run mode to test policy changes before applying
+
+### Go Server Status
+
+- **IMPLEMENTED**: Go `Authorizer` interface.
+- **IMPLEMENTED**: `AllowAllAuthorizer` and `DenyAllAuthorizer` for tests and explicit development mode only.
+- **IMPLEMENTED**: `POST /staged`, `GET /staged`, `SyncService.StageSnapshot`, and `SyncService.ListStagedSnapshots` call the authorizer.
+- **IMPLEMENTED**: Staged audit events use normalized actions `staged:create` and `staged:list`.
+- **IMPLEMENTED**: Bearer-token principal extraction for staged REST/gRPC, gRPC auth interceptor, default-deny policy-backed Go authorizer, and JSON demo credential/policy files.
+- **PENDING**: Declarative `.wt/access/*.toml` parsing, full scope resolution, deny-overrides across all scope levels, teams, and full ABAC evaluation in Go.
 
 ---
 

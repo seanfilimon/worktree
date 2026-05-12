@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"strings"
 
 	"github.com/ramizik/worktree/server-go/internal/auth"
 )
@@ -27,7 +28,8 @@ type Authorizer interface {
 	Authorize(ctx context.Context, principal auth.Principal, action string, resource string) (Decision, error)
 }
 
-// AllowAllAuthorizer permits every request. Used in development.
+// AllowAllAuthorizer permits every request. It is only valid in tests or an
+// explicitly configured development mode; production startup rejects it.
 type AllowAllAuthorizer struct{}
 
 func (AllowAllAuthorizer) Authorize(_ context.Context, _ auth.Principal, _, _ string) (Decision, error) {
@@ -39,4 +41,157 @@ type DenyAllAuthorizer struct{}
 
 func (DenyAllAuthorizer) Authorize(_ context.Context, _ auth.Principal, _, _ string) (Decision, error) {
 	return Deny, nil
+}
+
+type Effect string
+
+const (
+	EffectAllow Effect = "allow"
+	EffectDeny  Effect = "deny"
+)
+
+type PolicyRule struct {
+	Effect     Effect            `json:"effect"`
+	Tenant     string            `json:"tenant,omitempty"`
+	Account    string            `json:"account,omitempty"`
+	Actions    []string          `json:"actions"`
+	Resources  []string          `json:"resources"`
+	Conditions map[string]string `json:"conditions,omitempty"`
+}
+
+type PolicyAuthorizer struct {
+	rules []PolicyRule
+}
+
+func NewPolicyAuthorizer(rules []PolicyRule) *PolicyAuthorizer {
+	copied := append([]PolicyRule(nil), rules...)
+	return &PolicyAuthorizer{rules: copied}
+}
+
+func NewDefaultPolicyAuthorizer() *PolicyAuthorizer {
+	return NewPolicyAuthorizer([]PolicyRule{
+		{
+			Effect:    EffectAllow,
+			Actions:   []string{"staged:create", "staged:list"},
+			Resources: []string{"tenant:${tenant}/*"},
+			Conditions: map[string]string{
+				"scope": "staged:*",
+			},
+		},
+		{
+			Effect: EffectAllow,
+			Actions: []string{
+				"branch:push", "branch:pull",
+				"object:check", "object:read", "object:write",
+				"ref:list",
+			},
+			Resources: []string{"tenant:${tenant}/*", "tenant:${tenant}"},
+		},
+	})
+}
+
+func (a *PolicyAuthorizer) Authorize(ctx context.Context, principal auth.Principal, action string, resource string) (Decision, error) {
+	if err := ctx.Err(); err != nil {
+		return Deny, err
+	}
+	if !principal.Authenticated {
+		return Deny, nil
+	}
+
+	matchedAllow := false
+	for _, rule := range a.rules {
+		if !ruleMatchesPrincipal(rule, principal) {
+			continue
+		}
+		if !matchesAny(rule.Actions, action) {
+			continue
+		}
+		if !resourceMatchesAny(rule.Resources, principal, resource) {
+			continue
+		}
+		if !conditionsMatch(rule.Conditions, principal, action) {
+			continue
+		}
+		if rule.Effect == EffectDeny {
+			return Deny, nil
+		}
+		if rule.Effect == EffectAllow {
+			matchedAllow = true
+		}
+	}
+	if matchedAllow {
+		return Allow, nil
+	}
+	return Deny, nil
+}
+
+func ruleMatchesPrincipal(rule PolicyRule, principal auth.Principal) bool {
+	if rule.Tenant != "" && rule.Tenant != principal.Tenant {
+		return false
+	}
+	if rule.Account != "" && rule.Account != principal.Account {
+		return false
+	}
+	return true
+}
+
+func conditionsMatch(conditions map[string]string, principal auth.Principal, action string) bool {
+	for key, value := range conditions {
+		switch key {
+		case "scope":
+			if !principal.HasScope(value) && !principal.HasScope(action) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func matchesAny(patterns []string, value string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	for _, pattern := range patterns {
+		if wildcardMatch(pattern, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceMatchesAny(patterns []string, principal auth.Principal, resource string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	normalizedResource := normalizeResource(resource)
+	for _, pattern := range patterns {
+		pattern = strings.ReplaceAll(pattern, "${tenant}", principal.Tenant)
+		pattern = strings.ReplaceAll(pattern, "${account}", principal.Account)
+		if wildcardMatch(pattern, normalizedResource) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeResource(resource string) string {
+	if resource == "" || resource == "staged" {
+		return resource
+	}
+	if strings.HasPrefix(resource, "tenant:") {
+		return resource
+	}
+	return "tenant:" + resource
+}
+
+func wildcardMatch(pattern, value string) bool {
+	if pattern == "*" || pattern == value {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(value, strings.TrimSuffix(pattern, "*"))
+	}
+	return false
 }

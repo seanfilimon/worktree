@@ -24,16 +24,17 @@ W0rkTree provides several built-in roles that cover the most common use cases. T
 The Viewer role provides read-only access to resources.
 - `tree:read`
 - `branch:read`
-- `commit:read`
-- `staged:read`
+- `snapshot:read`
+- `staged:list`
 
 ### Developer
 The Developer role is the standard role for contributors. It allows reading and writing to branches, creating commits, and opening merge requests.
 - All `Viewer` permissions
-- `branch:write`
+- `tree:write`
 - `branch:create`
-- `commit:write`
-- `staged:write`
+- `snapshot:create`
+- `staged:create`
+- `staged:list`
 - `merge_request:create`
 
 ### Maintainer
@@ -54,7 +55,7 @@ The Admin role provides full administrative access to the scope it is assigned t
 
 ## Permissions Reference
 
-Permissions in W0rkTree follow the format `resource:action`.
+Permissions in W0rkTree follow the format `resource:action`. The staged permissions below are already present in the protocol crate and enforced by the Go staged REST/gRPC demo.
 
 ### Tree Permissions
 - `tree:read`: View tree metadata and existence.
@@ -71,8 +72,8 @@ Permissions in W0rkTree follow the format `resource:action`.
 - `branch:protect`: Modify branch protection rules.
 
 ### Staged Visibility Permissions
-- `staged:read`: View staged snapshots (in-flight changes).
-- `staged:write`: Publish staged snapshots.
+- `staged:list`: View staged snapshots (in-flight changes).
+- `staged:create`: Publish staged snapshots.
 
 ### IAM Permissions
 - `iam:read`: View role assignments and access policies.
@@ -89,7 +90,7 @@ description = "Can read code and approve merge requests"
 permissions = [
   "tree:read",
   "branch:read",
-  "staged:read",
+  "staged:list",
   "merge_request:approve"
 ]
 ```

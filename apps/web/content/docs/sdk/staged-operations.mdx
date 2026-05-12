@@ -29,7 +29,7 @@ for change in staged.diff().changes() {
 
 ## Publishing Staged Changes
 
-By default, the W0rkTree background daemon automatically publishes your local uncommitted changes to the server as staged snapshots. However, you can also trigger this manually via the SDK.
+By default, the W0rkTree background daemon automatically publishes your local uncommitted changes to the server as staged snapshots. The current Rust SDK compatibility path posts one snapshot to the Go server's authenticated `/staged` endpoint and sends `WT_SERVER_AUTH_TOKEN` as bearer auth when configured. However, you can also trigger this manually via the SDK.
 
 ```rust
 // Force publish the current working directory state to the server
@@ -75,7 +75,7 @@ tree.discard_staged().path("src/experimental/").await?;
 
 ## Accessing Other Users' Staged State
 
-If you have the appropriate IAM permissions (`staged:read`), you can query the staged snapshots of other collaborators on the same branch.
+If you have the appropriate IAM permissions (`staged:list`), you can query the staged snapshots of other collaborators on the same branch. The Go server demo includes a viewer token that can list staged snapshots but is denied `staged:create`.
 
 ```rust
 let collaborator_staged = tree.staged_snapshot()

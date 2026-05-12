@@ -38,7 +38,7 @@ func NewStagedService(objects storage.ObjectStore, stagedStore staged.Store, rec
 		recorder = audit.NoopRecorder{}
 	}
 	if authorizer == nil {
-		authorizer = iam.AllowAllAuthorizer{}
+		authorizer = iam.NewDefaultPolicyAuthorizer()
 	}
 	selectedLimits := DefaultStagedLimits()
 	if len(limits) > 0 {
@@ -99,6 +99,7 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	objectIDs := make([]string, 0, len(req.Objects))
+	objectRefs := make([]staged.ObjectRef, 0, len(req.Objects))
 	for _, obj := range req.Objects {
 		if len(obj.Content) != obj.Size {
 			s.auditDecision(r, "staged:create", audit.DecisionDeny, "object size mismatch", req.Tenant, req.resource())
@@ -111,6 +112,7 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		objectIDs = append(objectIDs, obj.Hash)
+		objectRefs = append(objectRefs, staged.ObjectRef{Path: obj.Path, Hash: obj.Hash, Size: obj.Size})
 	}
 	record := staged.Snapshot{
 		SnapshotID: req.SnapshotID,
@@ -119,18 +121,30 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		TreeID:     req.TreeID,
 		Branch:     req.Branch,
 		ObjectIDs:  objectIDs,
+		Objects:    objectRefs,
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := s.staged.Add(r.Context(), record); err != nil {
+	result, err := s.staged.Add(r.Context(), record)
+	if err != nil {
+		if errors.Is(err, staged.ErrConflict) {
+			s.auditDecision(r, "staged:create", audit.DecisionDeny, "staged idempotency conflict", req.Tenant, req.resource())
+			writeError(w, http.StatusConflict, "StagedConflict", "staged snapshot conflicts with an existing snapshot for the same identity")
+			return
+		}
 		s.auditDecision(r, "staged:create", audit.DecisionDeny, "staged persistence failed", req.Tenant, req.resource())
 		writeError(w, http.StatusInternalServerError, "StagedStoreFailed", "failed to persist staged snapshot")
 		return
 	}
 	s.auditDecision(r, "staged:create", audit.DecisionAllow, "", req.Tenant, req.resource())
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	status := http.StatusAccepted
+	if result.IdempotentReplay() {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{
 		"status":      "staged",
 		"snapshot_id": req.SnapshotID,
 		"objects":     len(objectIDs),
+		"idempotent":  result.IdempotentReplay(),
 	})
 }
 
@@ -153,21 +167,22 @@ func (s *StagedService) HandleList(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Tenant = principal.Tenant
 	}
+	resource := stagedListResource(filter)
 	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
-		decision, err := s.authorizer.Authorize(r.Context(), principal, "staged:list", "staged")
+		decision, err := s.authorizer.Authorize(r.Context(), principal, "staged:list", resource)
 		if err != nil || decision == iam.Deny {
-			s.auditDecision(r, "staged:list", audit.DecisionDeny, "iam denied", filter.Tenant, "staged")
+			s.auditDecision(r, "staged:list", audit.DecisionDeny, "iam denied", filter.Tenant, resource)
 			writeError(w, http.StatusForbidden, "Forbidden", "access denied")
 			return
 		}
 	}
 	snapshots, err := s.staged.List(r.Context(), filter)
 	if err != nil {
-		s.auditDecision(r, "staged:list", audit.DecisionDeny, "staged list failed", filter.Tenant, "staged")
+		s.auditDecision(r, "staged:list", audit.DecisionDeny, "staged list failed", filter.Tenant, resource)
 		writeError(w, http.StatusInternalServerError, "StagedListFailed", "failed to list staged snapshots")
 		return
 	}
-	s.auditDecision(r, "staged:list", audit.DecisionAllow, "", filter.Tenant, "staged")
+	s.auditDecision(r, "staged:list", audit.DecisionAllow, "", filter.Tenant, resource)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"snapshots": snapshots,
 		"count":     len(snapshots),
@@ -176,6 +191,13 @@ func (s *StagedService) HandleList(w http.ResponseWriter, r *http.Request) {
 
 func (r stagedUploadRequest) resource() string {
 	return r.Tenant + "/" + r.Worktree + "/" + r.Branch + "/" + r.SnapshotID
+}
+
+func stagedListResource(filter staged.ListFilter) string {
+	if filter.Tenant == "" {
+		return "staged"
+	}
+	return filter.Tenant + "/" + filter.Worktree + "/" + filter.Branch + "/*"
 }
 
 func (s *StagedService) enforceUploadLimits(req stagedUploadRequest) error {
@@ -204,6 +226,8 @@ func (s *StagedService) auditDecision(r *http.Request, action string, decision a
 		Reason:     reason,
 		Tenant:     tenant,
 		Account:    principal.Account,
+		TokenID:    principal.TokenID,
+		AuthMethod: principal.AuthMethod,
 		Resource:   resource,
 		RequestID:  RequestIDFromContext(r.Context()),
 		HTTPMethod: r.Method,
@@ -231,8 +255,8 @@ func (r stagedUploadRequest) validate() error {
 		return errors.New("at least one object is required")
 	}
 	for _, obj := range r.Objects {
-		if obj.Path == "" {
-			return errors.New("object path is required")
+		if !staged.IsValidRelativePath(obj.Path) {
+			return errors.New("object path must be a relative path without parent traversal")
 		}
 		if !storage.IsValidHash(obj.Hash) {
 			return errors.New("object hash must be a 64-character BLAKE3 hex digest")

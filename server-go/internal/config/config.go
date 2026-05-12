@@ -16,7 +16,14 @@ type Config struct {
 	LogLevelName         string
 	StorageRoot          string
 	AuditPath            string
+	AuthMode             string
+	IAMMode              string
 	AuthToken            string
+	AuthCredentialsPath  string
+	IAMPolicyPath        string
+	AuthTenant           string
+	AuthAccount          string
+	AuthScopes           []string
 	MaxStagedObjectBytes int
 	MaxStagedObjects     int
 	ShutdownTimeout      time.Duration
@@ -39,7 +46,14 @@ func Load() (Config, error) {
 		LogLevelName:         getEnv("WT_SERVER_LOG_LEVEL", "info"),
 		StorageRoot:          getEnv("WT_SERVER_STORAGE_ROOT", ".wt-server-go"),
 		AuditPath:            getEnv("WT_SERVER_AUDIT_PATH", ".wt-server-go/audit/audit.jsonl"),
+		AuthMode:             getEnv("WT_SERVER_AUTH_MODE", "bearer"),
+		IAMMode:              getEnv("WT_SERVER_IAM_MODE", "policy"),
 		AuthToken:            os.Getenv("WT_SERVER_AUTH_TOKEN"),
+		AuthCredentialsPath:  os.Getenv("WT_SERVER_AUTH_CREDENTIALS_PATH"),
+		IAMPolicyPath:        os.Getenv("WT_SERVER_IAM_POLICY_PATH"),
+		AuthTenant:           getEnv("WT_SERVER_AUTH_TENANT", "default"),
+		AuthAccount:          getEnv("WT_SERVER_AUTH_ACCOUNT", "server-token"),
+		AuthScopes:           getCSVEnv("WT_SERVER_AUTH_SCOPES", []string{"staged:*"}),
 		MaxStagedObjectBytes: getIntEnv("WT_SERVER_MAX_STAGED_OBJECT_BYTES", 64*1024*1024),
 		MaxStagedObjects:     getIntEnv("WT_SERVER_MAX_STAGED_OBJECTS", 1024),
 		ShutdownTimeout:      getDurationEnv("WT_SERVER_SHUTDOWN_TIMEOUT", 30*time.Second),
@@ -55,6 +69,14 @@ func Load() (Config, error) {
 	if cfg.TLS.Enabled {
 		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
 			return Config{}, ErrMissingTLSFiles
+		}
+	}
+	if strings.EqualFold(cfg.Environment, "production") {
+		if cfg.AuthMode != "bearer" || (cfg.AuthToken == "" && cfg.AuthCredentialsPath == "") {
+			return Config{}, ErrProductionAuthRequired
+		}
+		if cfg.IAMMode == "allow-all-dev" {
+			return Config{}, ErrProductionIAMRequired
 		}
 	}
 
@@ -112,6 +134,25 @@ func getDurationEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func getCSVEnv(key string, fallback []string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }
 
 func getIntEnv(key string, fallback int) int {

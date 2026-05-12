@@ -329,7 +329,7 @@ mod tests {
         assert!(state.is_out_of_sync());
         assert!(state.needs_sync());
 
-        state.local_tip = state.remote_tip.clone();
+        state.local_tip = state.remote_tip;
         state.pending_staged = 2;
         assert!(state.is_ahead());
     }

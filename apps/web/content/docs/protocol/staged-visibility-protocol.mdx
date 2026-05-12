@@ -28,17 +28,29 @@ Unlike permanent commits, staged changes are ephemeral, highly mutable, and user
 
 When a developer saves a file, their local background worker creates a new local `staged_tree_root` and pushes only the minimal delta to the server. The server updates the `staged_update` pointer, effectively overwriting the previous staged state for that developer's branch.
 
+The current compatibility implementation uses one staged snapshot upload per local snapshot. The
+Rust request and Go REST endpoint share the fields `snapshot_id`, `tenant`, `worktree`, `tree_id`,
+`branch`, and `objects`. Object `content` is base64 in JSON and raw bytes in gRPC. Uploads are
+authenticated with bearer principals and idempotent on the canonical staged identity plus object
+refs (`path`, `hash`, `size`).
+
 ## Streaming Transport
 
 The continuous transmission of staged snapshots is handled over a bidirectional multiplexed stream, utilizing W0rkTree's primary QUIC transport or gRPC fallback. For web-based clients (like the W0rkTree web dashboard), this data is bridged seamlessly via **WebSockets**.
 
 ### 1. Publishing (Client → Server)
 
-The background worker maintains a persistent stream to the server. It uses a debounced file system watcher to detect local changes. Upon a save event, it computes a fast BLAKE3 tree delta and pushes a `STAGED_SYNC` wire frame containing only the new blob chunks and tree nodes.
+The background worker uses a debounced file system watcher to detect local changes. The implemented
+compatibility path sends a single snapshot to authenticated `POST /staged`; the Go server also
+exposes authenticated `SyncService.StageSnapshot` for the same semantic operation. Future streaming
+will evolve this into continuous staged frames and object negotiation.
 
 ### 2. Subscribing (Server → Client)
 
 Clients (like the `wt staged` CLI command or the web UI) can subscribe to presence and staged change events for a specific tree or tenant. The server broadcasts lightweight notification frames (`STAGED_EVENT`) to all subscribed clients whenever a user's staged pointer is updated.
+
+The implemented read path is polling/listing: REST `GET /staged` and gRPC
+`ListStagedSnapshots`. WebSocket event fanout remains planned.
 
 <Callout type="info">
 To conserve network bandwidth and preserve privacy, the server broadcasts only *metadata* (e.g., "+45 lines, -12 lines in 3 files") to subscribers by default. The actual file contents (blobs) are only transferred if a client explicitly requests to view the diff via `wt staged diff`.

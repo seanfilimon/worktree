@@ -3,23 +3,28 @@ use base64::Engine;
 use std::collections::{HashMap, HashSet};
 
 #[derive(serde::Serialize)]
-struct StatusReq {
+struct CanonicalPullReq {
+    tenant: String,
+    worktree: String,
     tree_id: String,
     root_path: String,
+    branch: String,
+    remote_tip: Option<String>,
 }
 
 #[derive(serde::Serialize)]
-struct StagedReq {
+struct CanonicalPushReq {
     snapshot_id: String,
     tenant: String,
     worktree: String,
     tree_id: String,
     branch: String,
-    objects: Vec<StagedObjectUpload>,
+    remote_tip: Option<String>,
+    objects: Vec<CanonicalObjectUpload>,
 }
 
 #[derive(serde::Serialize)]
-struct StagedObjectUpload {
+struct CanonicalObjectUpload {
     path: String,
     hash: String,
     size: u64,
@@ -31,9 +36,7 @@ fn server_url() -> String {
 }
 
 fn server_url_with_env(override_val: Option<&str>) -> String {
-    override_val
-        .unwrap_or("http://127.0.0.1:8080")
-        .to_string()
+    override_val.unwrap_or("http://127.0.0.1:8080").to_string()
 }
 
 pub fn push(engine: &super::WorktreeEngine) -> Result<PushResult> {
@@ -59,6 +62,15 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
     let tree = state
         .current_tree()
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
+
+    if engine.wt_dir().join("cache").join("sync_paused").exists() {
+        return Ok(PushResult {
+            branch: tree.current_branch.clone(),
+            snapshots_pushed: 0,
+            server: server_url(),
+        });
+    }
+
     let branch = &tree.current_branch;
     let snapshot = tree
         .snapshots
@@ -73,19 +85,26 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
     let change_set = snapshot_changes(parent, &snapshot);
     let tenant = std::env::var("WT_TENANT").unwrap_or_else(|_| "default".to_string());
 
-    let req = StagedReq {
+    let branch_state = tree.branches.iter().find(|b| &b.name == branch);
+    let remote_tip = branch_state.and_then(|b| b.remote_tip.clone());
+
+    let req = CanonicalPushReq {
         snapshot_id: snapshot.id.clone(),
         tenant,
         worktree: tree.name.clone(),
         tree_id: tree.name.clone(),
         branch: branch.clone(),
-        objects: staged_object_uploads(engine, &snapshot, &change_set.present_files)?,
+        remote_tip,
+        objects: canonical_object_uploads(engine, &snapshot, &change_set.present_files)?,
     };
 
     let server = server_url();
-    reqwest::blocking::Client::new()
-        .post(format!("{server}/staged"))
-        .json(&req)
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.post(format!("{server}/staged")).json(&req);
+    if let Ok(token) = std::env::var("WT_SERVER_AUTH_TOKEN") {
+        request = request.bearer_auth(token);
+    }
+    request
         .send()
         .map_err(|e| SdkError::NetworkError(e.to_string()))?
         .error_for_status()
@@ -104,13 +123,21 @@ pub fn pull(engine: &super::WorktreeEngine) -> Result<PullResult> {
         .current_tree()
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let req = StatusReq {
+    let branch_state = tree.branches.iter().find(|b| b.name == tree.current_branch);
+    let remote_tip = branch_state.and_then(|b| b.remote_tip.clone());
+    let tenant = std::env::var("WT_TENANT").unwrap_or_else(|_| "default".to_string());
+
+    let req = CanonicalPullReq {
+        tenant,
+        worktree: tree.name.clone(),
         tree_id: tree.name.clone(),
         root_path: engine.root().to_string_lossy().to_string(),
+        branch: tree.current_branch.clone(),
+        remote_tip,
     };
 
     let resp: serde_json::Value = reqwest::blocking::Client::new()
-        .post(format!("{}/status", server_url()))
+        .post(format!("{}/api/pull", server_url()))
         .json(&req)
         .send()
         .map_err(|e| SdkError::NetworkError(e.to_string()))?
@@ -211,11 +238,11 @@ fn snapshot_changes(
     }
 }
 
-fn staged_object_uploads(
+fn canonical_object_uploads(
     engine: &super::WorktreeEngine,
     snapshot: &super::status::SnapshotState,
     present_files: &HashSet<String>,
-) -> Result<Vec<StagedObjectUpload>> {
+) -> Result<Vec<CanonicalObjectUpload>> {
     let mut uploads = Vec::new();
 
     for file in &snapshot.files {
@@ -233,7 +260,7 @@ fn staged_object_uploads(
             )));
         }
 
-        uploads.push(StagedObjectUpload {
+        uploads.push(CanonicalObjectUpload {
             path: file.path.clone(),
             hash: file.hash.clone(),
             size: file.size,
@@ -251,13 +278,14 @@ mod tests {
 
     #[test]
     fn staged_req_serializes_to_spec_field_names() {
-        let req = StagedReq {
+        let req = CanonicalPushReq {
             snapshot_id: "snap-1".to_string(),
             tenant: "acme".to_string(),
             worktree: "my-tree".to_string(),
             tree_id: "my-tree".to_string(),
             branch: "main".to_string(),
-            objects: vec![StagedObjectUpload {
+            remote_tip: Some("snap-0".to_string()),
+            objects: vec![CanonicalObjectUpload {
                 path: "foo.rs".to_string(),
                 hash: "a".repeat(64),
                 size: 3,
@@ -272,11 +300,20 @@ mod tests {
         assert!(v.get("branch").is_some(), "missing branch");
         assert!(v.get("objects").is_some(), "missing objects");
         assert!(v.get("files").is_none(), "must not have old 'files' field");
-        assert!(v.get("branch_name").is_none(), "must not have old 'branch_name' field");
-        assert!(v.get("snapshot").is_none(), "must not have old nested 'snapshot' field");
+        assert!(
+            v.get("branch_name").is_none(),
+            "must not have old 'branch_name' field"
+        );
+        assert!(
+            v.get("snapshot").is_none(),
+            "must not have old nested 'snapshot' field"
+        );
         let obj = &v["objects"][0];
         assert!(obj.get("content").is_some(), "missing content");
-        assert!(obj.get("content_base64").is_none(), "must not have old 'content_base64' field");
+        assert!(
+            obj.get("content_base64").is_none(),
+            "must not have old 'content_base64' field"
+        );
     }
 
     fn snap(id: &str, parents: Vec<String>, files: Vec<(&str, &str)>) -> SnapshotState {

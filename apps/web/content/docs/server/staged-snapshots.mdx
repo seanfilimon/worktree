@@ -15,13 +15,32 @@ As developers work locally, their background daemon (`bgprocess`) automatically 
 
 When the server receives a staged snapshot:
 
-1. **IAM Verification:** The server verifies that the user has `staged:write` permissions for the target branch.
-2. **Delta Resolution:** The server resolves the incoming delta against the client's last known state, writing any new BLAKE3-hashed chunks to the tenant's object store.
-3. **Pointer Update:** Instead of updating a permanent branch reference, the server updates a volatile **Staged Pointer** associated with the user and the branch.
+1. **Authentication:** REST and gRPC staged APIs derive a bearer-token principal before handlers run.
+2. **IAM Verification:** The server calls the shared default-deny `Authorizer` for `staged:create` or `staged:list`.
+3. **Object Verification:** The server rejects unsafe paths and verifies every uploaded object by declared byte size and BLAKE3 hash.
+4. **Object Storage:** The server writes object bytes to content-addressed storage.
+5. **Metadata Storage:** The server stores staged snapshot metadata in the development file store or in Postgres when `WT_SERVER_DATABASE_URL` is set.
+6. **Idempotency:** Identical retries are accepted without duplicate metadata; conflicting retries are rejected.
+7. **ACK:** The server returns `staged` only after persistence succeeds.
 
 <Callout type="info">
   Staged snapshots do not alter the permanent, cryptographic history of a tree. They are parallel, mutable pointers that sit "on top" of the current branch head.
 </Callout>
+
+## Implemented Transports
+
+The Go server exposes staged snapshots over both REST and gRPC:
+
+| Transport | Endpoint / Method | Status |
+|---|---|---|
+| REST | `POST /staged` | Implemented |
+| REST | `GET /staged` | Implemented |
+| gRPC | `SyncService.StageSnapshot` | Implemented |
+| gRPC | `SyncService.ListStagedSnapshots` | Implemented |
+
+The Rust SDK compatibility path uses `POST /staged`. It sends `snapshot_id`, `tenant`,
+`worktree`, `tree_id`, `branch`, and `objects`; each object carries `path`, `hash`, `size`, and
+`content`. If `WT_SERVER_AUTH_TOKEN` is set, the SDK sends it as a bearer token.
 
 ## Real-Time Aggregation & Streaming
 
@@ -31,7 +50,10 @@ The W0rkTree Server acts as a real-time message broker for staged state:
 
 1. **Subscriptions:** Clients can subscribe to the staged state of a specific branch. For example, an IDE plugin or the W0rkTree web interface might request a real-time stream of all activity on `feature/auth`.
 2. **Aggregation:** If Alice and Bob are both working on `feature/auth`, the server aggregates their individual staged pointers into a unified view. It identifies potential merge conflicts *before* either user has committed their code.
-3. **Broadcasting:** When Alice makes a change, the server instantly streams a notification to Bob's client via gRPC or WebSockets, highlighting the modified files.
+3. **Broadcasting:** When Alice makes a change, the server will stream a notification to Bob's client via gRPC or WebSockets, highlighting the modified files.
+
+WebSocket fanout is still planned. The implemented read-side visibility path is authenticated
+`GET /staged` and authenticated `ListStagedSnapshots`.
 
 ## Garbage Collection and Retention
 

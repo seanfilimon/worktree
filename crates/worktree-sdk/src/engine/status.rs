@@ -27,6 +27,8 @@ pub struct TreeState {
 pub struct BranchState {
     pub name: String,
     pub tip: Option<String>,
+    #[serde(default)]
+    pub remote_tip: Option<String>,
     pub created_at: String,
 }
 
@@ -80,6 +82,7 @@ impl WorktreeState {
                 branches: vec![BranchState {
                     name: "main".to_string(),
                     tip: None,
+                    remote_tip: None,
                     created_at: now.clone(),
                 }],
                 current_branch: "main".to_string(),

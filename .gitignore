@@ -55,3 +55,8 @@ next-env.d.ts
 
 # Vercel
 .vercel
+
+
+# Ramis
+progress.md
+roadmap.md

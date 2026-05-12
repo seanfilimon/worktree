@@ -28,6 +28,7 @@ pub fn create_branch(
     let branch = BranchState {
         name: name.to_string(),
         tip,
+        remote_tip: None,
         created_at: Utc::now().to_rfc3339(),
     };
 

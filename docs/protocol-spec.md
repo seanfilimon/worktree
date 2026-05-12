@@ -16,6 +16,14 @@ The Go server roadmap is connected to this protocol specification in the followi
 - Cross-language compatibility tests should use this spec as the source of expected behavior: Rust creates protocol objects, Go validates/stores them, and Rust pulls/verifies them.
 - Any Go server feature that changes object structure, staged snapshot flow, push/pull semantics, IAM action names, or wire framing requires a protocol-spec update before code.
 
+Current implementation status:
+
+- Rust staged uploads use this contract and are configurable with `WT_SERVER_URL` and `WT_TENANT`.
+- Go REST implements `POST /staged` and `GET /staged`.
+- Go gRPC implements `SyncService.StageSnapshot` and `SyncService.ListStagedSnapshots`.
+- Go staged metadata is stored in Postgres when `WT_SERVER_DATABASE_URL` is set, or in a file store for development.
+- REST and gRPC staged create/list authenticate bearer principals, pass those principals to the shared `Authorizer`, and audit normalized action names.
+
 ## Object Model
 
 TODO: Define the core object types (blob, tree, snapshot, branch) and their relationships. Describe content-addressable storage using BLAKE3 hashes. Specify object identity, immutability guarantees, and garbage collection semantics.
@@ -31,7 +39,7 @@ TODO: Specify the binary and/or text serialization formats for protocol messages
 ### Staged Snapshot Upload Compatibility Contract
 
 The first Go server compatibility endpoint is `POST /staged`. It mirrors the current Rust
-prototype boundary while the gRPC sync service is being designed.
+prototype boundary and now has an equivalent gRPC `StageSnapshot` method.
 
 Request fields:
 
@@ -56,10 +64,11 @@ Each object entry contains:
 Server behavior:
 
 1. Reject malformed JSON or missing required fields.
-2. Reject invalid BLAKE3 hashes, size mismatches, and hash/content mismatches.
-3. Store object bytes in content-addressed storage using BLAKE3 fan-out paths.
-4. Persist staged snapshot metadata only after all objects are verified and stored.
-5. Return an ACK after persistence:
+2. Reject unsafe paths, invalid BLAKE3 hashes, negative sizes, size mismatches, and hash/content mismatches.
+3. Authenticate the bearer principal and authorize `staged:create` for the staged resource.
+4. Store object bytes in content-addressed storage using BLAKE3 fan-out paths.
+5. Persist staged snapshot metadata only after all objects are verified and stored.
+6. Return an ACK after persistence:
 
 ```json
 {
@@ -72,6 +81,9 @@ Server behavior:
 This REST shape is a compatibility bridge. The production sync API should promote the same
 semantics into a `StageSnapshot` gRPC method without changing object identity, verification, or ACK
 rules.
+
+The Rust SDK currently sends this shape from `push_staged`. `content` is intentionally the JSON
+field name even though the value is base64 text; Go decodes it into bytes for verification.
 
 ### Staged Snapshot Listing Compatibility Contract
 
@@ -95,9 +107,26 @@ Response:
 }
 ```
 
-When `X-WT-Tenant` is present, the server filters the list to that tenant and rejects mismatched
-explicit `tenant` query parameters. This is a compatibility guard until full IAM and visibility
-policy evaluation are wired in.
+When an authenticated tenant is present, the server filters the list to that tenant and rejects
+mismatched explicit `tenant` query parameters. The server authorizes `staged:list` against a
+tenant-scoped staged resource before returning results.
+
+### gRPC SyncService Contract
+
+The Go server also exposes the staged flow through gRPC on `WT_SERVER_GRPC_ADDR`, default
+`127.0.0.1:9877`.
+
+```proto
+service SyncService {
+  rpc StageSnapshot(StageSnapshotRequest) returns (StageSnapshotResponse);
+  rpc ListStagedSnapshots(ListStagedSnapshotsRequest) returns (ListStagedSnapshotsResponse);
+}
+```
+
+`StageSnapshotRequest` carries the same logical fields as `POST /staged`. `StagedObject.content`
+is raw `bytes` in protobuf rather than JSON base64 text. `ListStagedSnapshotsRequest` filters by
+`tenant`, `worktree`, and `branch`. The service shares the same object store, staged store, audit
+recorder, bearer-auth principal path, and IAM authorizer as REST.
 
 ## Error Codes
 
@@ -119,11 +148,17 @@ All Go server error responses use this envelope:
 | `InvalidObject` | 422 | Object size mismatch or BLAKE3 hash/content mismatch |
 | `StagedUploadTooLarge` | 413 | Object count or byte size exceeds server limits |
 | `TenantMismatch` | 403 | Authenticated tenant does not match payload tenant |
-| `Unauthorized` | 401 | Missing or invalid bearer token |
+| `AuthenticationRequired` | 401 | Missing or invalid bearer token |
+| `AuthenticationFailed` | 401 | Authentication backend rejected the request |
 | `Forbidden` | 403 | IAM authorizer denied the action |
+| `StagedConflict` | 409 | Staged retry conflicts with an existing canonical staged identity |
 | `StagedStoreFailed` | 500 | Persistence layer error |
 | `StagedListFailed` | 500 | Read-side storage error |
 | `MethodNotAllowed` | 405 | Wrong HTTP method for route |
+
+For gRPC, missing/invalid bearer metadata maps to `Unauthenticated`, validation failures map to
+`InvalidArgument`, IAM denials map to `PermissionDenied`, staged idempotency conflicts map to
+`AlreadyExists`, and storage failures map to `Internal`.
 
 ## Permission Action Names
 
@@ -141,15 +176,17 @@ must use these exact strings when recording audit events and calling the authori
 
 ## Idempotency
 
-`POST /staged` is idempotent on `snapshot_id`. If a request arrives with a `snapshot_id`
-that was already successfully persisted:
+`POST /staged` and `StageSnapshot` are idempotent on the canonical staged identity:
+`tenant`, `worktree`, `tree_id`, `branch`, `snapshot_id`, and sorted object refs (`path`, `hash`,
+`size`). If a request arrives with an already-persisted identity and the same payload hash:
 
-1. The server MUST NOT create a duplicate record.
-2. The server MUST return `202 Accepted` with the same ACK shape.
-3. Object bytes that are already stored (by BLAKE3 key) are silently skipped.
+1. The server MUST NOT create duplicate staged metadata.
+2. The server SHOULD return success with an idempotent replay marker where the transport supports it.
+3. Object bytes already stored by BLAKE3 key are skipped.
 
-Callers may safely retry `POST /staged` on network failure without risk of data duplication.
-The Postgres store enforces this via `ON CONFLICT (snapshot_id) DO NOTHING`.
+If the same identity arrives with different object refs or metadata, the server MUST reject it as a
+conflict. The file store and Postgres store both enforce this behavior; Postgres uses a composite
+identity constraint plus a canonical payload hash.
 
 ## Diff Semantics
 

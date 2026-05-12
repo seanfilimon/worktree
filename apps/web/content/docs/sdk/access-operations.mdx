@@ -9,7 +9,7 @@ W0rkTree uses a declarative Identity and Access Management (IAM) model. The SDK 
 
 ## Managing Declarative Access
 
-Access in W0rkTree is primarily managed via `.wt-access.toml` files. The SDK allows you to parse, modify, and commit these configurations programmatically.
+Access in W0rkTree is primarily managed via `.wt/access/*.toml` and `.wt-tree/access/*.toml` files. The SDK allows you to parse, modify, and commit these configurations programmatically. The Go server currently supports JSON demo policy files for staged create/list while full TOML policy ingestion is being built.
 
 ```rust
 use worktree_sdk::iam::{AccessConfig, Role, Policy};
@@ -38,7 +38,7 @@ let custom_role = Role::builder("qa_engineer")
     .description("QA team read and approve access")
     .add_permission("tree:read")
     .add_permission("branch:read")
-    .add_permission("staged:read")
+    .add_permission("staged:list")
     .add_permission("merge_request:approve")
     .build();
 
@@ -66,7 +66,7 @@ if allowed {
 ```
 
 <Callout type="info">
-  Permission evaluations performed via the SDK are evaluated locally against the synchronized tree state. To ensure you are evaluating against the latest remote state, perform a sync operation first.
+  Permission evaluations performed via the SDK are evaluated locally against the synchronized tree state. Server-side staged REST/gRPC operations are still enforced by the remote Go server authorizer, so local checks are advisory unless they match the latest remote policy state.
 </Callout>
 
 ## Cross-Tenant Grants

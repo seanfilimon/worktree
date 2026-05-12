@@ -52,7 +52,7 @@ Developer          BGProcess              Server
 
 #### Prototype HTTP Contract
 
-The Rust prototype currently exposes a REST compatibility endpoint for staged upload:
+The Rust prototype and Go server currently expose a REST compatibility endpoint for staged upload:
 
 ```
 POST /staged
@@ -72,6 +72,30 @@ This prototype endpoint is deliberately not authoritative IAM design. It exists 
 client/bgprocess contract while the production Go server is planned. The production service should
 keep the same semantic boundary: bgprocess uploads staged snapshot objects; the server verifies,
 authorizes, stores, indexes, and ACKs only after durable persistence.
+
+The current Rust request shape is compatible with Go:
+
+- `snapshot_id`
+- `tenant`
+- `worktree`
+- `tree_id`
+- `branch`
+- `objects[]`
+
+Each object contains `path`, `hash`, `size`, and `content`. JSON `content` is base64 text decoded
+by Go into bytes. The previous `content_base64` field is obsolete.
+
+The Go server also exposes this flow through protobuf:
+
+```proto
+service SyncService {
+  rpc StageSnapshot(StageSnapshotRequest) returns (StageSnapshotResponse);
+  rpc ListStagedSnapshots(ListStagedSnapshotsRequest) returns (ListStagedSnapshotsResponse);
+}
+```
+
+The gRPC service shares the same object store, staged store, audit recorder, and IAM authorizer as
+REST.
 
 #### Auto-Sync Behavior
 
@@ -159,6 +183,158 @@ PullResponse {
 - BGProcess subscribes to branches it cares about
 - Notification contains: branch name, new tip, who pushed
 - BGProcess then issues PullRequest to fetch actual data
+
+## Canonical Push/Pull (v1 REST Wire Contract)
+
+The v1 canonical sync surface uses REST over HTTP/2 with bearer-token auth (same `authMiddleware` as `/staged`). gRPC parity is deferred. All endpoints live under `/api/` to separate them from the prototype `/staged` flow.
+
+### Endpoints
+
+```
+POST   /api/push
+POST   /api/pull
+POST   /api/objects/check
+GET    /api/objects/{hash}
+GET    /api/refs?tenant=&worktree=&tree_id=
+```
+
+All require `Authorization: Bearer <token>`. All emit audit events via the shared `Recorder`.
+
+### POST /api/push
+
+Promotes a snapshot chain from local (or staged) into the canonical branch tip with compare-and-swap conflict detection.
+
+Request body (JSON):
+```json
+{
+  "tenant": "acme",
+  "worktree": "main",
+  "tree_id": "uuid",
+  "branch": "main",
+  "expected_tip": "snapshot-id-or-null",
+  "new_tip": "snapshot-id",
+  "snapshot_chain": [ { /* full Snapshot record */ } ],
+  "objects": [ { "hash": "blake3hex", "size": 1234, "path": "src/foo.rs" } ]
+}
+```
+
+`objects[]` lists hashes referenced by the chain — **metadata only**, no bytes. Client must first call `POST /api/objects/check` and upload missing blobs via `PUT /api/objects/{hash}` (see below) before invoking `/api/push`. This keeps push idempotent and lightweight.
+
+Server actions in a single Postgres txn:
+1. IAM check `branch:push` on `tenant:${tenant}/${worktree}/${tree_id}/branches/${branch}`.
+2. Verify every hash in `objects[]` exists in `ObjectStore` (reject 412 Precondition Failed otherwise).
+3. CAS: `UPDATE canonical_branches SET tip_snapshot_id = $new WHERE ... AND tip_snapshot_id IS NOT DISTINCT FROM $expected`. Zero rows → 409 Conflict.
+4. Insert snapshot rows into `canonical_snapshots` (idempotent on PK).
+5. Insert `canonical_snapshot_objects` rows linking each snapshot to its object hashes.
+6. Audit emit `canonical_push` with decision/reason.
+
+Response (200):
+```json
+{ "status": "accepted", "new_tip": "snapshot-id", "snapshots_committed": 3 }
+```
+
+Conflict (409):
+```json
+{ "status": "conflict", "actual_tip": "snapshot-id", "message": "branch advanced by another client" }
+```
+
+Missing-objects precondition (412):
+```json
+{ "status": "missing_objects", "missing": [ "hash1", "hash2" ] }
+```
+
+### POST /api/pull
+
+Returns the snapshot chain and object set the client needs to advance to the current canonical tip.
+
+Request:
+```json
+{ "tenant": "acme", "worktree": "main", "tree_id": "uuid", "branch": "main", "last_known_tip": "snapshot-id-or-null" }
+```
+
+Server actions:
+1. IAM check `branch:pull`.
+2. Read current `tip_snapshot_id` from `canonical_branches`.
+3. Walk parent chain from current tip back to `last_known_tip` (or genesis), collecting snapshots and their object hashes.
+4. Emit `canonical_pull` audit event.
+
+Response:
+```json
+{
+  "new_tip": "snapshot-id",
+  "snapshots": [ /* in oldest-to-newest order */ ],
+  "objects_needed": [ "hash1", "hash2" ],
+  "up_to_date": false
+}
+```
+
+If `last_known_tip == current tip`: `up_to_date: true`, empty arrays. Client downloads each object via `GET /api/objects/{hash}` and verifies BLAKE3 locally before applying snapshots to `.wt/state.json`.
+
+### POST /api/objects/check
+
+Simple negotiation: client asks which hashes the server is missing before uploading.
+
+Request: `{ "hashes": [ "h1", "h2", "h3" ] }`
+Response: `{ "missing": [ "h2" ] }`
+
+IAM check `object:check`. This is the v1 substitute for full Have/Want negotiation — adequate because objects are immutable and content-addressed.
+
+### PUT /api/objects/{hash}
+
+Upload a single object blob. Body is raw bytes (or base64 JSON; see `Content-Type`). Server BLAKE3-verifies before persisting to `ObjectStore.Put`. Idempotent (no-op if hash already present).
+
+IAM check `object:write`. Returns 201 on store, 200 if already present, 400 on hash mismatch.
+
+### GET /api/objects/{hash}
+
+Stream blob bytes. 404 if absent. Client MUST verify BLAKE3 of received bytes equals requested hash; mismatch is a protocol violation, reject.
+
+IAM check `object:read`. `Content-Type: application/octet-stream`.
+
+### GET /api/refs
+
+List branch tips for a tree.
+
+Response:
+```json
+{ "branches": [ { "name": "main", "tip": "snapshot-id", "updated_at": "..." } ] }
+```
+
+IAM check `ref:list`.
+
+### Push/Pull Sequence (Happy Path)
+
+```
+Client                                    Server
+  |  POST /api/objects/check { hashes }     |
+  |---------------------------------------->|
+  |             { missing: [...] }          |
+  |<----------------------------------------|
+  |  PUT /api/objects/{h} (loop, missing)   |
+  |---------------------------------------->|
+  |  POST /api/push { chain, expected_tip } |
+  |---------------------------------------->|
+  |     { status: accepted, new_tip }       |
+  |<----------------------------------------|
+```
+
+```
+Client                                    Server
+  |  POST /api/pull { last_known_tip }      |
+  |---------------------------------------->|
+  |  { snapshots, objects_needed, new_tip } |
+  |<----------------------------------------|
+  |  GET /api/objects/{h} (loop)            |
+  |---------------------------------------->|
+  |  apply snapshots to state.json          |
+```
+
+### Horizontal Scale Notes
+
+- `canonical_branches` CAS via Postgres `UPDATE ... WHERE tip = $expected` is naturally multi-pod safe.
+- `canonical_snapshots` and `canonical_snapshot_objects` inserts are idempotent on PK.
+- `ObjectStore` must be horizontally consistent (shared volume or S3-compatible). v1 ships with per-pod `LocalObjectStore` and requires either single-replica or tenant-sticky routing. v2 will add an S3 adapter (clean interface today).
+- Push notification fan-out (WebSocket subscribers learn of `canonical.branch.advanced`) is deferred to a Kafka-backed Phase 2; v1 clients poll via `/api/pull` or `/api/refs`.
 
 ### Access Config Sync
 
@@ -405,8 +581,18 @@ compression_level = 3                   # zstd compression level (default: 3)
 
 - IMPLEMENTED: Wire format module in protocol crate
 - IMPLEMENTED: Rust prototype `POST /staged` flow for single-snapshot staged upload with BLAKE3 verification and server-side staged index persistence
-- TODO: Sync protocol messages, have/want negotiation, delta sync, streaming object upload, auth/IAM-gated staged upload
-- PLANNED: Full gRPC service definitions, QUIC transport, offline queue
+- IMPLEMENTED: Rust staged request compatibility with the Go field shape and `WT_SERVER_URL` / `WT_TENANT`
+- IMPLEMENTED: Go REST `POST /staged` and `GET /staged`
+- IMPLEMENTED: Go gRPC `SyncService.StageSnapshot` and `SyncService.ListStagedSnapshots`
+- IMPLEMENTED: Go Postgres/file staged metadata stores with canonical staged identity idempotency and conflict detection
+- IMPLEMENTED: Shared Go bearer-auth principal path for REST and gRPC staged APIs
+- IMPLEMENTED: Shared Go default-deny `Authorizer` seam for staged create/list and audit decisions
+- IMPLEMENTED: JSON demo credentials and policy files for local staged auth/IAM demos
+- IMPLEMENTED: Canonical push/pull v1 REST contract (`POST /api/push`, `POST /api/pull`, `POST /api/objects/check`, `PUT/GET /api/objects/{hash}`, `GET /api/refs`) with Postgres-backed `canonical_branches` CAS, `canonical_snapshots`, `canonical_snapshot_objects`, and BLAKE3-verified `ObjectStore.Put`/`Get`
+- IMPLEMENTED: Client canonical push/pull logic in `crates/worktree-server/src/sync/{push,pull}.rs`; SDK orchestrators in `worktree-sdk/src/engine/sync.rs` delegate to these
+- IMPLEMENTED: `remote_tip` per-branch field in `WorktreeState` for CAS expected-tip tracking
+- TODO: Simple object-check is the v1 negotiation. Full Have/Want envelope, batched object transfer, streaming pack files
+- PLANNED: gRPC parity for canonical endpoints, QUIC transport, offline queue, S3-compatible `ObjectStore` adapter for horizontal scale, Kafka-backed push notifications
 
 ## Related Specifications
 

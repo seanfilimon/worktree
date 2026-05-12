@@ -430,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_git_hash_clone_copy() {
         let h = sample_git_hash();
         let copy = h;

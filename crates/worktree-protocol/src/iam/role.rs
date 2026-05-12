@@ -124,6 +124,9 @@ impl Role {
             // Sync
             Permission::SyncPush,
             Permission::SyncPull,
+            // Staged visibility
+            Permission::StagedCreate,
+            Permission::StagedList,
             // Management
             Permission::AccountManage,
             Permission::TeamManage,
@@ -159,6 +162,8 @@ impl Role {
             Permission::SnapshotRead,
             Permission::SyncPush,
             Permission::SyncPull,
+            Permission::StagedCreate,
+            Permission::StagedList,
         ];
         Self {
             id: RoleId::new(),
@@ -185,6 +190,8 @@ impl Role {
             Permission::SnapshotRead,
             Permission::SyncPush,
             Permission::SyncPull,
+            Permission::StagedCreate,
+            Permission::StagedList,
         ];
         Self {
             id: RoleId::new(),
@@ -204,6 +211,7 @@ impl Role {
             Permission::TreeRead,
             Permission::BranchRead,
             Permission::SnapshotRead,
+            Permission::StagedList,
         ];
         Self {
             id: RoleId::new(),
@@ -384,7 +392,8 @@ mod tests {
         assert!(role.has_permission(&Permission::TreeRead));
         assert!(role.has_permission(&Permission::BranchRead));
         assert!(role.has_permission(&Permission::SnapshotRead));
-        assert_eq!(role.permissions.len(), 3);
+        assert!(role.has_permission(&Permission::StagedList));
+        assert_eq!(role.permissions.len(), 4);
     }
 
     #[test]
@@ -395,6 +404,7 @@ mod tests {
         assert!(!role.has_permission(&Permission::BranchCreate));
         assert!(!role.has_permission(&Permission::SnapshotCreate));
         assert!(!role.has_permission(&Permission::SyncPush));
+        assert!(!role.has_permission(&Permission::StagedCreate));
     }
 
     // ------------------------------------------------------------------

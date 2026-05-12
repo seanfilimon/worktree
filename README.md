@@ -150,6 +150,14 @@ worktree/
 │   ├── worktree-git/                    # Git compatibility — import, export, SHA-1↔BLAKE3 bridge
 │   └── worktree-admin/                  # Admin panel — Yew WASM SPA + Axum HTTP API
 │
+├── server-go/                           # Production-boundary Go remote server
+│   ├── cmd/wt-server/                   # HTTP + gRPC server entrypoint
+│   ├── internal/                        # staged storage, object store, IAM, audit, HTTP, gRPC
+│   ├── migrations/                      # Postgres staged/audit migrations
+│   ├── proto/                           # SyncService protobuf contract
+│   ├── Dockerfile
+│   └── docker-compose.yml               # Postgres + migrate + server stack
+│
 ├── apps/                                # ── TypeScript Workspace ──
 │   └── web/                             # Marketing & docs site (Next.js 16, Fumadocs, shadcn)
 │
@@ -235,7 +243,7 @@ The core library that performs all local repository operations. Operates entirel
 
 ### `worktree-server` — Rust Local Daemon / Prototype Server
 
-Long-running Rust daemon/prototype that watches the filesystem, creates auto-snapshots, manages local sync behavior, and exposes local HTTP/API surfaces. The production remote authority is planned as a clean Go service; see [`roadmap.md`](./roadmap.md). Server-side IAM, canonical storage, branch protection, quotas, and audit logging belong in the remote authority, not in the local bgprocess.
+Long-running Rust daemon/prototype that watches the filesystem, creates auto-snapshots, manages local sync behavior, and exposes local HTTP/API surfaces. The production remote authority is the Go service under `server-go/`; see [`roadmap.md`](./roadmap.md). Server-side IAM, canonical storage, branch protection, quotas, and audit logging belong in the remote authority, not in the local bgprocess.
 
 | Component | Status | Description |
 |---|---|---|
@@ -279,6 +287,23 @@ Long-running Rust daemon/prototype that watches the filesystem, creates auto-sna
 | `wt permission` | `set / get / list` | Access control management |
 | `wt git` | `import / export / clone / remote / push / pull / mirror` | Git interoperability |
 | `wt server` | `start / stop / status` | Background process management |
+
+### `server-go` — Production Remote Server Boundary
+
+Deployable Go service for the remote authority. The implemented slice covers authenticated staged
+snapshot ingestion and listing across REST and gRPC, with shared BLAKE3 object verification,
+idempotent staged metadata storage, policy-backed IAM authorizer hooks, and audit.
+
+| Component | Status | Description |
+|---|---|---|
+| HTTP runtime | ✅ Complete | Health, readiness, metrics, request IDs, graceful shutdown, TLS 1.3 config |
+| REST staged API | ✅ Complete | `POST /staged` and `GET /staged` |
+| gRPC sync API | ✅ Complete | `SyncService.StageSnapshot` and `ListStagedSnapshots` on `9877` |
+| Staged storage | ✅ Complete | File/Postgres stores with canonical identity idempotency and conflict detection |
+| Postgres migrations | ✅ Complete | SQL migrations plus embedded runner via `WT_SERVER_RUN_MIGRATIONS=true` |
+| Auth + IAM seam | 🔶 Partial | Bearer credentials, gRPC interceptor, default-deny policy authorizer, JSON demo policies |
+| Docker | ✅ Complete | Two-stage Dockerfile and Compose stack with Postgres + migrate runner |
+| Branch history | 📋 Planned | Push/pull, branch DAG, protection, quotas, retention |
 
 ### `worktree-git` — Git Compatibility Layer
 
@@ -694,7 +719,7 @@ Serialization: Bincode (sync protocol), JSON (REST API). Compression: zstd level
 
 The protocol is defined by 14 authoritative specification documents in [`crates/worktree-protocol/specs/`](./crates/worktree-protocol/specs/):
 
-The production server rebuild and deployment plan is tracked separately in [`roadmap.md`](./roadmap.md). The specs remain the authority for protocol behavior; the roadmap explains the implementation sequence and why the remote authority is planned as a Go service.
+The production server rebuild and deployment plan is tracked separately in [`roadmap.md`](./roadmap.md). The specs remain the authority for protocol behavior; the roadmap explains the implementation sequence and why the remote authority is implemented as a Go service.
 
 | Specification | Document | Covers |
 |---|---|---|
@@ -731,7 +756,7 @@ The production server rebuild and deployment plan is tracked separately in [`roa
 
 ## Implementation Status
 
-The Rust workspace remains the active local engine, CLI, protocol, Git bridge, and prototype daemon implementation. The production remote server direction is now tracked in [`roadmap.md`](./roadmap.md): a deployable Go service with canonical storage, server-side IAM, staged snapshot visibility, branch protection, quotas, and audit logging.
+The Rust workspace remains the active local engine, CLI, protocol, Git bridge, and prototype daemon implementation. The production remote server direction is active in `server-go/`: a deployable Go service with authenticated REST/gRPC staged visibility, canonical staged idempotency, file/Postgres metadata, embedded migrations, policy-backed IAM hooks, Docker, and audit records. Canonical branch history, full RBAC/ABAC policy parity, branch protection, quotas, and WebSocket fanout remain the next server milestones.
 
 ### ✅ Complete
 
@@ -744,22 +769,22 @@ The Rust workspace remains the active local engine, CLI, protocol, Git bridge, a
 | **worktree-server** | Rust bgprocess/prototype server pieces: filesystem watcher, debouncer, session auth, permission enforcer, object index, staged storage work, health tracker, transport, rules engine |
 | **worktree-admin** | 8 Yew components, routing, CSS system, Axum API (10 endpoints), auth middleware, error handling |
 | **@worktree/web** | Next.js site with Fumadocs, shadcn, Tailwind v4 |
+| **server-go staged boundary** | Authenticated REST/gRPC staged create/list, BLAKE3 object verification, file/Postgres staged store, idempotency, JSON demo policies, audit records, Docker Compose |
 | **Specifications** | 14 detailed specifications covering the complete system |
 
 ### 🔶 In Progress
 
 - Sync protocol messages and delta negotiation
-- Production Go server roadmap, service boundary, and deployment plan
-- Server gRPC service definitions
+- Production Go server full RBAC/ABAC policy parity and `.wt/access` TOML ingestion
+- Branch push/pull and canonical reference graph
 - Git import/export object conversion
-- Production canonical object store and reference graph
+- Tenant quota accounting and staged retention cleanup
 - Large file chunking integration
 - License compliance types and SPDX validation
 
 ### 📋 Planned
 
 - Full QUIC transport implementation
-- Go remote server skeleton with canonical storage and IAM enforcement
 - Offline queue and reconnection logic
 - Admin panel page components with real server integration
 - WebSocket streaming for real-time staged visibility

@@ -11,8 +11,10 @@ import (
 	"github.com/zeebo/blake3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/ramizik/worktree/server-go/internal/audit"
+	"github.com/ramizik/worktree/server-go/internal/auth"
 	grpcserver "github.com/ramizik/worktree/server-go/internal/grpc"
 	worktreepb "github.com/ramizik/worktree/server-go/internal/grpc/worktreepb/worktree/v1"
 	"github.com/ramizik/worktree/server-go/internal/iam"
@@ -31,9 +33,10 @@ func startTestGRPCServer(t *testing.T) worktreepb.SyncServiceClient {
 		storage.NewLocalObjectStore(tmpDir),
 		staged.NewFileStore(tmpDir),
 		audit.NoopRecorder{},
-		iam.AllowAllAuthorizer{},
+		iam.NewDefaultPolicyAuthorizer(),
 	)
-	gs := grpc.NewServer()
+	authenticator := auth.NewBearerTokenAuthenticator([]auth.TokenCredential{{TokenID: "test", Secret: "test-token", Tenant: "acme", Account: "alice", Scopes: []string{"staged:*"}}})
+	gs := grpc.NewServer(grpc.UnaryInterceptor(grpcserver.AuthUnaryInterceptor(authenticator)))
 	worktreepb.RegisterSyncServiceServer(gs, srv)
 	go gs.Serve(lis) //nolint:errcheck
 	t.Cleanup(gs.GracefulStop)
@@ -46,6 +49,11 @@ func startTestGRPCServer(t *testing.T) worktreepb.SyncServiceClient {
 	return worktreepb.NewSyncServiceClient(conn)
 }
 
+func authenticatedContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer test-token"), cancel
+}
+
 func blake3Hex(data []byte) string {
 	h := blake3.Sum256(data)
 	return fmt.Sprintf("%x", h)
@@ -53,7 +61,7 @@ func blake3Hex(data []byte) string {
 
 func TestSyncServer_StageSnapshot_ValidHash(t *testing.T) {
 	client := startTestGRPCServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := authenticatedContext()
 	defer cancel()
 
 	content := []byte("hello grpc")
@@ -85,7 +93,7 @@ func TestSyncServer_StageSnapshot_ValidHash(t *testing.T) {
 
 func TestSyncServer_StageSnapshot_HashMismatch(t *testing.T) {
 	client := startTestGRPCServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := authenticatedContext()
 	defer cancel()
 
 	content := []byte("real content")
@@ -108,7 +116,7 @@ func TestSyncServer_StageSnapshot_HashMismatch(t *testing.T) {
 
 func TestSyncServer_StageSnapshot_MissingFields(t *testing.T) {
 	client := startTestGRPCServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := authenticatedContext()
 	defer cancel()
 
 	_, err := client.StageSnapshot(ctx, &worktreepb.StageSnapshotRequest{
@@ -122,7 +130,7 @@ func TestSyncServer_StageSnapshot_MissingFields(t *testing.T) {
 
 func TestSyncServer_ListStagedSnapshots(t *testing.T) {
 	client := startTestGRPCServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := authenticatedContext()
 	defer cancel()
 
 	// First stage a snapshot
@@ -130,7 +138,7 @@ func TestSyncServer_ListStagedSnapshots(t *testing.T) {
 	hash := blake3Hex(content)
 	_, err := client.StageSnapshot(ctx, &worktreepb.StageSnapshotRequest{
 		SnapshotId: "list-test-snap",
-		Tenant:     "list-tenant",
+		Tenant:     "acme",
 		Worktree:   "wt",
 		TreeId:     "tree-1",
 		Branch:     "feat",
@@ -144,7 +152,7 @@ func TestSyncServer_ListStagedSnapshots(t *testing.T) {
 
 	// List and verify
 	resp, err := client.ListStagedSnapshots(ctx, &worktreepb.ListStagedSnapshotsRequest{
-		Tenant: "list-tenant",
+		Tenant: "acme",
 	})
 	if err != nil {
 		t.Fatalf("ListStagedSnapshots: %v", err)

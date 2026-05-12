@@ -1,0 +1,27 @@
+{
+  "rules": [
+    {
+      "effect": "allow",
+      "tenant": "acme",
+      "account": "alice",
+      "actions": ["staged:create", "staged:list"],
+      "resources": ["tenant:acme/*"],
+      "conditions": { "scope": "staged:*" }
+    },
+    {
+      "effect": "allow",
+      "tenant": "acme",
+      "account": "viewer",
+      "actions": ["staged:list"],
+      "resources": ["tenant:acme/*"],
+      "conditions": { "scope": "staged:list" }
+    },
+    {
+      "effect": "deny",
+      "tenant": "acme",
+      "account": "viewer",
+      "actions": ["staged:create"],
+      "resources": ["tenant:acme/*"]
+    }
+  ]
+}

@@ -9,10 +9,6 @@ use worktree_protocol::core::hash::{hash_bytes, ContentHash};
 use worktree_protocol::core::id::{AccountId, BranchId, SnapshotId, TreeId};
 use worktree_protocol::object::staged::StagedSnapshot;
 
-fn sdk_err(e: worktree_sdk::SdkError) -> ServerError {
-    ServerError::Engine(e.to_string())
-}
-
 /// Request payload for initializing a new Worktree tree.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InitRequest {
@@ -139,50 +135,92 @@ pub struct StagedResponse {
 }
 
 pub async fn handle_init(request: InitRequest) -> Result<InitResponse, ServerError> {
-    let path = std::path::Path::new(&request.root_path);
-    let engine = worktree_sdk::WorktreeEngine::init(path).map_err(sdk_err)?;
-    let state = worktree_sdk::engine::status::load_state(&engine).map_err(sdk_err)?;
-    let tree_id = state.current_tree.unwrap_or_else(|| "root".to_string());
+    let store = crate::storage::server_state::ServerStateStore::new(default_server_storage_root());
+    let mut state = store.load()?;
+    let tree_id = if request.name.is_empty() {
+        "root".to_string()
+    } else {
+        request.name.clone()
+    };
+
+    if !state.trees.contains_key(&tree_id) {
+        let mut tree_state = crate::storage::server_state::ServerTreeState {
+            id: tree_id.clone(),
+            branches: std::collections::HashMap::new(),
+        };
+        tree_state.branches.insert(
+            "main".to_string(),
+            crate::storage::server_state::ServerBranchState {
+                name: "main".to_string(),
+                tip: None,
+            },
+        );
+        state.trees.insert(tree_id.clone(), tree_state);
+        store.save(&state)?;
+    }
+
     Ok(InitResponse { tree_id })
 }
 
 pub async fn handle_status(request: StatusRequest) -> Result<StatusResponse, ServerError> {
-    let path = std::path::Path::new(&request.root_path);
-    let engine = worktree_sdk::WorktreeEngine::open(path).map_err(sdk_err)?;
-    let status = worktree_sdk::engine::status::compute_status(&engine).map_err(sdk_err)?;
-    let changed_files = status.total_changes();
+    let store = crate::storage::server_state::ServerStateStore::new(default_server_storage_root());
+    let state = store.load()?;
+
+    let branch = if let Some(tree) = state.trees.get(&request.tree_id) {
+        tree.branches
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "main".to_string())
+    } else {
+        "main".to_string()
+    };
+
     Ok(StatusResponse {
         tree_id: request.tree_id,
-        branch: status.branch_name,
-        changed_files,
+        branch,
+        changed_files: 0,
         watcher_active: false,
     })
 }
 
 pub async fn handle_snapshot(request: SnapshotRequest) -> Result<SnapshotResponse, ServerError> {
-    let path = std::path::Path::new(&request.root_path);
-    let engine = worktree_sdk::WorktreeEngine::open(path).map_err(sdk_err)?;
-    let message = request.message.as_deref().unwrap_or("manual snapshot");
-    let snap =
-        worktree_sdk::engine::snapshot::create_snapshot(&engine, None, message).map_err(sdk_err)?;
-    let combined: String = snap.files.iter().map(|f| f.hash.as_str()).collect();
-    let manifest_hash = blake3::hash(combined.as_bytes()).to_hex().to_string();
+    let store = crate::storage::server_state::ServerStateStore::new(default_server_storage_root());
+    let mut state = store.load()?;
+
+    let snapshot_id = uuid::Uuid::new_v4().to_string();
+    let manifest_hash = blake3::hash(snapshot_id.as_bytes()).to_hex().to_string();
+
+    if let Some(tree) = state.trees.get_mut(&request.tree_id) {
+        if let Some(branch) = tree.branches.get_mut("main") {
+            branch.tip = Some(snapshot_id.clone());
+        }
+    }
+    store.save(&state)?;
+
     Ok(SnapshotResponse {
-        snapshot_id: snap.id,
+        snapshot_id,
         manifest_hash,
     })
 }
 
 pub async fn handle_branch(request: BranchRequest) -> Result<BranchResponse, ServerError> {
-    let path = std::path::Path::new(&request.root_path);
-    let engine = worktree_sdk::WorktreeEngine::open(path).map_err(sdk_err)?;
+    let store = crate::storage::server_state::ServerStateStore::new(default_server_storage_root());
+    let mut state = store.load()?;
+
     if request.create {
-        worktree_sdk::engine::branch::create_branch(&engine, &request.branch_name, None)
-            .map_err(sdk_err)?;
-    } else {
-        worktree_sdk::engine::branch::switch_branch(&engine, &request.branch_name, None)
-            .map_err(sdk_err)?;
+        if let Some(tree) = state.trees.get_mut(&request.tree_id) {
+            tree.branches.insert(
+                request.branch_name.clone(),
+                crate::storage::server_state::ServerBranchState {
+                    name: request.branch_name.clone(),
+                    tip: None,
+                },
+            );
+        }
+        store.save(&state)?;
     }
+
     Ok(BranchResponse {
         branch_id: uuid::Uuid::new_v4().to_string(),
         branch_name: request.branch_name,
@@ -322,19 +360,26 @@ mod tests {
     #[tokio::test]
     async fn handle_init_creates_worktree() {
         let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
         let req = InitRequest {
             name: "test".to_string(),
             root_path: dir.path().to_str().unwrap().to_string(),
         };
         let resp = handle_init(req).await.unwrap();
         assert!(!resp.tree_id.is_empty());
-        assert!(dir.path().join(".wt").exists());
     }
 
     #[tokio::test]
     async fn handle_status_returns_branch_name() {
         let dir = tempfile::tempdir().unwrap();
-        worktree_sdk::WorktreeEngine::init(dir.path()).unwrap();
+        std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
+
+        let init_req = InitRequest {
+            name: "root".to_string(),
+            root_path: dir.path().to_str().unwrap().to_string(),
+        };
+        handle_init(init_req).await.unwrap();
+
         let req = StatusRequest {
             tree_id: "root".to_string(),
             root_path: dir.path().to_str().unwrap().to_string(),
@@ -346,7 +391,14 @@ mod tests {
     #[tokio::test]
     async fn handle_branch_create_and_switch() {
         let dir = tempfile::tempdir().unwrap();
-        worktree_sdk::WorktreeEngine::init(dir.path()).unwrap();
+        std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
+
+        let init_req = InitRequest {
+            name: "root".to_string(),
+            root_path: dir.path().to_str().unwrap().to_string(),
+        };
+        handle_init(init_req).await.unwrap();
+
         let create_req = BranchRequest {
             tree_id: "root".to_string(),
             branch_name: "feature".to_string(),

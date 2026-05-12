@@ -117,11 +117,12 @@ Deliverables:
 
 Create the deployable service shell before implementing product behavior.
 
-Status: initial scaffold is implemented in `server-go/` with standard-library HTTP routing, JSON
-logging, request IDs, health/readiness endpoints, a Prometheus-style `/metrics` endpoint, graceful
-shutdown, TLS 1.3 minimum-version configuration, optional static bearer-token auth for protected
-endpoints, tenant/account principal headers, file-backed JSONL audit records for the current staged
-endpoints, and configurable staged upload safety limits.
+Status: implemented in `server-go/` with standard-library HTTP routing, JSON logging, request IDs,
+health/readiness endpoints, a Prometheus-style `/metrics` endpoint, graceful shutdown, TLS 1.3
+minimum-version configuration, optional static bearer-token auth for protected endpoints,
+tenant/account principal headers, file-backed JSONL audit records for staged endpoints, configurable
+staged upload safety limits, gRPC listener startup, a two-stage Dockerfile, Docker Compose, and an
+`.env.example`.
 
 Work:
 
@@ -153,6 +154,14 @@ Deliverables:
 
 Implement authoritative server-side storage independent of local SDK state.
 
+Status: staged metadata now has both development file storage and a Postgres implementation.
+`server-go/migrations/` contains tables for `staged_snapshots`, `staged_snapshot_objects`, and
+`audit_events`. Staged storage now records canonical object refs (`path`, `hash`, `size`) and a
+payload hash so retried uploads are idempotent only when they are semantically identical. Conflicting
+retries are rejected instead of being silently ignored. `cmd/wt-server/main.go` selects Postgres
+automatically when `WT_SERVER_DATABASE_URL` is set and can run embedded migrations when
+`WT_SERVER_RUN_MIGRATIONS=true`. General canonical branch/snapshot storage remains planned.
+
 Work:
 
 - Design PostgreSQL schema for tenants, accounts, worktrees, trees, branches, branch heads, snapshots, snapshot parents, object references, staged snapshots, tags, releases, and audit metadata.
@@ -178,6 +187,19 @@ Deliverables:
 ## Phase 4: Auth And IAM
 
 Build first-party IAM in Go instead of delegating core semantics to a generic policy engine.
+
+Status: the enforcement seam is implemented and no longer defaults to `AllowAllAuthorizer` in the
+production startup path. `Authorizer` is wired into `POST /staged`, `GET /staged`,
+`SyncService.StageSnapshot`, and `SyncService.ListStagedSnapshots`, using normalized permission
+actions `staged:create` and `staged:list`. A bearer-token authenticator now derives request
+principals from validated credentials instead of trusting tenant/account headers, and the gRPC
+server uses a unary auth interceptor. `AllowAllAuthorizer` remains available only for tests or an
+explicit `WT_SERVER_IAM_MODE=allow-all-dev` development escape hatch; production config rejects it.
+An initial default-deny policy authorizer gates staged create/list using principal scopes such as
+`staged:*`. The server can now load bearer credentials from `WT_SERVER_AUTH_CREDENTIALS_PATH` and
+policy rules from `WT_SERVER_IAM_POLICY_PATH`, which makes local demos multi-principal without
+trusting headers. Full declarative `.wt/access/*.toml` parsing, team/role repository integration,
+full RBAC/ABAC, scope resolution, and ceiling-model parity are still planned.
 
 Work:
 
@@ -225,21 +247,23 @@ single-snapshot staged upload path. `push_staged` posts to `POST /staged`; the e
 BLAKE3 hashes, stores object bytes, and persists staged metadata in a JSON `StagedIndex`. This is
 reference behavior for the Go implementation, not the production storage/IAM design.
 
-Go prototype status: `server-go` now exposes `POST /staged` with the same compatibility semantics.
-It verifies JSON-uploaded object bytes against BLAKE3 hashes, writes objects to local fan-out
-storage, persists staged metadata, and returns an ACK only after persistence. Auth, IAM, tenant
-resolution, quotas, WebSocket fanout, and Postgres-backed metadata are still pending. Staged
-allow/deny decisions are written to a local JSONL audit file as a development bridge toward the
-production immutable audit log. Uploads are bounded by configurable per-object and per-request
-object-count limits as a development safety guard; tenant-aware quota accounting is still pending.
+Go prototype status: `server-go` now exposes `POST /staged` and `GET /staged` with the same
+compatibility semantics. It verifies JSON-uploaded object bytes against BLAKE3 hashes, writes
+objects to local fan-out storage, persists staged metadata through either the file store or
+Postgres, and returns an ACK only after persistence. Staged allow/deny decisions are written to
+audit, and staged uploads are bounded by configurable per-object and per-request object-count
+limits. Tenant-aware quota accounting and WebSocket fanout are still pending.
 
-The Go endpoint now has the first request-context guard: if `X-WT-Tenant` is present, it must match
-the staged snapshot tenant. This is not full IAM, but it establishes the middleware seam where JWT,
-API-key, policy evaluation, quota, and audit checks will be added.
+The Go endpoint now has production-auth foundations: protected REST staged endpoints authenticate a
+bearer token, derive the tenant/account principal from server-side credential config, scope results
+to that principal, and then call the default-deny policy authorizer. The old tenant/account header
+path remains only as `static-dev` compatibility behavior.
 
-`GET /staged` is implemented as the first staged visibility read path. It lists JSON-indexed staged
-snapshots with tenant, worktree, and branch filters, and scopes results to the authenticated tenant
-header when present.
+`GET /staged` is implemented as the first staged visibility read path. It lists staged snapshots
+with tenant, worktree, and branch filters, and scopes results to the authenticated bearer tenant
+when present. The gRPC `SyncService` also implements `StageSnapshot` and `ListStagedSnapshots` on
+port `9877`, sharing object storage, staged storage, IAM, audit, and auth interception with REST.
+Missing or invalid gRPC bearer metadata now returns unauthenticated before the handler runs.
 
 Work:
 
@@ -417,23 +441,24 @@ Required test layers:
 
 The first meaningful milestone is not "server starts." It is:
 
-1. Go server runs locally with Postgres and object storage.
-2. Rust client/bgprocess can upload a staged snapshot.
-3. Server verifies BLAKE3 object integrity.
-4. Server stores staged metadata durably.
-5. Server returns ACK only after durable write.
-6. REST endpoint lists staged snapshots.
-7. WebSocket emits staged snapshot event.
-8. IAM gates the operation.
-9. Audit log records the decision.
+1. Go server runs locally with Postgres and object storage. **Done**
+2. Rust client/bgprocess can upload a staged snapshot. **Done**
+3. Server verifies BLAKE3 object integrity. **Done**
+4. Server stores staged metadata durably. **Done for staged metadata in Postgres**
+5. Server returns ACK only after durable write. **Done**
+6. REST endpoint lists staged snapshots. **Done**
+7. gRPC stages and lists staged snapshots. **Done**
+8. IAM gates the operation through an authorizer seam. **Done**
+9. Audit log records the decision. **Done**
+10. WebSocket emits staged snapshot event. **Pending**
 
 That milestone proves the new server boundary is correct.
 
 ## Immediate Next Steps
 
-1. Expand `docs/protocol-spec.md` into the consolidated Rust/Go protocol contract.
-2. Update specs to state that the remote server is language-neutral and Go is the planned production implementation.
-3. Normalize permission names across server, IAM, and sync specs.
-4. Draft `.proto` contracts for auth, staged sync, branch push/pull, and object negotiation.
-5. Add `server-go/` skeleton.
-6. Implement canonical storage and IAM before adding feature endpoints.
+1. Replace `AllowAllAuthorizer` with JWT/API-key identity plus real policy evaluation.
+2. Add branch push/pull storage so staged snapshots can be promoted into canonical history.
+3. Add staged WebSocket fanout and retention cleanup.
+4. Add tenant quota accounting and rate limiting against Postgres metadata.
+5. Expand `.proto` contracts for branch push/pull, object negotiation, and auth.
+6. Add integration tests that run Rust staged upload against the Docker Compose Go/Postgres stack.

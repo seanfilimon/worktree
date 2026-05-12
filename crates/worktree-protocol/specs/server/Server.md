@@ -669,6 +669,103 @@ SYNC request: branch=main, trees=["frontend", "api-service"]
 
 Trees not in the requested set are served as **stubs** — metadata only (name, latest snapshot hash, size) without file content. Stubs can be hydrated later on demand.
 
+### Canonical Push/Pull (v1 REST Implementation)
+
+The Go server exposes the canonical sync surface over REST at `/api/*` (separate from the prototype `/staged` flow). Endpoints, payloads, and CAS semantics are specified in `specs/sync/Sync.md` § Canonical Push/Pull. This section covers the **server-side storage and operational model**.
+
+#### Postgres Schema
+
+```sql
+CREATE TABLE canonical_branches (
+    tenant            TEXT NOT NULL,
+    worktree          TEXT NOT NULL,
+    tree_id           TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    tip_snapshot_id   TEXT,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant, worktree, tree_id, name)
+);
+
+CREATE TABLE canonical_snapshots (
+    snapshot_id     TEXT PRIMARY KEY,
+    tenant          TEXT NOT NULL,
+    worktree        TEXT NOT NULL,
+    tree_id         TEXT NOT NULL,
+    branch          TEXT NOT NULL,
+    parents         JSONB NOT NULL,          -- array of snapshot_ids
+    manifest_hash   TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    author          TEXT NOT NULL,
+    committed_at    TIMESTAMPTZ NOT NULL,
+    payload         JSONB NOT NULL           -- full Snapshot record
+);
+CREATE INDEX canonical_snapshots_branch_idx
+    ON canonical_snapshots (tenant, worktree, tree_id, branch);
+CREATE INDEX canonical_snapshots_committed_at_idx
+    ON canonical_snapshots (committed_at);
+
+CREATE TABLE canonical_snapshot_objects (
+    snapshot_id     TEXT NOT NULL REFERENCES canonical_snapshots(snapshot_id),
+    object_hash     TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    size            BIGINT NOT NULL,
+    PRIMARY KEY (snapshot_id, object_hash, path)
+);
+CREATE INDEX canonical_snapshot_objects_hash_idx
+    ON canonical_snapshot_objects (object_hash);
+```
+
+#### Push Transaction (CAS)
+
+`POST /api/push` runs inside a single Postgres transaction:
+
+```
+BEGIN;
+  -- 1. Verify objects already uploaded
+  --    (ObjectStore.Exists check happens outside txn; 412 returned early)
+  -- 2. Insert snapshot rows (idempotent on PK)
+  INSERT INTO canonical_snapshots (...) VALUES (...) ON CONFLICT DO NOTHING;
+  INSERT INTO canonical_snapshot_objects (...) VALUES (...) ON CONFLICT DO NOTHING;
+  -- 3. CAS the branch tip
+  UPDATE canonical_branches
+     SET tip_snapshot_id = $new_tip, updated_at = now()
+   WHERE tenant = $t AND worktree = $w AND tree_id = $tree AND name = $br
+     AND tip_snapshot_id IS NOT DISTINCT FROM $expected_tip
+  RETURNING tip_snapshot_id;
+  -- if 0 rows: ROLLBACK + 409 Conflict
+COMMIT;
+```
+
+Snapshots and object rows are inserted before the CAS so that if the CAS fails the data is still recoverable (idempotent insert; reused on the client's retry after pull/merge). Optionally a janitor sweep removes orphaned snapshot rows after a TTL.
+
+#### Pull Walk
+
+`POST /api/pull` walks the parent DAG from the current branch tip backwards until it reaches `last_known_tip` (or the genesis). The walk is implemented as a recursive CTE keyed on `parents` JSONB. Returns the visited snapshot rows in oldest-to-newest order along with the union of their `canonical_snapshot_objects.object_hash` set.
+
+#### Object Storage Layer
+
+Blob bytes are stored by `storage.ObjectStore` (interface — current impl is `LocalObjectStore` writing to `<storage_root>/objects/HH/HHHH...`). The interface enables future swap to S3/MinIO/GCS without touching `canonical.Service`. `Put` is idempotent (no-op on existing hash); `Put` BLAKE3-verifies the incoming bytes against the declared hash before persisting.
+
+#### Horizontal Scaling
+
+- Postgres CAS is the global serialization point — multi-pod safe.
+- `LocalObjectStore` is **per-pod local disk**. Multi-pod deployments must either:
+  - (a) mount a shared filesystem (NFS, EFS) for `objects/`,
+  - (b) deploy a single replica (acceptable for v1 dev/staging),
+  - (c) implement and inject an `S3ObjectStore` (v2 work — interface ready).
+- Push event fan-out (notify watching clients of `canonical.branch.advanced`) is deferred to Kafka-backed Phase 2. v1 clients poll `/api/refs` or `/api/pull`.
+
+#### Audit Events
+
+- `canonical_push`: emitted after CAS regardless of outcome (allow/deny/conflict).
+- `canonical_pull`: emitted on successful pull response.
+- `object_fetch`: emitted on each `GET /api/objects/{hash}`.
+- `object_check`: emitted on `POST /api/objects/check`.
+- `object_write`: emitted on `PUT /api/objects/{hash}`.
+- `ref_list`: emitted on `GET /api/refs`.
+
+All flow through the same `audit.Recorder` interface as staged audit events.
+
 ---
 
 ## 16. Tag & Release Storage
@@ -763,6 +860,21 @@ is complete:
 The production server must not preserve the local-working-directory behavior of `/init`,
 `/status`, `/snapshot`, or `/branch`. The reusable contract is the `/staged` semantic boundary:
 clients upload snapshot objects, and the server verifies, authorizes, stores, indexes, and ACKs.
+
+### Go Server Compatibility API
+
+The production-boundary Go server currently exposes the staged semantic boundary over REST and
+gRPC:
+
+| Transport | Method | Description |
+|---|---|---|
+| REST | `POST /staged` | Upload one staged snapshot using JSON `content` bytes encoded as base64 |
+| REST | `GET /staged` | List staged snapshots with tenant, worktree, and branch filters |
+| gRPC | `SyncService.StageSnapshot` | Upload one staged snapshot using protobuf bytes |
+| gRPC | `SyncService.ListStagedSnapshots` | List staged snapshots with tenant, worktree, and branch filters |
+
+Both transports share BLAKE3 object verification, staged storage, audit recording, and IAM
+authorization. The gRPC server listens on `WT_SERVER_GRPC_ADDR`, default `127.0.0.1:9877`.
 
 ### WebSocket (Real-Time Events)
 
@@ -1013,17 +1125,19 @@ Error responses include the code, a human-readable message, and an optional `det
 | Area | Status | Notes |
 |---|---|---|
 | Routing & basic handlers | **Implemented** | In `worktree-server` crate, but mixed with bgprocess code. |
-| gRPC sync protocol | **Partial** | Basic sync works. Delta sync and shallow sync are TODO. |
-| REST API | **Partial** | Some endpoints exist. Full admin API is TODO. |
+| Go server runtime | **Implemented initial slice** | HTTP health/readiness/metrics, request IDs, graceful shutdown, TLS 1.3 config, Dockerfile, Compose. |
+| gRPC sync protocol | **Partial** | Go `SyncService.StageSnapshot` and `ListStagedSnapshots` are implemented. Canonical push/pull is REST-only in v1; gRPC parity is deferred. |
+| REST API | **Partial** | Go `POST /staged`, `GET /staged`, and the canonical sync surface (`POST /api/push`, `POST /api/pull`, `POST /api/objects/check`, `PUT/GET /api/objects/{hash}`, `GET /api/refs`) are implemented. Full admin API is TODO. |
+| Canonical push/pull | **Implemented v1** | Postgres-backed `canonical_branches` (CAS), `canonical_snapshots`, `canonical_snapshot_objects`. `ObjectStore` interface with `LocalObjectStore` impl. Client logic in `crates/worktree-server/src/sync/{push,pull}.rs`. Horizontal-scale-safe via DB CAS; multi-pod object storage requires shared volume or S3 adapter (v2). |
 | Tenant management | **TODO** | Tenant CRUD, plan management, org structure. |
-| IAM enforcement | **TODO** | Policy parsing exists but server-side enforcement is not wired. |
+| IAM enforcement | **Partial** | Go `Authorizer` seam is wired into staged REST/gRPC create/list. Production bearer principal extraction, gRPC auth interceptor, and default-deny policy authorizer are in progress; full RBAC/ABAC parity remains TODO. |
 | License compliance | **TODO** | Data model exists in protocol crate but enforcement engine is not implemented. |
 | Merge request system | **TODO** | Data model planned, no implementation. |
-| Staged snapshot storage | **Prototype implemented** | Rust prototype accepts `POST /staged`, verifies uploaded object hashes, stores bytes, and persists a JSON `StagedIndex`. Production Go storage, IAM, listing, retention, and WebSocket fanout remain TODO. |
+| Staged snapshot storage | **Partial** | Rust prototype and Go server accept staged uploads. Go supports file-store metadata and Postgres metadata with canonical staged identity idempotency and conflict detection, plus REST/gRPC listing. Retention and WebSocket fanout remain TODO. |
 | Branch protection | **TODO** | Rules are parsed from config but not enforced on push. |
 | WebSocket streaming | **TODO** | No real-time event system yet. |
 | Storage quotas | **TODO** | No quota tracking or enforcement. |
-| Audit logging | **TODO** | No structured audit logging. |
+| Audit logging | **Partial** | Go records staged create/list allow/deny decisions; durable audit querying remains TODO. |
 | CI integration | **TODO** | No webhook endpoints for CI status. |
 
 ### Migration Plan

@@ -24,6 +24,8 @@ type Event struct {
 	Reason     string    `json:"reason,omitempty"`
 	Tenant     string    `json:"tenant,omitempty"`
 	Account    string    `json:"account,omitempty"`
+	TokenID    string    `json:"token_id,omitempty"`
+	AuthMethod string    `json:"auth_method,omitempty"`
 	Resource   string    `json:"resource,omitempty"`
 	RequestID  string    `json:"request_id,omitempty"`
 	HTTPMethod string    `json:"http_method,omitempty"`

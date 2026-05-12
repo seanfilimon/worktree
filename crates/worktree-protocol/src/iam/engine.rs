@@ -757,9 +757,9 @@ mod tests {
         let decision = engine.evaluate(
             &request_main,
             &account,
-            &[team.clone()],
-            &[dev_role.clone()],
-            &[deny_main.clone()],
+            std::slice::from_ref(&team),
+            std::slice::from_ref(&dev_role),
+            std::slice::from_ref(&deny_main),
         );
         assert!(decision.is_deny());
 
