@@ -8,15 +8,17 @@ import (
 
 	"github.com/ramizik/worktree/server-go/internal/audit"
 	"github.com/ramizik/worktree/server-go/internal/auth"
+	"github.com/ramizik/worktree/server-go/internal/iam"
 	"github.com/ramizik/worktree/server-go/internal/staged"
 	"github.com/ramizik/worktree/server-go/internal/storage"
 )
 
 type StagedService struct {
-	objects storage.ObjectStore
-	staged  staged.Store
-	audit   audit.Recorder
-	limits  StagedLimits
+	objects    storage.ObjectStore
+	staged     staged.Store
+	audit      audit.Recorder
+	limits     StagedLimits
+	authorizer iam.Authorizer
 }
 
 type StagedLimits struct {
@@ -31,15 +33,18 @@ func DefaultStagedLimits() StagedLimits {
 	}
 }
 
-func NewStagedService(objects storage.ObjectStore, stagedStore staged.Store, recorder audit.Recorder, limits ...StagedLimits) *StagedService {
+func NewStagedService(objects storage.ObjectStore, stagedStore staged.Store, recorder audit.Recorder, authorizer iam.Authorizer, limits ...StagedLimits) *StagedService {
 	if recorder == nil {
 		recorder = audit.NoopRecorder{}
+	}
+	if authorizer == nil {
+		authorizer = iam.AllowAllAuthorizer{}
 	}
 	selectedLimits := DefaultStagedLimits()
 	if len(limits) > 0 {
 		selectedLimits = limits[0]
 	}
-	return &StagedService{objects: objects, staged: stagedStore, audit: recorder, limits: selectedLimits}
+	return &StagedService{objects: objects, staged: stagedStore, audit: recorder, authorizer: authorizer, limits: selectedLimits}
 }
 
 type stagedUploadRequest struct {
@@ -79,6 +84,14 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		s.auditDecision(r, "staged:create", audit.DecisionDeny, "tenant mismatch", req.Tenant, req.resource())
 		writeError(w, http.StatusForbidden, "TenantMismatch", "authenticated tenant does not match staged snapshot tenant")
 		return
+	}
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		decision, err := s.authorizer.Authorize(r.Context(), principal, "staged:create", req.resource())
+		if err != nil || decision == iam.Deny {
+			s.auditDecision(r, "staged:create", audit.DecisionDeny, "iam denied", req.Tenant, req.resource())
+			writeError(w, http.StatusForbidden, "Forbidden", "access denied")
+			return
+		}
 	}
 	if err := s.enforceUploadLimits(req); err != nil {
 		s.auditDecision(r, "staged:create", audit.DecisionDeny, err.Error(), req.Tenant, req.resource())
@@ -139,6 +152,14 @@ func (s *StagedService) HandleList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter.Tenant = principal.Tenant
+	}
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		decision, err := s.authorizer.Authorize(r.Context(), principal, "staged:list", "staged")
+		if err != nil || decision == iam.Deny {
+			s.auditDecision(r, "staged:list", audit.DecisionDeny, "iam denied", filter.Tenant, "staged")
+			writeError(w, http.StatusForbidden, "Forbidden", "access denied")
+			return
+		}
 	}
 	snapshots, err := s.staged.List(r.Context(), filter)
 	if err != nil {

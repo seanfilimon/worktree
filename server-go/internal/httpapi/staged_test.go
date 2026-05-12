@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/ramizik/worktree/server-go/internal/audit"
+	"github.com/ramizik/worktree/server-go/internal/auth"
+	"github.com/ramizik/worktree/server-go/internal/iam"
 	"github.com/ramizik/worktree/server-go/internal/staged"
 	"github.com/ramizik/worktree/server-go/internal/storage"
 	"github.com/zeebo/blake3"
@@ -44,7 +46,7 @@ func TestStagedUploadPersistsVerifiedObject(t *testing.T) {
 			recorded = snapshot
 			return nil
 		},
-	}, auditRecorder)
+	}, auditRecorder, nil)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -100,7 +102,7 @@ func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil
 		},
-	}, nil)
+	}, nil, nil)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	hash := blake3.Sum256([]byte("expected"))
@@ -140,7 +142,7 @@ func TestStagedUploadRejectsObjectSizeLimit(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil
 		},
-	}, auditRecorder, StagedLimits{MaxObjectBytes: 4, MaxObjects: 10})
+	}, auditRecorder, nil, StagedLimits{MaxObjectBytes: 4, MaxObjects: 10})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("too-large")
@@ -183,7 +185,7 @@ func TestStagedUploadRejectsObjectCountLimit(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil
 		},
-	}, nil, StagedLimits{MaxObjectBytes: 100, MaxObjects: 1})
+	}, nil, nil, StagedLimits{MaxObjectBytes: 100, MaxObjects: 1})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file")
@@ -222,7 +224,7 @@ func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil
 		},
-	}, auditRecorder)
+	}, auditRecorder, nil)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -271,7 +273,7 @@ func TestStagedListFiltersToAuthenticatedTenant(t *testing.T) {
 				Branch:     "main",
 			}}, nil
 		},
-	}, auditRecorder)
+	}, auditRecorder, nil)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?worktree=api", nil)
 	req.Header.Set("X-WT-Tenant", "acme")
@@ -296,7 +298,7 @@ func TestStagedListRejectsTenantMismatch(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil, nil
 		},
-	}, nil)
+	}, nil, nil)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?tenant=other", nil)
 	req.Header.Set("X-WT-Tenant", "acme")
@@ -306,6 +308,37 @@ func TestStagedListRejectsTenantMismatch(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUpload_IAMDeny(t *testing.T) {
+	root := t.TempDir()
+	objects := storage.NewLocalObjectStore(root)
+	service := NewStagedService(objects, stagedStoreStub{}, nil, iam.DenyAllAuthorizer{})
+
+	content := []byte("hello")
+	hash := blake3.Sum256(content)
+	body := stagedUploadRequest{
+		SnapshotID: "snap-1",
+		Tenant:     "acme",
+		Worktree:   "wt",
+		TreeID:     "tree-1",
+		Branch:     "main",
+		Objects: []stagedObjectUpload{{
+			Path:    "a.rs",
+			Hash:    hex.EncodeToString(hash[:]),
+			Size:    len(content),
+			Content: content,
+		}},
+	}
+	data, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Tenant: "acme", Account: "alice"}))
+	rec := httptest.NewRecorder()
+	service.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
 	}
 }
 

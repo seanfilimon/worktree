@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/ramizik/worktree/server-go/internal/auth"
+	"github.com/ramizik/worktree/server-go/internal/iam"
 	"github.com/ramizik/worktree/server-go/internal/observability"
 )
 
 type RouterConfig struct {
 	Version       string
 	Authenticator auth.StaticAuthenticator
+	Authorizer    iam.Authorizer
 	Staged        *StagedService
 	Metrics       *observability.Metrics
 }

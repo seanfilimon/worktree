@@ -13,6 +13,7 @@ import (
 	"github.com/ramizik/worktree/server-go/internal/auth"
 	"github.com/ramizik/worktree/server-go/internal/config"
 	"github.com/ramizik/worktree/server-go/internal/httpapi"
+	"github.com/ramizik/worktree/server-go/internal/iam"
 	"github.com/ramizik/worktree/server-go/internal/observability"
 	"github.com/ramizik/worktree/server-go/internal/server"
 	"github.com/ramizik/worktree/server-go/internal/staged"
@@ -53,7 +54,7 @@ func main() {
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Version:       "dev",
 		Authenticator: auth.NewStaticAuthenticator(cfg.AuthToken),
-		Staged: httpapi.NewStagedService(objectStore, stagedStore, auditRecorder, httpapi.StagedLimits{
+		Staged: httpapi.NewStagedService(objectStore, stagedStore, auditRecorder, iam.AllowAllAuthorizer{}, httpapi.StagedLimits{
 			MaxObjectBytes: cfg.MaxStagedObjectBytes,
 			MaxObjects:     cfg.MaxStagedObjects,
 		}),
