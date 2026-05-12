@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: worktree
+      POSTGRES_PASSWORD: worktree
+      POSTGRES_DB: worktree
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U worktree"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate:v4
+    volumes:
+      - ./migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://worktree:worktree@postgres:5432/worktree?sslmode=disable"
+      - "up"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  server:
+    build: .
+    environment:
+      WT_SERVER_HTTP_ADDR: "0.0.0.0:8080"
+      WT_SERVER_GRPC_ADDR: "0.0.0.0:9877"
+      WT_SERVER_DATABASE_URL: "postgres://worktree:worktree@postgres:5432/worktree?sslmode=disable"
+      WT_SERVER_RUN_MIGRATIONS: "false"
+      WT_SERVER_LOG_LEVEL: "info"
+      WT_SERVER_STORAGE_ROOT: "/data/wt-server"
+      WT_SERVER_AUDIT_PATH: "/data/wt-server/audit/audit.jsonl"
+    ports:
+      - "8080:8080"
+      - "9877:9877"
+    volumes:
+      - server_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pg_data:
+  server_data:
