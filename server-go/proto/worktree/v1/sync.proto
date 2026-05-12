@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package worktree.v1;
+
+option go_package = "github.com/ramizik/worktree/server-go/internal/grpc/worktreepb";
+
+// SyncService handles staged snapshot uploads and listings between client and server.
+service SyncService {
+    // StageSnapshot uploads a local snapshot as staged work visible to teammates.
+    // Idempotent on snapshot_id.
+    rpc StageSnapshot(StageSnapshotRequest) returns (StageSnapshotResponse);
+
+    // ListStagedSnapshots returns staged snapshots visible to the caller.
+    rpc ListStagedSnapshots(ListStagedSnapshotsRequest) returns (ListStagedSnapshotsResponse);
+}
+
+message StagedObject {
+    string path    = 1;
+    string hash    = 2;
+    int64  size    = 3;
+    bytes  content = 4;
+}
+
+message StageSnapshotRequest {
+    string              snapshot_id = 1;
+    string              tenant      = 2;
+    string              worktree    = 3;
+    string              tree_id     = 4;
+    string              branch      = 5;
+    repeated StagedObject objects   = 6;
+}
+
+message StageSnapshotResponse {
+    string status      = 1;
+    string snapshot_id = 2;
+    int32  objects     = 3;
+}
+
+message ListStagedSnapshotsRequest {
+    string tenant   = 1;
+    string worktree = 2;
+    string branch   = 3;
+}
+
+message StagedSnapshotRecord {
+    string          snapshot_id = 1;
+    string          tenant      = 2;
+    string          worktree    = 3;
+    string          tree_id     = 4;
+    string          branch      = 5;
+    repeated string object_ids  = 6;
+    string          created_at  = 7;
+}
+
+message ListStagedSnapshotsResponse {
+    repeated StagedSnapshotRecord snapshots = 1;
+    int32                         count     = 2;
+}
