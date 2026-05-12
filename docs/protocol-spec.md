@@ -73,6 +73,32 @@ This REST shape is a compatibility bridge. The production sync API should promot
 semantics into a `StageSnapshot` gRPC method without changing object identity, verification, or ACK
 rules.
 
+### Staged Snapshot Listing Compatibility Contract
+
+The Go server also exposes `GET /staged` as the first read-side compatibility endpoint for staged
+visibility.
+
+Query parameters:
+
+| Parameter | Required | Description |
+|---|---:|---|
+| `tenant` | no | Tenant slug. If authenticated tenant context is present, it must match. |
+| `worktree` | no | Worktree name filter. |
+| `branch` | no | Branch name filter. |
+
+Response:
+
+```json
+{
+  "snapshots": [],
+  "count": 0
+}
+```
+
+When `X-WT-Tenant` is present, the server filters the list to that tenant and rejects mismatched
+explicit `tenant` query parameters. This is a compatibility guard until full IAM and visibility
+policy evaluation are wired in.
+
 ## Diff Semantics
 
 TODO: Define how diffs are computed between snapshots. Specify the diff algorithm, handling of binary files, rename/move detection, and representation of changes across nested tree boundaries.

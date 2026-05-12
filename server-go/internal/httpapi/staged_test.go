@@ -14,20 +14,35 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-type stagedStoreFunc func(context.Context, staged.Snapshot) error
+type stagedStoreStub struct {
+	add  func(context.Context, staged.Snapshot) error
+	list func(context.Context, staged.ListFilter) ([]staged.Snapshot, error)
+}
 
-func (f stagedStoreFunc) Add(ctx context.Context, snapshot staged.Snapshot) error {
-	return f(ctx, snapshot)
+func (s stagedStoreStub) Add(ctx context.Context, snapshot staged.Snapshot) error {
+	if s.add == nil {
+		return nil
+	}
+	return s.add(ctx, snapshot)
+}
+
+func (s stagedStoreStub) List(ctx context.Context, filter staged.ListFilter) ([]staged.Snapshot, error) {
+	if s.list == nil {
+		return nil, nil
+	}
+	return s.list(ctx, filter)
 }
 
 func TestStagedUploadPersistsVerifiedObject(t *testing.T) {
 	root := t.TempDir()
 	objects := storage.NewLocalObjectStore(root)
 	var recorded staged.Snapshot
-	service := NewStagedService(objects, stagedStoreFunc(func(ctx context.Context, snapshot staged.Snapshot) error {
-		recorded = snapshot
-		return nil
-	}))
+	service := NewStagedService(objects, stagedStoreStub{
+		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+			recorded = snapshot
+			return nil
+		},
+	})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -75,10 +90,12 @@ func TestStagedUploadPersistsVerifiedObject(t *testing.T) {
 func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 	root := t.TempDir()
 	objects := storage.NewLocalObjectStore(root)
-	service := NewStagedService(objects, stagedStoreFunc(func(ctx context.Context, snapshot staged.Snapshot) error {
-		t.Fatal("staged store should not be called")
-		return nil
-	}))
+	service := NewStagedService(objects, stagedStoreStub{
+		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+			t.Fatal("staged store should not be called")
+			return nil
+		},
+	})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	hash := blake3.Sum256([]byte("expected"))
@@ -112,10 +129,12 @@ func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 	root := t.TempDir()
 	objects := storage.NewLocalObjectStore(root)
-	service := NewStagedService(objects, stagedStoreFunc(func(ctx context.Context, snapshot staged.Snapshot) error {
-		t.Fatal("staged store should not be called")
-		return nil
-	}))
+	service := NewStagedService(objects, stagedStoreStub{
+		add: func(ctx context.Context, snapshot staged.Snapshot) error {
+			t.Fatal("staged store should not be called")
+			return nil
+		},
+	})
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -139,6 +158,53 @@ func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
 	req.Header.Set("X-WT-Tenant", "other")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStagedListFiltersToAuthenticatedTenant(t *testing.T) {
+	var received staged.ListFilter
+	service := NewStagedService(nil, stagedStoreStub{
+		list: func(ctx context.Context, filter staged.ListFilter) ([]staged.Snapshot, error) {
+			received = filter
+			return []staged.Snapshot{{
+				SnapshotID: "snap-1",
+				Tenant:     "acme",
+				Worktree:   "api",
+				Branch:     "main",
+			}}, nil
+		},
+	})
+	router := NewRouter(RouterConfig{Version: "test", Staged: service})
+	req := httptest.NewRequest(http.MethodGet, "/staged?worktree=api", nil)
+	req.Header.Set("X-WT-Tenant", "acme")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if received.Tenant != "acme" || received.Worktree != "api" {
+		t.Fatalf("filter = %#v", received)
+	}
+}
+
+func TestStagedListRejectsTenantMismatch(t *testing.T) {
+	service := NewStagedService(nil, stagedStoreStub{
+		list: func(ctx context.Context, filter staged.ListFilter) ([]staged.Snapshot, error) {
+			t.Fatal("staged store should not be called")
+			return nil, nil
+		},
+	})
+	router := NewRouter(RouterConfig{Version: "test", Staged: service})
+	req := httptest.NewRequest(http.MethodGet, "/staged?tenant=other", nil)
+	req.Header.Set("X-WT-Tenant", "acme")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)

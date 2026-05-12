@@ -20,6 +20,13 @@ type Snapshot struct {
 
 type Store interface {
 	Add(ctx context.Context, snapshot Snapshot) error
+	List(ctx context.Context, filter ListFilter) ([]Snapshot, error)
+}
+
+type ListFilter struct {
+	Tenant   string
+	Worktree string
+	Branch   string
 }
 
 type FileStore struct {
@@ -37,7 +44,7 @@ func (s *FileStore) Add(ctx context.Context, snapshot Snapshot) error {
 	if snapshot.CreatedAt.IsZero() {
 		snapshot.CreatedAt = time.Now().UTC()
 	}
-	path := filepath.Join(s.root, "staged", "index.json")
+	path := s.indexPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -51,6 +58,30 @@ func (s *FileStore) Add(ctx context.Context, snapshot Snapshot) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+func (s *FileStore) List(ctx context.Context, filter ListFilter) ([]Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	index, err := s.load(s.indexPath())
+	if err != nil {
+		return nil, err
+	}
+	snapshots := make([]Snapshot, 0, len(index.Snapshots))
+	for _, snapshot := range index.Snapshots {
+		if filter.Tenant != "" && snapshot.Tenant != filter.Tenant {
+			continue
+		}
+		if filter.Worktree != "" && snapshot.Worktree != filter.Worktree {
+			continue
+		}
+		if filter.Branch != "" && snapshot.Branch != filter.Branch {
+			continue
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
 }
 
 type indexFile struct {
@@ -70,4 +101,8 @@ func (s *FileStore) load(path string) (indexFile, error) {
 		return indexFile{}, err
 	}
 	return index, nil
+}
+
+func (s *FileStore) indexPath() string {
+	return filepath.Join(s.root, "staged", "index.json")
 }

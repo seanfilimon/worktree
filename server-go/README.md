@@ -19,6 +19,7 @@ Implemented:
 - Request-scoped tenant/account principal headers.
 - Local content-addressed object storage with BLAKE3 verification.
 - `POST /staged` staged snapshot upload endpoint.
+- `GET /staged` staged snapshot listing endpoint with tenant/worktree/branch filters.
 - JSON staged snapshot index for local development.
 
 Not implemented yet:
@@ -81,6 +82,14 @@ Then call protected endpoints with:
 
 ```bash
 Authorization: Bearer dev-secret
+```
+
+List staged snapshots:
+
+```bash
+curl "http://127.0.0.1:8080/staged?worktree=api&branch=main" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "X-WT-Tenant: acme"
 ```
 
 ## TLS 1.3

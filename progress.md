@@ -55,6 +55,23 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
 **Result:** `go test ./...` passes in `server-go`.
 
+### Step 5 — `feat(server-go): list staged snapshots`
+**Files:**
+- `server-go/internal/staged/store.go`
+- `server-go/internal/httpapi/staged.go`
+- `server-go/README.md`
+- `docs/protocol-spec.md`
+- `docs/server-architecture.md`
+- `roadmap.md`
+
+- Added `Store.List` with tenant/worktree/branch filters.
+- Added `GET /staged` compatibility endpoint.
+- Scoped list results to `X-WT-Tenant` when present.
+- Rejected explicit tenant query mismatches.
+- Added store and HTTP tests for listing and tenant filtering.
+
+**Result:** `go test ./...` passes in `server-go`.
+
 ## Local Demo — Implementation Progress
 
 Target: full local demo (CLI → bgprocess → server on localhost). No remote server needed.

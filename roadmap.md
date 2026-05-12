@@ -229,6 +229,10 @@ The Go endpoint now has the first request-context guard: if `X-WT-Tenant` is pre
 the staged snapshot tenant. This is not full IAM, but it establishes the middleware seam where JWT,
 API-key, policy evaluation, quota, and audit checks will be added.
 
+`GET /staged` is implemented as the first staged visibility read path. It lists JSON-indexed staged
+snapshots with tenant, worktree, and branch filters, and scopes results to the authenticated tenant
+header when present.
+
 Work:
 
 - Implement have/want object negotiation.

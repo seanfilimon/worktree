@@ -8,9 +8,9 @@ directories or share SDK `.wt/state.json`.
 The Go server now has an initial `server-go/` implementation scaffold. It provides health/readiness
 endpoints, TLS 1.3 configuration, request IDs, optional static bearer-token authentication for
 protected endpoints, tenant/account principal headers, local BLAKE3-verified content-addressed
-object storage, and a `POST /staged` compatibility endpoint. This is still development storage:
-staged metadata is written to a JSON index for now, while the production path remains PostgreSQL
-metadata plus S3-compatible object storage.
+object storage, a `POST /staged` compatibility endpoint, and a filtered `GET /staged` listing
+endpoint. This is still development storage: staged metadata is written to a JSON index for now,
+while the production path remains PostgreSQL metadata plus S3-compatible object storage.
 
 Recent prototype work added the first real staged-sync boundary: after an auto-snapshot is created,
 the bgprocess synchronously uploads that snapshot to `POST /staged`. The endpoint verifies uploaded
@@ -64,6 +64,7 @@ Current prototype HTTP endpoints:
 | `POST` | `/snapshot` | Demo/manual snapshot creation |
 | `POST` | `/branch` | Demo branch create/switch |
 | `POST` | `/staged` | Upload one local snapshot as staged work |
+| `GET` | `/staged` | List staged snapshots, filtered by tenant/worktree/branch |
 
 `/staged` is the important contract for the production rewrite: the client sends snapshot metadata
 and added/modified file bytes, while the server verifies hashes, stores objects, indexes staged
@@ -77,3 +78,6 @@ Current Go auth is intentionally minimal: `WT_SERVER_AUTH_TOKEN` enables static 
 and `X-WT-Tenant` / `X-WT-Account` populate request principal context. `/staged` rejects requests
 when a principal tenant is present and does not match the staged snapshot tenant. Full JWT/API-key
 auth, IAM evaluation, and audit logging remain planned work.
+
+`GET /staged` applies the same tenant guard. When `X-WT-Tenant` is present, the response is scoped
+to that tenant; an explicit mismatched `tenant` query parameter is rejected.

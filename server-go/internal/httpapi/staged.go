@@ -86,6 +86,34 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *StagedService) HandleList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	filter := staged.ListFilter{
+		Tenant:   r.URL.Query().Get("tenant"),
+		Worktree: r.URL.Query().Get("worktree"),
+		Branch:   r.URL.Query().Get("branch"),
+	}
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok && principal.Tenant != "" {
+		if filter.Tenant != "" && filter.Tenant != principal.Tenant {
+			writeError(w, http.StatusForbidden, "TenantMismatch", "authenticated tenant does not match requested tenant")
+			return
+		}
+		filter.Tenant = principal.Tenant
+	}
+	snapshots, err := s.staged.List(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "StagedListFailed", "failed to list staged snapshots")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"snapshots": snapshots,
+		"count":     len(snapshots),
+	})
+}
+
 func (r stagedUploadRequest) validate() error {
 	if r.SnapshotID == "" {
 		return errors.New("snapshot_id is required")

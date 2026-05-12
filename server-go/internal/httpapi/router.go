@@ -20,6 +20,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	mux.HandleFunc("GET /ready", readyHandler(cfg))
 	if cfg.Staged != nil {
 		mux.Handle("POST /staged", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Staged.HandleUpload)))
+		mux.Handle("GET /staged", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Staged.HandleList)))
 	}
 	return requestIDMiddleware(mux)
 }
