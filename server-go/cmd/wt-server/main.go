@@ -32,7 +32,21 @@ func main() {
 	slog.SetDefault(log)
 
 	objectStore := storage.NewLocalObjectStore(cfg.StorageRoot)
-	stagedStore := staged.NewFileStore(cfg.StorageRoot)
+
+	var stagedStore staged.Store
+	if cfg.DatabaseURL != "" {
+		pgStore, err := staged.NewPostgresStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			slog.Error("failed to connect to postgres", "error", err)
+			os.Exit(1)
+		}
+		defer pgStore.Close()
+		stagedStore = pgStore
+		slog.Info("using postgres staged store")
+	} else {
+		stagedStore = staged.NewFileStore(cfg.StorageRoot)
+		slog.Info("using file staged store (dev mode)")
+	}
 	metrics := observability.NewMetrics()
 	auditRecorder := audit.NewFileRecorder(cfg.AuditPath)
 
