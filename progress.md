@@ -317,6 +317,14 @@ shape.
 - Reconciles live WebSocket JSON payloads into `.wt/cache/staged_index.json`.
 - Added interactive real-time `wt staged --watch` terminal UI.
 
+## Git Interoperability
+
+### `feat(git): implement libgit2 converter stubs`
+- Implemented `WorktreeToGitConverter` to export W0rktree `Snapshot`, `Manifest`, and `Blob` into Git.
+- Implemented `GitToWorktreeConverter` to import Git commits, trees, and blobs into W0rktree.
+- Added deterministic mapping of Git object OIDs to W0rktree `SnapshotId`s and emails to `AccountId`s.
+- **Deferred**: CLI integration for `wt git import` and `wt git export` is currently mocked and deferred until native network stability is finalized.
+
 ## Fixes
 
 ### `fix(git): sync InMemoryHashIndex with refactored HashIndex trait`

@@ -10,8 +10,8 @@ pub mod sync;
 pub mod watcher;
 
 use crate::api::handlers::{
-    handle_branch, handle_init, handle_snapshot, handle_staged, handle_status, BranchRequest,
-    InitRequest, SnapshotRequest, StagedRequest, StatusRequest,
+    handle_branch, handle_init, handle_snapshot, handle_staged, handle_status, route_staged_ws,
+    BranchRequest, InitRequest, SnapshotRequest, StagedRequest, StatusRequest,
 };
 use crate::auth::enforcer::PermissionEnforcer;
 use crate::auth::session::Session;
@@ -27,6 +27,7 @@ use std::sync::{Arc, RwLock};
 pub struct AppState {
     pub enforcer: Arc<RwLock<PermissionEnforcer>>,
     pub sessions: Arc<RwLock<HashMap<String, Session>>>,
+    pub staged_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
 }
 
 pub async fn run() -> Result<(), error::ServerError> {
@@ -43,9 +44,12 @@ pub async fn run() -> Result<(), error::ServerError> {
         ws_staged_loop(ws_root).await;
     });
 
+    let (staged_tx, _) = tokio::sync::broadcast::channel(100);
+
     let state = Arc::new(AppState {
         enforcer: Arc::new(RwLock::new(PermissionEnforcer::new())),
         sessions: Arc::new(RwLock::new(HashMap::new())),
+        staged_tx,
     });
 
     let app = Router::new()
@@ -55,6 +59,7 @@ pub async fn run() -> Result<(), error::ServerError> {
         .route("/snapshot", post(route_snapshot))
         .route("/staged", post(route_staged))
         .route("/branch", post(route_branch))
+        .route("/staged/ws", get(route_staged_ws))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
@@ -105,9 +110,18 @@ async fn route_branch(Json(req): Json<BranchRequest>) -> impl IntoResponse {
     }
 }
 
-async fn route_staged(Json(req): Json<StagedRequest>) -> impl IntoResponse {
+async fn route_staged(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<StagedRequest>,
+) -> impl IntoResponse {
+    let snapshot = req.snapshot.clone();
     match handle_staged(req).await {
-        Ok(r) => (StatusCode::OK, Json(serde_json::to_value(r).unwrap())).into_response(),
+        Ok(r) => {
+            if let Ok(val) = serde_json::to_value(&snapshot) {
+                let _ = state.staged_tx.send(val);
+            }
+            (StatusCode::OK, Json(serde_json::to_value(r).unwrap())).into_response()
+        }
         Err(e) => server_err(e),
     }
 }
@@ -249,12 +263,19 @@ fn watcher_loop_blocking(root: std::path::PathBuf) -> Result<(), error::ServerEr
         for event in push_rx {
             match event {
                 PushQueueEvent::Push(snap_id) => {
-                    if let Err(e) = worktree_sdk::engine::sync::push_staged(&push_engine, &snap_id)
-                    {
-                        tracing::warn!(
-                            "bgprocess: staged sync failed for snapshot {}: {e}",
-                            &snap_id[..8]
-                        );
+                    let mut attempts = 0;
+                    loop {
+                        match worktree_sdk::engine::sync::push_staged(&push_engine, &snap_id) {
+                            Ok(_) => break,
+                            Err(e) => {
+                                attempts += 1;
+                                tracing::warn!(
+                                    "bgprocess: staged sync failed for snapshot {}: {} (attempt {})",
+                                    &snap_id[..8], e, attempts
+                                );
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                            }
+                        }
                     }
                 }
                 PushQueueEvent::Resume => {

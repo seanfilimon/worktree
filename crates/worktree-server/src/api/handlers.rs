@@ -352,6 +352,26 @@ fn validate_relative_path(path: &str) -> Result<(), ServerError> {
     Ok(())
 }
 
+pub async fn route_staged_ws(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::AppState>>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |mut socket| async move {
+        let mut rx = state.staged_tx.subscribe();
+        while let Ok(msg) = rx.recv().await {
+            if let Ok(text) = serde_json::to_string(&msg) {
+                if socket
+                    .send(axum::extract::ws::Message::Text(text.into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

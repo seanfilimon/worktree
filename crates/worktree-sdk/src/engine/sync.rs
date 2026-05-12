@@ -153,7 +153,10 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
 
     let server = server_url();
     let client = reqwest::blocking::Client::new();
-    let mut request = client.post(format!("{server}/staged")).json(&req);
+    let mut request = client
+        .post(format!("{server}/staged"))
+        .header("x-wt-tree-id", &req.tree_id)
+        .json(&req);
     let token = std::env::var("WT_SERVER_AUTH_TOKEN").ok().or_else(|| {
         std::fs::read_to_string(engine.wt_dir().join("cache").join("auth_token"))
             .ok()
@@ -211,6 +214,7 @@ pub fn pull(engine: &super::WorktreeEngine) -> Result<PullResult> {
 
     let mut request = reqwest::blocking::Client::new()
         .post(format!("{}/api/pull", server_url()))
+        .header("x-wt-tree-id", &req.tree_id)
         .json(&req);
 
     if let Some(t) = token {

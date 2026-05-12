@@ -45,21 +45,12 @@ pub async fn require_auth(
         session.user_id
     };
 
-    // We need to parse body for some requests
-    let (parts, body) = req.into_parts();
-    let path = parts.uri.path().to_string();
+    let path = req.uri().path().to_string();
 
-    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
-        Ok(b) => b,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-    };
-
-    let json: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
-
-    let tree_id = json
-        .as_ref()
-        .and_then(|j| j.get("tree_id"))
-        .and_then(|v| v.as_str())
+    let tree_id = req
+        .headers()
+        .get("x-wt-tree-id")
+        .and_then(|h| h.to_str().ok())
         .and_then(|s| TreeId::from_str(s).ok());
 
     let (permission, scope) = match path.as_str() {
@@ -86,26 +77,14 @@ pub async fn require_auth(
             }
         }
         "/branch" => {
-            let is_create = json
-                .as_ref()
-                .and_then(|j| j.get("create"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
             if let Some(t) = tree_id {
-                let perm = if is_create {
-                    Permission::BranchCreate
-                } else {
-                    Permission::BranchRead
-                };
-                (perm, Scope::Tree(TenantId::nil(), t))
+                (Permission::BranchCreate, Scope::Tree(TenantId::nil(), t))
             } else {
                 return StatusCode::BAD_REQUEST.into_response();
             }
         }
         "/health" => {
             // Health check bypasses auth
-            let req = Request::from_parts(parts, Body::from(bytes));
             return next.run(req).await;
         }
         _ => return StatusCode::NOT_FOUND.into_response(),
@@ -120,9 +99,8 @@ pub async fn require_auth(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    // Reconstruct request
-    let mut req = Request::from_parts(parts, Body::from(bytes));
     // Provide user id to next handler if needed
+    let mut req = req;
     req.extensions_mut().insert(user_id);
 
     next.run(req).await
