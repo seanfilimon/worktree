@@ -1,22 +1,29 @@
-use std::fs;
+use super::status::{load_state, save_state, BranchState, TreeState};
+use crate::error::{Result, SdkError};
 use chrono::Utc;
-use crate::error::{SdkError, Result};
-use super::status::{TreeState, BranchState, load_state, save_state};
+use std::fs;
 
-pub fn add_tree(
-    engine: &super::WorktreeEngine,
-    path: &str,
-) -> Result<TreeState> {
+pub fn add_tree(engine: &super::WorktreeEngine, path: &str) -> Result<TreeState> {
     // Validate path doesn't traverse upward
     if path.contains("..") || path.starts_with('/') || path.starts_with('\\') {
-        return Err(SdkError::InvalidConfig("tree path must not contain '..' or start with '/' or '\\\\'".into()));
+        return Err(SdkError::InvalidConfig(
+            "tree path must not contain '..' or start with '/' or '\\\\'".into(),
+        ));
     }
 
     let mut state = load_state(engine)?;
-    let name = path.replace('\\', "/").split('/').last().unwrap_or(path).to_string();
+    let name = path
+        .replace('\\', "/")
+        .split('/')
+        .next_back()
+        .unwrap_or(path)
+        .to_string();
 
     if state.find_tree(&name).is_some() {
-        return Err(SdkError::InvalidConfig(format!("tree '{}' already exists", name)));
+        return Err(SdkError::InvalidConfig(format!(
+            "tree '{}' already exists",
+            name
+        )));
     }
 
     // Create the tree directory and .wt-tree
@@ -28,10 +35,12 @@ pub fn add_tree(
 
     // Write tree config
     let config = format!(
-r#"[tree]
+        r#"[tree]
 name = "{}"
 branch_strategy = "feature-branch"
-"#, name);
+"#,
+        name
+    );
     fs::write(wt_tree_dir.join("config.toml"), config)?;
 
     let now = Utc::now().to_rfc3339();
@@ -58,17 +67,17 @@ pub fn list_trees(engine: &super::WorktreeEngine) -> Result<Vec<TreeState>> {
     Ok(state.trees.clone())
 }
 
-pub fn remove_tree(
-    engine: &super::WorktreeEngine,
-    name: &str,
-) -> Result<()> {
+pub fn remove_tree(engine: &super::WorktreeEngine, name: &str) -> Result<()> {
     let mut state = load_state(engine)?;
 
     if name == "root" {
-        return Err(SdkError::InvalidConfig("cannot remove the root tree".into()));
+        return Err(SdkError::InvalidConfig(
+            "cannot remove the root tree".into(),
+        ));
     }
 
-    let tree = state.find_tree(name)
+    let tree = state
+        .find_tree(name)
         .ok_or(SdkError::TreeNotFound(name.to_string()))?;
 
     // Remove .wt-tree directory

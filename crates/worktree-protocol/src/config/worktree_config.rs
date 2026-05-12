@@ -47,9 +47,10 @@ impl Default for WorktreeSection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
+    #[default]
     Private,
     Shared,
     Public,
@@ -57,12 +58,6 @@ pub enum Visibility {
 
 fn default_visibility() -> Visibility {
     Visibility::Private
-}
-
-impl Default for Visibility {
-    fn default() -> Self {
-        Visibility::Private
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,19 +83,14 @@ impl Default for SyncSection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConflictStrategy {
+    #[default]
     Auto,
     Manual,
     Ours,
     Theirs,
-}
-
-impl Default for ConflictStrategy {
-    fn default() -> Self {
-        ConflictStrategy::Auto
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,7 +135,7 @@ impl Default for LargeFilesSection {
     fn default() -> Self {
         Self {
             threshold_bytes: 10 * 1024 * 1024, // 10MB
-            chunk_size_bytes: 4 * 1024 * 1024,  // 4MB
+            chunk_size_bytes: 4 * 1024 * 1024, // 4MB
             lazy_loading: true,
             preload_patterns: Vec::new(),
         }
@@ -248,7 +238,7 @@ pub struct TenantAccessGrant {
     pub expires: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BranchProtectionRule {
     pub pattern: String,
     #[serde(default)]
@@ -265,21 +255,6 @@ pub struct BranchProtectionRule {
     pub required_ci_checks: Vec<String>,
     #[serde(default)]
     pub require_snapshot_signature: bool,
-}
-
-impl Default for BranchProtectionRule {
-    fn default() -> Self {
-        Self {
-            pattern: String::new(),
-            no_direct_push: false,
-            require_merge_review: false,
-            required_reviewers: 0,
-            no_delete: false,
-            require_ci_pass: false,
-            required_ci_checks: Vec::new(),
-            require_snapshot_signature: false,
-        }
-    }
 }
 
 impl WorktreeConfig {
@@ -333,18 +308,42 @@ impl WorktreeConfig {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_sync_interval() -> u64 { 30 }
-fn default_retry_count() -> u32 { 3 }
-fn default_conflict_strategy() -> ConflictStrategy { ConflictStrategy::Auto }
-fn default_inactivity_timeout() -> u64 { 30 }
-fn default_max_changed_files() -> u32 { 50 }
-fn default_max_changed_bytes() -> u64 { 10 * 1024 * 1024 }
-fn default_large_file_threshold() -> u64 { 10 * 1024 * 1024 }
-fn default_chunk_size() -> u64 { 4 * 1024 * 1024 }
-fn default_reflog_retention() -> u32 { 90 }
-fn default_reflog_max() -> u32 { 10000 }
-fn default_shallow_depth() -> u32 { 100 }
+fn default_true() -> bool {
+    true
+}
+fn default_sync_interval() -> u64 {
+    30
+}
+fn default_retry_count() -> u32 {
+    3
+}
+fn default_conflict_strategy() -> ConflictStrategy {
+    ConflictStrategy::Auto
+}
+fn default_inactivity_timeout() -> u64 {
+    30
+}
+fn default_max_changed_files() -> u32 {
+    50
+}
+fn default_max_changed_bytes() -> u64 {
+    10 * 1024 * 1024
+}
+fn default_large_file_threshold() -> u64 {
+    10 * 1024 * 1024
+}
+fn default_chunk_size() -> u64 {
+    4 * 1024 * 1024
+}
+fn default_reflog_retention() -> u32 {
+    90
+}
+fn default_reflog_max() -> u32 {
+    10000
+}
+fn default_shallow_depth() -> u32 {
+    100
+}
 
 #[cfg(test)]
 mod tests {
@@ -373,7 +372,10 @@ mod tests {
             .with_server("https://wt.example.com")
             .with_tenant("my-org")
             .with_visibility(Visibility::Shared);
-        assert_eq!(config.worktree.server.as_deref(), Some("https://wt.example.com"));
+        assert_eq!(
+            config.worktree.server.as_deref(),
+            Some("https://wt.example.com")
+        );
         assert_eq!(config.worktree.tenant.as_deref(), Some("my-org"));
         assert_eq!(config.worktree.visibility, Visibility::Shared);
     }

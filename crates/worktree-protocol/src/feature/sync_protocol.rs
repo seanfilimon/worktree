@@ -1,9 +1,9 @@
 //! Sync protocol message types for communication between BGProcess and Server.
 
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
-use crate::core::id::{SnapshotId, BranchId, TreeId, TenantId, AccountId};
 use crate::core::hash::ContentHash;
+use crate::core::id::{AccountId, BranchId, SnapshotId, TenantId, TreeId};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 // ============================================================
 // Sync Operations
@@ -99,11 +99,19 @@ pub enum PushRejection {
 
 impl PushResponse {
     pub fn accepted(new_tip: SnapshotId) -> Self {
-        Self { accepted: true, rejection_reason: None, new_tip: Some(new_tip) }
+        Self {
+            accepted: true,
+            rejection_reason: None,
+            new_tip: Some(new_tip),
+        }
     }
 
     pub fn rejected(reason: PushRejection) -> Self {
-        Self { accepted: false, rejection_reason: Some(reason), new_tip: None }
+        Self {
+            accepted: false,
+            rejection_reason: Some(reason),
+            new_tip: None,
+        }
     }
 }
 
@@ -141,7 +149,11 @@ impl PullResponse {
         }
     }
 
-    pub fn with_updates(new_tip: SnapshotId, chain: Vec<SnapshotId>, objects: Vec<ContentHash>) -> Self {
+    pub fn with_updates(
+        new_tip: SnapshotId,
+        chain: Vec<SnapshotId>,
+        objects: Vec<ContentHash>,
+    ) -> Self {
         Self {
             has_updates: true,
             new_tip: Some(new_tip),
@@ -214,7 +226,7 @@ pub struct AccessConfigSyncResponse {
 // ============================================================
 
 /// Tracks the sync state between client and server
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SyncState {
     pub last_sync: Option<DateTime<Utc>>,
     pub local_tip: Option<SnapshotId>,
@@ -225,22 +237,10 @@ pub struct SyncState {
     pub offline: bool,
 }
 
-impl Default for SyncState {
-    fn default() -> Self {
-        Self {
-            last_sync: None,
-            local_tip: None,
-            remote_tip: None,
-            pending_staged: 0,
-            pending_objects: 0,
-            is_syncing: false,
-            offline: false,
-        }
-    }
-}
-
 impl SyncState {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Returns true if local and remote tips differ (local may be behind OR ahead).
     /// Cannot determine direction without snapshot DAG traversal.

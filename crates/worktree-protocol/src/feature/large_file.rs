@@ -1,5 +1,5 @@
+use crate::core::hash::{hash_bytes, ContentHash};
 use serde::{Deserialize, Serialize};
-use crate::core::hash::{ContentHash, hash_bytes};
 
 /// A chunk of a large file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,17 +19,12 @@ pub struct ChunkManifest {
 }
 
 /// Algorithm used for chunking
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ChunkAlgorithm {
+    #[default]
     FastCdc,
     FixedSize,
-}
-
-impl Default for ChunkAlgorithm {
-    fn default() -> Self {
-        ChunkAlgorithm::FastCdc
-    }
 }
 
 /// Configuration for large file handling
@@ -45,8 +40,8 @@ pub struct LargeFileConfig {
 impl Default for LargeFileConfig {
     fn default() -> Self {
         Self {
-            threshold: 10 * 1024 * 1024,  // 10MB
-            min_chunk_size: 1024 * 1024,  // 1MB
+            threshold: 10 * 1024 * 1024,      // 10MB
+            min_chunk_size: 1024 * 1024,      // 1MB
             avg_chunk_size: 4 * 1024 * 1024,  // 4MB
             max_chunk_size: 16 * 1024 * 1024, // 16MB
             algorithm: ChunkAlgorithm::FastCdc,
@@ -71,7 +66,12 @@ pub struct LargeFileStub {
 }
 
 impl LargeFileStub {
-    pub fn new(path: &str, file_hash: ContentHash, file_size: u64, manifest_hash: ContentHash) -> Self {
+    pub fn new(
+        path: &str,
+        file_hash: ContentHash,
+        file_size: u64,
+        manifest_hash: ContentHash,
+    ) -> Self {
         Self {
             path: path.to_string(),
             file_hash,

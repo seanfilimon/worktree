@@ -11,6 +11,11 @@ path = "src/main.rs"
 [dependencies]
 worktree-protocol = { path = "../worktree-protocol" }
 worktree-git = { path = "../worktree-git" }
+worktree-sdk = { path = "../worktree-sdk" }
+blake3 = "1"
+axum = { version = "0.7", features = ["macros"] }
+serde_json = "1"
+tower-http = { version = "0.5", features = ["trace"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
@@ -20,3 +25,7 @@ thiserror = "1"
 notify = "7"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"

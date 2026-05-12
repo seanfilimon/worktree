@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::core::hash::ContentHash;
-use crate::object::delta::{Delta, DeltaKind};
+use crate::object::delta::Delta;
 use crate::object::manifest::{EntryKind, Manifest, ManifestEntry};
 
 /// Configuration for diff computation.
@@ -88,10 +88,7 @@ pub fn compute_diff(old: &Manifest, new: &Manifest, options: &DiffOptions) -> Ve
         let mut deleted_by_hash: HashMap<ContentHash, Vec<&ManifestEntry>> = HashMap::new();
         for entry in &deleted {
             if entry.kind == EntryKind::File && entry.hash != ContentHash::ZERO {
-                deleted_by_hash
-                    .entry(entry.hash)
-                    .or_default()
-                    .push(entry);
+                deleted_by_hash.entry(entry.hash).or_default().push(entry);
             }
         }
 
@@ -207,7 +204,8 @@ mod tests {
     use super::*;
     use crate::core::hash::hash_bytes;
     use crate::core::id::TreeId;
-    use crate::object::manifest::{EntryKind, Manifest, ManifestEntry};
+    use crate::object::delta::DeltaKind;
+    use crate::object::manifest::{Manifest, ManifestEntry};
 
     fn make_manifest(entries: Vec<ManifestEntry>) -> Manifest {
         let tree_id = TreeId::new();
@@ -402,7 +400,7 @@ mod tests {
         let hash = hash_bytes(b"script");
         let old = make_manifest(vec![ManifestEntry::file("run.sh", hash, 6)]);
         let new = make_manifest(vec![
-            ManifestEntry::file("run.sh", hash, 6).with_executable(true),
+            ManifestEntry::file("run.sh", hash, 6).with_executable(true)
         ]);
 
         let deltas = compute_diff_default(&old, &new);

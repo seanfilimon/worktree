@@ -98,7 +98,7 @@ impl Debouncer {
                 .signed_duration_since(existing.timestamp)
                 .num_milliseconds()
                 .unsigned_abs();
-            delta <= self.delay_ms as u64
+            delta <= self.delay_ms
         });
 
         if let Some(idx) = dominated {
@@ -132,7 +132,7 @@ impl Debouncer {
         self.pending = remaining;
 
         // Return in chronological order.
-        ready.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        ready.sort_by_key(|event| event.timestamp);
         ready
     }
 
@@ -140,7 +140,7 @@ impl Debouncer {
     /// has elapsed. Useful during shutdown.
     pub fn flush_all(&mut self) -> Vec<DebouncedEvent> {
         let mut events: Vec<DebouncedEvent> = self.pending.drain(..).collect();
-        events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        events.sort_by_key(|event| event.timestamp);
         events
     }
 
@@ -202,8 +202,14 @@ mod tests {
     fn flush_all_drains_everything() {
         let mut debouncer = Debouncer::new(500);
 
-        debouncer.push(DebouncedEvent::now(PathBuf::from("a.rs"), EventKind::Created));
-        debouncer.push(DebouncedEvent::now(PathBuf::from("b.rs"), EventKind::Deleted));
+        debouncer.push(DebouncedEvent::now(
+            PathBuf::from("a.rs"),
+            EventKind::Created,
+        ));
+        debouncer.push(DebouncedEvent::now(
+            PathBuf::from("b.rs"),
+            EventKind::Deleted,
+        ));
 
         let events = debouncer.flush_all();
         assert_eq!(events.len(), 2);

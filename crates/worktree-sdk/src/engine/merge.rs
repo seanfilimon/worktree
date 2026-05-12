@@ -1,5 +1,5 @@
-use crate::error::{SdkError, Result};
-use super::status::{load_state, save_state, SnapshotState, FileEntry};
+use super::status::{load_state, save_state, FileEntry, SnapshotState};
+use crate::error::{Result, SdkError};
 use chrono::Utc;
 use std::collections::HashMap;
 
@@ -9,37 +9,44 @@ pub struct MergeResult {
     pub conflicts: Vec<String>,
 }
 
-pub fn merge_branch(
-    engine: &super::WorktreeEngine,
-    source_branch: &str,
-) -> Result<MergeResult> {
+pub fn merge_branch(engine: &super::WorktreeEngine, source_branch: &str) -> Result<MergeResult> {
     let mut state = load_state(engine)?;
-    let tree_name = state.current_tree.clone()
+    let tree_name = state
+        .current_tree
+        .clone()
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree_mut(&tree_name)
+    let tree = state
+        .find_tree_mut(&tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
 
     let target_branch = tree.current_branch.clone();
     if source_branch == target_branch {
-        return Err(SdkError::MergeConflict("cannot merge a branch into itself".into()));
+        return Err(SdkError::MergeConflict(
+            "cannot merge a branch into itself".into(),
+        ));
     }
 
     // Get latest snapshots from both branches
-    let source_files: Vec<FileEntry> = tree.snapshots.iter()
-        .filter(|s| s.branch_name == source_branch)
-        .last()
+    let source_files: Vec<FileEntry> = tree
+        .snapshots
+        .iter()
+        .rfind(|s| s.branch_name == source_branch)
         .map(|s| s.files.clone())
         .unwrap_or_default();
 
-    let target_files: Vec<FileEntry> = tree.snapshots.iter()
-        .filter(|s| s.branch_name == target_branch)
-        .last()
+    let target_files: Vec<FileEntry> = tree
+        .snapshots
+        .iter()
+        .rfind(|s| s.branch_name == target_branch)
         .map(|s| s.files.clone())
         .unwrap_or_default();
 
     if source_files.is_empty() {
-        return Err(SdkError::BranchNotFound(format!("no snapshots on branch '{}'", source_branch)));
+        return Err(SdkError::BranchNotFound(format!(
+            "no snapshots on branch '{}'",
+            source_branch
+        )));
     }
 
     // Simple three-way merge: combine files from both branches
@@ -72,10 +79,8 @@ pub fn merge_branch(
     let files: Vec<FileEntry> = merged_files.into_values().collect();
     let files_merged = files.len();
 
-    let source_tip = tree.find_branch(source_branch)
-        .and_then(|b| b.tip.clone());
-    let target_tip = tree.find_branch(&target_branch)
-        .and_then(|b| b.tip.clone());
+    let source_tip = tree.find_branch(source_branch).and_then(|b| b.tip.clone());
+    let target_tip = tree.find_branch(&target_branch).and_then(|b| b.tip.clone());
 
     let parents: Vec<String> = [target_tip, source_tip].into_iter().flatten().collect();
     let snapshot_id = uuid::Uuid::new_v4().to_string();

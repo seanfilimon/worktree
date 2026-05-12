@@ -914,7 +914,11 @@ mod tests {
             tid,
             trid,
             TreeAccessSubject::Account(user),
-            vec![Permission::TreeRead, Permission::TreeWrite, Permission::TreeDelete],
+            vec![
+                Permission::TreeRead,
+                Permission::TreeWrite,
+                Permission::TreeDelete,
+            ],
             admin,
         ));
 
@@ -946,38 +950,18 @@ mod tests {
         ));
 
         // TreeRead and TreeWrite should be allowed
-        let result = acl.check(
-            &[user],
-            &[team_a, team_b],
-            &[role],
-            &Permission::TreeRead,
-        );
+        let result = acl.check(&[user], &[team_a, team_b], &[role], &Permission::TreeRead);
         assert_eq!(result, PolicyEffect::Allow);
 
-        let result = acl.check(
-            &[user],
-            &[team_a, team_b],
-            &[role],
-            &Permission::TreeWrite,
-        );
+        let result = acl.check(&[user], &[team_a, team_b], &[role], &Permission::TreeWrite);
         assert_eq!(result, PolicyEffect::Allow);
 
         // TreeDelete should be denied because team_b denies it (deny overrides all allows)
-        let result = acl.check(
-            &[user],
-            &[team_a, team_b],
-            &[role],
-            &Permission::TreeDelete,
-        );
+        let result = acl.check(&[user], &[team_a, team_b], &[role], &Permission::TreeDelete);
         assert_eq!(result, PolicyEffect::Deny);
 
         // TreeAdmin should be allowed via team_a (no deny for it)
-        let result = acl.check(
-            &[user],
-            &[team_a, team_b],
-            &[role],
-            &Permission::TreeAdmin,
-        );
+        let result = acl.check(&[user], &[team_a, team_b], &[role], &Permission::TreeAdmin);
         assert_eq!(result, PolicyEffect::Allow);
     }
 

@@ -18,10 +18,7 @@ pub async fn execute(action: SyncAction) -> Result<(), Box<dyn std::error::Error
             let engine = WorktreeEngine::open(Path::new("."))?;
             let result = worktree_sdk::engine::sync::pull(&engine)?;
             if result.up_to_date {
-                format::print_success(&format!(
-                    "Already up to date on branch '{}'",
-                    result.branch
-                ));
+                format::print_success(&format!("Already up to date on branch '{}'", result.branch));
             } else {
                 format::print_success(&format!(
                     "Pulled {} new snapshot(s) on branch '{}'",
@@ -35,7 +32,9 @@ pub async fn execute(action: SyncAction) -> Result<(), Box<dyn std::error::Error
             std::fs::create_dir_all(engine.wt_dir().join("cache"))?;
             std::fs::write(&sync_state_file, "paused")?;
             format::print_success("Sync paused.");
-            format::print_info("Staged snapshots will be queued locally. Run `wt sync resume` to resume.");
+            format::print_info(
+                "Staged snapshots will be queued locally. Run `wt sync resume` to resume.",
+            );
         }
         SyncAction::Resume => {
             let engine = WorktreeEngine::open(Path::new("."))?;

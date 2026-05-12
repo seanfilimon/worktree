@@ -30,7 +30,7 @@ impl Daemon {
         }
         self.running.store(true, Ordering::SeqCst);
         tracing::info!("Daemon started");
-        todo!("launch subsystems: watcher, engine, API server, sync")
+        crate::run().await
     }
 
     /// Gracefully stop the daemon, shutting down all subsystems.
@@ -43,7 +43,7 @@ impl Daemon {
         }
         self.running.store(false, Ordering::SeqCst);
         tracing::info!("Daemon stopped");
-        todo!("gracefully shut down all subsystems")
+        Ok(())
     }
 
     /// Returns `true` if the daemon is currently running.

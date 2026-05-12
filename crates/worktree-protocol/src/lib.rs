@@ -17,24 +17,24 @@
 //! - **large_file** — Large file storage and chunking
 //! - **sync_protocol** — Synchronization protocol for push/pull operations
 
-#[allow(clippy::module_inception)]
-pub mod core;
-pub mod object;
-pub mod iam;
 pub mod access;
 pub mod config;
+#[allow(clippy::module_inception)]
+pub mod core;
+pub mod iam;
+pub mod object;
 
 // Feature modules
 pub mod feature;
 
 // Re-exports for convenience
-pub use feature::diff;
-pub use feature::merge;
-pub use feature::wire;
-pub use feature::compat;
-pub use feature::ignore;
-pub use feature::licensing;
-pub use feature::large_file;
-pub use feature::sync_protocol;
 pub use feature::archive;
 pub use feature::audit;
+pub use feature::compat;
+pub use feature::diff;
+pub use feature::ignore;
+pub use feature::large_file;
+pub use feature::licensing;
+pub use feature::merge;
+pub use feature::sync_protocol;
+pub use feature::wire;

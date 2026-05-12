@@ -92,6 +92,7 @@ Staged snapshot visibility is exposed through multiple surfaces:
 | SDK | Query API | Programmatic access to staged snapshot metadata |
 | WebSocket | `/api/repositories/:id/staged/live` | Real-time stream of staged snapshot updates |
 | REST API | `GET /api/repositories/:id/staged` | List current staged snapshots |
+| Prototype REST API | `POST /staged` | Upload one local snapshot as staged work in the Rust prototype |
 
 ### CLI Examples
 
@@ -334,7 +335,7 @@ See [License Compliance Specification](../licensing/LicenseCompliance.md) for fu
 
 ## Implementation Status
 
-- **IMPLEMENTED**: None (new concept)
-- **TODO**: Staged snapshot data model, `StagedStatus` enum, server storage/indexing, API endpoints, CLI commands (`wt staged`, `wt status --team`)
+- **IMPLEMENTED**: Protocol `StagedSnapshot`, `StagedStatus`, and `StagedIndex` types; Rust prototype `POST /staged` upload endpoint; SDK `push_staged`; server-side JSON staged index persistence for prototype flows
+- **TODO**: Production Go server staged storage/indexing, IAM-gated query/list endpoints, CLI commands wired to real server data (`wt staged`, `wt status --team`)
 - **PLANNED**: WebSocket streaming for real-time updates, admin panel dashboard, SDK event subscriptions, conflict detection advisory system
 - **DEFERRED**: Line-level granularity (intentionally deferred — snapshot-level is the right abstraction for now)

@@ -745,6 +745,25 @@ The server exposes three API transports:
 | `POST` | `/ci/status` | CI status webhook |
 | `GET` | `/tenants/:slug/worktrees/:name/staged` | List staged snapshots |
 
+### Rust Prototype Compatibility API
+
+The current Rust prototype also exposes a local-development REST surface on `127.0.0.1:9876`.
+These endpoints exist to exercise the bgprocess/SDK flow before the production Go server boundary
+is complete:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Prototype health check |
+| `POST` | `/init` | Initialize/open local SDK state for demo flows |
+| `POST` | `/status` | Return local SDK status for demo flows |
+| `POST` | `/snapshot` | Create a local SDK snapshot for demo/manual compatibility |
+| `POST` | `/branch` | Create or switch a local SDK branch for demo flows |
+| `POST` | `/staged` | Accept one staged snapshot upload, verify BLAKE3 object bytes, and persist prototype staged metadata |
+
+The production server must not preserve the local-working-directory behavior of `/init`,
+`/status`, `/snapshot`, or `/branch`. The reusable contract is the `/staged` semantic boundary:
+clients upload snapshot objects, and the server verifies, authorizes, stores, indexes, and ACKs.
+
 ### WebSocket (Real-Time Events)
 
 - **Transport**: WSS (WebSocket over TLS).
@@ -1000,7 +1019,7 @@ Error responses include the code, a human-readable message, and an optional `det
 | IAM enforcement | **TODO** | Policy parsing exists but server-side enforcement is not wired. |
 | License compliance | **TODO** | Data model exists in protocol crate but enforcement engine is not implemented. |
 | Merge request system | **TODO** | Data model planned, no implementation. |
-| Staged snapshot storage | **TODO** | bgprocess sends staged snapshots but server doesn't aggregate or index them. |
+| Staged snapshot storage | **Prototype implemented** | Rust prototype accepts `POST /staged`, verifies uploaded object hashes, stores bytes, and persists a JSON `StagedIndex`. Production Go storage, IAM, listing, retention, and WebSocket fanout remain TODO. |
 | Branch protection | **TODO** | Rules are parsed from config but not enforced on push. |
 | WebSocket streaming | **TODO** | No real-time event system yet. |
 | Storage quotas | **TODO** | No quota tracking or enforcement. |

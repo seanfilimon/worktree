@@ -10,7 +10,8 @@ TODO: Document how to add the SDK as a dependency, minimum supported Rust versio
 
 ## Connecting
 
-TODO: Document how to connect to a local or remote Worktree server, connection options, authentication, and session management.
+The current SDK prototype targets the local Rust HTTP server at `http://127.0.0.1:9876`. This is a
+temporary compatibility path while the production Go server contract is defined.
 
 ## Tree Operations
 
@@ -18,7 +19,16 @@ TODO: Document how to initialize trees, open existing trees, list files, read/wr
 
 ## Snapshot Operations
 
-TODO: Document how to create snapshots, list snapshots, inspect snapshot contents, compare snapshots, and restore from snapshots.
+The SDK can create local snapshots through `worktree_sdk::engine::snapshot::create_snapshot`. Recent
+sync work adds staged upload support:
+
+- `worktree_sdk::engine::sync::push(engine)` stages the latest snapshot on the current branch.
+- `worktree_sdk::engine::sync::push_latest_staged(engine)` is the explicit latest-snapshot helper.
+- `worktree_sdk::engine::sync::push_staged(engine, snapshot_id)` uploads a specific snapshot.
+
+The staged upload computes added, modified, and deleted paths relative to the parent snapshot. It
+uploads added/modified file bytes to `POST /staged` after locally verifying each file's BLAKE3 hash
+still matches the snapshot metadata.
 
 ## Branch Operations
 

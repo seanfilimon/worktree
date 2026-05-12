@@ -65,10 +65,16 @@ pub async fn execute(action: TreeAction) -> Result<(), Box<dyn std::error::Error
                         println!();
                         format::print_info("Branches:");
                         for branch in &tree.branches {
-                            let tip_display = branch.tip.as_deref()
+                            let tip_display = branch
+                                .tip
+                                .as_deref()
                                 .map(|t| &t[..t.len().min(8)])
                                 .unwrap_or("(no snapshots)");
-                            let marker = if branch.name == tree.current_branch { "* " } else { "  " };
+                            let marker = if branch.name == tree.current_branch {
+                                "* "
+                            } else {
+                                "  "
+                            };
                             println!("  {}{} -> {}", marker, branch.name, tip_display);
                         }
                     }

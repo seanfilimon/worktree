@@ -60,9 +60,11 @@ impl StorageBackend for DiskStorage {
     fn store(&self, hash: &ContentHash, data: &[u8]) -> Result<(), ServerError> {
         let dir = self.fan_out_dir(hash);
         let path = self.object_path(hash);
-
-        let _ = (dir, path, data);
-        todo!("create fan-out directory, write data to object path atomically")
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| ServerError::Storage(format!("create dir {}: {}", dir.display(), e)))?;
+        std::fs::write(&path, data)
+            .map_err(|e| ServerError::Storage(format!("write object {}: {}", path.display(), e)))?;
+        Ok(())
     }
 
     /// Retrieve the raw bytes of the object identified by `hash`.
@@ -71,9 +73,8 @@ impl StorageBackend for DiskStorage {
     /// cannot be read.
     fn retrieve(&self, hash: &ContentHash) -> Result<Vec<u8>, ServerError> {
         let path = self.object_path(hash);
-
-        let _ = path;
-        todo!("read object file from disk and return its contents")
+        std::fs::read(&path)
+            .map_err(|e| ServerError::Storage(format!("read object {}: {}", hash.to_hex(), e)))
     }
 
     /// Check whether an object with the given `hash` exists on disk.
@@ -102,10 +103,7 @@ mod tests {
             parent_dir.file_name().unwrap().to_str().unwrap(),
             expected_prefix
         );
-        assert_eq!(
-            path.file_name().unwrap().to_str().unwrap(),
-            expected_rest
-        );
+        assert_eq!(path.file_name().unwrap().to_str().unwrap(), expected_rest);
     }
 
     #[test]
@@ -124,5 +122,26 @@ mod tests {
         let storage = DiskStorage::new(PathBuf::from("/nonexistent/path"));
         let hash = hash_bytes(b"does not exist");
         assert!(!storage.exists(&hash));
+    }
+
+    #[test]
+    fn store_and_retrieve_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = DiskStorage::new(dir.path().to_path_buf());
+        let data = b"hello worktree";
+        let hash = hash_bytes(data);
+
+        storage.store(&hash, data).unwrap();
+        assert!(storage.exists(&hash));
+        let retrieved = storage.retrieve(&hash).unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[test]
+    fn retrieve_missing_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = DiskStorage::new(dir.path().to_path_buf());
+        let hash = hash_bytes(b"does not exist");
+        assert!(storage.retrieve(&hash).is_err());
     }
 }

@@ -1,6 +1,11 @@
 # Implementation Details — `worktree-server`
 
-The `worktree-server` crate is the **background daemon** for the Worktree version control system. It watches the filesystem for changes, automatically creates snapshots, manages synchronization with remote servers, enforces access control, and provides a gRPC API for programmatic control. It is designed to run as a persistent system service.
+> Current role: this Rust crate is the local daemon/prototype server surface. The planned
+> production remote authority is a separate Go service described in the root
+> [`roadmap.md`](../../roadmap.md). Do not treat this crate as the final deployable remote
+> server for canonical multi-tenant history.
+
+The `worktree-server` crate is the current Rust **background daemon / prototype server** for the Worktree version control system. It watches the filesystem for changes, automatically creates snapshots, manages local synchronization flows, and provides API surfaces for programmatic control. Production remote-server responsibilities such as canonical storage, server-side IAM enforcement, branch protection, quotas, audit logging, and staged visibility should be implemented in the planned Go service rather than expanded here.
 
 ---
 
@@ -17,7 +22,7 @@ The `worktree-server` crate is the **background daemon** for the Worktree versio
 
 ```
 src/
-├── lib.rs              # 9 public modules + run() stub
+├── lib.rs              # public modules + local HTTP/prototype runtime
 ├── main.rs             # Binary entry point (tokio::main)
 ├── error.rs            # ServerError (8 variants)
 ├── config/
@@ -53,6 +58,7 @@ src/
 │   ├── mod.rs
 │   ├── backend.rs      # StorageBackend trait
 │   ├── disk.rs         # DiskStorage (Git-style fan-out)
+│   ├── staged.rs       # Staged snapshot persistence
 │   └── index.rs        # ObjectIndex (in-memory hash→kind)
 ├── sync/
 │   ├── mod.rs
@@ -272,6 +278,12 @@ Tests validate: path structure, fan-out directory, exists returns false for miss
 
 ---
 
+## `storage/staged` — Staged Snapshot Persistence
+
+Stores staged snapshot records for prototype sync flows. These records support the staged visibility model locally, but the authoritative staged snapshot index belongs in the production remote server described in [`roadmap.md`](../../roadmap.md).
+
+---
+
 ## `storage/index` — In-Memory Object Index
 
 **Fully implemented with 7 tests.**
@@ -374,6 +386,7 @@ Platform-dispatched via `cfg!(target_os)`:
 | `auth::enforcer` | ✅ Complete (with 6 tests) |
 | `storage::index` | ✅ Complete (with 7 tests) |
 | `storage::disk` | 🔶 Partial (paths + exists only) |
+| `storage::staged` | 🔶 In progress |
 | `storage::backend` | ✅ Trait defined |
 | `sync::transport` | ✅ Complete (with tests) |
 | `engine::rules` | ✅ Types complete |
@@ -412,3 +425,4 @@ Platform-dispatched via `cfg!(target_os)`:
 - [ ] Implement object garbage collection for unreferenced blobs
 - [ ] Add TLS/mTLS support for gRPC server
 - [ ] Implement WebSocket event streaming for real-time UI updates
+- [ ] Keep production remote-server work aligned with the Go server roadmap in `roadmap.md`

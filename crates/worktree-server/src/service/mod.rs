@@ -1,3 +1,3 @@
 pub mod daemon;
-pub mod install;
 pub mod health;
+pub mod install;

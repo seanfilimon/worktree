@@ -1,6 +1,7 @@
 use colored::Color;
 
 /// Color theme for CLI output.
+#[allow(dead_code)]
 pub struct Theme {
     pub success: Color,
     pub error: Color,
@@ -16,6 +17,7 @@ pub struct Theme {
     pub modified: Color,
 }
 
+#[allow(dead_code)]
 impl Theme {
     /// Returns the default Worktree color theme.
     pub fn default_theme() -> Self {
@@ -43,15 +45,27 @@ impl Default for Theme {
 }
 
 // Convenience constants using the default theme colors.
+#[allow(dead_code)]
 pub const SUCCESS_COLOR: Color = Color::Green;
+#[allow(dead_code)]
 pub const ERROR_COLOR: Color = Color::Red;
+#[allow(dead_code)]
 pub const WARNING_COLOR: Color = Color::Yellow;
+#[allow(dead_code)]
 pub const INFO_COLOR: Color = Color::Cyan;
+#[allow(dead_code)]
 pub const HEADER_COLOR: Color = Color::BrightWhite;
+#[allow(dead_code)]
 pub const MUTED_COLOR: Color = Color::BrightBlack;
+#[allow(dead_code)]
 pub const ACCENT_COLOR: Color = Color::Magenta;
+#[allow(dead_code)]
 pub const BRANCH_COLOR: Color = Color::BrightCyan;
+#[allow(dead_code)]
 pub const HASH_COLOR: Color = Color::Yellow;
+#[allow(dead_code)]
 pub const ADDED_COLOR: Color = Color::Green;
+#[allow(dead_code)]
 pub const REMOVED_COLOR: Color = Color::Red;
+#[allow(dead_code)]
 pub const MODIFIED_COLOR: Color = Color::Yellow;

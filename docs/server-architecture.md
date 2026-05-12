@@ -1,6 +1,14 @@
 # Worktree Server Architecture
 
-The Worktree server is a long-running daemon that watches the filesystem, automatically tracks changes, and manages the lifecycle of trees, snapshots, and branches. It provides the core engine that powers Worktree's automatic version control capabilities.
+The current Rust `worktree-server` crate is a mixed local daemon/prototype server. It watches the
+filesystem for local demo flows, creates auto-snapshots through the SDK, and exposes HTTP endpoints
+on localhost. The production remote authority is planned as a Go service; it must not watch working
+directories or share SDK `.wt/state.json`.
+
+Recent prototype work added the first real staged-sync boundary: after an auto-snapshot is created,
+the bgprocess synchronously uploads that snapshot to `POST /staged`. The endpoint verifies uploaded
+object bytes with BLAKE3 and stores staged metadata in server-side storage, separate from local SDK
+state.
 
 ## Daemon Lifecycle
 
@@ -16,7 +24,10 @@ TODO: Document the event processing pipeline. Cover how filesystem events are co
 
 ## Auto-Commit Engine
 
-TODO: Document the automatic commit (snapshot) system. Cover triggers for automatic snapshots, debounce intervals, content-based deduplication, and configuration options for snapshot frequency and granularity.
+The auto-snapshot path lives in `watcher_loop_blocking` and uses the SDK snapshot engine. Filesystem
+events are debounced, classified into semantic changes, and evaluated by `AutoCommitEngine`. When a
+snapshot is created successfully, the watcher calls `worktree_sdk::engine::sync::push_staged` before
+continuing the loop. Sync errors are logged but do not terminate the watcher.
 
 ## Auto-Branch Engine
 
@@ -24,8 +35,24 @@ TODO: Document automatic branch management. Cover heuristics for detecting logic
 
 ## Storage Backend
 
-TODO: Document the storage layer. Cover content-addressable storage, object packing, garbage collection, compression strategies, and the on-disk format. Include details on how nested trees share storage.
+The Rust prototype has a disk content-addressable storage backend using BLAKE3 fan-out paths:
+`objects/XX/<remaining-hash>`. Staged snapshot metadata is persisted by `storage::staged::StagedStore`
+as `staged/index.json` under the server storage root. This is a prototype persistence layer, not the
+planned production canonical storage model.
 
 ## API Surface
 
-TODO: Document the server's API for clients. Cover the IPC mechanism (Unix sockets, named pipes), request/response protocol, streaming events, authentication, and the command set exposed to the CLI and SDK.
+Current prototype HTTP endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `POST` | `/init` | Demo initialization through SDK state |
+| `POST` | `/status` | Demo status through SDK state |
+| `POST` | `/snapshot` | Demo/manual snapshot creation |
+| `POST` | `/branch` | Demo branch create/switch |
+| `POST` | `/staged` | Upload one local snapshot as staged work |
+
+`/staged` is the important contract for the production rewrite: the client sends snapshot metadata
+and added/modified file bytes, while the server verifies hashes, stores objects, indexes staged
+metadata, and returns an ACK only after persistence.

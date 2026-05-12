@@ -15,7 +15,7 @@ access control engine, license compliance framework, and real-time collaboration
 
 It speaks Git only when necessary — for migration and interoperability — and nothing more.
 
-[Architecture](#architecture) · [Getting Started](#getting-started) · [CLI Reference](#command-reference) · [Specifications](#specifications) · [Contributing](./CONTRIBUTING.md)
+[Architecture](#architecture) · [Roadmap](./roadmap.md) · [Getting Started](#getting-started) · [CLI Reference](#command-reference) · [Specifications](#specifications) · [Contributing](./CONTRIBUTING.md)
 
 </div>
 
@@ -145,7 +145,7 @@ worktree/
 │   │   └── specs/                       # Authoritative specification documents (14 specs)
 │   │
 │   ├── worktree-sdk/                    # Local engine — snapshots, branches, diffs, merges
-│   ├── worktree-server/                 # Background daemon — watcher, auto-snapshot, sync, gRPC
+│   ├── worktree-server/                 # Rust bgprocess/server prototype — watcher, auto-snapshot, sync API
 │   ├── worktree-cli/                    # CLI binary (`wt`) — 20 subcommands, colored output
 │   ├── worktree-git/                    # Git compatibility — import, export, SHA-1↔BLAKE3 bridge
 │   └── worktree-admin/                  # Admin panel — Yew WASM SPA + Axum HTTP API
@@ -175,6 +175,7 @@ worktree/
 ├── Cargo.toml                           # Rust workspace root
 ├── package.json                         # Node/npm workspace root (Turborepo)
 ├── turbo.json                           # Turborepo pipeline config
+├── roadmap.md                           # Production Go server roadmap and deployment plan
 ├── LICENSE                              # W0rkTree Public License v1.0
 ├── CONTRIBUTING.md                      # Contributor guide
 └── README.md                            # ← You are here
@@ -191,7 +192,7 @@ worktree-protocol          ← Foundation: every crate depends on this
     │
     ├── worktree-git       ← Git bridge (libgit2, SHA-1↔BLAKE3 index)
     │       ↑
-    │       └── worktree-server    ← Background daemon (watcher, sync, gRPC, RBAC)
+    │       └── worktree-server    ← Rust bgprocess/server prototype
     │
     └── worktree-admin     ← Admin panel (Yew WASM + Axum SSR)
 ```
@@ -230,11 +231,11 @@ The core library that performs all local repository operations. Operates entirel
 | `merge` | ✅ Complete | Hash-based conflict detection, merge snapshots |
 | `diff` | ✅ Complete | Working tree + snapshot-to-snapshot comparison |
 | `tag` | ✅ Complete | Create, list, delete |
-| `sync` | 🔶 Stub | Push/pull placeholders for future server integration |
+| `sync` | 🔶 Prototype | HTTP push/pull integration; `push()` stages the latest snapshot through `POST /staged` |
 
-### `worktree-server` — The Background Daemon
+### `worktree-server` — Rust Local Daemon / Prototype Server
 
-Long-running daemon that watches the filesystem, auto-snapshots, syncs with the remote server, enforces RBAC, and exposes a gRPC API.
+Long-running Rust daemon/prototype that watches the filesystem, creates auto-snapshots, manages local sync behavior, and exposes local HTTP/API surfaces. The production remote authority is planned as a clean Go service; see [`roadmap.md`](./roadmap.md). Server-side IAM, canonical storage, branch protection, quotas, and audit logging belong in the remote authority, not in the local bgprocess.
 
 | Component | Status | Description |
 |---|---|---|
@@ -243,12 +244,13 @@ Long-running daemon that watches the filesystem, auto-snapshots, syncs with the 
 | `auth::session` | ✅ Complete | JWT-style session tokens with expiry |
 | `auth::enforcer` | ✅ Complete | Permission enforcement with hierarchical scope matching |
 | `storage::index` | ✅ Complete | In-memory object index (hash → kind) |
-| `storage::disk` | 🔶 Partial | Git-style fan-out paths (store/retrieve stubs) |
+| `storage::disk` | ✅ Complete | Git-style fan-out content-addressed store/retrieve |
 | `engine::rules` | ✅ Complete | Declarative condition/action automation rules |
-| `engine::event` | 🔶 Types only | Semantic event classification (CodeChange, ConfigChange, ...) |
-| `engine::auto_commit` | 🔶 Structure | Threshold-based auto-snapshot engine |
+| `engine::event` | ✅ Complete | Semantic event classification (CodeChange, ConfigChange, DependencyChange) |
+| `engine::auto_commit` | ✅ Complete | Threshold-based auto-snapshot engine |
 | `sync::transport` | ✅ Complete | QUIC/TCP transport abstraction |
-| `api::handlers` | 🔶 Stubs | Init, status, snapshot, branch request handlers |
+| `api::handlers` | 🔶 Prototype | Init, status, snapshot, branch, and staged upload handlers |
+| `storage::staged` | 🔶 Prototype | Server-side staged index persistence for prototype sync flows |
 | `service::health` | ✅ Complete | Health tracking (uptime, trees watched, snapshots created) |
 
 ### `worktree-cli` — The CLI (`wt`)
@@ -692,6 +694,8 @@ Serialization: Bincode (sync protocol), JSON (REST API). Compression: zstd level
 
 The protocol is defined by 14 authoritative specification documents in [`crates/worktree-protocol/specs/`](./crates/worktree-protocol/specs/):
 
+The production server rebuild and deployment plan is tracked separately in [`roadmap.md`](./roadmap.md). The specs remain the authority for protocol behavior; the roadmap explains the implementation sequence and why the remote authority is planned as a Go service.
+
 | Specification | Document | Covers |
 |---|---|---|
 | **Protocol Overview** | [`specs/README.md`](./crates/worktree-protocol/specs/README.md) | Architecture, terminology, Git comparison, innovation summary |
@@ -727,6 +731,8 @@ The protocol is defined by 14 authoritative specification documents in [`crates/
 
 ## Implementation Status
 
+The Rust workspace remains the active local engine, CLI, protocol, Git bridge, and prototype daemon implementation. The production remote server direction is now tracked in [`roadmap.md`](./roadmap.md): a deployable Go service with canonical storage, server-side IAM, staged snapshot visibility, branch protection, quotas, and audit logging.
+
 ### ✅ Complete
 
 | Component | What's Done |
@@ -735,7 +741,7 @@ The protocol is defined by 14 authoritative specification documents in [`crates/
 | **worktree-sdk** | Init, snapshot, branch CRUD, tree CRUD, diff, merge, tag, status, reflog |
 | **worktree-cli** | 20 commands with colored output, config management, TOML read/write |
 | **worktree-git** | Hash index, gitattributes parser, repo wrapper, commit walker, submodule import, repo builder, transport, auth |
-| **worktree-server** | Filesystem watcher, debouncer, session auth, permission enforcer, object index, health tracker, transport, rules engine |
+| **worktree-server** | Rust bgprocess/prototype server pieces: filesystem watcher, debouncer, session auth, permission enforcer, object index, staged storage work, health tracker, transport, rules engine |
 | **worktree-admin** | 8 Yew components, routing, CSS system, Axum API (10 endpoints), auth middleware, error handling |
 | **@worktree/web** | Next.js site with Fumadocs, shadcn, Tailwind v4 |
 | **Specifications** | 14 detailed specifications covering the complete system |
@@ -743,15 +749,17 @@ The protocol is defined by 14 authoritative specification documents in [`crates/
 ### 🔶 In Progress
 
 - Sync protocol messages and delta negotiation
+- Production Go server roadmap, service boundary, and deployment plan
 - Server gRPC service definitions
 - Git import/export object conversion
-- Content-addressable object store (disk backend)
+- Production canonical object store and reference graph
 - Large file chunking integration
 - License compliance types and SPDX validation
 
 ### 📋 Planned
 
 - Full QUIC transport implementation
+- Go remote server skeleton with canonical storage and IAM enforcement
 - Offline queue and reconnection logic
 - Admin panel page components with real server integration
 - WebSocket streaming for real-time staged visibility

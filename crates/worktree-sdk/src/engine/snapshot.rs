@@ -1,7 +1,7 @@
-use std::path::Path;
+use super::status::{load_state, save_state, FileEntry, SnapshotState};
+use crate::error::{Result, SdkError};
 use chrono::Utc;
-use crate::error::{SdkError, Result};
-use super::status::{self, SnapshotState, FileEntry, WorktreeState, load_state, save_state};
+use std::path::Path;
 
 /// Create a new snapshot of the current state
 pub fn create_snapshot(
@@ -15,12 +15,12 @@ pub fn create_snapshot(
         .or_else(|| state.current_tree.clone())
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree_mut(&tree_name)
+    let tree = state
+        .find_tree_mut(&tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
 
     let branch_name = tree.current_branch.clone();
-    let parent = tree.current_branch()
-        .and_then(|b| b.tip.clone());
+    let parent = tree.current_branch().and_then(|b| b.tip.clone());
 
     // Collect current files
     let root = engine.root();
@@ -28,15 +28,19 @@ pub fn create_snapshot(
 
     // Check for duplicate snapshot (same files as previous)
     if let Some(_parent_id) = &parent {
-        let last_snap = tree.snapshots.iter()
-            .filter(|s| s.branch_name == branch_name)
-            .last();
+        let last_snap = tree
+            .snapshots
+            .iter()
+            .rfind(|s| s.branch_name == branch_name);
         if let Some(last) = last_snap {
             if last.files.len() == files.len() {
-                let mut old_set: Vec<(&str, &str)> = last.files.iter()
+                let mut old_set: Vec<(&str, &str)> = last
+                    .files
+                    .iter()
                     .map(|f| (f.path.as_str(), f.hash.as_str()))
                     .collect();
-                let mut new_set: Vec<(&str, &str)> = files.iter()
+                let mut new_set: Vec<(&str, &str)> = files
+                    .iter()
                     .map(|f| (f.path.as_str(), f.hash.as_str()))
                     .collect();
                 old_set.sort();
@@ -87,11 +91,13 @@ pub fn list_snapshots(
         .or_else(|| state.current_tree.clone())
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree(&tree_name)
+    let tree = state
+        .find_tree(&tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
 
     let branch = &tree.current_branch;
-    let mut snapshots: Vec<_> = tree.snapshots_on_branch(branch)
+    let mut snapshots: Vec<_> = tree
+        .snapshots_on_branch(branch)
         .into_iter()
         .cloned()
         .collect();

@@ -43,6 +43,9 @@ pub enum SdkError {
 
     #[error("tag not found: {0}")]
     TagNotFound(String),
+
+    #[error("network error: {0}")]
+    NetworkError(String),
 }
 
 pub type Result<T> = std::result::Result<T, SdkError>;

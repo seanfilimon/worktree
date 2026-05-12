@@ -50,6 +50,29 @@ Developer          BGProcess              Server
 - Server creates staged snapshot record pointing to the objects
 - Server returns ACK with staged snapshot ID
 
+#### Prototype HTTP Contract
+
+The Rust prototype currently exposes a REST compatibility endpoint for staged upload:
+
+```
+POST /staged
+```
+
+The request uploads one SDK snapshot plus the added/modified file objects needed by that snapshot.
+The server validates each uploaded file by:
+
+- requiring a relative path
+- decoding base64 content
+- checking byte size
+- recomputing BLAKE3 and comparing it to the declared hash
+- writing content-addressed objects to server storage
+- recording `StagedSnapshot` metadata in a server-side staged index
+
+This prototype endpoint is deliberately not authoritative IAM design. It exists to stabilize the
+client/bgprocess contract while the production Go server is planned. The production service should
+keep the same semantic boundary: bgprocess uploads staged snapshot objects; the server verifies,
+authorizes, stores, indexes, and ACKs only after durable persistence.
+
 #### Auto-Sync Behavior
 
 - BGProcess runs on a configurable interval (default: 30 seconds)
@@ -381,7 +404,8 @@ compression_level = 3                   # zstd compression level (default: 3)
 ## Implementation Status
 
 - IMPLEMENTED: Wire format module in protocol crate
-- TODO: Sync protocol messages, delta sync, staged snapshot upload
+- IMPLEMENTED: Rust prototype `POST /staged` flow for single-snapshot staged upload with BLAKE3 verification and server-side staged index persistence
+- TODO: Sync protocol messages, have/want negotiation, delta sync, streaming object upload, auth/IAM-gated staged upload
 - PLANNED: Full gRPC service definitions, QUIC transport, offline queue
 
 ## Related Specifications

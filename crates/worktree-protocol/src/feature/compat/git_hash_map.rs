@@ -107,8 +107,8 @@ impl FromStr for GitHash {
         let mut bytes = [0u8; 20];
         for i in 0..20 {
             let hex_byte = &s[i * 2..i * 2 + 2];
-            bytes[i] = u8::from_str_radix(hex_byte, 16)
-                .map_err(|_| GitHashParseError::InvalidHex)?;
+            bytes[i] =
+                u8::from_str_radix(hex_byte, 16).map_err(|_| GitHashParseError::InvalidHex)?;
         }
         Ok(GitHash(bytes))
     }
@@ -203,10 +203,29 @@ pub trait HashIndex {
 ///
 /// This is suitable for tests and small-scale usage. For production use with
 /// large repositories, a persistent on-disk implementation should be used.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct InMemoryHashIndex {
     blake3_to_sha1: HashMap<ContentHash, GitHash>,
     sha1_to_blake3: HashMap<GitHash, ContentHash>,
+}
+
+impl Serialize for InMemoryHashIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.all_mappings().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for InMemoryHashIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mappings = Vec::<HashMapping>::deserialize(deserializer)?;
+        Ok(Self::from_mappings(mappings))
+    }
 }
 
 impl InMemoryHashIndex {
@@ -765,8 +784,7 @@ mod tests {
         index.insert(sample_mapping_2());
 
         let json = serde_json::to_string(&index).expect("serialize");
-        let deserialized: InMemoryHashIndex =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: InMemoryHashIndex = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_blake3(&sample_mapping().blake3));
@@ -779,8 +797,7 @@ mod tests {
         index.insert(sample_mapping());
 
         let encoded = bincode::serialize(&index).expect("serialize");
-        let decoded: InMemoryHashIndex =
-            bincode::deserialize(&encoded).expect("deserialize");
+        let decoded: InMemoryHashIndex = bincode::deserialize(&encoded).expect("deserialize");
 
         assert_eq!(decoded.len(), 1);
         let m = sample_mapping();

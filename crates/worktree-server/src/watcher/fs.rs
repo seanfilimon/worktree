@@ -45,11 +45,7 @@ impl FileSystemWatcher {
         self.watcher
             .watch(path, RecursiveMode::Recursive)
             .map_err(|e| {
-                ServerError::Watcher(format!(
-                    "failed to watch path {}: {}",
-                    path.display(),
-                    e
-                ))
+                ServerError::Watcher(format!("failed to watch path {}: {}", path.display(), e))
             })
     }
 
@@ -58,11 +54,7 @@ impl FileSystemWatcher {
     /// If the path was not previously watched this is a no-op.
     pub fn unwatch(&mut self, path: &Path) -> Result<(), ServerError> {
         self.watcher.unwatch(path).map_err(|e| {
-            ServerError::Watcher(format!(
-                "failed to unwatch path {}: {}",
-                path.display(),
-                e
-            ))
+            ServerError::Watcher(format!("failed to unwatch path {}: {}", path.display(), e))
         })
     }
 

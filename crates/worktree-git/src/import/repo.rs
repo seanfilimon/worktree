@@ -44,11 +44,11 @@ impl GitRepo {
     /// Returns an error if HEAD is detached or unborn.
     pub fn head_branch(&self) -> Result<String> {
         let head = self.repo.head()?;
-        let shorthand = head
-            .shorthand()
-            .ok_or_else(|| crate::error::GitCompatError::ImportError(
+        let shorthand = head.shorthand().ok_or_else(|| {
+            crate::error::GitCompatError::ImportError(
                 "HEAD is not a valid UTF-8 reference".to_string(),
-            ))?;
+            )
+        })?;
         Ok(shorthand.to_owned())
     }
 

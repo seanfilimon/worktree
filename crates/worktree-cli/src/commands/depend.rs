@@ -5,7 +5,11 @@ use worktree_sdk::WorktreeEngine;
 
 pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        DependAction::Add { tree, target, blocking } => {
+        DependAction::Add {
+            tree,
+            target,
+            blocking,
+        } => {
             let engine = WorktreeEngine::open(Path::new("."))?;
             let state = worktree_sdk::engine::status::load_state(&engine)?;
 
@@ -69,7 +73,11 @@ pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Err
                 if tree.name == "root" {
                     continue;
                 }
-                let config_path = engine.root().join(&tree.path).join(".wt-tree").join("config.toml");
+                let config_path = engine
+                    .root()
+                    .join(&tree.path)
+                    .join(".wt-tree")
+                    .join("config.toml");
                 if config_path.exists() {
                     let content = std::fs::read_to_string(&config_path)?;
                     if content.contains("[[dependencies]]") {
@@ -77,7 +85,10 @@ pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Err
                         format::print_info(&format!("Dependencies in tree '{}':", tree.name));
                         // Parse and display dependency blocks
                         for line in content.lines() {
-                            if line.starts_with("name = ") || line.starts_with("path = ") || line.starts_with("required = ") {
+                            if line.starts_with("name = ")
+                                || line.starts_with("path = ")
+                                || line.starts_with("required = ")
+                            {
                                 format::print_kv("  ", line.trim());
                             }
                         }
@@ -94,7 +105,11 @@ pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Err
             let mut todo_count = 0;
 
             for tree in &state.trees {
-                let config_path = engine.root().join(&tree.path).join(".wt-tree").join("config.toml");
+                let config_path = engine
+                    .root()
+                    .join(&tree.path)
+                    .join(".wt-tree")
+                    .join("config.toml");
                 if config_path.exists() {
                     let content = std::fs::read_to_string(&config_path)?;
                     if content.contains("required = true") {

@@ -24,7 +24,9 @@ Welcome to the Worktree documentation! This directory contains comprehensive gui
 ### Components
 
 #### Worktree Server
-The background daemon that manages version control operations.
+The current Rust crate is a local daemon/prototype server; the production remote authority is
+planned as a Go service. Recent prototype work added synchronous staged snapshot upload through
+`POST /staged`.
 
 - Architecture overview
 - Configuration options
@@ -63,6 +65,7 @@ The Worktree protocol enables efficient communication between clients and server
 
 - Binary protocol format
 - Message types and structure
+- Staged snapshot upload contract
 - Streaming and chunked transfers
 - Authentication mechanisms
 - Error handling
@@ -71,9 +74,10 @@ The Worktree protocol enables efficient communication between clients and server
 
 Deep dive into the server's internal design:
 
-- Multi-threaded architecture
-- Repository management
+- Rust bgprocess/prototype boundary
+- Production Go server boundary
 - File watching and change detection
+- Staged snapshot storage
 - Caching strategies
 - Performance optimization
 
@@ -312,7 +316,7 @@ A: Yes, Worktree is designed to efficiently handle repositories of all sizes wit
 
 ### License
 
-Worktree is released under the MIT License. See [LICENSE](../LICENSE) for details.
+Worktree uses the W0rkTree Public License v1.0. See [LICENSE](../LICENSE) for details.
 
 ### Changelog
 
@@ -358,5 +362,5 @@ If you can't find what you're looking for in the documentation:
 
 ---
 
-*Last updated: 2024*
+*Last updated: 2026*
 *Worktree Version: 0.1.0*

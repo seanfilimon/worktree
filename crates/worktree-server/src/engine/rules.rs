@@ -45,11 +45,7 @@ pub enum RuleAction {
 
 impl Rule {
     /// Create a new rule with the given name, condition, and action.
-    pub fn new(
-        name: impl Into<String>,
-        condition: RuleCondition,
-        action: RuleAction,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, condition: RuleCondition, action: RuleAction) -> Self {
         Self {
             name: name.into(),
             condition,
@@ -82,6 +78,10 @@ impl std::fmt::Display for RuleAction {
 
 impl std::fmt::Display for Rule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Rule '{}': when {} => {}", self.name, self.condition, self.action)
+        write!(
+            f,
+            "Rule '{}': when {} => {}",
+            self.name, self.condition, self.action
+        )
     }
 }

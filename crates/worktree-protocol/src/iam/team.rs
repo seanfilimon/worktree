@@ -39,7 +39,11 @@ pub struct Team {
 
 impl Team {
     /// Creates a new team with the given name within a tenant.
-    pub fn new(tenant_id: TenantId, name: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        tenant_id: TenantId,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             id: TeamId::new(),
             tenant_id,

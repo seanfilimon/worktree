@@ -49,6 +49,124 @@ pub enum SemanticEvent {
 /// prefixes to decide the semantic category. In the future this will also
 /// consult a tree registry to resolve which tree owns each path.
 pub fn classify_event(raw: &DebouncedEvent) -> SemanticEvent {
-    let _ = raw;
-    todo!("inspect raw.path extension / name to classify into SemanticEvent variant")
+    let path = &raw.path;
+    let tree_id = TreeId::nil();
+
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    const DEPENDENCY_FILES: &[&str] = &[
+        "Cargo.toml",
+        "Cargo.lock",
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "go.mod",
+        "go.sum",
+        "requirements.txt",
+        "pyproject.toml",
+        "Pipfile",
+        "Pipfile.lock",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+    ];
+
+    if DEPENDENCY_FILES.contains(&filename) {
+        return SemanticEvent::DependencyChange {
+            tree_id,
+            path: path.clone(),
+        };
+    }
+
+    let is_wt_path = path
+        .components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some(".wt") | Some(".wt-tree")));
+
+    const CONFIG_FILES: &[&str] = &[
+        ".editorconfig",
+        ".gitignore",
+        ".wtignore",
+        "config.toml",
+        ".env",
+        ".env.local",
+    ];
+
+    if is_wt_path || CONFIG_FILES.contains(&filename) {
+        return SemanticEvent::ConfigChange {
+            tree_id,
+            path: path.clone(),
+        };
+    }
+
+    SemanticEvent::CodeChange {
+        tree_id,
+        paths: vec![path.clone()],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::watcher::debounce::{DebouncedEvent, EventKind};
+
+    fn make_event(path: &str) -> DebouncedEvent {
+        DebouncedEvent::now(PathBuf::from(path), EventKind::Modified)
+    }
+
+    #[test]
+    fn cargo_toml_is_dependency_change() {
+        let e = make_event("myproject/Cargo.toml");
+        assert!(matches!(
+            classify_event(&e),
+            SemanticEvent::DependencyChange { .. }
+        ));
+    }
+
+    #[test]
+    fn package_json_is_dependency_change() {
+        let e = make_event("frontend/package.json");
+        assert!(matches!(
+            classify_event(&e),
+            SemanticEvent::DependencyChange { .. }
+        ));
+    }
+
+    #[test]
+    fn rust_source_is_code_change() {
+        let e = make_event("src/main.rs");
+        assert!(matches!(
+            classify_event(&e),
+            SemanticEvent::CodeChange { .. }
+        ));
+    }
+
+    #[test]
+    fn wt_dir_path_is_config_change() {
+        let e = make_event(".wt/config.toml");
+        assert!(matches!(
+            classify_event(&e),
+            SemanticEvent::ConfigChange { .. }
+        ));
+    }
+
+    #[test]
+    fn editorconfig_is_config_change() {
+        let e = make_event(".editorconfig");
+        assert!(matches!(
+            classify_event(&e),
+            SemanticEvent::ConfigChange { .. }
+        ));
+    }
+
+    #[test]
+    fn code_change_paths_contains_the_file() {
+        let e = make_event("src/lib.rs");
+        match classify_event(&e) {
+            SemanticEvent::CodeChange { paths, .. } => {
+                assert_eq!(paths, vec![PathBuf::from("src/lib.rs")]);
+            }
+            other => panic!("expected CodeChange, got {:?}", other),
+        }
+    }
 }

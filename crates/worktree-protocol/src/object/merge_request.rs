@@ -1,11 +1,12 @@
-use serde::{Deserialize, Serialize};
+use crate::core::id::{AccountId, BranchId, SnapshotId, TreeId};
 use chrono::{DateTime, Utc};
-use crate::core::id::{BranchId, TreeId, AccountId, SnapshotId};
+use serde::{Deserialize, Serialize};
 
 /// Status of a merge request
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeRequestStatus {
+    #[default]
     Open,
     InReview,
     Approved,
@@ -14,27 +15,16 @@ pub enum MergeRequestStatus {
     Closed,
 }
 
-impl Default for MergeRequestStatus {
-    fn default() -> Self {
-        MergeRequestStatus::Open
-    }
-}
-
 /// CI check status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CiStatus {
+    #[default]
     Pending,
     Running,
     Passed,
     Failed,
     Skipped,
-}
-
-impl Default for CiStatus {
-    fn default() -> Self {
-        CiStatus::Pending
-    }
 }
 
 /// A review on a merge request
@@ -91,6 +81,7 @@ pub struct MergeRequest {
 }
 
 impl MergeRequest {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         tree_id: TreeId,
@@ -151,19 +142,24 @@ impl MergeRequest {
     }
 
     pub fn approve_count(&self) -> usize {
-        self.reviews.iter()
+        self.reviews
+            .iter()
             .filter(|r| !r.stale && r.status == ReviewStatus::Approved)
             .count()
     }
 
     pub fn has_changes_requested(&self) -> bool {
-        self.reviews.iter()
+        self.reviews
+            .iter()
             .any(|r| !r.stale && r.status == ReviewStatus::ChangesRequested)
     }
 
     pub fn all_ci_passed(&self) -> bool {
-        !self.ci_checks.is_empty() &&
-        self.ci_checks.iter().all(|c| c.status == CiStatus::Passed || c.status == CiStatus::Skipped)
+        !self.ci_checks.is_empty()
+            && self
+                .ci_checks
+                .iter()
+                .all(|c| c.status == CiStatus::Passed || c.status == CiStatus::Skipped)
     }
 
     pub fn can_merge(&self, required_reviewers: u32) -> bool {
@@ -208,11 +204,21 @@ impl MergeRequest {
     }
 
     pub fn is_open(&self) -> bool {
-        matches!(self.status, MergeRequestStatus::Open | MergeRequestStatus::InReview | MergeRequestStatus::Approved | MergeRequestStatus::ChangesRequested)
+        matches!(
+            self.status,
+            MergeRequestStatus::Open
+                | MergeRequestStatus::InReview
+                | MergeRequestStatus::Approved
+                | MergeRequestStatus::ChangesRequested
+        )
     }
 
-    pub fn is_merged(&self) -> bool { self.status == MergeRequestStatus::Merged }
-    pub fn is_closed(&self) -> bool { self.status == MergeRequestStatus::Closed }
+    pub fn is_merged(&self) -> bool {
+        self.status == MergeRequestStatus::Merged
+    }
+    pub fn is_closed(&self) -> bool {
+        self.status == MergeRequestStatus::Closed
+    }
 }
 
 #[cfg(test)]
@@ -222,8 +228,14 @@ mod tests {
     #[test]
     fn test_merge_request_lifecycle() {
         let mut mr = MergeRequest::new(
-            1, TreeId::new(), BranchId::new(), "feature/x",
-            BranchId::new(), "main", "Add feature X", AccountId::new(),
+            1,
+            TreeId::new(),
+            BranchId::new(),
+            "feature/x",
+            BranchId::new(),
+            "main",
+            "Add feature X",
+            AccountId::new(),
         );
         assert!(mr.is_open());
         assert!(!mr.can_merge(1));
@@ -247,8 +259,14 @@ mod tests {
     #[test]
     fn test_changes_requested_blocks_merge() {
         let mut mr = MergeRequest::new(
-            2, TreeId::new(), BranchId::new(), "fix/y",
-            BranchId::new(), "main", "Fix Y", AccountId::new(),
+            2,
+            TreeId::new(),
+            BranchId::new(),
+            "fix/y",
+            BranchId::new(),
+            "main",
+            "Fix Y",
+            AccountId::new(),
         );
         mr.add_review(Review {
             reviewer: AccountId::new(),
@@ -265,8 +283,14 @@ mod tests {
     #[test]
     fn test_ci_checks() {
         let mut mr = MergeRequest::new(
-            3, TreeId::new(), BranchId::new(), "feature/z",
-            BranchId::new(), "main", "Feature Z", AccountId::new(),
+            3,
+            TreeId::new(),
+            BranchId::new(),
+            "feature/z",
+            BranchId::new(),
+            "main",
+            "Feature Z",
+            AccountId::new(),
         );
         mr.add_ci_check(CiCheck {
             name: "tests".to_string(),
@@ -299,8 +323,14 @@ mod tests {
     fn test_stale_reviews() {
         let reviewer = AccountId::new();
         let mut mr = MergeRequest::new(
-            4, TreeId::new(), BranchId::new(), "feature/a",
-            BranchId::new(), "main", "Feature A", AccountId::new(),
+            4,
+            TreeId::new(),
+            BranchId::new(),
+            "feature/a",
+            BranchId::new(),
+            "main",
+            "Feature A",
+            AccountId::new(),
         );
 
         // First review: changes requested

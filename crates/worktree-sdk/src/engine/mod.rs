@@ -1,20 +1,20 @@
-pub mod init;
-pub mod status;
-pub mod snapshot;
 pub mod branch;
-pub mod tree;
+pub mod config;
+pub mod dependency;
+pub mod diff;
+pub mod ignore;
+pub mod init;
 pub mod log;
 pub mod merge;
+pub mod reflog;
+pub mod snapshot;
+pub mod status;
 pub mod sync;
 pub mod tag;
-pub mod diff;
-pub mod config;
-pub mod reflog;
-pub mod dependency;
-pub mod ignore;
+pub mod tree;
 
+use crate::error::{Result, SdkError};
 use std::path::{Path, PathBuf};
-use crate::error::{SdkError, Result};
 
 /// The core engine that performs all worktree operations locally.
 /// Operates on `.wt/` and `.wt-tree/` directories.

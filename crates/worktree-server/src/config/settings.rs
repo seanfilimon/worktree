@@ -76,7 +76,11 @@ impl ServerConfig {
     /// Returns a `ServerError::Config` if the file cannot be read or parsed.
     pub fn load(path: &Path) -> Result<Self, ServerError> {
         let contents = std::fs::read_to_string(path).map_err(|e| {
-            ServerError::Config(format!("failed to read config file {}: {}", path.display(), e))
+            ServerError::Config(format!(
+                "failed to read config file {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
         let config: ServerConfig = toml::from_str(&contents).map_err(|e| {
