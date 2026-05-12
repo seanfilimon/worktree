@@ -99,6 +99,58 @@ When `X-WT-Tenant` is present, the server filters the list to that tenant and re
 explicit `tenant` query parameters. This is a compatibility guard until full IAM and visibility
 policy evaluation are wired in.
 
+## Error Codes
+
+All Go server error responses use this envelope:
+
+```json
+{
+  "error": {
+    "code": "ErrorCodeCamelCase",
+    "message": "human-readable description"
+  }
+}
+```
+
+| Code | HTTP Status | Meaning |
+|---|---|---|
+| `InvalidJSON` | 400 | Request body is not valid JSON |
+| `InvalidStagedSnapshot` | 422 | Required field missing or invalid |
+| `InvalidObject` | 422 | Object size mismatch or BLAKE3 hash/content mismatch |
+| `StagedUploadTooLarge` | 413 | Object count or byte size exceeds server limits |
+| `TenantMismatch` | 403 | Authenticated tenant does not match payload tenant |
+| `Unauthorized` | 401 | Missing or invalid bearer token |
+| `Forbidden` | 403 | IAM authorizer denied the action |
+| `StagedStoreFailed` | 500 | Persistence layer error |
+| `StagedListFailed` | 500 | Read-side storage error |
+| `MethodNotAllowed` | 405 | Wrong HTTP method for route |
+
+## Permission Action Names
+
+IAM permission strings follow the pattern `<resource>:<verb>`. Server implementations
+must use these exact strings when recording audit events and calling the authorizer.
+
+| Action | Description |
+|---|---|
+| `staged:create` | Upload a staged snapshot via `POST /staged` |
+| `staged:list` | List staged snapshots via `GET /staged` |
+| `branch:push` | Finalize staged snapshots into branch history |
+| `branch:pull` | Download branch history to local store |
+| `tree:init` | Initialize a new tree on the server |
+| `tenant:read` | Read tenant metadata |
+
+## Idempotency
+
+`POST /staged` is idempotent on `snapshot_id`. If a request arrives with a `snapshot_id`
+that was already successfully persisted:
+
+1. The server MUST NOT create a duplicate record.
+2. The server MUST return `202 Accepted` with the same ACK shape.
+3. Object bytes that are already stored (by BLAKE3 key) are silently skipped.
+
+Callers may safely retry `POST /staged` on network failure without risk of data duplication.
+The Postgres store enforces this via `ON CONFLICT (snapshot_id) DO NOTHING`.
+
 ## Diff Semantics
 
 TODO: Define how diffs are computed between snapshots. Specify the diff algorithm, handling of binary files, rename/move detection, and representation of changes across nested tree boundaries.
