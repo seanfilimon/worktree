@@ -13,6 +13,7 @@ Implemented:
 - JSON logging through `log/slog`.
 - `GET /health`.
 - `GET /ready`.
+- `GET /metrics` Prometheus-style request counters.
 - Request ID middleware.
 - TLS 1.3 minimum-version configuration.
 - Optional static bearer-token middleware for protected endpoints.
@@ -42,6 +43,7 @@ Then test:
 ```bash
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/ready
+curl http://127.0.0.1:8080/metrics
 ```
 
 Upload a staged snapshot object:

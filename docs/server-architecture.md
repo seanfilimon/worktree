@@ -6,11 +6,12 @@ on localhost. The production remote authority is planned as a Go service; it mus
 directories or share SDK `.wt/state.json`.
 
 The Go server now has an initial `server-go/` implementation scaffold. It provides health/readiness
-endpoints, TLS 1.3 configuration, request IDs, optional static bearer-token authentication for
-protected endpoints, tenant/account principal headers, local BLAKE3-verified content-addressed
-object storage, a `POST /staged` compatibility endpoint, and a filtered `GET /staged` listing
-endpoint. This is still development storage: staged metadata is written to a JSON index for now,
-while the production path remains PostgreSQL metadata plus S3-compatible object storage.
+endpoints, Prometheus-style request counters at `/metrics`, TLS 1.3 configuration, request IDs,
+optional static bearer-token authentication for protected endpoints, tenant/account principal
+headers, local BLAKE3-verified content-addressed object storage, a `POST /staged` compatibility
+endpoint, and a filtered `GET /staged` listing endpoint. This is still development storage: staged
+metadata is written to a JSON index for now, while the production path remains PostgreSQL metadata
+plus S3-compatible object storage.
 
 Recent prototype work added the first real staged-sync boundary: after an auto-snapshot is created,
 the bgprocess synchronously uploads that snapshot to `POST /staged`. The endpoint verifies uploaded
@@ -59,6 +60,8 @@ Current prototype HTTP endpoints:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Health check |
+| `GET` | `/ready` | Readiness check |
+| `GET` | `/metrics` | Prometheus-style HTTP request counters |
 | `POST` | `/init` | Demo initialization through SDK state |
 | `POST` | `/status` | Demo status through SDK state |
 | `POST` | `/snapshot` | Demo/manual snapshot creation |

@@ -118,9 +118,9 @@ Deliverables:
 Create the deployable service shell before implementing product behavior.
 
 Status: initial scaffold is implemented in `server-go/` with standard-library HTTP routing, JSON
-logging, request IDs, health/readiness endpoints, graceful shutdown, TLS 1.3 minimum-version
-configuration, optional static bearer-token auth for protected endpoints, and tenant/account
-principal headers.
+logging, request IDs, health/readiness endpoints, a Prometheus-style `/metrics` endpoint, graceful
+shutdown, TLS 1.3 minimum-version configuration, optional static bearer-token auth for protected
+endpoints, and tenant/account principal headers.
 
 Work:
 

@@ -12,6 +12,7 @@ import (
 	"github.com/ramizik/worktree/server-go/internal/auth"
 	"github.com/ramizik/worktree/server-go/internal/config"
 	"github.com/ramizik/worktree/server-go/internal/httpapi"
+	"github.com/ramizik/worktree/server-go/internal/observability"
 	"github.com/ramizik/worktree/server-go/internal/server"
 	"github.com/ramizik/worktree/server-go/internal/staged"
 	"github.com/ramizik/worktree/server-go/internal/storage"
@@ -31,11 +32,13 @@ func main() {
 
 	objectStore := storage.NewLocalObjectStore(cfg.StorageRoot)
 	stagedStore := staged.NewFileStore(cfg.StorageRoot)
+	metrics := observability.NewMetrics()
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Version:       "dev",
 		Authenticator: auth.NewStaticAuthenticator(cfg.AuthToken),
 		Staged:        httpapi.NewStagedService(objectStore, stagedStore),
+		Metrics:       metrics,
 	})
 
 	srv := server.NewHTTPServer(cfg, router)

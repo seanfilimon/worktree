@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/ramizik/worktree/server-go/internal/auth"
+	"github.com/ramizik/worktree/server-go/internal/observability"
 )
 
 type contextKey string
@@ -40,6 +41,24 @@ func authMiddleware(authenticator auth.StaticAuthenticator, next http.Handler) h
 		ctx := auth.WithPrincipal(r.Context(), principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func metricsMiddleware(metrics *observability.Metrics, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		metrics.RecordRequest(r.Method, r.URL.Path, recorder.status)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
 }
 
 func newRequestID() string {

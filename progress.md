@@ -72,6 +72,22 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
 **Result:** `go test ./...` passes in `server-go`.
 
+### Step 6 — `feat(server-go): expose basic metrics`
+**Files:**
+- `server-go/internal/observability/metrics.go`
+- `server-go/internal/httpapi/middleware.go`
+- `server-go/internal/httpapi/router.go`
+- `server-go/README.md`
+- `docs/server-architecture.md`
+- `roadmap.md`
+
+- Added in-memory HTTP request counters.
+- Added Prometheus-style `GET /metrics`.
+- Added middleware that records method/path/status labels.
+- Added unit tests for metrics rendering and router exposure.
+
+**Result:** `go test ./...` passes in `server-go`.
+
 ## Local Demo — Implementation Progress
 
 Target: full local demo (CLI → bgprocess → server on localhost). No remote server needed.
