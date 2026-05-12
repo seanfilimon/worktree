@@ -33,3 +33,25 @@ func TestLoadFallsBackForInvalidStagedUploadLimits(t *testing.T) {
 		t.Fatalf("MaxStagedObjects = %d", cfg.MaxStagedObjects)
 	}
 }
+
+func TestConfig_DatabaseURL(t *testing.T) {
+	t.Setenv("WT_SERVER_DATABASE_URL", "postgres://user:pass@localhost:5432/worktree?sslmode=disable")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.DatabaseURL != "postgres://user:pass@localhost:5432/worktree?sslmode=disable" {
+		t.Errorf("DatabaseURL = %q, want postgres://...", cfg.DatabaseURL)
+	}
+}
+
+func TestConfig_RunMigrations(t *testing.T) {
+	t.Setenv("WT_SERVER_RUN_MIGRATIONS", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.RunMigrations {
+		t.Error("RunMigrations should be true")
+	}
+}
