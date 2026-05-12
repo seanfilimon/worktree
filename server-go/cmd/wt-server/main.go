@@ -12,6 +12,8 @@ import (
 	"github.com/ramizik/worktree/server-go/internal/config"
 	"github.com/ramizik/worktree/server-go/internal/httpapi"
 	"github.com/ramizik/worktree/server-go/internal/server"
+	"github.com/ramizik/worktree/server-go/internal/staged"
+	"github.com/ramizik/worktree/server-go/internal/storage"
 )
 
 func main() {
@@ -26,8 +28,12 @@ func main() {
 	}))
 	slog.SetDefault(log)
 
+	objectStore := storage.NewLocalObjectStore(cfg.StorageRoot)
+	stagedStore := staged.NewFileStore(cfg.StorageRoot)
+
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Version: "dev",
+		Staged:  httpapi.NewStagedService(objectStore, stagedStore),
 	})
 
 	srv := server.NewHTTPServer(cfg, router)

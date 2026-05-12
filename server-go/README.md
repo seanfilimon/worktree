@@ -15,14 +15,15 @@ Implemented:
 - `GET /ready`.
 - Request ID middleware.
 - TLS 1.3 minimum-version configuration.
+- Local content-addressed object storage with BLAKE3 verification.
+- `POST /staged` staged snapshot upload endpoint.
+- JSON staged snapshot index for local development.
 
 Not implemented yet:
 
 - Postgres metadata storage.
-- Content-addressed object storage.
 - Auth and tenant resolution.
 - IAM policy evaluation.
-- Staged snapshot upload.
 - gRPC sync service.
 
 ## Local Run
@@ -40,6 +41,32 @@ Then test:
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/ready
 ```
+
+Upload a staged snapshot object:
+
+```bash
+curl -X POST http://127.0.0.1:8080/staged \
+  -H "Content-Type: application/json" \
+  -d '{
+    "snapshot_id": "snap-1",
+    "tenant": "acme",
+    "worktree": "api",
+    "tree_id": "tree-1",
+    "branch": "main",
+    "objects": [
+      {
+        "path": "README.md",
+        "hash": "<blake3-hex-of-content>",
+        "size": 12,
+        "content": "<base64-content>"
+      }
+    ]
+  }'
+```
+
+JSON `content` fields are decoded as base64 by Go. The server verifies `size` and BLAKE3 `hash`
+before persisting the object. Staged metadata is written under
+`.wt-server-go/staged/index.json` by default.
 
 ## TLS 1.3
 

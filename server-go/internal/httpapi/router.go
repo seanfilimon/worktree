@@ -8,12 +8,16 @@ import (
 
 type RouterConfig struct {
 	Version string
+	Staged  *StagedService
 }
 
 func NewRouter(cfg RouterConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(cfg))
 	mux.HandleFunc("GET /ready", readyHandler(cfg))
+	if cfg.Staged != nil {
+		mux.HandleFunc("POST /staged", cfg.Staged.HandleUpload)
+	}
 	return requestIDMiddleware(mux)
 }
 

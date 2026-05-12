@@ -4,6 +4,8 @@
 Cargo.lock
 *.swp
 *.swo
+.gocache/
+.gopath/
 
 # Node / npm
 node_modules/

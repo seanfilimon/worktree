@@ -13,6 +13,7 @@ type Config struct {
 	HTTPAddr        string
 	Environment     string
 	LogLevelName    string
+	StorageRoot     string
 	ShutdownTimeout time.Duration
 	TLS             TLSConfig
 }
@@ -28,6 +29,7 @@ func Load() (Config, error) {
 		HTTPAddr:        getEnv("WT_SERVER_HTTP_ADDR", "127.0.0.1:8080"),
 		Environment:     getEnv("WT_SERVER_ENV", "development"),
 		LogLevelName:    getEnv("WT_SERVER_LOG_LEVEL", "info"),
+		StorageRoot:     getEnv("WT_SERVER_STORAGE_ROOT", ".wt-server-go"),
 		ShutdownTimeout: getDurationEnv("WT_SERVER_SHUTDOWN_TIMEOUT", 30*time.Second),
 		TLS: TLSConfig{
 			Enabled:  getBoolEnv("WT_SERVER_TLS_ENABLED", false),
