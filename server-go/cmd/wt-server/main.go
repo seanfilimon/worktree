@@ -4,14 +4,19 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"google.golang.org/grpc"
+
 	"github.com/ramizik/worktree/server-go/internal/audit"
 	"github.com/ramizik/worktree/server-go/internal/auth"
 	"github.com/ramizik/worktree/server-go/internal/config"
+	grpcserver "github.com/ramizik/worktree/server-go/internal/grpc"
+	worktreepb "github.com/ramizik/worktree/server-go/internal/grpc/worktreepb/worktree/v1"
 	"github.com/ramizik/worktree/server-go/internal/httpapi"
 	"github.com/ramizik/worktree/server-go/internal/iam"
 	"github.com/ramizik/worktree/server-go/internal/observability"
@@ -63,6 +68,22 @@ func main() {
 
 	srv := server.NewHTTPServer(cfg, router)
 
+	syncSrv := grpcserver.NewSyncServer(objectStore, stagedStore, auditRecorder, iam.AllowAllAuthorizer{})
+	grpcS := grpc.NewServer()
+	worktreepb.RegisterSyncServiceServer(grpcS, syncSrv)
+
+	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
+	if err != nil {
+		slog.Error("failed to listen for gRPC", "addr", cfg.GRPCAddr, "error", err)
+		os.Exit(1)
+	}
+	go func() {
+		log.Info("starting gRPC server", "addr", cfg.GRPCAddr)
+		if err := grpcS.Serve(grpcLis); err != nil {
+			log.Error("gRPC server failed", "error", err)
+		}
+	}()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -78,6 +99,7 @@ func main() {
 
 	select {
 	case <-ctx.Done():
+		grpcS.GracefulStop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {

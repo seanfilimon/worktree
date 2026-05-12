@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	HTTPAddr             string
+	GRPCAddr             string
 	Environment          string
 	LogLevelName         string
 	StorageRoot          string
@@ -33,6 +34,7 @@ type TLSConfig struct {
 func Load() (Config, error) {
 	cfg := Config{
 		HTTPAddr:             getEnv("WT_SERVER_HTTP_ADDR", "127.0.0.1:8080"),
+		GRPCAddr:             getEnv("WT_SERVER_GRPC_ADDR", "127.0.0.1:9877"),
 		Environment:          getEnv("WT_SERVER_ENV", "development"),
 		LogLevelName:         getEnv("WT_SERVER_LOG_LEVEL", "info"),
 		StorageRoot:          getEnv("WT_SERVER_STORAGE_ROOT", ".wt-server-go"),
