@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ramizik/worktree/server-go/internal/audit"
 	"github.com/ramizik/worktree/server-go/internal/auth"
 	"github.com/ramizik/worktree/server-go/internal/config"
 	"github.com/ramizik/worktree/server-go/internal/httpapi"
@@ -33,11 +34,12 @@ func main() {
 	objectStore := storage.NewLocalObjectStore(cfg.StorageRoot)
 	stagedStore := staged.NewFileStore(cfg.StorageRoot)
 	metrics := observability.NewMetrics()
+	auditRecorder := audit.NewFileRecorder(cfg.AuditPath)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Version:       "dev",
 		Authenticator: auth.NewStaticAuthenticator(cfg.AuthToken),
-		Staged:        httpapi.NewStagedService(objectStore, stagedStore),
+		Staged:        httpapi.NewStagedService(objectStore, stagedStore, auditRecorder),
 		Metrics:       metrics,
 	})
 

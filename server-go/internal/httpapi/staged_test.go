@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/ramizik/worktree/server-go/internal/audit"
 	"github.com/ramizik/worktree/server-go/internal/staged"
 	"github.com/ramizik/worktree/server-go/internal/storage"
 	"github.com/zeebo/blake3"
@@ -37,12 +38,13 @@ func TestStagedUploadPersistsVerifiedObject(t *testing.T) {
 	root := t.TempDir()
 	objects := storage.NewLocalObjectStore(root)
 	var recorded staged.Snapshot
+	auditRecorder := &auditRecorderStub{}
 	service := NewStagedService(objects, stagedStoreStub{
 		add: func(ctx context.Context, snapshot staged.Snapshot) error {
 			recorded = snapshot
 			return nil
 		},
-	})
+	}, auditRecorder)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -85,6 +87,9 @@ func TestStagedUploadPersistsVerifiedObject(t *testing.T) {
 	if !exists {
 		t.Fatal("expected staged object to be stored")
 	}
+	if auditRecorder.last.Decision != "allow" || auditRecorder.last.Action != "staged:create" {
+		t.Fatalf("audit event = %#v", auditRecorder.last)
+	}
 }
 
 func TestStagedUploadRejectsHashMismatch(t *testing.T) {
@@ -95,7 +100,7 @@ func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil
 		},
-	})
+	}, nil)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	hash := blake3.Sum256([]byte("expected"))
@@ -129,12 +134,13 @@ func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 	root := t.TempDir()
 	objects := storage.NewLocalObjectStore(root)
+	auditRecorder := &auditRecorderStub{}
 	service := NewStagedService(objects, stagedStoreStub{
 		add: func(ctx context.Context, snapshot staged.Snapshot) error {
 			t.Fatal("staged store should not be called")
 			return nil
 		},
-	})
+	}, auditRecorder)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 
 	content := []byte("file contents")
@@ -165,10 +171,14 @@ func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	if auditRecorder.last.Decision != "deny" || auditRecorder.last.Reason != "tenant mismatch" {
+		t.Fatalf("audit event = %#v", auditRecorder.last)
+	}
 }
 
 func TestStagedListFiltersToAuthenticatedTenant(t *testing.T) {
 	var received staged.ListFilter
+	auditRecorder := &auditRecorderStub{}
 	service := NewStagedService(nil, stagedStoreStub{
 		list: func(ctx context.Context, filter staged.ListFilter) ([]staged.Snapshot, error) {
 			received = filter
@@ -179,7 +189,7 @@ func TestStagedListFiltersToAuthenticatedTenant(t *testing.T) {
 				Branch:     "main",
 			}}, nil
 		},
-	})
+	}, auditRecorder)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?worktree=api", nil)
 	req.Header.Set("X-WT-Tenant", "acme")
@@ -193,6 +203,9 @@ func TestStagedListFiltersToAuthenticatedTenant(t *testing.T) {
 	if received.Tenant != "acme" || received.Worktree != "api" {
 		t.Fatalf("filter = %#v", received)
 	}
+	if auditRecorder.last.Decision != "allow" || auditRecorder.last.Action != "staged:list" {
+		t.Fatalf("audit event = %#v", auditRecorder.last)
+	}
 }
 
 func TestStagedListRejectsTenantMismatch(t *testing.T) {
@@ -201,7 +214,7 @@ func TestStagedListRejectsTenantMismatch(t *testing.T) {
 			t.Fatal("staged store should not be called")
 			return nil, nil
 		},
-	})
+	}, nil)
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?tenant=other", nil)
 	req.Header.Set("X-WT-Tenant", "acme")
@@ -212,4 +225,13 @@ func TestStagedListRejectsTenantMismatch(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+}
+
+type auditRecorderStub struct {
+	last audit.Event
+}
+
+func (r *auditRecorderStub) Record(ctx context.Context, event audit.Event) error {
+	r.last = event
+	return nil
 }

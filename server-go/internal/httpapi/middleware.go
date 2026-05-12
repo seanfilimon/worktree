@@ -68,3 +68,8 @@ func newRequestID() string {
 	}
 	return "req-" + hex.EncodeToString(bytes[:])
 }
+
+func RequestIDFromContext(ctx context.Context) string {
+	requestID, _ := ctx.Value(requestIDKey).(string)
+	return requestID
+}

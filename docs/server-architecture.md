@@ -9,9 +9,9 @@ The Go server now has an initial `server-go/` implementation scaffold. It provid
 endpoints, Prometheus-style request counters at `/metrics`, TLS 1.3 configuration, request IDs,
 optional static bearer-token authentication for protected endpoints, tenant/account principal
 headers, local BLAKE3-verified content-addressed object storage, a `POST /staged` compatibility
-endpoint, and a filtered `GET /staged` listing endpoint. This is still development storage: staged
-metadata is written to a JSON index for now, while the production path remains PostgreSQL metadata
-plus S3-compatible object storage.
+endpoint, a filtered `GET /staged` listing endpoint, and file-backed JSONL audit records for staged
+allow/deny decisions. This is still development storage: staged metadata is written to a JSON index
+for now, while the production path remains PostgreSQL metadata plus S3-compatible object storage.
 
 Recent prototype work added the first real staged-sync boundary: after an auto-snapshot is created,
 the bgprocess synchronously uploads that snapshot to `POST /staged`. The endpoint verifies uploaded
@@ -53,6 +53,12 @@ The Go server mirrors that first boundary under `server-go/internal/storage` and
 hex digest before writing to `objects/XX/<remaining-hash>`. `staged.FileStore` persists staged
 metadata to `staged/index.json` for local development only.
 
+The Go server also writes staged access decisions through `server-go/internal/audit`. The current
+development recorder appends JSON lines to `.wt-server-go/audit/audit.jsonl` by default, or the path
+set by `WT_SERVER_AUDIT_PATH`. This covers `POST /staged` and `GET /staged` allow/deny outcomes
+with action, reason, tenant, account, resource, request ID, and HTTP route metadata. The production
+audit target should become immutable durable storage with query indexes.
+
 ## API Surface
 
 Current prototype HTTP endpoints:
@@ -74,13 +80,13 @@ and added/modified file bytes, while the server verifies hashes, stores objects,
 metadata, and returns an ACK only after persistence.
 
 The Go implementation currently supports the same REST compatibility endpoint. The next production
-step is to put auth, tenant resolution, IAM, quota checks, and audit logging in front of this
-handler before widening the API surface.
+step is to put JWT/API-key identity, full IAM, and quota checks in front of this handler before
+widening the API surface.
 
 Current Go auth is intentionally minimal: `WT_SERVER_AUTH_TOKEN` enables static bearer-token checks,
 and `X-WT-Tenant` / `X-WT-Account` populate request principal context. `/staged` rejects requests
 when a principal tenant is present and does not match the staged snapshot tenant. Full JWT/API-key
-auth, IAM evaluation, and audit logging remain planned work.
+auth and IAM evaluation remain planned work.
 
 `GET /staged` applies the same tenant guard. When `X-WT-Tenant` is present, the response is scoped
 to that tenant; an explicit mismatched `tenant` query parameter is rejected.

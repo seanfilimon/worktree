@@ -14,6 +14,7 @@ type Config struct {
 	Environment     string
 	LogLevelName    string
 	StorageRoot     string
+	AuditPath       string
 	AuthToken       string
 	ShutdownTimeout time.Duration
 	TLS             TLSConfig
@@ -31,6 +32,7 @@ func Load() (Config, error) {
 		Environment:     getEnv("WT_SERVER_ENV", "development"),
 		LogLevelName:    getEnv("WT_SERVER_LOG_LEVEL", "info"),
 		StorageRoot:     getEnv("WT_SERVER_STORAGE_ROOT", ".wt-server-go"),
+		AuditPath:       getEnv("WT_SERVER_AUDIT_PATH", ".wt-server-go/audit/audit.jsonl"),
 		AuthToken:       os.Getenv("WT_SERVER_AUTH_TOKEN"),
 		ShutdownTimeout: getDurationEnv("WT_SERVER_SHUTDOWN_TIMEOUT", 30*time.Second),
 		TLS: TLSConfig{

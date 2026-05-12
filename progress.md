@@ -88,6 +88,26 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
 **Result:** `go test ./...` passes in `server-go`.
 
+### Step 7 — `feat(server-go): audit staged access decisions`
+**Files:**
+- `server-go/internal/audit/audit.go`
+- `server-go/internal/httpapi/staged.go`
+- `server-go/internal/httpapi/middleware.go`
+- `server-go/internal/config/config.go`
+- `server-go/cmd/wt-server/main.go`
+- `server-go/README.md`
+- `docs/server-architecture.md`
+- `roadmap.md`
+
+- Added an audit recorder interface with a file-backed JSONL implementation.
+- Added `WT_SERVER_AUDIT_PATH`, defaulting to `.wt-server-go/audit/audit.jsonl`.
+- Recorded `POST /staged` and `GET /staged` allow/deny decisions with action, reason, tenant,
+  account, resource, request ID, method, and path.
+- Kept audit write failures out of the request path for this prototype slice.
+- Added unit tests for JSONL audit persistence and staged audit events.
+
+**Result:** `go test ./...` passes in `server-go`.
+
 ## Local Demo — Implementation Progress
 
 Target: full local demo (CLI → bgprocess → server on localhost). No remote server needed.

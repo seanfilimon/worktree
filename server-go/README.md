@@ -22,6 +22,7 @@ Implemented:
 - `POST /staged` staged snapshot upload endpoint.
 - `GET /staged` staged snapshot listing endpoint with tenant/worktree/branch filters.
 - JSON staged snapshot index for local development.
+- File-backed JSONL audit records for staged upload/list allow and deny decisions.
 
 Not implemented yet:
 
@@ -74,6 +75,9 @@ JSON `content` fields are decoded as base64 by Go. The server verifies `size` an
 before persisting the object. Staged metadata is written under
 `.wt-server-go/staged/index.json` by default.
 
+Staged upload and list decisions are appended to `.wt-server-go/audit/audit.jsonl` by default.
+Override the path with `WT_SERVER_AUDIT_PATH`.
+
 Set `WT_SERVER_AUTH_TOKEN` to require a static bearer token for protected endpoints:
 
 ```bash
@@ -92,6 +96,12 @@ List staged snapshots:
 curl "http://127.0.0.1:8080/staged?worktree=api&branch=main" \
   -H "Authorization: Bearer dev-secret" \
   -H "X-WT-Tenant: acme"
+```
+
+Inspect local audit records:
+
+```bash
+cat .wt-server-go/audit/audit.jsonl
 ```
 
 ## TLS 1.3
