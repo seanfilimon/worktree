@@ -28,6 +28,51 @@ TODO: Define the nested tree model. Describe how trees can contain sub-trees wit
 
 TODO: Specify the binary and/or text serialization formats for protocol messages. Define encoding for objects, metadata, and transport frames. Cover versioning and backward compatibility of the wire format.
 
+### Staged Snapshot Upload Compatibility Contract
+
+The first Go server compatibility endpoint is `POST /staged`. It mirrors the current Rust
+prototype boundary while the gRPC sync service is being designed.
+
+Request fields:
+
+| Field | Type | Required | Description |
+|---|---|---:|---|
+| `snapshot_id` | string | yes | Client-created snapshot identifier. |
+| `tenant` | string | yes | Tenant slug that owns or stages the work. |
+| `worktree` | string | yes | Worktree name within the tenant namespace. |
+| `tree_id` | string | yes | Tree identifier associated with the snapshot. |
+| `branch` | string | yes | Branch name where the staged work was produced. |
+| `objects` | array | yes | Uploaded added/modified objects required by the staged snapshot. |
+
+Each object entry contains:
+
+| Field | Type | Required | Description |
+|---|---|---:|---|
+| `path` | string | yes | Relative worktree path for diagnostics and future policy checks. |
+| `hash` | string | yes | 64-character BLAKE3 hex digest of `content`. |
+| `size` | integer | yes | Byte length of decoded `content`. |
+| `content` | base64 bytes | yes | Raw object bytes encoded by JSON as base64. |
+
+Server behavior:
+
+1. Reject malformed JSON or missing required fields.
+2. Reject invalid BLAKE3 hashes, size mismatches, and hash/content mismatches.
+3. Store object bytes in content-addressed storage using BLAKE3 fan-out paths.
+4. Persist staged snapshot metadata only after all objects are verified and stored.
+5. Return an ACK after persistence:
+
+```json
+{
+  "status": "staged",
+  "snapshot_id": "snap-1",
+  "objects": 1
+}
+```
+
+This REST shape is a compatibility bridge. The production sync API should promote the same
+semantics into a `StageSnapshot` gRPC method without changing object identity, verification, or ACK
+rules.
+
 ## Diff Semantics
 
 TODO: Define how diffs are computed between snapshots. Specify the diff algorithm, handling of binary files, rename/move detection, and representation of changes across nested tree boundaries.

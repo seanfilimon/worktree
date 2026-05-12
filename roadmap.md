@@ -117,6 +117,10 @@ Deliverables:
 
 Create the deployable service shell before implementing product behavior.
 
+Status: initial scaffold is implemented in `server-go/` with standard-library HTTP routing, JSON
+logging, request IDs, health/readiness endpoints, graceful shutdown, and TLS 1.3 minimum-version
+configuration.
+
 Work:
 
 - Add `server-go/`.
@@ -214,6 +218,11 @@ Rust prototype status: the SDK and mixed Rust server now have a compatibility im
 single-snapshot staged upload path. `push_staged` posts to `POST /staged`; the endpoint verifies
 BLAKE3 hashes, stores object bytes, and persists staged metadata in a JSON `StagedIndex`. This is
 reference behavior for the Go implementation, not the production storage/IAM design.
+
+Go prototype status: `server-go` now exposes `POST /staged` with the same compatibility semantics.
+It verifies JSON-uploaded object bytes against BLAKE3 hashes, writes objects to local fan-out
+storage, persists staged metadata, and returns an ACK only after persistence. Auth, IAM, tenant
+resolution, quotas, audit logging, WebSocket fanout, and Postgres-backed metadata are still pending.
 
 Work:
 

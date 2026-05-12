@@ -5,6 +5,12 @@ filesystem for local demo flows, creates auto-snapshots through the SDK, and exp
 on localhost. The production remote authority is planned as a Go service; it must not watch working
 directories or share SDK `.wt/state.json`.
 
+The Go server now has an initial `server-go/` implementation scaffold. It provides health/readiness
+endpoints, TLS 1.3 configuration, request IDs, local BLAKE3-verified content-addressed object
+storage, and a `POST /staged` compatibility endpoint. This is still development storage: staged
+metadata is written to a JSON index for now, while the production path remains PostgreSQL metadata
+plus S3-compatible object storage.
+
 Recent prototype work added the first real staged-sync boundary: after an auto-snapshot is created,
 the bgprocess synchronously uploads that snapshot to `POST /staged`. The endpoint verifies uploaded
 object bytes with BLAKE3 and stores staged metadata in server-side storage, separate from local SDK
@@ -40,6 +46,11 @@ The Rust prototype has a disk content-addressable storage backend using BLAKE3 f
 as `staged/index.json` under the server storage root. This is a prototype persistence layer, not the
 planned production canonical storage model.
 
+The Go server mirrors that first boundary under `server-go/internal/storage` and
+`server-go/internal/staged`. `LocalObjectStore` verifies uploaded bytes against a 64-character BLAKE3
+hex digest before writing to `objects/XX/<remaining-hash>`. `staged.FileStore` persists staged
+metadata to `staged/index.json` for local development only.
+
 ## API Surface
 
 Current prototype HTTP endpoints:
@@ -56,3 +67,7 @@ Current prototype HTTP endpoints:
 `/staged` is the important contract for the production rewrite: the client sends snapshot metadata
 and added/modified file bytes, while the server verifies hashes, stores objects, indexes staged
 metadata, and returns an ACK only after persistence.
+
+The Go implementation currently supports the same REST compatibility endpoint. The next production
+step is to put auth, tenant resolution, IAM, quota checks, and audit logging in front of this
+handler before widening the API surface.
