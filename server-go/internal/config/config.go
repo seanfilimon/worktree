@@ -10,14 +10,16 @@ import (
 )
 
 type Config struct {
-	HTTPAddr        string
-	Environment     string
-	LogLevelName    string
-	StorageRoot     string
-	AuditPath       string
-	AuthToken       string
-	ShutdownTimeout time.Duration
-	TLS             TLSConfig
+	HTTPAddr             string
+	Environment          string
+	LogLevelName         string
+	StorageRoot          string
+	AuditPath            string
+	AuthToken            string
+	MaxStagedObjectBytes int
+	MaxStagedObjects     int
+	ShutdownTimeout      time.Duration
+	TLS                  TLSConfig
 }
 
 type TLSConfig struct {
@@ -28,13 +30,15 @@ type TLSConfig struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:        getEnv("WT_SERVER_HTTP_ADDR", "127.0.0.1:8080"),
-		Environment:     getEnv("WT_SERVER_ENV", "development"),
-		LogLevelName:    getEnv("WT_SERVER_LOG_LEVEL", "info"),
-		StorageRoot:     getEnv("WT_SERVER_STORAGE_ROOT", ".wt-server-go"),
-		AuditPath:       getEnv("WT_SERVER_AUDIT_PATH", ".wt-server-go/audit/audit.jsonl"),
-		AuthToken:       os.Getenv("WT_SERVER_AUTH_TOKEN"),
-		ShutdownTimeout: getDurationEnv("WT_SERVER_SHUTDOWN_TIMEOUT", 30*time.Second),
+		HTTPAddr:             getEnv("WT_SERVER_HTTP_ADDR", "127.0.0.1:8080"),
+		Environment:          getEnv("WT_SERVER_ENV", "development"),
+		LogLevelName:         getEnv("WT_SERVER_LOG_LEVEL", "info"),
+		StorageRoot:          getEnv("WT_SERVER_STORAGE_ROOT", ".wt-server-go"),
+		AuditPath:            getEnv("WT_SERVER_AUDIT_PATH", ".wt-server-go/audit/audit.jsonl"),
+		AuthToken:            os.Getenv("WT_SERVER_AUTH_TOKEN"),
+		MaxStagedObjectBytes: getIntEnv("WT_SERVER_MAX_STAGED_OBJECT_BYTES", 64*1024*1024),
+		MaxStagedObjects:     getIntEnv("WT_SERVER_MAX_STAGED_OBJECTS", 1024),
+		ShutdownTimeout:      getDurationEnv("WT_SERVER_SHUTDOWN_TIMEOUT", 30*time.Second),
 		TLS: TLSConfig{
 			Enabled:  getBoolEnv("WT_SERVER_TLS_ENABLED", false),
 			CertFile: os.Getenv("WT_SERVER_TLS_CERT_FILE"),
@@ -99,6 +103,18 @@ func getDurationEnv(key string, fallback time.Duration) time.Duration {
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getIntEnv(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
 		return fallback
 	}
 	return parsed

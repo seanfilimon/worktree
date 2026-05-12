@@ -39,8 +39,11 @@ func main() {
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Version:       "dev",
 		Authenticator: auth.NewStaticAuthenticator(cfg.AuthToken),
-		Staged:        httpapi.NewStagedService(objectStore, stagedStore, auditRecorder),
-		Metrics:       metrics,
+		Staged: httpapi.NewStagedService(objectStore, stagedStore, auditRecorder, httpapi.StagedLimits{
+			MaxObjectBytes: cfg.MaxStagedObjectBytes,
+			MaxObjects:     cfg.MaxStagedObjects,
+		}),
+		Metrics: metrics,
 	})
 
 	srv := server.NewHTTPServer(cfg, router)

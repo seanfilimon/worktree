@@ -23,6 +23,7 @@ Implemented:
 - `GET /staged` staged snapshot listing endpoint with tenant/worktree/branch filters.
 - JSON staged snapshot index for local development.
 - File-backed JSONL audit records for staged upload/list allow and deny decisions.
+- Configurable staged upload object-size and object-count limits.
 
 Not implemented yet:
 
@@ -77,6 +78,13 @@ before persisting the object. Staged metadata is written under
 
 Staged upload and list decisions are appended to `.wt-server-go/audit/audit.jsonl` by default.
 Override the path with `WT_SERVER_AUDIT_PATH`.
+
+Staged uploads are bounded before object persistence. Defaults:
+
+- `WT_SERVER_MAX_STAGED_OBJECT_BYTES=67108864`
+- `WT_SERVER_MAX_STAGED_OBJECTS=1024`
+
+Set either value to `0` to disable that specific development limit.
 
 Set `WT_SERVER_AUTH_TOKEN` to require a static bearer token for protected endpoints:
 

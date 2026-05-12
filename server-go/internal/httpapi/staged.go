@@ -16,13 +16,30 @@ type StagedService struct {
 	objects storage.ObjectStore
 	staged  staged.Store
 	audit   audit.Recorder
+	limits  StagedLimits
 }
 
-func NewStagedService(objects storage.ObjectStore, stagedStore staged.Store, recorder audit.Recorder) *StagedService {
+type StagedLimits struct {
+	MaxObjectBytes int
+	MaxObjects     int
+}
+
+func DefaultStagedLimits() StagedLimits {
+	return StagedLimits{
+		MaxObjectBytes: 64 * 1024 * 1024,
+		MaxObjects:     1024,
+	}
+}
+
+func NewStagedService(objects storage.ObjectStore, stagedStore staged.Store, recorder audit.Recorder, limits ...StagedLimits) *StagedService {
 	if recorder == nil {
 		recorder = audit.NoopRecorder{}
 	}
-	return &StagedService{objects: objects, staged: stagedStore, audit: recorder}
+	selectedLimits := DefaultStagedLimits()
+	if len(limits) > 0 {
+		selectedLimits = limits[0]
+	}
+	return &StagedService{objects: objects, staged: stagedStore, audit: recorder, limits: selectedLimits}
 }
 
 type stagedUploadRequest struct {
@@ -61,6 +78,11 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if principal, ok := auth.PrincipalFromContext(r.Context()); ok && principal.Tenant != "" && principal.Tenant != req.Tenant {
 		s.auditDecision(r, "staged:create", audit.DecisionDeny, "tenant mismatch", req.Tenant, req.resource())
 		writeError(w, http.StatusForbidden, "TenantMismatch", "authenticated tenant does not match staged snapshot tenant")
+		return
+	}
+	if err := s.enforceUploadLimits(req); err != nil {
+		s.auditDecision(r, "staged:create", audit.DecisionDeny, err.Error(), req.Tenant, req.resource())
+		writeError(w, http.StatusRequestEntityTooLarge, "StagedUploadTooLarge", err.Error())
 		return
 	}
 	objectIDs := make([]string, 0, len(req.Objects))
@@ -133,6 +155,20 @@ func (s *StagedService) HandleList(w http.ResponseWriter, r *http.Request) {
 
 func (r stagedUploadRequest) resource() string {
 	return r.Tenant + "/" + r.Worktree + "/" + r.Branch + "/" + r.SnapshotID
+}
+
+func (s *StagedService) enforceUploadLimits(req stagedUploadRequest) error {
+	if s.limits.MaxObjects > 0 && len(req.Objects) > s.limits.MaxObjects {
+		return errors.New("staged upload object count exceeds configured limit")
+	}
+	if s.limits.MaxObjectBytes > 0 {
+		for _, obj := range req.Objects {
+			if obj.Size > s.limits.MaxObjectBytes || len(obj.Content) > s.limits.MaxObjectBytes {
+				return errors.New("staged upload object size exceeds configured limit")
+			}
+		}
+	}
+	return nil
 }
 
 func (s *StagedService) auditDecision(r *http.Request, action string, decision audit.Decision, reason string, tenant string, resource string) {

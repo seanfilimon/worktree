@@ -120,8 +120,8 @@ Create the deployable service shell before implementing product behavior.
 Status: initial scaffold is implemented in `server-go/` with standard-library HTTP routing, JSON
 logging, request IDs, health/readiness endpoints, a Prometheus-style `/metrics` endpoint, graceful
 shutdown, TLS 1.3 minimum-version configuration, optional static bearer-token auth for protected
-endpoints, tenant/account principal headers, and file-backed JSONL audit records for the current
-staged endpoints.
+endpoints, tenant/account principal headers, file-backed JSONL audit records for the current staged
+endpoints, and configurable staged upload safety limits.
 
 Work:
 
@@ -230,7 +230,8 @@ It verifies JSON-uploaded object bytes against BLAKE3 hashes, writes objects to 
 storage, persists staged metadata, and returns an ACK only after persistence. Auth, IAM, tenant
 resolution, quotas, WebSocket fanout, and Postgres-backed metadata are still pending. Staged
 allow/deny decisions are written to a local JSONL audit file as a development bridge toward the
-production immutable audit log.
+production immutable audit log. Uploads are bounded by configurable per-object and per-request
+object-count limits as a development safety guard; tenant-aware quota accounting is still pending.
 
 The Go endpoint now has the first request-context guard: if `X-WT-Tenant` is present, it must match
 the staged snapshot tenant. This is not full IAM, but it establishes the middleware seam where JWT,

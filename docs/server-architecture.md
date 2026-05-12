@@ -12,6 +12,7 @@ headers, local BLAKE3-verified content-addressed object storage, a `POST /staged
 endpoint, a filtered `GET /staged` listing endpoint, and file-backed JSONL audit records for staged
 allow/deny decisions. This is still development storage: staged metadata is written to a JSON index
 for now, while the production path remains PostgreSQL metadata plus S3-compatible object storage.
+Staged uploads are bounded by configurable development limits before object persistence.
 
 Recent prototype work added the first real staged-sync boundary: after an auto-snapshot is created,
 the bgprocess synchronously uploads that snapshot to `POST /staged`. The endpoint verifies uploaded
@@ -58,6 +59,11 @@ development recorder appends JSON lines to `.wt-server-go/audit/audit.jsonl` by 
 set by `WT_SERVER_AUDIT_PATH`. This covers `POST /staged` and `GET /staged` allow/deny outcomes
 with action, reason, tenant, account, resource, request ID, and HTTP route metadata. The production
 audit target should become immutable durable storage with query indexes.
+
+The current staged upload guard rejects requests that exceed `WT_SERVER_MAX_STAGED_OBJECT_BYTES`
+per object or `WT_SERVER_MAX_STAGED_OBJECTS` per request. These are deployment-safety limits, not
+tenant quota accounting; production quotas still need tenant-aware storage accounting and durable
+rate-limit state.
 
 ## API Surface
 

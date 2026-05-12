@@ -108,6 +108,25 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
 **Result:** `go test ./...` passes in `server-go`.
 
+### Step 8 — `feat(server-go): limit staged upload payloads`
+**Files:**
+- `server-go/internal/config/config.go`
+- `server-go/internal/config/config_test.go`
+- `server-go/internal/httpapi/staged.go`
+- `server-go/internal/httpapi/staged_test.go`
+- `server-go/cmd/wt-server/main.go`
+- `server-go/README.md`
+- `docs/server-architecture.md`
+- `roadmap.md`
+
+- Added `WT_SERVER_MAX_STAGED_OBJECT_BYTES`, defaulting to 64 MiB per staged object.
+- Added `WT_SERVER_MAX_STAGED_OBJECTS`, defaulting to 1024 objects per staged upload request.
+- Rejected oversized staged uploads with structured `StagedUploadTooLarge` responses.
+- Recorded limit rejections through the same staged audit decision path.
+- Added config and HTTP tests for limit parsing and staged upload rejection.
+
+**Result:** `go test ./...` passes in `server-go`.
+
 ## Local Demo — Implementation Progress
 
 Target: full local demo (CLI → bgprocess → server on localhost). No remote server needed.
