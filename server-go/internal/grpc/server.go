@@ -103,6 +103,7 @@ func (s *SyncServer) StageSnapshot(ctx context.Context, req *worktreepb.StageSna
 func (s *SyncServer) ListStagedSnapshots(ctx context.Context, req *worktreepb.ListStagedSnapshotsRequest) (*worktreepb.ListStagedSnapshotsResponse, error) {
 	decision, err := s.authorizer.Authorize(ctx, auth.Principal{}, "staged:list", "staged")
 	if err != nil || decision == iam.Deny {
+		s.record(ctx, "staged:list", audit.DecisionDeny, "iam denied", req.Tenant, "", "staged")
 		return nil, status.Error(codes.PermissionDenied, "access denied")
 	}
 
@@ -112,6 +113,7 @@ func (s *SyncServer) ListStagedSnapshots(ctx context.Context, req *worktreepb.Li
 		Branch:   req.Branch,
 	})
 	if err != nil {
+		s.record(ctx, "staged:list", audit.DecisionDeny, "list failed", req.Tenant, "", "staged")
 		return nil, status.Errorf(codes.Internal, "list failed: %v", err)
 	}
 
@@ -127,6 +129,7 @@ func (s *SyncServer) ListStagedSnapshots(ctx context.Context, req *worktreepb.Li
 			CreatedAt:  snap.CreatedAt.Format(time.RFC3339),
 		})
 	}
+	s.record(ctx, "staged:list", audit.DecisionAllow, "", req.Tenant, "", "staged")
 	return &worktreepb.ListStagedSnapshotsResponse{
 		Snapshots: records,
 		Count:     int32(len(records)),

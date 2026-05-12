@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
@@ -162,5 +161,4 @@ func TestSyncServer_ListStagedSnapshots(t *testing.T) {
 	if !found {
 		t.Error("snapshot not found in list response")
 	}
-	_ = strings.Contains // suppress unused import
 }
