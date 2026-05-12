@@ -13,28 +13,33 @@ The immediate goal is to finalize the Rust-based local prototype (`worktree-serv
 These are the critical fixes and missing features required to make the local Rust prototype function flawlessly for the engineering team lead presentation.
 
 ### 1. Staged Snapshot Visibility (The "Killer Feature")
+* **Status: Done**
 * **Goal:** Demonstrate real-time team visibility of unpushed work.
-* **To Do:**
-  * Add the missing `/staged/ws` endpoint to the Axum router.
-  * Implement WebSocket connection upgrading in the server.
-  * Wire up a `tokio::sync::broadcast` or `mpsc` channel to forward incoming HTTP `POST /staged` payloads to all connected WebSocket clients dynamically.
+* **Completed:**
+  * Added the missing `/staged/ws` endpoint to the Axum router.
+  * Implemented WebSocket connection upgrading in the server.
+  * Wired up a `tokio::sync::broadcast` channel to forward incoming HTTP `POST /staged` payloads to all connected WebSocket clients dynamically.
 
 ### 2. Snapshot-Based Conflict Resolution (Fixing the "Revert Bug")
+* **Status: Done**
 * **Goal:** Prove the 3-way snapshot diffing algorithm works end-to-end without data loss.
-* **To Do:**
-  * **Critical Fix:** Modify `worktree-sdk/src/engine/merge.rs` to write the `merged_files` directly to the physical disk (working directory) *before* saving the database state. Currently, the disconnected filesystem state triggers the `bgprocess` to auto-snapshot and silently revert the merge.
+* **Completed:**
+  * **Critical Fix:** Modified `worktree-sdk/src/engine/merge.rs` to write the `merged_files` directly to the physical disk (working directory) *before* saving the database state. Solved the disconnected filesystem state that was triggering the `bgprocess` to auto-snapshot and silently revert the merge.
 
 ### 3. IAM Enforcement Demo (Securing the Middleware)
+* **Status: Done**
 * **Goal:** Show that Role-Based/Attribute-Based Access Control works without exposing the system to crashes.
-* **To Do:**
-  * **Critical Fix:** Remove the severe Out-of-Memory (OOM) vulnerability in `require_auth` middleware (`axum::body::to_bytes(body, usize::MAX)`).
-  * Refactor the client and server to pass `tree_id` via HTTP headers (e.g., `x-wt-tree-id`) or URL path parameters (e.g., `/api/tree/:id/snapshot`) to avoid parsing the JSON body during auth enforcement.
+* **Completed:**
+  * **Critical Fix:** Removed the severe Out-of-Memory (OOM) vulnerability in `require_auth` middleware.
+  * Refactored the client and server to pass `tree_id` via HTTP headers (`x-wt-tree-id`) to avoid parsing the JSON body during auth enforcement.
+  * Seeded a long-lived demo session directly into the in-memory server to ensure local commands authenticate reliably during the demo.
 
 ### 4. Resilient Background Sync Loop
+* **Status: Done**
 * **Goal:** Show that the local watcher can reliably push to the remote without leaking memory or dropping changes.
-* **To Do:**
-  * Add a bounded capacity to the `push_tx` channel (`mpsc::sync_channel` or `tokio::sync::mpsc`) to prevent unbounded RAM growth.
-  * Add basic retry logic to the background thread if a `push_staged` network request fails.
+* **Completed:**
+  * Added bounded capacity to the `push_tx` channel (`tokio::sync::mpsc` / `mpsc::sync_channel`) to prevent unbounded RAM growth.
+  * Added basic retry logic to the background thread if a `push_staged` network request fails.
 
 ---
 
