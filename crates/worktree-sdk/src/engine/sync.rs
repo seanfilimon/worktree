@@ -27,7 +27,13 @@ struct StagedObjectUpload {
 }
 
 fn server_url() -> String {
-    std::env::var("WT_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string())
+    server_url_with_env(std::env::var("WT_SERVER_URL").ok().as_deref())
+}
+
+fn server_url_with_env(override_val: Option<&str>) -> String {
+    override_val
+        .unwrap_or("http://127.0.0.1:8080")
+        .to_string()
 }
 
 pub fn push(engine: &super::WorktreeEngine) -> Result<PushResult> {
@@ -292,6 +298,15 @@ mod tests {
                 .collect(),
             auto_generated: false,
         }
+    }
+
+    #[test]
+    fn server_url_reads_env_var() {
+        let url = server_url_with_env(None);
+        assert_eq!(url, "http://127.0.0.1:8080");
+
+        let url = server_url_with_env(Some("http://prod.example.com:9000"));
+        assert_eq!(url, "http://prod.example.com:9000");
     }
 
     #[test]
