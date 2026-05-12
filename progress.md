@@ -38,6 +38,23 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
 **Result:** `go test ./...` passes in `server-go` with workspace-local Go cache settings.
 
+### Step 4 — `feat(server-go): add initial auth tenant context`
+**Files:**
+- `server-go/internal/auth/auth.go`
+- `server-go/internal/httpapi/middleware.go`
+- `server-go/internal/httpapi/staged.go`
+- `server-go/README.md`
+- `docs/server-architecture.md`
+- `roadmap.md`
+
+- Added optional static bearer-token auth via `WT_SERVER_AUTH_TOKEN`.
+- Added request-scoped tenant/account principal from `X-WT-Tenant` and `X-WT-Account`.
+- Scoped auth middleware to protected endpoints instead of public health/readiness endpoints.
+- Added `/staged` tenant mismatch rejection when authenticated tenant context is present.
+- Added unit tests for static auth and staged tenant mismatch behavior.
+
+**Result:** `go test ./...` passes in `server-go`.
+
 ## Local Demo — Implementation Progress
 
 Target: full local demo (CLI → bgprocess → server on localhost). No remote server needed.

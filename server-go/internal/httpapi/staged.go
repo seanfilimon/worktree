@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ramizik/worktree/server-go/internal/auth"
 	"github.com/ramizik/worktree/server-go/internal/staged"
 	"github.com/ramizik/worktree/server-go/internal/storage"
 )
@@ -47,6 +48,10 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := req.validate(); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "InvalidStagedSnapshot", err.Error())
+		return
+	}
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok && principal.Tenant != "" && principal.Tenant != req.Tenant {
+		writeError(w, http.StatusForbidden, "TenantMismatch", "authenticated tenant does not match staged snapshot tenant")
 		return
 	}
 	objectIDs := make([]string, 0, len(req.Objects))

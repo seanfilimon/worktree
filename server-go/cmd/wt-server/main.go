@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ramizik/worktree/server-go/internal/auth"
 	"github.com/ramizik/worktree/server-go/internal/config"
 	"github.com/ramizik/worktree/server-go/internal/httpapi"
 	"github.com/ramizik/worktree/server-go/internal/server"
@@ -32,8 +33,9 @@ func main() {
 	stagedStore := staged.NewFileStore(cfg.StorageRoot)
 
 	router := httpapi.NewRouter(httpapi.RouterConfig{
-		Version: "dev",
-		Staged:  httpapi.NewStagedService(objectStore, stagedStore),
+		Version:       "dev",
+		Authenticator: auth.NewStaticAuthenticator(cfg.AuthToken),
+		Staged:        httpapi.NewStagedService(objectStore, stagedStore),
 	})
 
 	srv := server.NewHTTPServer(cfg, router)

@@ -6,10 +6,11 @@ on localhost. The production remote authority is planned as a Go service; it mus
 directories or share SDK `.wt/state.json`.
 
 The Go server now has an initial `server-go/` implementation scaffold. It provides health/readiness
-endpoints, TLS 1.3 configuration, request IDs, local BLAKE3-verified content-addressed object
-storage, and a `POST /staged` compatibility endpoint. This is still development storage: staged
-metadata is written to a JSON index for now, while the production path remains PostgreSQL metadata
-plus S3-compatible object storage.
+endpoints, TLS 1.3 configuration, request IDs, optional static bearer-token authentication for
+protected endpoints, tenant/account principal headers, local BLAKE3-verified content-addressed
+object storage, and a `POST /staged` compatibility endpoint. This is still development storage:
+staged metadata is written to a JSON index for now, while the production path remains PostgreSQL
+metadata plus S3-compatible object storage.
 
 Recent prototype work added the first real staged-sync boundary: after an auto-snapshot is created,
 the bgprocess synchronously uploads that snapshot to `POST /staged`. The endpoint verifies uploaded
@@ -71,3 +72,8 @@ metadata, and returns an ACK only after persistence.
 The Go implementation currently supports the same REST compatibility endpoint. The next production
 step is to put auth, tenant resolution, IAM, quota checks, and audit logging in front of this
 handler before widening the API surface.
+
+Current Go auth is intentionally minimal: `WT_SERVER_AUTH_TOKEN` enables static bearer-token checks,
+and `X-WT-Tenant` / `X-WT-Account` populate request principal context. `/staged` rejects requests
+when a principal tenant is present and does not match the staged snapshot tenant. Full JWT/API-key
+auth, IAM evaluation, and audit logging remain planned work.

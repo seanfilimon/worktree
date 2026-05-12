@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/ramizik/worktree/server-go/internal/auth"
 )
 
 type RouterConfig struct {
-	Version string
-	Staged  *StagedService
+	Version       string
+	Authenticator auth.StaticAuthenticator
+	Staged        *StagedService
 }
 
 func NewRouter(cfg RouterConfig) http.Handler {
@@ -16,7 +19,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	mux.HandleFunc("GET /health", healthHandler(cfg))
 	mux.HandleFunc("GET /ready", readyHandler(cfg))
 	if cfg.Staged != nil {
-		mux.HandleFunc("POST /staged", cfg.Staged.HandleUpload)
+		mux.Handle("POST /staged", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Staged.HandleUpload)))
 	}
 	return requestIDMiddleware(mux)
 }

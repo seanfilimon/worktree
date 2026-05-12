@@ -118,8 +118,9 @@ Deliverables:
 Create the deployable service shell before implementing product behavior.
 
 Status: initial scaffold is implemented in `server-go/` with standard-library HTTP routing, JSON
-logging, request IDs, health/readiness endpoints, graceful shutdown, and TLS 1.3 minimum-version
-configuration.
+logging, request IDs, health/readiness endpoints, graceful shutdown, TLS 1.3 minimum-version
+configuration, optional static bearer-token auth for protected endpoints, and tenant/account
+principal headers.
 
 Work:
 
@@ -223,6 +224,10 @@ Go prototype status: `server-go` now exposes `POST /staged` with the same compat
 It verifies JSON-uploaded object bytes against BLAKE3 hashes, writes objects to local fan-out
 storage, persists staged metadata, and returns an ACK only after persistence. Auth, IAM, tenant
 resolution, quotas, audit logging, WebSocket fanout, and Postgres-backed metadata are still pending.
+
+The Go endpoint now has the first request-context guard: if `X-WT-Tenant` is present, it must match
+the staged snapshot tenant. This is not full IAM, but it establishes the middleware seam where JWT,
+API-key, policy evaluation, quota, and audit checks will be added.
 
 Work:
 

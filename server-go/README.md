@@ -15,6 +15,8 @@ Implemented:
 - `GET /ready`.
 - Request ID middleware.
 - TLS 1.3 minimum-version configuration.
+- Optional static bearer-token middleware for protected endpoints.
+- Request-scoped tenant/account principal headers.
 - Local content-addressed object storage with BLAKE3 verification.
 - `POST /staged` staged snapshot upload endpoint.
 - JSON staged snapshot index for local development.
@@ -22,7 +24,6 @@ Implemented:
 Not implemented yet:
 
 - Postgres metadata storage.
-- Auth and tenant resolution.
 - IAM policy evaluation.
 - gRPC sync service.
 
@@ -47,6 +48,8 @@ Upload a staged snapshot object:
 ```bash
 curl -X POST http://127.0.0.1:8080/staged \
   -H "Content-Type: application/json" \
+  -H "X-WT-Tenant: acme" \
+  -H "X-WT-Account: alice" \
   -d '{
     "snapshot_id": "snap-1",
     "tenant": "acme",
@@ -67,6 +70,18 @@ curl -X POST http://127.0.0.1:8080/staged \
 JSON `content` fields are decoded as base64 by Go. The server verifies `size` and BLAKE3 `hash`
 before persisting the object. Staged metadata is written under
 `.wt-server-go/staged/index.json` by default.
+
+Set `WT_SERVER_AUTH_TOKEN` to require a static bearer token for protected endpoints:
+
+```bash
+WT_SERVER_AUTH_TOKEN=dev-secret go run ./cmd/wt-server
+```
+
+Then call protected endpoints with:
+
+```bash
+Authorization: Bearer dev-secret
+```
 
 ## TLS 1.3
 

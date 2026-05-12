@@ -108,3 +108,42 @@ func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
+	root := t.TempDir()
+	objects := storage.NewLocalObjectStore(root)
+	service := NewStagedService(objects, stagedStoreFunc(func(ctx context.Context, snapshot staged.Snapshot) error {
+		t.Fatal("staged store should not be called")
+		return nil
+	}))
+	router := NewRouter(RouterConfig{Version: "test", Staged: service})
+
+	content := []byte("file contents")
+	hash := blake3.Sum256(content)
+	body := stagedUploadRequest{
+		SnapshotID: "snap-1",
+		Tenant:     "acme",
+		Worktree:   "api",
+		TreeID:     "tree-1",
+		Branch:     "main",
+		Objects: []stagedObjectUpload{{
+			Path:    "src/main.rs",
+			Hash:    hex.EncodeToString(hash[:]),
+			Size:    len(content),
+			Content: content,
+		}},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
+	req.Header.Set("X-WT-Tenant", "other")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
