@@ -89,10 +89,12 @@ Before implementation, update the specs so the server is explicitly language-neu
 
 Work:
 
+- Treat [`docs/protocol-spec.md`](docs/protocol-spec.md) as the implementation-facing protocol contract for the Go server and Rust clients.
 - Update `crates/worktree-protocol/specs/server/Server.md`.
 - Update `crates/worktree-protocol/specs/sync/Sync.md`.
 - Update `crates/worktree-protocol/specs/iam/IAM.md`.
 - Update `crates/worktree-protocol/specs/visibility/StagedVisibility.md` if staged event semantics need clarification.
+- Backfill `docs/protocol-spec.md` from the authoritative protocol specs so it names object formats, staged snapshot flow, push/pull contracts, wire framing, and compatibility rules in one place.
 - Normalize permission names. The specs currently mix names like `sync:push`, `branch:push`, `PolicyManage`, and `policy:manage`.
 - Define exact sync, branch, staged snapshot, and auth message schemas.
 - Define which payloads are Protobuf, which remain bincode, and how object bytes are verified.
@@ -101,9 +103,12 @@ Why:
 
 The Go server and Rust clients need one shared contract. Without this, the Go implementation will drift from the Rust protocol crate and become another incompatible server.
 
+`docs/protocol-spec.md` is the bridge between product architecture and implementation. The detailed specs under `crates/worktree-protocol/specs/` remain authoritative, but the Go server should be built against the consolidated contract in `docs/protocol-spec.md` so deployment work does not depend on reading scattered TODOs or Rust-only implementation details.
+
 Deliverables:
 
 - Updated specs.
+- Updated `docs/protocol-spec.md` with Go/Rust compatibility requirements.
 - Permission vocabulary table.
 - Initial `.proto` files for sync/auth/branch/staged APIs.
 - Cross-language fixture plan for Rust-generated objects verified by Go.
@@ -400,8 +405,9 @@ That milestone proves the new server boundary is correct.
 
 ## Immediate Next Steps
 
-1. Update specs to state that the remote server is language-neutral and Go is the planned production implementation.
-2. Normalize permission names across server, IAM, and sync specs.
-3. Draft `.proto` contracts for auth, staged sync, branch push/pull, and object negotiation.
-4. Add `server-go/` skeleton.
-5. Implement canonical storage and IAM before adding feature endpoints.
+1. Expand `docs/protocol-spec.md` into the consolidated Rust/Go protocol contract.
+2. Update specs to state that the remote server is language-neutral and Go is the planned production implementation.
+3. Normalize permission names across server, IAM, and sync specs.
+4. Draft `.proto` contracts for auth, staged sync, branch push/pull, and object negotiation.
+5. Add `server-go/` skeleton.
+6. Implement canonical storage and IAM before adding feature endpoints.
