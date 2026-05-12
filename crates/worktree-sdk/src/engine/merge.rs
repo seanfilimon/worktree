@@ -187,7 +187,7 @@ pub fn merge_branch(engine: &super::WorktreeEngine, source_branch: &str) -> Resu
 
     conflicts.sort();
 
-    let mut files: Vec<FileEntry> = merged_files.into_values().collect();
+    let mut files: Vec<FileEntry> = merged_files.values().cloned().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let files_merged = files.len();
 

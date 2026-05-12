@@ -5,7 +5,6 @@ use worktree_sdk::WorktreeEngine;
 
 fn print_staged(clear: bool) -> Result<(), Box<dyn std::error::Error>> {
     let engine = WorktreeEngine::open(Path::new("."))?;
-    let state = worktree_sdk::engine::status::load_state(&engine)?;
 
     if clear {
         // Clear terminal screen for interactive watch
@@ -21,21 +20,93 @@ fn print_staged(clear: bool) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "unknown".to_string());
 
     let mut found_others = false;
-    for tree in &state.trees {
-        for snap in &tree.snapshots {
-            if snap.author != current_author {
-                found_others = true;
-                let short_id: String = snap.id.chars().take(8).collect();
-                format::print_list_item(&format!(
-                    "{} on {}/{} — \"{}\" ({} file(s))",
-                    snap.author,
-                    tree.name,
-                    snap.branch_name,
-                    snap.message,
-                    snap.files.len(),
-                ));
-                format::print_kv("      Snapshot", &short_id);
-                format::print_kv("      Time", &snap.timestamp);
+
+    let staged_file = engine.wt_dir().join("cache").join("staged_index.json");
+    if let Ok(content) = std::fs::read_to_string(&staged_file) {
+        if let Ok(snapshots) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+            for snap in snapshots {
+                let author = snap
+                    .get("author")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        snap.get("snapshot")
+                            .and_then(|s| s.get("author"))
+                            .and_then(|v| v.as_str())
+                    })
+                    .unwrap_or("unknown");
+
+                if author != current_author {
+                    found_others = true;
+
+                    let id = snap
+                        .get("snapshot_id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| snap.get("id").and_then(|v| v.as_str()))
+                        .or_else(|| {
+                            snap.get("snapshot")
+                                .and_then(|s| s.get("id"))
+                                .and_then(|v| v.as_str())
+                        })
+                        .unwrap_or("unknown");
+
+                    let tree_name = snap
+                        .get("tree_id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| snap.get("worktree").and_then(|v| v.as_str()))
+                        .or_else(|| snap.get("tree_name").and_then(|v| v.as_str()))
+                        .unwrap_or("unknown");
+
+                    let branch_name = snap
+                        .get("branch")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| snap.get("branch_name").and_then(|v| v.as_str()))
+                        .unwrap_or("unknown");
+
+                    let message = snap
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| {
+                            snap.get("snapshot")
+                                .and_then(|s| s.get("message"))
+                                .and_then(|v| v.as_str())
+                        })
+                        .unwrap_or("No message");
+
+                    let timestamp = snap
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| {
+                            snap.get("snapshot")
+                                .and_then(|s| s.get("timestamp"))
+                                .and_then(|v| v.as_str())
+                        })
+                        .unwrap_or("unknown time");
+
+                    let files_len = snap
+                        .get("objects")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .or_else(|| {
+                            snap.get("files")
+                                .and_then(|v| v.as_array())
+                                .map(|a| a.len())
+                        })
+                        .or_else(|| {
+                            snap.get("snapshot")
+                                .and_then(|s| s.get("files"))
+                                .and_then(|v| v.as_array())
+                                .map(|a| a.len())
+                        })
+                        .unwrap_or(0);
+
+                    let short_id: String = id.chars().take(8).collect();
+                    format::print_list_item(&format!(
+                        "{} on {}/{} — \"{}\" ({} file(s))",
+                        author, tree_name, branch_name, message, files_len,
+                    ));
+                    format::print_kv("      Snapshot", &short_id);
+                    format::print_kv("      Time", timestamp);
+                }
             }
         }
     }

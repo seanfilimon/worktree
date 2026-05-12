@@ -46,9 +46,30 @@ pub async fn run() -> Result<(), error::ServerError> {
 
     let (staged_tx, _) = tokio::sync::broadcast::channel(100);
 
+    let mut sessions = HashMap::new();
+    let demo_user = worktree_protocol::core::id::AccountId::new();
+    sessions.insert(
+        "dev-secret".to_string(),
+        crate::auth::session::Session::new(
+            demo_user,
+            "dev-secret",
+            chrono::Utc::now() + chrono::Duration::days(365),
+        ),
+    );
+
+    let mut enforcer = PermissionEnforcer::new();
+    use worktree_protocol::iam::permission::Permission;
+    use worktree_protocol::iam::scope::Scope;
+    enforcer.grant(demo_user, Permission::TreeCreate, Scope::Global);
+    enforcer.grant(demo_user, Permission::TreeRead, Scope::Global);
+    enforcer.grant(demo_user, Permission::SnapshotCreate, Scope::Global);
+    enforcer.grant(demo_user, Permission::StagedCreate, Scope::Global);
+    enforcer.grant(demo_user, Permission::BranchCreate, Scope::Global);
+    enforcer.grant(demo_user, Permission::BranchRead, Scope::Global);
+
     let state = Arc::new(AppState {
-        enforcer: Arc::new(RwLock::new(PermissionEnforcer::new())),
-        sessions: Arc::new(RwLock::new(HashMap::new())),
+        enforcer: Arc::new(RwLock::new(enforcer)),
+        sessions: Arc::new(RwLock::new(sessions)),
         staged_tx,
     });
 

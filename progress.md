@@ -327,6 +327,11 @@ shape.
 
 ## Fixes
 
+### `fix(demo): secure Auth and WebSocket broadcast for Staged Visibility`
+- Seeded `dev-secret` into in-memory server sessions to bypass full IAM requirements for local demo.
+- Fixed `wt staged` CLI command to read from the cached WebSocket index (`.wt/cache/staged_index.json`) instead of the committed canonical state.
+- Fixed server-side WebSocket broadcast of real-time staged snapshots.
+
 ### `fix(git): sync InMemoryHashIndex with refactored HashIndex trait`
 **File:** `crates/worktree-git/src/hash_index/store.rs`
 - Rewrote `HashIndex` impl to match current trait signature
