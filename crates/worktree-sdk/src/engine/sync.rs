@@ -57,8 +57,61 @@ pub fn push_latest_staged(engine: &super::WorktreeEngine) -> Result<PushResult> 
     push_staged(engine, &snap.id)
 }
 
-pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<PushResult> {
+pub fn push_unpushed(engine: &super::WorktreeEngine) -> Result<PushResult> {
     let state = super::status::load_state(engine)?;
+    let tree = state
+        .current_tree()
+        .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
+
+    let branch = &tree.current_branch;
+    let branch_state = tree.branches.iter().find(|b| &b.name == branch);
+    let remote_tip = branch_state.and_then(|b| b.remote_tip.clone());
+
+    let snaps = tree.snapshots_on_branch(branch);
+
+    let mut to_push = Vec::new();
+    if let Some(rtip) = remote_tip {
+        let mut found = false;
+        for snap in &snaps {
+            if found {
+                to_push.push(snap.id.clone());
+            } else if snap.id == rtip {
+                found = true;
+            }
+        }
+        if !found {
+            to_push = snaps.into_iter().map(|s| s.id.clone()).collect();
+        }
+    } else {
+        to_push = snaps.into_iter().map(|s| s.id.clone()).collect();
+    }
+
+    if engine.wt_dir().join("cache").join("sync_paused").exists() {
+        return Ok(PushResult {
+            branch: branch.clone(),
+            snapshots_pushed: 0,
+            server: server_url(),
+        });
+    }
+
+    let mut pushed = 0;
+    for snap_id in to_push {
+        let res = push_staged(engine, &snap_id)?;
+        if res.snapshots_pushed == 0 {
+            break;
+        }
+        pushed += 1;
+    }
+
+    Ok(PushResult {
+        branch: branch.clone(),
+        snapshots_pushed: pushed,
+        server: server_url(),
+    })
+}
+
+pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<PushResult> {
+    let mut state = super::status::load_state(engine)?;
     let tree = state
         .current_tree()
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
@@ -101,7 +154,12 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
     let server = server_url();
     let client = reqwest::blocking::Client::new();
     let mut request = client.post(format!("{server}/staged")).json(&req);
-    if let Ok(token) = std::env::var("WT_SERVER_AUTH_TOKEN") {
+    let token = std::env::var("WT_SERVER_AUTH_TOKEN").ok().or_else(|| {
+        std::fs::read_to_string(engine.wt_dir().join("cache").join("auth_token"))
+            .ok()
+            .map(|t| t.trim().to_string())
+    });
+    if let Some(token) = token {
         request = request.bearer_auth(token);
     }
     request
@@ -110,8 +168,17 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
         .error_for_status()
         .map_err(|e| SdkError::NetworkError(e.to_string()))?;
 
+    let branch_name = req.branch.clone();
+    let tree_name = req.tree_id.clone();
+    if let Some(t) = state.trees.iter_mut().find(|t| t.name == tree_name) {
+        if let Some(b) = t.branches.iter_mut().find(|b| b.name == branch_name) {
+            b.remote_tip = Some(snapshot_id.to_string());
+        }
+    }
+    super::status::save_state(engine, &state)?;
+
     Ok(PushResult {
-        branch: branch.clone(),
+        branch: branch_name,
         snapshots_pushed: 1,
         server,
     })
@@ -136,9 +203,21 @@ pub fn pull(engine: &super::WorktreeEngine) -> Result<PullResult> {
         remote_tip,
     };
 
-    let resp: serde_json::Value = reqwest::blocking::Client::new()
+    let token = std::env::var("WT_SERVER_AUTH_TOKEN").ok().or_else(|| {
+        std::fs::read_to_string(engine.wt_dir().join("cache").join("auth_token"))
+            .ok()
+            .map(|t| t.trim().to_string())
+    });
+
+    let mut request = reqwest::blocking::Client::new()
         .post(format!("{}/api/pull", server_url()))
-        .json(&req)
+        .json(&req);
+
+    if let Some(t) = token {
+        request = request.bearer_auth(t);
+    }
+
+    let resp: serde_json::Value = request
         .send()
         .map_err(|e| SdkError::NetworkError(e.to_string()))?
         .json()

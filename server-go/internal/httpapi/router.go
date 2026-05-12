@@ -17,6 +17,7 @@ type RouterConfig struct {
 	Staged        *StagedService
 	Canonical     *CanonicalService
 	Metrics       *observability.Metrics
+	LoginHandler  http.HandlerFunc
 }
 
 func NewRouter(cfg RouterConfig) http.Handler {
@@ -30,9 +31,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	mux.HandleFunc("GET /health", healthHandler(cfg))
 	mux.HandleFunc("GET /ready", readyHandler(cfg))
 	mux.Handle("GET /metrics", cfg.Metrics)
+	if cfg.LoginHandler != nil {
+		mux.Handle("POST /login", cfg.LoginHandler)
+	}
 	if cfg.Staged != nil {
 		mux.Handle("POST /staged", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Staged.HandleUpload)))
 		mux.Handle("GET /staged", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Staged.HandleList)))
+		mux.Handle("GET /staged/ws", authMiddleware(cfg.Authenticator, HandleStagedWS(cfg.Staged.Broadcaster())))
 	}
 	if cfg.Canonical != nil {
 		mux.Handle("POST /api/push", authMiddleware(cfg.Authenticator, http.HandlerFunc(cfg.Canonical.HandlePush)))

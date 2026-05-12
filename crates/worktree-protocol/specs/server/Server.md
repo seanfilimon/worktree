@@ -463,6 +463,25 @@ When a merge request is merged:
 4. Merge request status is set to `Merged`.
 5. Source branch is optionally deleted (configurable per merge request).
 
+### Snapshot-Based Conflict Resolution
+
+W0rktree rejects Git's commit-by-commit replay (like rebase or cherry-pick) in favor of **group-based snapshot diffing**. Conflicts are detected and resolved at the snapshot level rather than attempting to replay individual changes.
+
+#### Group-Based Snapshot Diffing
+
+When merging `source_branch` into `target_branch`:
+1. **Base Identification**: The server identifies the Most Recent Common Ancestor (MRCA) snapshot between the two branches.
+2. **Snapshot Diffing**: The server compares the MRCA directly against the tip of `source_branch` and the tip of `target_branch` (ignoring intermediate snapshots entirely).
+3. **Conflict Detection**: If both branch tips modified the same file differently from the MRCA (e.g. content conflict, modify/delete), a conflict is registered using the protocol's `MergeConflict` primitive.
+
+#### Conflict Resolution Flow
+
+If conflicts are detected during a merge attempt:
+1. The server rejects the merge execution and marks the Merge Request as `Conflicted`.
+2. The server exposes a **Conflict Manifest** via the API containing base, source, and target file hashes for all conflicting files.
+3. A collaborator fetches the conflict state, resolves the files locally, and stages/pushes a **resolution snapshot** to the `source_branch`.
+4. The resolution snapshot natively incorporates the resolved contents. The server re-evaluates the merge, finds no conflicts between the new source tip and target tip, and allows the merge to proceed.
+
 ### CI Integration
 
 The server exposes webhook endpoints for CI systems to report check status:

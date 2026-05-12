@@ -27,6 +27,10 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 	return &PostgresStore{pool: pool}, nil
 }
 
+func NewPostgresStoreWithPool(pool *pgxpool.Pool) *PostgresStore {
+	return &PostgresStore{pool: pool}
+}
+
 func (s *PostgresStore) Close() {
 	s.pool.Close()
 }

@@ -766,7 +766,7 @@ The Rust workspace remains the active local engine, CLI, protocol, Git bridge, a
 | **worktree-sdk** | Init, snapshot, branch CRUD, tree CRUD, diff, merge, tag, status, reflog |
 | **worktree-cli** | 20 commands with colored output, config management, TOML read/write |
 | **worktree-git** | Hash index, gitattributes parser, repo wrapper, commit walker, submodule import, repo builder, transport, auth |
-| **worktree-server** | Rust bgprocess/prototype server pieces: filesystem watcher, debouncer, session auth, permission enforcer, object index, staged storage work, health tracker, transport, rules engine |
+| **worktree-server** | Rust bgprocess/prototype server pieces: filesystem watcher, debouncer, session auth, permission enforcer, object index, staged storage work, health tracker, transport, rules engine, decoupled sync queue, backfill-on-resume |
 | **worktree-admin** | 8 Yew components, routing, CSS system, Axum API (10 endpoints), auth middleware, error handling |
 | **@worktree/web** | Next.js site with Fumadocs, shadcn, Tailwind v4 |
 | **server-go staged boundary** | Authenticated REST/gRPC staged create/list, BLAKE3 object verification, file/Postgres staged store, idempotency, JSON demo policies, audit records, Docker Compose |
@@ -774,7 +774,7 @@ The Rust workspace remains the active local engine, CLI, protocol, Git bridge, a
 
 ### 🔶 In Progress
 
-- Sync protocol messages and delta negotiation
+- Sync protocol delta negotiation
 - Production Go server full RBAC/ABAC policy parity and `.wt/access` TOML ingestion
 - Branch push/pull and canonical reference graph
 - Git import/export object conversion

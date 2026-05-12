@@ -14,11 +14,12 @@ import (
 )
 
 type StagedService struct {
-	objects    storage.ObjectStore
-	staged     staged.Store
-	audit      audit.Recorder
-	limits     StagedLimits
-	authorizer iam.Authorizer
+	objects     storage.ObjectStore
+	staged      staged.Store
+	audit       audit.Recorder
+	limits      StagedLimits
+	authorizer  iam.Authorizer
+	broadcaster StagedBroadcaster
 }
 
 type StagedLimits struct {
@@ -44,7 +45,11 @@ func NewStagedService(objects storage.ObjectStore, stagedStore staged.Store, rec
 	if len(limits) > 0 {
 		selectedLimits = limits[0]
 	}
-	return &StagedService{objects: objects, staged: stagedStore, audit: recorder, authorizer: authorizer, limits: selectedLimits}
+	return &StagedService{objects: objects, staged: stagedStore, audit: recorder, authorizer: authorizer, broadcaster: NewInMemoryHub(), limits: selectedLimits}
+}
+
+func (s *StagedService) Broadcaster() StagedBroadcaster {
+	return s.broadcaster
 }
 
 type stagedUploadRequest struct {
@@ -136,6 +141,11 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditDecision(r, "staged:create", audit.DecisionAllow, "", req.Tenant, req.resource())
+
+	if s.broadcaster != nil {
+		s.broadcaster.Publish(result.Snapshot)
+	}
+
 	status := http.StatusAccepted
 	if result.IdempotentReplay() {
 		status = http.StatusOK

@@ -219,6 +219,14 @@ contract in `docs/protocol-spec.md` and the deployment sequence in `roadmap.md`.
 
 **Result:** `go test ./...` passes in `server-go`.
 
+### Step 9 — `feat(server-go): Staged Visibility via WebSockets & JWT Auth`
+
+- Implemented `POST /login` to issue 7-day expiring JWTs.
+- Replaced static Bearer tokens with JWT authentication.
+- Created `StagedBroadcaster` memory hub for real-time pub/sub.
+- Added `GET /staged/ws` for WebSocket upgrade and live streaming.
+- Integrated `broadcaster.Publish()` into the HTTP staging upload flow.
+
 ## Local Demo — Implementation Progress
 
 Target: full local demo (CLI → bgprocess → server on localhost). No remote server needed.
@@ -272,6 +280,21 @@ a `TenantId` arg but 3 test call sites weren't updated. Moved `TenantId` import 
     `worktree_sdk::engine::sync::push_staged(&engine, &snap.id)`
   - Sync failures are logged without killing the watcher loop
 
+### Step 4 — `feat(sync): decouple push queue and implement backfill`
+**Files:**
+- `crates/worktree-sdk/src/engine/sync.rs`
+- `crates/worktree-server/src/lib.rs`
+
+- **Decoupled Push Queue**:
+  - Moved `push_staged` invocation in `bgprocess` from the blocking watcher thread to an asynchronous background MPSC queue.
+  - Spawned a dedicated worker thread in `watcher_loop_blocking` to process `PushQueueEvent` messages.
+  - Ensures filesystem events are processed immediately even during large blob uploads or network latency.
+- **Backfill on Resume**:
+  - Implemented `push_unpushed(engine)` in the SDK to compute and upload missing snapshot deltas based on `remote_tip` tracking.
+  - Updated `push_staged` to persist `remote_tip` in `WorktreeState` upon successful server confirmation.
+  - Added filesystem watcher hook to detect the deletion of `.wt/cache/sync_paused`.
+  - Automatically triggers a backfill job when sync is resumed via CLI or manual file deletion.
+
 **Go IAM/server rewrite note:** The Rust endpoint is intentionally a compatibility bridge. The
 client contract is now `POST /staged`, and IAM remains server-side; bgprocess does not enforce
 permissions. The Go server can replace the endpoint implementation without changing the SDK call
@@ -286,6 +309,13 @@ shape.
 **Result:** `cargo fmt --all` and `cargo test --workspace` pass.
 
 ---
+
+### Step 5 — `feat(cli/daemon): WebSocket listener and interactive watch UI`
+
+- Added `wt auth login` CLI command to retrieve and cache JWTs.
+- Updated `worktree-server` daemon with a background `tokio-tungstenite` task.
+- Reconciles live WebSocket JSON payloads into `.wt/cache/staged_index.json`.
+- Added interactive real-time `wt staged --watch` terminal UI.
 
 ## Fixes
 

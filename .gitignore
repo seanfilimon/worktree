@@ -56,7 +56,10 @@ next-env.d.ts
 # Vercel
 .vercel
 
-
 # Ramis
+agents.md
 progress.md
 roadmap.md
+demo/
+*.exe
+.temp/

@@ -351,6 +351,7 @@ See [License Compliance Specification](../licensing/LicenseCompliance.md) for fu
 ## Implementation Status
 
 - **IMPLEMENTED**: Protocol `StagedSnapshot`, `StagedStatus`, and `StagedIndex` types; Rust prototype `POST /staged` upload endpoint; SDK `push_staged`; server-side JSON staged index persistence for prototype flows
+- **IMPLEMENTED**: Decoupled asynchronous background push queue in `bgprocess` via MPSC channel and automated backfill-on-resume for queued snapshots
 - **IMPLEMENTED**: Rust/Go staged request compatibility with `snapshot_id`, `tenant`, `worktree`, `tree_id`, `branch`, and `objects`
 - **IMPLEMENTED**: Go REST `POST /staged` and `GET /staged`
 - **IMPLEMENTED**: Go gRPC `SyncService.StageSnapshot` and `SyncService.ListStagedSnapshots`

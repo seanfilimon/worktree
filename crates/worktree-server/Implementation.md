@@ -97,10 +97,12 @@ classify_event() → SemanticEvent
         ▼                ▼                ▼
     API Handlers (snapshot/branch/init/status)
         │
-    ┌───┼───────────┬──────────────┐
-    ▼   ▼           ▼              ▼
-Storage  Auth      Sync         Git Layer
-(Disk)   (RBAC)   (QUIC/TCP)   (Import/Export)
+    ┌───┼───────────┬──────────────────┬──────────────┐
+    ▼   ▼           ▼                  ▼              ▼
+Storage  Auth   Push Queue (MPSC)  Sync (QUIC/TCP) Git Layer
+(Disk)   (RBAC)     │              (Manual/CLI)   (Import/Export)
+                    ▼
+               Background Push & Backfill
 ```
 
 ---

@@ -25,6 +25,8 @@ import (
 	"github.com/ramizik/worktree/server-go/internal/server"
 	"github.com/ramizik/worktree/server-go/internal/staged"
 	"github.com/ramizik/worktree/server-go/internal/storage"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -49,19 +51,24 @@ func main() {
 	objectStore := storage.NewLocalObjectStore(cfg.StorageRoot)
 
 	var stagedStore staged.Store
+	var canonicalStore canonical.Store
+
 	if cfg.DatabaseURL != "" {
-		pgStore, err := staged.NewPostgresStore(context.Background(), cfg.DatabaseURL)
+		pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
 		if err != nil {
-			slog.Error("failed to connect to postgres", "error", err)
+			slog.Error("failed to connect to postgres pool", "error", err)
 			os.Exit(1)
 		}
-		defer pgStore.Close()
-		stagedStore = pgStore
-		slog.Info("using postgres staged store")
+		defer pool.Close()
+
+		stagedStore = staged.NewPostgresStoreWithPool(pool)
+		canonicalStore = canonical.NewPostgresStoreWithPool(pool)
+		slog.Info("using postgres storage")
 	} else {
 		stagedStore = staged.NewFileStore(cfg.StorageRoot)
 		slog.Info("using file staged store (dev mode)")
 	}
+
 	metrics := observability.NewMetrics()
 	auditRecorder := audit.NewFileRecorder(cfg.AuditPath)
 	authenticator, err := buildAuthenticator(cfg)
@@ -69,26 +76,41 @@ func main() {
 		slog.Error("failed to configure authentication", "error", err)
 		os.Exit(1)
 	}
+	jwtSecret := os.Getenv("WT_SERVER_JWT_SECRET")
+	if jwtSecret == "" {
+		jwtSecret = "default-insecure-dev-secret"
+	}
+	jwtAuth := auth.NewJWTAuthenticator(jwtSecret)
+
 	authorizer, err := buildAuthorizer(cfg)
 	if err != nil {
 		slog.Error("failed to configure IAM", "error", err)
 		os.Exit(1)
 	}
 
+	var canService *httpapi.CanonicalService
+	if canonicalStore != nil {
+		coreService := canonical.NewService(canonicalStore, objectStore)
+		canService = httpapi.NewCanonicalService(coreService, auditRecorder, authorizer)
+	}
+
 	router := httpapi.NewRouter(httpapi.RouterConfig{
 		Version:       "dev",
-		Authenticator: authenticator,
+		Authenticator: jwtAuth,
+		Authorizer:    authorizer,
 		Staged: httpapi.NewStagedService(objectStore, stagedStore, auditRecorder, authorizer, httpapi.StagedLimits{
 			MaxObjectBytes: cfg.MaxStagedObjectBytes,
 			MaxObjects:     cfg.MaxStagedObjects,
 		}),
-		Metrics: metrics,
+		Canonical:    canService,
+		Metrics:      metrics,
+		LoginHandler: httpapi.HandleLogin(authenticator, jwtAuth),
 	})
 
 	srv := server.NewHTTPServer(cfg, router)
 
 	syncSrv := grpcserver.NewSyncServer(objectStore, stagedStore, auditRecorder, authorizer)
-	grpcS := grpc.NewServer(grpc.UnaryInterceptor(grpcserver.AuthUnaryInterceptor(authenticator)))
+	grpcS := grpc.NewServer(grpc.UnaryInterceptor(grpcserver.AuthUnaryInterceptor(jwtAuth)))
 	worktreepb.RegisterSyncServiceServer(grpcS, syncSrv)
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)

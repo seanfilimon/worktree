@@ -578,7 +578,7 @@ Team sees push in `wt log`
 
 ### 8.1 Sync Loop
 
-The sync engine runs on a configurable interval (default 30 seconds):
+The sync engine runs on a configurable interval (default 30 seconds), but staged uploads are decoupled into an asynchronous background queue to ensure the filesystem watcher remains responsive during network I/O.
 
 ```
 ┌──────────────────────────────────────────────────────┐

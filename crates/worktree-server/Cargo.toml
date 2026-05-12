@@ -26,6 +26,8 @@ notify = "7"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
+tokio-tungstenite = "0.29.0"
+futures-util = "0.3.32"
 
 [dev-dependencies]
 tempfile = "3"

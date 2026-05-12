@@ -1,4 +1,5 @@
 pub mod archive;
+pub mod auth;
 pub mod branch;
 pub mod config;
 pub mod depend;
@@ -124,6 +125,8 @@ pub enum Commands {
     },
     /// View staged snapshots (team activity)
     Staged {
+        #[arg(short, long)]
+        watch: bool,
         #[command(subcommand)]
         action: Option<StagedAction>,
     },
@@ -146,6 +149,11 @@ pub enum Commands {
     Server {
         #[command(subcommand)]
         action: ServerAction,
+    },
+    /// Manage authentication
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
     },
 }
 
@@ -321,6 +329,19 @@ pub enum ServerAction {
     Logs,
 }
 
+#[derive(Subcommand, Clone, Debug)]
+pub enum AuthAction {
+    /// Login to the server
+    Login {
+        /// Token ID
+        #[arg(long)]
+        token_id: Option<String>,
+        /// Secret token
+        #[arg(long)]
+        secret: String,
+    },
+}
+
 pub async fn execute(cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         Commands::Init { path } => init::execute(path).await,
@@ -347,10 +368,11 @@ pub async fn execute(cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
             tree,
         } => archive::execute(output, format, tree).await,
         Commands::Depend { action } => depend::execute(action).await,
-        Commands::Staged { action } => staged::execute(action).await,
+        Commands::Staged { action, watch } => staged::execute(action, watch).await,
         Commands::Ignore { action } => ignore::execute(action).await,
         Commands::Permission { action } => permission::execute(action).await,
         Commands::Git { action } => git::execute(action).await,
         Commands::Server { action } => server::execute(action).await,
+        Commands::Auth { action } => auth::execute(action).await,
     }
 }
