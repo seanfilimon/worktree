@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 
+	"strings"
 	"github.com/ramizik/worktree/server-go/internal/auth"
 	"github.com/ramizik/worktree/server-go/internal/observability"
 )
@@ -37,7 +38,11 @@ func authMiddleware(authenticator auth.Authenticator, next http.Handler) http.Ha
 				writeError(w, http.StatusUnauthorized, "AuthenticationRequired", "valid bearer token required")
 				return
 			}
-			writeError(w, http.StatusUnauthorized, "AuthenticationFailed", "authentication failed")
+			writeError(w, http.StatusInternalServerError, "InternalServerError", "internal server error")
+			return
+		}
+		if !principal.Authenticated {
+			writeError(w, http.StatusUnauthorized, "AuthenticationRequired", "valid bearer token required")
 			return
 		}
 		ctx := auth.WithPrincipal(r.Context(), principal)
@@ -49,7 +54,13 @@ func metricsMiddleware(metrics *observability.Metrics, next http.Handler) http.H
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
-		metrics.RecordRequest(r.Method, r.URL.Path, recorder.status)
+		path := r.Pattern
+		if path == "" {
+			path = "unmatched"
+		} else if i := strings.Index(path, " "); i >= 0 {
+			path = path[i+1:]
+		}
+		metrics.RecordRequest(r.Method, path, recorder.status)
 	})
 }
 

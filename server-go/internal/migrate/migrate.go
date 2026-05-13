@@ -2,17 +2,13 @@ package migrate
 
 import (
 	"context"
-	"embed"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ramizik/worktree/server-go/migrations"
 )
-
-//go:embed sql/*.up.sql
-var migrationFS embed.FS
 
 func Run(ctx context.Context, databaseURL string) error {
 	pool, err := pgxpool.New(ctx, databaseURL)
@@ -31,7 +27,7 @@ func Run(ctx context.Context, databaseURL string) error {
 	`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
-	entries, err := migrationFS.ReadDir("sql")
+	entries, err := migrations.FS.ReadDir(".")
 	if err != nil {
 		return fmt.Errorf("read embedded migrations: %w", err)
 	}
@@ -51,7 +47,7 @@ func Run(ctx context.Context, databaseURL string) error {
 		if exists {
 			continue
 		}
-		data, err := migrationFS.ReadFile(filepath.ToSlash(filepath.Join("sql", name)))
+		data, err := migrations.FS.ReadFile(name)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", version, err)
 		}

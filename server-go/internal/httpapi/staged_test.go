@@ -69,6 +69,8 @@ func TestStagedUploadPersistsVerifiedObject(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
+	req.Header.Set("X-WT-Tenant", "acme")
+	req.Header.Set("X-WT-Account", "alice")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -124,6 +126,8 @@ func TestStagedUploadRejectsHashMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
+	req.Header.Set("X-WT-Tenant", "acme")
+	req.Header.Set("X-WT-Account", "alice")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -165,6 +169,8 @@ func TestStagedUploadRejectsObjectSizeLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
+	req.Header.Set("X-WT-Tenant", "acme")
+	req.Header.Set("X-WT-Account", "alice")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -206,6 +212,8 @@ func TestStagedUploadRejectsObjectCountLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
+	req.Header.Set("X-WT-Tenant", "acme")
+	req.Header.Set("X-WT-Account", "alice")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -248,6 +256,7 @@ func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
 	req.Header.Set("X-WT-Tenant", "other")
+	req.Header.Set("X-WT-Account", "alice")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -277,6 +286,7 @@ func TestStagedListFiltersToAuthenticatedTenant(t *testing.T) {
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?worktree=api", nil)
 	req.Header.Set("X-WT-Tenant", "acme")
+	req.Header.Set("X-WT-Account", "alice")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -302,6 +312,7 @@ func TestStagedListRejectsTenantMismatch(t *testing.T) {
 	router := NewRouter(RouterConfig{Version: "test", Staged: service})
 	req := httptest.NewRequest(http.MethodGet, "/staged?tenant=other", nil)
 	req.Header.Set("X-WT-Tenant", "acme")
+	req.Header.Set("X-WT-Account", "alice")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)

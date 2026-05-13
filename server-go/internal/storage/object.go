@@ -44,7 +44,8 @@ func (s *LocalObjectStore) Put(ctx context.Context, hash string, data []byte) er
 		return fmt.Errorf("%w: content hash mismatch", ErrInvalidHash)
 	}
 	path := s.objectPath(hash)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	if _, err := os.Stat(path); err == nil {
@@ -52,11 +53,29 @@ func (s *LocalObjectStore) Put(ctx context.Context, hash string, data []byte) er
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+
+	f, err := os.CreateTemp(dir, "obj-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmp, path); err != nil {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *LocalObjectStore) Get(ctx context.Context, hash string) ([]byte, error) {

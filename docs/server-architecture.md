@@ -74,9 +74,10 @@ per object or `WT_SERVER_MAX_STAGED_OBJECTS` per request. These are deployment-s
 tenant quota accounting; production quotas still need tenant-aware storage accounting and durable
 rate-limit state.
 
-Three migrations currently exist in `server-go/migrations`: staged snapshot records, staged object
-references, and audit events. Docker Compose runs these migrations before starting the server; the
-binary can also apply embedded migrations with `WT_SERVER_RUN_MIGRATIONS=true`.
+Migrations currently exist in `server-go/migrations` for both staged records (snapshots, objects, audit events)
+and canonical records (branches, canonical snapshots, etc.). Docker Compose runs these migrations before
+starting the server; the binary can also apply the full embedded set of migrations with `WT_SERVER_RUN_MIGRATIONS=true`
+consistently across both Linux and Windows environments.
 
 ## API Surface
 

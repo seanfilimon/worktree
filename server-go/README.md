@@ -25,7 +25,7 @@ Implemented:
 - `GET /staged` staged snapshot listing endpoint with tenant/worktree/branch filters.
 - JSON staged snapshot index for local development.
 - Postgres staged snapshot store selected by `WT_SERVER_DATABASE_URL`.
-- Migrations for `staged_snapshots`, `staged_snapshot_objects`, and `audit_events`.
+- Embedded migrations for staged schema, canonical schema, and audit events run seamlessly on both Windows and Linux environments.
 - File-backed JSONL audit records for staged upload/list allow and deny decisions.
 - Configurable staged upload object-size and object-count limits.
 - IAM `Authorizer` seam with allow-all/deny-all test implementations and a default-deny policy authorizer.
