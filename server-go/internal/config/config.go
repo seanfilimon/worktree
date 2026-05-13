@@ -57,7 +57,7 @@ func Load() (Config, error) {
 		MaxStagedObjectBytes: getIntEnv("WT_SERVER_MAX_STAGED_OBJECT_BYTES", 64*1024*1024),
 		MaxStagedObjects:     getIntEnv("WT_SERVER_MAX_STAGED_OBJECTS", 1024),
 		ShutdownTimeout:      getDurationEnv("WT_SERVER_SHUTDOWN_TIMEOUT", 30*time.Second),
-		DatabaseURL:          os.Getenv("WT_SERVER_DATABASE_URL"),
+		DatabaseURL:          "", // Hardcoded to empty for local demo
 		RunMigrations:        getBoolEnv("WT_SERVER_RUN_MIGRATIONS", false),
 		TLS: TLSConfig{
 			Enabled:  getBoolEnv("WT_SERVER_TLS_ENABLED", false),

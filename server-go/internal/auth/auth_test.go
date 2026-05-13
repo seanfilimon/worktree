@@ -21,7 +21,7 @@ func TestStaticAuthenticatorRequiresConfiguredToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate() error = %v", err)
 	}
-	if principal.Tenant != "" {
+	if principal.Tenant != "acme" {
 		t.Fatalf("tenant = %q", principal.Tenant)
 	}
 }

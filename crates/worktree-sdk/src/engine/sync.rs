@@ -168,11 +168,18 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
-    request
+    let resp = request
         .send()
-        .map_err(|e| SdkError::NetworkError(e.to_string()))?
-        .error_for_status()
         .map_err(|e| SdkError::NetworkError(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(SdkError::NetworkError(format!(
+            "server rejected staged upload ({}): {}",
+            status, body
+        )));
+    }
 
     let branch_name = req.branch.clone();
     let tree_name = req.tree_id.clone();
@@ -227,9 +234,20 @@ pub fn pull(engine: &super::WorktreeEngine) -> Result<PullResult> {
         request = request.bearer_auth(t);
     }
 
-    let resp: serde_json::Value = request
+    let resp = request
         .send()
-        .map_err(|e| SdkError::NetworkError(e.to_string()))?
+        .map_err(|e| SdkError::NetworkError(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(SdkError::NetworkError(format!(
+            "server rejected pull ({}): {}",
+            status, body
+        )));
+    }
+
+    let resp: serde_json::Value = resp
         .json()
         .map_err(|e| SdkError::NetworkError(e.to_string()))?;
 

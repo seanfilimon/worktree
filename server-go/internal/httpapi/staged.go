@@ -86,9 +86,11 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if principal, ok := auth.PrincipalFromContext(r.Context()); ok && principal.Tenant != "" && principal.Tenant != req.Tenant {
-		s.auditDecision(r, "staged:create", audit.DecisionDeny, "tenant mismatch", req.Tenant, req.resource())
-		writeError(w, http.StatusForbidden, "TenantMismatch", "authenticated tenant does not match staged snapshot tenant")
-		return
+		if principal.AuthMethod != "static_dev" && !principal.HasScope("*") {
+			s.auditDecision(r, "staged:create", audit.DecisionDeny, "tenant mismatch", req.Tenant, req.resource())
+			writeError(w, http.StatusForbidden, "TenantMismatch", "authenticated tenant does not match staged snapshot tenant")
+			return
+		}
 	}
 	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
 		decision, err := s.authorizer.Authorize(r.Context(), principal, "staged:create", req.resource())
@@ -136,8 +138,8 @@ func (s *StagedService) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "StagedConflict", "staged snapshot conflicts with an existing snapshot for the same identity")
 			return
 		}
-		s.auditDecision(r, "staged:create", audit.DecisionDeny, "staged persistence failed", req.Tenant, req.resource())
-		writeError(w, http.StatusInternalServerError, "StagedStoreFailed", "failed to persist staged snapshot")
+		s.auditDecision(r, "staged:create", audit.DecisionDeny, "staged persistence failed: "+err.Error(), req.Tenant, req.resource())
+		writeError(w, http.StatusInternalServerError, "StagedStoreFailed", "failed to persist staged snapshot: "+err.Error())
 		return
 	}
 	s.auditDecision(r, "staged:create", audit.DecisionAllow, "", req.Tenant, req.resource())

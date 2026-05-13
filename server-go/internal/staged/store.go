@@ -107,8 +107,18 @@ func (s *FileStore) Add(ctx context.Context, snapshot Snapshot) (AddResult, erro
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return AddResult{}, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return AddResult{}, err
+
+	// Robust Windows retry loop for rename
+	var renameErr error
+	for i := 0; i < 10; i++ {
+		renameErr = os.Rename(tmp, path)
+		if renameErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if renameErr != nil {
+		return AddResult{}, renameErr
 	}
 	return AddResult{Status: AddStatusCreated, Snapshot: snapshot}, nil
 }

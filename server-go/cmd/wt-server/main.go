@@ -41,6 +41,11 @@ func main() {
 	}))
 	slog.SetDefault(log)
 
+	if os.Getenv("WT_SERVER_FORCE_FILE_STORE") == "true" {
+		cfg.DatabaseURL = ""
+		slog.Info("forcing file store locally (database URL ignored)")
+	}
+
 	if cfg.RunMigrations && cfg.DatabaseURL != "" {
 		if err := migrate.Run(context.Background(), cfg.DatabaseURL); err != nil {
 			slog.Error("failed to run migrations", "error", err)

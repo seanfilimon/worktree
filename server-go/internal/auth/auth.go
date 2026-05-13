@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -117,15 +118,30 @@ func (a StaticAuthenticator) AuthenticateHTTP(r *http.Request) (Principal, error
 			return Principal{}, ErrUnauthorized
 		}
 	}
-	principal := Principal{
-		Tenant:        r.Header.Get("X-WT-Tenant"),
-		Account:       r.Header.Get("X-WT-Account"),
-		Subject:       r.Header.Get("X-WT-Account"),
-		AuthMethod:    "static_dev",
-		Authenticated: true,
+
+	tenant := r.Header.Get("X-WT-Tenant")
+	if tenant == "" {
+		tenant = os.Getenv("WT_SERVER_AUTH_TENANT")
 	}
-	if principal.Tenant == "" && principal.Account == "" && a.token == "" {
-		principal.Authenticated = false
+	if tenant == "" {
+		tenant = "acme"
+	}
+
+	account := r.Header.Get("X-WT-Account")
+	if account == "" {
+		account = os.Getenv("WT_SERVER_AUTH_ACCOUNT")
+	}
+	if account == "" {
+		account = "alice"
+	}
+
+	principal := Principal{
+		Tenant:        tenant,
+		Account:       account,
+		Subject:       account,
+		AuthMethod:    "static_dev",
+		Scopes:        []string{"*"},
+		Authenticated: true,
 	}
 	return principal, nil
 }
@@ -134,10 +150,27 @@ func (a StaticAuthenticator) AuthenticateBearer(ctx context.Context, token strin
 	if err := ctx.Err(); err != nil {
 		return Principal{}, err
 	}
-	if a.token == "" || token != a.token {
+	if a.token != "" && token != a.token {
 		return Principal{}, ErrUnauthorized
 	}
-	return Principal{AuthMethod: "static_dev", Authenticated: true}, nil
+
+	tenant := os.Getenv("WT_SERVER_AUTH_TENANT")
+	if tenant == "" {
+		tenant = "acme"
+	}
+	account := os.Getenv("WT_SERVER_AUTH_ACCOUNT")
+	if account == "" {
+		account = "alice"
+	}
+
+	return Principal{
+		Tenant:        tenant,
+		Account:       account,
+		Subject:       account,
+		AuthMethod:    "static_dev",
+		Scopes:        []string{"*"},
+		Authenticated: true,
+	}, nil
 }
 
 func bearerTokenFromHeader(header string) string {

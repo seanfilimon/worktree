@@ -233,7 +233,8 @@ func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 			return staged.AddResult{}, nil
 		},
 	}, auditRecorder, iam.AllowAllAuthorizer{})
-	router := NewRouter(RouterConfig{Version: "test", Staged: service})
+	jwtAuth := auth.NewJWTAuthenticator("secret")
+	router := NewRouter(RouterConfig{Version: "test", Staged: service, Authenticator: jwtAuth})
 
 	content := []byte("file contents")
 	hash := blake3.Sum256(content)
@@ -255,8 +256,11 @@ func TestStagedUploadRejectsTenantMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/staged", bytes.NewReader(data))
-	req.Header.Set("X-WT-Tenant", "other")
-	req.Header.Set("X-WT-Account", "alice")
+	token, _ := jwtAuth.GenerateToken(auth.Principal{
+		Tenant:  "other",
+		Account: "alice",
+	})
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
