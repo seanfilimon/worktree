@@ -345,6 +345,91 @@ fn snapshot_changes(
     }
 }
 
+pub fn push_staged_dirty(
+    engine: &super::WorktreeEngine,
+    snapshot_id: &str,
+    dirty_paths: &[std::path::PathBuf],
+) -> Result<()> {
+    let state = super::status::load_state(engine)?;
+    let tree = state
+        .current_tree()
+        .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
+
+    if engine.wt_dir().join("cache").join("sync_paused").exists() {
+        return Ok(());
+    }
+
+    let branch = &tree.current_branch;
+    let tenant = std::env::var("WT_TENANT").unwrap_or_else(|_| "default".to_string());
+
+    let branch_state = tree.branches.iter().find(|b| &b.name == branch);
+    let remote_tip = branch_state.and_then(|b| b.remote_tip.clone());
+
+    let mut uploads = Vec::new();
+    for path in dirty_paths {
+        // Compute relative path
+        let relative = if path.is_absolute() {
+            path.strip_prefix(engine.root())
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string()
+        } else {
+            path.to_string_lossy().to_string()
+        };
+
+        let content = std::fs::read(path).unwrap_or_default();
+        let hash = blake3::hash(&content).to_hex().to_string();
+        uploads.push(CanonicalObjectUpload {
+            path: relative.replace('\\', "/"),
+            hash,
+            size: content.len() as u64,
+            content: base64::engine::general_purpose::STANDARD.encode(&content),
+        });
+    }
+
+    let req = CanonicalPushReq {
+        snapshot_id: snapshot_id.to_string(),
+        tenant,
+        worktree: tree.name.clone(),
+        tree_id: tree.name.clone(),
+        branch: branch.clone(),
+        remote_tip,
+        objects: uploads,
+    };
+
+    let server = server_url();
+    let client = reqwest::blocking::Client::new();
+    let mut request = client
+        .post(format!("{server}/staged"))
+        .header("x-wt-tree-id", &req.tree_id)
+        .json(&req);
+    let token = std::env::var("WT_SERVER_AUTH_TOKEN")
+        .ok()
+        .or_else(|| {
+            std::fs::read_to_string(engine.wt_dir().join("cache").join("auth_token"))
+                .ok()
+                .map(|t| t.trim().to_string())
+        })
+        .or_else(|| Some("dev-secret".to_string()));
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let resp = request
+        .send()
+        .map_err(|e| SdkError::NetworkError(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(SdkError::NetworkError(format!(
+            "server rejected staged upload ({}): {}",
+            status, body
+        )));
+    }
+
+    Ok(())
+}
+
 fn canonical_object_uploads(
     engine: &super::WorktreeEngine,
     snapshot: &super::status::SnapshotState,

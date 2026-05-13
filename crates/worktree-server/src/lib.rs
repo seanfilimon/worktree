@@ -159,6 +159,7 @@ fn server_err(e: error::ServerError) -> axum::response::Response {
 
 enum PushQueueEvent {
     Push(String),
+    PushDirty(String, Vec<std::path::PathBuf>),
     Resume,
 }
 
@@ -303,11 +304,16 @@ async fn ws_staged_loop(root: std::path::PathBuf) {
 }
 
 fn watcher_loop_blocking(root: std::path::PathBuf) -> Result<(), error::ServerError> {
-    use crate::engine::{auto_commit::AutoCommitEngine, event::classify_event};
+    use crate::engine::{
+        auto_commit::AutoCommitEngine, event::classify_event, event::SemanticEvent,
+    };
     use crate::watcher::{
         debounce::{DebouncedEvent, EventKind},
         fs::FileSystemWatcher,
     };
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant};
+    use worktree_protocol::core::id::SnapshotId;
 
     let engine = worktree_sdk::WorktreeEngine::open(&root)
         .map_err(|e| error::ServerError::Engine(e.to_string()))?;
@@ -346,6 +352,19 @@ fn watcher_loop_blocking(root: std::path::PathBuf) -> Result<(), error::ServerEr
                         }
                     }
                 }
+                PushQueueEvent::PushDirty(snap_id, dirty_paths) => {
+                    if let Err(e) = worktree_sdk::engine::sync::push_staged_dirty(
+                        &push_engine,
+                        &snap_id,
+                        &dirty_paths,
+                    ) {
+                        tracing::warn!(
+                            "bgprocess: staged dirty sync failed for {}: {}",
+                            &snap_id[..8],
+                            e
+                        );
+                    }
+                }
                 PushQueueEvent::Resume => {
                     tracing::info!("bgprocess: sync resumed, backfilling...");
                     if let Err(e) = worktree_sdk::engine::sync::push_unpushed(&push_engine) {
@@ -356,8 +375,24 @@ fn watcher_loop_blocking(root: std::path::PathBuf) -> Result<(), error::ServerEr
         }
     });
 
+    let mut auto_commit_interval = Duration::from_secs(3600); // Default to 1 hour
+    if let Ok(config_str) = worktree_sdk::engine::config::read_config(&engine) {
+        if let Ok(config) = toml::from_str::<
+            worktree_protocol::config::worktree_config::WorktreeConfig,
+        >(&config_str)
+        {
+            auto_commit_interval = Duration::from_secs(config.sync.auto_commit_interval_secs);
+        }
+    }
+
+    let mut session_start = Instant::now();
+    let mut active_snapshot_id = SnapshotId::new().to_string();
+    let mut accumulated_events: Vec<SemanticEvent> = Vec::new();
+    let mut dirty_paths: HashSet<std::path::PathBuf> = HashSet::new();
+
     loop {
-        match watcher.receiver.recv() {
+        // Use a timeout so we can check the auto-commit interval
+        match watcher.receiver.recv_timeout(Duration::from_millis(500)) {
             Ok(Ok(raw)) => {
                 let mut sync_resumed = false;
                 for path in raw.paths {
@@ -383,23 +418,53 @@ fn watcher_loop_blocking(root: std::path::PathBuf) -> Result<(), error::ServerEr
                 let ready = debouncer.flush();
                 if !ready.is_empty() {
                     let semantic: Vec<_> = ready.iter().map(classify_event).collect();
-                    if let Some(msg) = commit_engine.evaluate(&semantic) {
-                        match worktree_sdk::engine::snapshot::create_snapshot(&engine, None, &msg) {
-                            Ok(snap) => {
-                                tracing::info!(
-                                    "bgprocess: auto-snapshot {} - {msg}",
-                                    &snap.id[..8]
-                                );
-                                let _ = push_tx.send(PushQueueEvent::Push(snap.id.clone()));
+                    for evt in &semantic {
+                        accumulated_events.push(evt.clone());
+                        if let SemanticEvent::CodeChange { paths, .. } = evt {
+                            for p in paths {
+                                dirty_paths.insert(p.clone());
                             }
-                            Err(worktree_sdk::SdkError::NoChanges) => {}
-                            Err(e) => tracing::warn!("bgprocess: snapshot failed: {e}"),
                         }
+                    }
+
+                    // Push the dirty paths to the active staged snapshot on the server
+                    if !dirty_paths.is_empty() {
+                        let _ = push_tx.send(PushQueueEvent::PushDirty(
+                            active_snapshot_id.clone(),
+                            dirty_paths.iter().cloned().collect(),
+                        ));
                     }
                 }
             }
             Ok(Err(e)) => tracing::warn!("watcher error: {e}"),
-            Err(_) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Check if the hourly interval has passed
+                if session_start.elapsed() >= auto_commit_interval {
+                    if !accumulated_events.is_empty() {
+                        if let Some(msg) = commit_engine.evaluate(&accumulated_events) {
+                            match worktree_sdk::engine::snapshot::create_snapshot(
+                                &engine, None, &msg,
+                            ) {
+                                Ok(snap) => {
+                                    tracing::info!(
+                                        "bgprocess: auto-snapshot {} - {msg}",
+                                        &snap.id[..8]
+                                    );
+                                    let _ = push_tx.send(PushQueueEvent::Push(snap.id.clone()));
+                                }
+                                Err(worktree_sdk::SdkError::NoChanges) => {}
+                                Err(e) => tracing::warn!("bgprocess: snapshot failed: {e}"),
+                            }
+                        }
+                    }
+                    // Reset the session
+                    session_start = Instant::now();
+                    active_snapshot_id = SnapshotId::new().to_string();
+                    accumulated_events.clear();
+                    dirty_paths.clear();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     Ok(())
