@@ -20,6 +20,7 @@ type AddStatus string
 const (
 	AddStatusCreated       AddStatus = "created"
 	AddStatusAlreadyExists AddStatus = "already_exists"
+	AddStatusUpdated       AddStatus = "updated"
 )
 
 type AddResult struct {
@@ -88,14 +89,40 @@ func (s *FileStore) Add(ctx context.Context, snapshot Snapshot) (AddResult, erro
 	}
 	for i := range index.Snapshots {
 		existing := NormalizeSnapshot(index.Snapshots[i])
-		index.Snapshots[i] = existing
 		if !sameIdentity(existing, snapshot) {
 			continue
 		}
 		if existing.PayloadHash == snapshot.PayloadHash {
 			return AddResult{Status: AddStatusAlreadyExists, Snapshot: existing}, nil
 		}
-		return AddResult{}, ErrConflict
+
+		// If identity is the same but payload hash differs, we update the existing record.
+		// This supports "appending" changes to a staged snapshot over time.
+		index.Snapshots[i] = snapshot
+
+		data, err := json.MarshalIndent(index, "", "  ")
+		if err != nil {
+			return AddResult{}, err
+		}
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, data, 0o644); err != nil {
+			return AddResult{}, err
+		}
+
+		// Robust Windows retry loop for rename
+		var renameErr error
+		for j := 0; j < 10; j++ {
+			renameErr = os.Rename(tmp, path)
+			if renameErr == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if renameErr != nil {
+			return AddResult{}, renameErr
+		}
+
+		return AddResult{Status: AddStatusUpdated, Snapshot: snapshot}, nil
 	}
 
 	index.Snapshots = append(index.Snapshots, snapshot)

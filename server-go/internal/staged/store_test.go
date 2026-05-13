@@ -2,7 +2,6 @@ package staged
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -70,16 +69,28 @@ func TestFileStoreAddIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestFileStoreAddRejectsConflictingReplay(t *testing.T) {
+func TestFileStoreAddUpdatesExisting(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	snap := Snapshot{SnapshotID: "snap-1", Tenant: "acme", Worktree: "api", TreeID: "tree-1", Branch: "main", Objects: []ObjectRef{{Path: "a.rs", Hash: "abc", Size: 3}}}
-	conflict := Snapshot{SnapshotID: "snap-1", Tenant: "acme", Worktree: "api", TreeID: "tree-1", Branch: "main", Objects: []ObjectRef{{Path: "a.rs", Hash: "def", Size: 3}}}
+	update := Snapshot{SnapshotID: "snap-1", Tenant: "acme", Worktree: "api", TreeID: "tree-1", Branch: "main", Objects: []ObjectRef{{Path: "a.rs", Hash: "def", Size: 3}, {Path: "b.rs", Hash: "xyz", Size: 4}}}
 
 	if _, err := store.Add(context.Background(), snap); err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
-	if _, err := store.Add(context.Background(), conflict); !errors.Is(err, ErrConflict) {
-		t.Fatalf("conflicting Add() error = %v, want ErrConflict", err)
+	result, err := store.Add(context.Background(), update)
+	if err != nil {
+		t.Fatalf("update Add() error = %v", err)
+	}
+	if result.Status != AddStatusUpdated {
+		t.Fatalf("status = %v, want AddStatusUpdated", result.Status)
+	}
+
+	all, _ := store.List(context.Background(), ListFilter{})
+	if len(all) != 1 {
+		t.Fatalf("len(all) = %d, want 1", len(all))
+	}
+	if len(all[0].Objects) != 2 {
+		t.Fatalf("len(objects) = %d, want 2", len(all[0].Objects))
 	}
 }
 
