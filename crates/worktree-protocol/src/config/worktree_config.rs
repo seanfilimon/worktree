@@ -66,6 +66,8 @@ pub struct SyncSection {
     pub auto: bool,
     #[serde(default = "default_sync_interval")]
     pub interval_secs: u64,
+    #[serde(default = "default_auto_commit_interval")]
+    pub auto_commit_interval_secs: u64,
     #[serde(default = "default_retry_count")]
     pub retry_count: u32,
     #[serde(default = "default_conflict_strategy")]
@@ -77,6 +79,7 @@ impl Default for SyncSection {
         Self {
             auto: true,
             interval_secs: 30,
+            auto_commit_interval_secs: 3600,
             retry_count: 3,
             conflict_strategy: ConflictStrategy::Auto,
         }
@@ -313,6 +316,9 @@ fn default_true() -> bool {
 }
 fn default_sync_interval() -> u64 {
     30
+}
+fn default_auto_commit_interval() -> u64 {
+    3600
 }
 fn default_retry_count() -> u32 {
     3

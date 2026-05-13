@@ -1,51 +1,26 @@
 use crate::engine::event::SemanticEvent;
 
-/// Engine responsible for deciding when to automatically create a snapshot (commit).
+/// Engine responsible for generating a commit message for the grouped changes.
 ///
 /// The `AutoCommitEngine` examines a batch of semantic events and determines
-/// whether a snapshot should be created. If so, it returns a suggested commit
-/// message describing the changes.
-pub struct AutoCommitEngine {
-    /// Minimum number of events before considering an auto-commit.
-    pub min_event_threshold: usize,
-
-    /// Maximum number of events to accumulate before forcing a commit.
-    pub max_event_threshold: usize,
-}
+/// a suggested commit message describing the changes that occurred over the interval.
+pub struct AutoCommitEngine {}
 
 impl AutoCommitEngine {
-    /// Create a new `AutoCommitEngine` with sensible defaults.
+    /// Create a new `AutoCommitEngine`.
     pub fn new() -> Self {
-        Self {
-            min_event_threshold: 1,
-            max_event_threshold: 100,
-        }
+        Self {}
     }
 
-    /// Create a new `AutoCommitEngine` with custom thresholds.
-    pub fn with_thresholds(min_event_threshold: usize, max_event_threshold: usize) -> Self {
-        Self {
-            min_event_threshold,
-            max_event_threshold,
-        }
-    }
-
-    /// Evaluate a batch of semantic events and decide whether to create a snapshot.
+    /// Evaluate a batch of semantic events and decide on a commit message.
     ///
-    /// Returns `Some(message)` with a suggested snapshot message if a snapshot
-    /// should be created, or `None` if the events do not yet warrant one.
+    /// Returns `Some(message)` with a suggested snapshot message, or `None` if
+    /// there are no events.
     pub fn evaluate(&self, events: &[SemanticEvent]) -> Option<String> {
         let count = events.len();
 
-        if count < self.min_event_threshold {
+        if count == 0 {
             return None;
-        }
-
-        if count >= self.max_event_threshold {
-            return Some(format!(
-                "auto-snapshot: {} files changed (threshold reached)",
-                count
-            ));
         }
 
         let has_dependency = events
@@ -114,20 +89,6 @@ mod tests {
     fn empty_events_returns_none() {
         let engine = AutoCommitEngine::new();
         assert_eq!(engine.evaluate(&[]), None);
-    }
-
-    #[test]
-    fn below_min_threshold_returns_none() {
-        let engine = AutoCommitEngine::with_thresholds(3, 100);
-        assert_eq!(engine.evaluate(&[code_event(1), code_event(1)]), None);
-    }
-
-    #[test]
-    fn at_or_above_max_threshold_returns_threshold_message() {
-        let engine = AutoCommitEngine::with_thresholds(1, 2);
-        let events = vec![code_event(1), code_event(1)];
-        let msg = engine.evaluate(&events).unwrap();
-        assert!(msg.contains("threshold reached"), "got: {msg}");
     }
 
     #[test]
