@@ -104,11 +104,11 @@ grant = "redistribute"     # Full permission to use, modify, copy, export
 
 ### Grant Levels
 
-| Level          | Read | Modify | Export/Copy/Fork |
-|----------------|------|--------|------------------|
-| read-only      | ✓    | ✗      | ✗                |
-| modify         | ✓    | ✓      | ✗                |
-| redistribute   | ✓    | ✓      | ✓                |
+| Level        | Read | Modify | Export/Copy/Fork |
+| ------------ | ---- | ------ | ---------------- |
+| read-only    | ✓    | ✗      | ✗                |
+| modify       | ✓    | ✓      | ✗                |
+| redistribute | ✓    | ✓      | ✓                |
 
 ### Grant Semantics
 
@@ -146,17 +146,17 @@ expires = "2025-06-30T23:59:59Z"    # Grant expires automatically
 
 ## What the Server Enforces
 
-| Operation                          | License Check                                                                                      |
-|------------------------------------|----------------------------------------------------------------------------------------------------|
-| Tenant reads file                  | Allowed if IAM permits AND license allows read for that tenant                                     |
-| Tenant forks/copies worktree       | Proprietary files excluded. Copyleft carries license. Attribution files include NOTICE.             |
-| `wt git export`                    | License headers injected. Proprietary paths blocked. LICENSE file auto-generated.                   |
-| Tenant syncs tree to own worktree  | Blocked for proprietary unless explicit grant exists                                               |
-| Public worktree browsing           | All can read, but license governs copy/modify/redistribute                                         |
-| `wt archive`                       | Proprietary paths excluded by default                                                              |
-| Cross-tenant staged visibility     | Can see "Alice working on billing-engine/src/pricing.rs" but cannot read file contents if proprietary |
-| `wt git mirror`                    | Proprietary files blocked from mirroring to public Git remotes                                     |
-| Branch merge across tenants        | License checks applied to each file in the merge set                                               |
+| Operation                         | License Check                                                                                         |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Tenant reads file                 | Allowed if IAM permits AND license allows read for that tenant                                        |
+| Tenant forks/copies worktree      | Proprietary files excluded. Copyleft carries license. Attribution files include NOTICE.               |
+| `wt git export`                   | License headers injected. Proprietary paths blocked. LICENSE file auto-generated.                     |
+| Tenant syncs tree to own worktree | Blocked for proprietary unless explicit grant exists                                                  |
+| Public worktree browsing          | All can read, but license governs copy/modify/redistribute                                            |
+| `wt archive`                      | Proprietary paths excluded by default                                                                 |
+| Cross-tenant staged visibility    | Can see "Alice working on billing-engine/src/pricing.rs" but cannot read file contents if proprietary |
+| `wt git mirror`                   | Proprietary files blocked from mirroring to public Git remotes                                        |
+| Branch merge across tenants       | License checks applied to each file in the merge set                                                  |
 
 ### Enforcement Details
 
@@ -167,6 +167,7 @@ are included but the license metadata travels with them. Attribution-required pa
 automatic NOTICE file generation.
 
 **Git Export**: `wt git export` generates a Git repository from the worktree. During export:
+
 1. Proprietary paths are completely excluded (not even empty files)
 2. Copyleft paths include license headers (injected if not already present)
 3. Attribution-required paths generate entries in a root-level NOTICE file
@@ -196,6 +197,7 @@ with the code.
 ### Example Scenarios
 
 **Scenario 1: Contractor with full IAM but no license grant**
+
 - Alice (contractor) has `tree:read`, `tree:write`, `sync:push`, `sync:pull` on the worktree
 - `services/billing-engine` is licensed as `proprietary`
 - Alice has no `[[license.grant]]` for that path
@@ -203,12 +205,14 @@ with the code.
   or interact with `services/billing-engine` in any way
 
 **Scenario 2: Partner with read-only license grant**
+
 - Bob (partner) has `tree:read` IAM permission
 - `services/billing-engine` is licensed as `proprietary`
 - Bob has a `read-only` grant for that path
 - Result: Bob can read the files but CANNOT modify, export, fork, or copy them
 
 **Scenario 3: Public worktree with mixed licenses**
+
 - Worktree is public (anyone can browse)
 - `src/` is MIT licensed
 - `vendor/sdk/` is Apache-2.0 with `attribution_required = true`
@@ -286,17 +290,18 @@ When exporting a worktree to a Git repository:
 
 ### Categories
 
-| Category     | Examples                              | Default Behavior                    |
-|--------------|---------------------------------------|-------------------------------------|
-| Permissive   | MIT, BSD-2-Clause, ISC, Unlicense     | Free to read, modify, redistribute  |
-| Copyleft     | GPL-3.0-only, AGPL-3.0-only, MPL-2.0 | Carries license to derivatives      |
-| Attribution  | Apache-2.0                            | Requires NOTICE file                |
-| Proprietary  | `proprietary`, custom strings         | Blocked unless explicit grant       |
-| Public Domain| CC0-1.0, Unlicense                    | No restrictions                     |
+| Category      | Examples                             | Default Behavior                   |
+| ------------- | ------------------------------------ | ---------------------------------- |
+| Permissive    | MIT, BSD-2-Clause, ISC, Unlicense    | Free to read, modify, redistribute |
+| Copyleft      | GPL-3.0-only, AGPL-3.0-only, MPL-2.0 | Carries license to derivatives     |
+| Attribution   | Apache-2.0                           | Requires NOTICE file               |
+| Proprietary   | `proprietary`, custom strings        | Blocked unless explicit grant      |
+| Public Domain | CC0-1.0, Unlicense                   | No restrictions                    |
 
 ### Copyleft Enforcement
 
 W0rkTree understands copyleft semantics:
+
 - Files derived from copyleft-licensed code inherit the copyleft license
 - The server tracks derivation through snapshot history
 - `wt git export` ensures copyleft requirements are met in the exported repo
@@ -307,12 +312,14 @@ W0rkTree understands copyleft semantics:
 ## Audit Trail
 
 All license-related operations are logged:
+
 - License config changes (who changed what, when)
 - Grant additions/removals
 - License check results (pass/fail, which check, which user)
 - Export/archive operations and which paths were included/excluded
 
 The audit trail is accessible via:
+
 - `wt license audit` CLI command
 - Admin panel license compliance dashboard
 - REST API `/api/repositories/:id/license/audit`
@@ -329,7 +336,7 @@ ERROR: License check failed for operation 'export'
   License: proprietary
   Required grant: redistribute
   Your grants: read-only
-  
+
   To export this file, you need a 'redistribute' grant.
   Contact the worktree owner to request access.
 ```
@@ -340,7 +347,7 @@ ERROR: License check failed for operation 'read'
   License: proprietary
   Required grant: read-only (minimum)
   Your grants: (none)
-  
+
   You do not have any license grant for this path.
   Contact the worktree owner to request access.
 ```

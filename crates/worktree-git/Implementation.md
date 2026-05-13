@@ -53,16 +53,16 @@ src/
 
 `GitCompatError` has 8 variants with `#[from]` auto-conversions for `git2::Error` and `std::io::Error`:
 
-| Variant | Source |
-|---------|--------|
-| `GitError` | `git2::Error` (auto-conversion) |
-| `ProtocolError` | Worktree protocol layer |
-| `IoError` | `std::io::Error` (auto-conversion) |
-| `HashIndexError` | BLAKE3 ↔ SHA-1 mapping |
-| `ImportError` | Git → Worktree conversion |
-| `ExportError` | Worktree → Git conversion |
-| `RemoteError` | Network/remote operations |
-| `ConfigError` | Configuration parsing |
+| Variant          | Source                             |
+| ---------------- | ---------------------------------- |
+| `GitError`       | `git2::Error` (auto-conversion)    |
+| `ProtocolError`  | Worktree protocol layer            |
+| `IoError`        | `std::io::Error` (auto-conversion) |
+| `HashIndexError` | BLAKE3 ↔ SHA-1 mapping             |
+| `ImportError`    | Git → Worktree conversion          |
+| `ExportError`    | Worktree → Git conversion          |
+| `RemoteError`    | Network/remote operations          |
+| `ConfigError`    | Configuration parsing              |
 
 ---
 
@@ -71,6 +71,7 @@ src/
 **Fully implemented** with comprehensive tests.
 
 `GitAttribute` struct holds a glob `pattern` and `Vec<String>` attribute tokens. `parse_gitattributes(content)` parses line-by-line:
+
 - Skips blank lines and `#` comments
 - First whitespace-delimited token = pattern
 - Remaining tokens = attributes (e.g., `text`, `-diff`, `eol=lf`)
@@ -83,6 +84,7 @@ Tests cover: empty content, comments, single/multiple rules, pattern-only lines,
 ## `config::gitignore` — Ignore Format Conversion
 
 Two identity functions for `.gitignore` ↔ `.worktreeignore` conversion:
+
 - `gitignore_to_worktreeignore(content)` — pass-through (formats currently identical)
 - `worktreeignore_to_gitignore(content)` — pass-through
 
@@ -95,10 +97,12 @@ Future versions may diverge as Worktree adds extended pattern syntax.
 **Fully implemented** with tests.
 
 `InMemoryHashIndex` uses dual `HashMap`s for O(1) lookup in both directions:
+
 - `git_to_content: HashMap<GitHash, ContentHash>`
 - `content_to_git: HashMap<ContentHash, GitHash>`
 
 Implements the `HashIndex` trait from `worktree-protocol::compat::git_hash_map`:
+
 - `insert(HashMapping)` — Inserts in both maps.
 - `lookup_by_git(&GitHash) -> Option<ContentHash>`
 - `lookup_by_content(&ContentHash) -> Option<GitHash>`
@@ -114,6 +118,7 @@ Tests: empty index, insert + round-trip lookup, missing → None.
 **Fully implemented.**
 
 `GitRepo` wraps `git2::Repository` with convenience methods:
+
 - `open(path)` — Opens bare or working directory repos.
 - `inner()` — Access raw `git2::Repository`.
 - `branches()` — Lists all local branch names.
@@ -141,6 +146,7 @@ Tests: empty index, insert + round-trip lookup, missing → None.
 **API designed, bodies are `todo!()` stubs.**
 
 `GitToWorktreeConverter<'repo>` holds a `&GitRepo` reference and a `TreeId`:
+
 - `convert_commit(&git2::Commit) -> Result<Snapshot>` — Map author, message, parents, tree hash.
 - `convert_tree(&git2::Tree) -> Result<Manifest>` — Iterate entries, map kinds and hashes.
 - `convert_blob(&git2::Blob) -> Result<Blob>` — Copy content, compute BLAKE3 hash.
@@ -160,6 +166,7 @@ Tests: empty index, insert + round-trip lookup, missing → None.
 **Fully implemented.**
 
 `GitRepoBuilder` uses the builder pattern:
+
 - `with_initial_branch(name)` — Default: `"main"`.
 - `bare(bool)` — Create bare repo.
 - `build(output_path)` — Calls `git2::Repository::init()` or `init_bare()`, then sets HEAD to the configured branch.
@@ -171,6 +178,7 @@ Tests: empty index, insert + round-trip lookup, missing → None.
 **API designed, bodies are `todo!()` stubs.**
 
 `WorktreeToGitConverter` wraps a `git2::Repository`:
+
 - `convert_snapshot(&Snapshot) -> Result<git2::Oid>` — Create Git commit.
 - `convert_manifest(&Manifest) -> Result<git2::Oid>` — Create Git tree.
 - `convert_blob(&Blob) -> Result<git2::Oid>` — Create Git blob.
@@ -182,6 +190,7 @@ Tests: empty index, insert + round-trip lookup, missing → None.
 **Types implemented, function is `todo!()`.**
 
 `SquashMode` enum:
+
 - `None` — Every snapshot → one Git commit.
 - `AutoOnly` — Squash auto-generated snapshots into nearest manual snapshot.
 - `All` — Squash all consecutive snapshots into one commit.
@@ -203,6 +212,7 @@ Tests: empty index, insert + round-trip lookup, missing → None.
 **Fully implemented** with tests.
 
 `GitTransport` enum:
+
 - `Https(String)` — URLs starting with `https://` or `http://`
 - `Ssh(String)` — URLs starting with `ssh://` or `git@`
 
@@ -240,25 +250,25 @@ Tests: empty index, insert + round-trip lookup, missing → None.
 
 ## Implementation Maturity Summary
 
-| Component | Status |
-|-----------|--------|
-| `error` | ✅ Complete |
-| `config::gitattributes` | ✅ Complete (with tests) |
-| `config::gitignore` | ✅ Complete (pass-through) |
-| `hash_index::store` | ✅ Complete (with tests) |
-| `import::repo` | ✅ Complete |
-| `import::walker` | ✅ Complete |
-| `import::converter` | 🔶 API only (todo!) |
-| `import::submodule` | ✅ Complete |
-| `export::builder` | ✅ Complete |
-| `export::converter` | 🔶 API only (todo!) |
-| `export::squash` | 🔶 Types complete (todo!) |
-| `export::submodule` | 🔶 Stub (todo!) |
-| `remote::transport` | ✅ Complete (with tests) |
-| `remote::auth` | ✅ Complete |
-| `remote::push` | 🔶 Stub (todo!) |
-| `remote::pull` | 🔶 Stub (todo!) |
-| `remote::mirror` | 🔶 Config complete (todo!) |
+| Component               | Status                     |
+| ----------------------- | -------------------------- |
+| `error`                 | ✅ Complete                |
+| `config::gitattributes` | ✅ Complete (with tests)   |
+| `config::gitignore`     | ✅ Complete (pass-through) |
+| `hash_index::store`     | ✅ Complete (with tests)   |
+| `import::repo`          | ✅ Complete                |
+| `import::walker`        | ✅ Complete                |
+| `import::converter`     | 🔶 API only (todo!)        |
+| `import::submodule`     | ✅ Complete                |
+| `export::builder`       | ✅ Complete                |
+| `export::converter`     | 🔶 API only (todo!)        |
+| `export::squash`        | 🔶 Types complete (todo!)  |
+| `export::submodule`     | 🔶 Stub (todo!)            |
+| `remote::transport`     | ✅ Complete (with tests)   |
+| `remote::auth`          | ✅ Complete                |
+| `remote::push`          | 🔶 Stub (todo!)            |
+| `remote::pull`          | 🔶 Stub (todo!)            |
+| `remote::mirror`        | 🔶 Config complete (todo!) |
 
 ---
 

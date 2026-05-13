@@ -361,7 +361,7 @@ pub async fn route_staged_ws(
         while let Ok(msg) = rx.recv().await {
             if let Ok(text) = serde_json::to_string(&msg) {
                 if socket
-                    .send(axum::extract::ws::Message::Text(text.into()))
+                    .send(axum::extract::ws::Message::Text(text))
                     .await
                     .is_err()
                 {
@@ -376,9 +376,13 @@ pub async fn route_staged_ws(
 mod tests {
     use super::*;
     use base64::Engine;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[tokio::test]
     async fn handle_init_creates_worktree() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
         let req = InitRequest {
@@ -391,6 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_status_returns_branch_name() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
 
@@ -410,6 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_branch_create_and_switch() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
 
@@ -439,7 +445,9 @@ mod tests {
 
     #[tokio::test]
     async fn handle_staged_stores_uploaded_objects_and_index_entry() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
         let content = b"hello staged";
         let hash = blake3::hash(content).to_hex().to_string();
         let snapshot_id = uuid::Uuid::new_v4().to_string();
@@ -489,7 +497,9 @@ mod tests {
 
     #[tokio::test]
     async fn handle_staged_rejects_hash_mismatch() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("W0RKTREE_SERVER_STORE", dir.path());
         let req = StagedRequest {
             tree_id: "root".to_string(),
             branch_name: "main".to_string(),

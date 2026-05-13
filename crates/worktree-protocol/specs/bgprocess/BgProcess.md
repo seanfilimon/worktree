@@ -79,12 +79,12 @@ constraint**, not an implementation detail.
 
 Throughout W0rkTree documentation and code:
 
-| Term | Refers to |
-|---|---|
-| `bgprocess` | The local daemon specified in this document |
-| `worktree-worker` | The Rust crate that implements the bgprocess |
-| `worktree-server` | The **remote** server — canonical history, IAM, compliance |
-| `daemon` | The long-running process entry point within `worktree-worker` |
+| Term              | Refers to                                                     |
+| ----------------- | ------------------------------------------------------------- |
+| `bgprocess`       | The local daemon specified in this document                   |
+| `worktree-worker` | The Rust crate that implements the bgprocess                  |
+| `worktree-server` | The **remote** server — canonical history, IAM, compliance    |
+| `daemon`          | The long-running process entry point within `worktree-worker` |
 
 > **Important:** Any existing code or documentation that refers to the bgprocess
 > as "the server" is incorrect and should be updated.
@@ -137,21 +137,21 @@ Throughout W0rkTree documentation and code:
 The bgprocess is composed of the following cooperating subsystems, each running
 as an async task within a single Tokio runtime:
 
-| Subsystem | Responsibility |
-|---|---|
-| **Filesystem Watcher** | Monitors working directory via OS-native APIs; feeds raw events into the debouncer. |
-| **Debouncer** | Collapses rapid successive changes to the same path within a configurable window. |
-| **Semantic Classifier** | Classifies debounced events into semantic categories (code change, config change, dependency change, cross-tree change). |
-| **Ignore Matcher** | Compiled ignore pattern matcher; filters events before they reach the classifier. |
-| **Auto-Snapshot Engine** | Evaluates snapshot rules against pending changesets; creates snapshots when conditions are met. |
-| **Snapshot Store** | Manages local snapshot objects, DAG relationships, and branch pointers. |
-| **Diff Engine** | Computes diffs between manifests using `worktree_protocol::feature::diff::compute`. |
-| **Merge Engine** | Handles local auto-merge for non-conflicting changes; detects and reports conflicts. |
-| **Sync Engine** | Uploads staged snapshots to server; downloads remote branch updates; handles delta sync. |
-| **Large File Manager** | Detects, chunks, deduplicates, and serves large files via virtual filesystem. |
-| **Reflog Writer** | Logs all branch-tip-changing operations for recovery. |
-| **IPC Server** | Listens for CLI commands on local socket/pipe; dispatches to appropriate subsystem. |
-| **Config Manager** | Reads and watches `.wt/config.toml` and `.wt-tree/config.toml`; hot-reloads on change. |
+| Subsystem                | Responsibility                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| **Filesystem Watcher**   | Monitors working directory via OS-native APIs; feeds raw events into the debouncer.                                      |
+| **Debouncer**            | Collapses rapid successive changes to the same path within a configurable window.                                        |
+| **Semantic Classifier**  | Classifies debounced events into semantic categories (code change, config change, dependency change, cross-tree change). |
+| **Ignore Matcher**       | Compiled ignore pattern matcher; filters events before they reach the classifier.                                        |
+| **Auto-Snapshot Engine** | Evaluates snapshot rules against pending changesets; creates snapshots when conditions are met.                          |
+| **Snapshot Store**       | Manages local snapshot objects, DAG relationships, and branch pointers.                                                  |
+| **Diff Engine**          | Computes diffs between manifests using `worktree_protocol::feature::diff::compute`.                                      |
+| **Merge Engine**         | Handles local auto-merge for non-conflicting changes; detects and reports conflicts.                                     |
+| **Sync Engine**          | Uploads staged snapshots to server; downloads remote branch updates; handles delta sync.                                 |
+| **Large File Manager**   | Detects, chunks, deduplicates, and serves large files via virtual filesystem.                                            |
+| **Reflog Writer**        | Logs all branch-tip-changing operations for recovery.                                                                    |
+| **IPC Server**           | Listens for CLI commands on local socket/pipe; dispatches to appropriate subsystem.                                      |
+| **Config Manager**       | Reads and watches `.wt/config.toml` and `.wt-tree/config.toml`; hot-reloads on change.                                   |
 
 ### Data Flow
 
@@ -273,11 +273,11 @@ All internal data (object store, history cache, chunk cache) is stored in the
 platform-appropriate location. **Nothing** is stored inside the working directory
 except `.wt/` and `.wt-tree/` configuration:
 
-| Platform | Storage Path |
-|---|---|
-| Windows | `%APPDATA%\W0rkTree\` |
-| Linux | `~/.local/share/w0rktree/` |
-| macOS | `~/Library/Application Support/W0rkTree/` |
+| Platform | Storage Path                              |
+| -------- | ----------------------------------------- |
+| Windows  | `%APPDATA%\W0rkTree\`                     |
+| Linux    | `~/.local/share/w0rktree/`                |
+| macOS    | `~/Library/Application Support/W0rkTree/` |
 
 Within the storage directory:
 
@@ -342,15 +342,15 @@ Startup sequence:
 
 During normal operation, the bgprocess runs the following concurrent loops:
 
-| Loop | Interval | Purpose |
-|---|---|---|
-| **Watcher loop** | Continuous (event-driven) | Receives and debounces filesystem events |
-| **Snapshot evaluation** | On each debounced batch | Checks auto-snapshot rules against pending changeset |
-| **Sync loop** | Configurable (default 30s) | Uploads staged snapshots, downloads remote updates |
-| **IPC listener** | Continuous (event-driven) | Accepts CLI commands via socket/pipe |
-| **Config watcher** | On filesystem event | Hot-reloads config when `.wt/config.toml` or `.wt-tree/config.toml` changes |
-| **Health check** | Every 60s | Verifies watcher is alive, IPC socket is bound, storage is accessible |
-| **Maintenance** | Every 6h | Prunes expired reflog entries, cleans stale chunks, compacts object store |
+| Loop                    | Interval                   | Purpose                                                                     |
+| ----------------------- | -------------------------- | --------------------------------------------------------------------------- |
+| **Watcher loop**        | Continuous (event-driven)  | Receives and debounces filesystem events                                    |
+| **Snapshot evaluation** | On each debounced batch    | Checks auto-snapshot rules against pending changeset                        |
+| **Sync loop**           | Configurable (default 30s) | Uploads staged snapshots, downloads remote updates                          |
+| **IPC listener**        | Continuous (event-driven)  | Accepts CLI commands via socket/pipe                                        |
+| **Config watcher**      | On filesystem event        | Hot-reloads config when `.wt/config.toml` or `.wt-tree/config.toml` changes |
+| **Health check**        | Every 60s                  | Verifies watcher is alive, IPC socket is bound, storage is accessible       |
+| **Maintenance**         | Every 6h                   | Prunes expired reflog entries, cleans stale chunks, compacts object store   |
 
 ### 5.3 Shutdown
 
@@ -477,17 +477,17 @@ max_changed_files = 20           # Lower threshold for this tree
 
 Each snapshot contains:
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | `SnapshotId` (hash) | Content-addressable hash of the snapshot |
-| `parents` | `Vec<SnapshotId>` | Parent snapshot(s) — one for normal, two for merge |
-| `tree_id` | `TreeId` | Which tree this snapshot belongs to |
-| `branch` | `String` | Branch name at time of creation |
-| `manifest` | `ManifestHash` | Hash of the file manifest |
-| `message` | `String` | Human-readable message (auto-generated or manual) |
-| `author` | `TenantId` | Who created this snapshot |
-| `timestamp` | `DateTime<Utc>` | When the snapshot was created |
-| `metadata` | `SnapshotMetadata` | Additional metadata (auto vs manual, trigger reason) |
+| Field       | Type                | Description                                          |
+| ----------- | ------------------- | ---------------------------------------------------- |
+| `id`        | `SnapshotId` (hash) | Content-addressable hash of the snapshot             |
+| `parents`   | `Vec<SnapshotId>`   | Parent snapshot(s) — one for normal, two for merge   |
+| `tree_id`   | `TreeId`            | Which tree this snapshot belongs to                  |
+| `branch`    | `String`            | Branch name at time of creation                      |
+| `manifest`  | `ManifestHash`      | Hash of the file manifest                            |
+| `message`   | `String`            | Human-readable message (auto-generated or manual)    |
+| `author`    | `TenantId`          | Who created this snapshot                            |
+| `timestamp` | `DateTime<Utc>`     | When the snapshot was created                        |
+| `metadata`  | `SnapshotMetadata`  | Additional metadata (auto vs manual, trigger reason) |
 
 ### 6.4 Pending Changeset
 
@@ -524,15 +524,15 @@ struct ChangeEntry {
 
 This is the key innovation in W0rkTree's collaboration model:
 
-| Aspect | Staged Snapshot | Pushed Snapshot |
-|---|---|---|
-| **Created by** | Auto-snapshot or manual `wt snapshot` | `wt push` |
-| **Visible to team** | ✅ Yes (via server) | ✅ Yes |
-| **Part of branch history** | ❌ No | ✅ Yes |
-| **Appears in `wt log`** | ❌ No | ✅ Yes |
-| **Can be discarded** | ✅ Yes, freely | ❌ No (append-only) |
-| **Server stores** | ✅ In staging area | ✅ In canonical history |
-| **Purpose** | Visibility, backup, WIP sharing | Permanent record |
+| Aspect                     | Staged Snapshot                       | Pushed Snapshot         |
+| -------------------------- | ------------------------------------- | ----------------------- |
+| **Created by**             | Auto-snapshot or manual `wt snapshot` | `wt push`               |
+| **Visible to team**        | ✅ Yes (via server)                   | ✅ Yes                  |
+| **Part of branch history** | ❌ No                                 | ✅ Yes                  |
+| **Appears in `wt log`**    | ❌ No                                 | ✅ Yes                  |
+| **Can be discarded**       | ✅ Yes, freely                        | ❌ No (append-only)     |
+| **Server stores**          | ✅ In staging area                    | ✅ In canonical history |
+| **Purpose**                | Visibility, backup, WIP sharing       | Permanent record        |
 
 ### 7.2 Staging Flow
 
@@ -760,11 +760,11 @@ ChunkRef {
 The bgprocess serves large file content transparently via a platform-native
 virtual filesystem:
 
-| Platform | Technology | Details |
-|---|---|---|
-| Linux | FUSE | User-space filesystem mounted at worktree root |
-| macOS | FUSE-T | macOS-compatible FUSE implementation |
-| Windows | ProjFS | Windows Projected File System provider |
+| Platform | Technology | Details                                        |
+| -------- | ---------- | ---------------------------------------------- |
+| Linux    | FUSE       | User-space filesystem mounted at worktree root |
+| macOS    | FUSE-T     | macOS-compatible FUSE implementation           |
+| Windows  | ProjFS     | Windows Projected File System provider         |
 
 Applications see regular files. The lazy loading is completely transparent to
 editors, build tools, and other programs.
@@ -816,11 +816,11 @@ Local has uncommitted/staged changes on "feature-auth"?
 
 ### 11.2 Auto-Merge Behavior
 
-| Scenario | Action | User Notification |
-|---|---|---|
-| Different files | Merge silently | None (visible in `wt status`) |
-| Same file, non-overlapping hunks | Merge and notify | `wt status` shows "auto-merged: file.rs" |
-| Same file, conflicting hunks | Pause sync, mark conflicts | `wt status` shows conflicts, blocks push |
+| Scenario                         | Action                     | User Notification                        |
+| -------------------------------- | -------------------------- | ---------------------------------------- |
+| Different files                  | Merge silently             | None (visible in `wt status`)            |
+| Same file, non-overlapping hunks | Merge and notify           | `wt status` shows "auto-merged: file.rs" |
+| Same file, conflicting hunks     | Pause sync, mark conflicts | `wt status` shows conflicts, blocks push |
 
 ### 11.3 Merge Snapshot
 
@@ -885,12 +885,12 @@ branch context:
 
 ### 12.4 Resolution Commands
 
-| Command | Action |
-|---|---|
-| `wt merge resolve <file>` | Mark a file as resolved (conflicts manually fixed) |
-| `wt merge resolve --all` | Mark all files as resolved |
-| `wt merge abort` | Abort the merge, revert to pre-merge state |
-| `wt merge finish` | Complete the merge (all conflicts must be resolved) |
+| Command                   | Action                                              |
+| ------------------------- | --------------------------------------------------- |
+| `wt merge resolve <file>` | Mark a file as resolved (conflicts manually fixed)  |
+| `wt merge resolve --all`  | Mark all files as resolved                          |
+| `wt merge abort`          | Abort the merge, revert to pre-merge state          |
+| `wt merge finish`         | Complete the merge (all conflicts must be resolved) |
 
 After resolution:
 
@@ -907,19 +907,19 @@ After resolution:
 
 Every operation that changes a branch tip or modifies tree state:
 
-| Operation | Logged |
-|---|---|
-| Snapshot creation (auto) | ✅ |
-| Snapshot creation (manual) | ✅ |
-| Branch create | ✅ |
-| Branch switch | ✅ |
-| Branch delete | ✅ |
-| Merge (auto and manual) | ✅ |
-| Push | ✅ |
-| Sync (remote update applied) | ✅ |
-| Tag creation/deletion | ✅ |
-| Revert | ✅ |
-| Conflict resolution | ✅ |
+| Operation                    | Logged |
+| ---------------------------- | ------ |
+| Snapshot creation (auto)     | ✅     |
+| Snapshot creation (manual)   | ✅     |
+| Branch create                | ✅     |
+| Branch switch                | ✅     |
+| Branch delete                | ✅     |
+| Merge (auto and manual)      | ✅     |
+| Push                         | ✅     |
+| Sync (remote update applied) | ✅     |
+| Tag creation/deletion        | ✅     |
+| Revert                       | ✅     |
+| Conflict resolution          | ✅     |
 
 ### 13.2 Storage
 
@@ -978,11 +978,11 @@ Expired entries are pruned during periodic maintenance (every 6 hours by default
 
 The bgprocess communicates with the `wt` CLI via local IPC:
 
-| Platform | Transport | Address |
-|---|---|---|
-| Linux | Unix domain socket | `/tmp/wt-worker-<worktree-hash>.sock` |
-| macOS | Unix domain socket | `/tmp/wt-worker-<worktree-hash>.sock` |
-| Windows | Named pipe | `\\.\pipe\wt-worker-<worktree-hash>` |
+| Platform | Transport          | Address                               |
+| -------- | ------------------ | ------------------------------------- |
+| Linux    | Unix domain socket | `/tmp/wt-worker-<worktree-hash>.sock` |
+| macOS    | Unix domain socket | `/tmp/wt-worker-<worktree-hash>.sock` |
+| Windows  | Named pipe         | `\\.\pipe\wt-worker-<worktree-hash>`  |
 
 The `<worktree-hash>` is a stable hash of the worktree root path, ensuring
 each worktree has its own IPC channel.
@@ -1030,19 +1030,19 @@ Response:
 All `wt` CLI commands go through the bgprocess. The CLI itself is a thin client
 that sends IPC requests and formats responses for the terminal:
 
-| CLI Command | IPC Command | Handler |
-|---|---|---|
-| `wt status` | `status` | Query watcher + engine state |
-| `wt snapshot` | `snapshot.create` | Trigger manual snapshot |
-| `wt snapshot list` | `snapshot.list` | Query snapshot store |
-| `wt branch create` | `branch.create` | Create branch in snapshot store |
-| `wt branch switch` | `branch.switch` | Switch branch (snapshot first if dirty) |
-| `wt push` | `sync.push` | Finalize staged snapshots into history |
-| `wt sync` | `sync.trigger` | Trigger immediate sync cycle |
-| `wt diff` | `diff.compute` | Compute diff via protocol crate |
-| `wt log` | `log.query` | Query snapshot DAG |
-| `wt merge` | `merge.start` | Initiate merge operation |
-| `wt reflog` | `reflog.query` | Query reflog entries |
+| CLI Command        | IPC Command       | Handler                                 |
+| ------------------ | ----------------- | --------------------------------------- |
+| `wt status`        | `status`          | Query watcher + engine state            |
+| `wt snapshot`      | `snapshot.create` | Trigger manual snapshot                 |
+| `wt snapshot list` | `snapshot.list`   | Query snapshot store                    |
+| `wt branch create` | `branch.create`   | Create branch in snapshot store         |
+| `wt branch switch` | `branch.switch`   | Switch branch (snapshot first if dirty) |
+| `wt push`          | `sync.push`       | Finalize staged snapshots into history  |
+| `wt sync`          | `sync.trigger`    | Trigger immediate sync cycle            |
+| `wt diff`          | `diff.compute`    | Compute diff via protocol crate         |
+| `wt log`           | `log.query`       | Query snapshot DAG                      |
+| `wt merge`         | `merge.start`     | Initiate merge operation                |
+| `wt reflog`        | `reflog.query`    | Query reflog entries                    |
 
 ### 14.4 Concurrency
 
@@ -1056,24 +1056,24 @@ single-writer lock. Read-only operations (status, log, diff) can run concurrentl
 
 ### 15.1 Configuration Sources
 
-| Source | Scope | Precedence |
-|---|---|---|
-| Built-in defaults | Global | Lowest |
-| Environment variables | Process | |
-| `.wt/config.toml` | Worktree | |
-| `.wt-tree/config.toml` | Tree | |
-| CLI flags | Command | Highest |
+| Source                 | Scope    | Precedence |
+| ---------------------- | -------- | ---------- |
+| Built-in defaults      | Global   | Lowest     |
+| Environment variables  | Process  |            |
+| `.wt/config.toml`      | Worktree |            |
+| `.wt-tree/config.toml` | Tree     |            |
+| CLI flags              | Command  | Highest    |
 
 ### 15.2 Environment Variables
 
-| Variable | Effect | Default |
-|---|---|---|
-| `WT_SYNC_AUTO` | Enable/disable auto-sync | `true` |
-| `WT_SNAPSHOT_AUTO` | Enable/disable auto-snapshots | `true` |
-| `WT_LOG_LEVEL` | Daemon log level (trace/debug/info/warn/error) | `info` |
-| `WT_SYNC_INTERVAL` | Sync interval in seconds | `30` |
-| `WT_WORKER_SOCKET` | Override IPC socket path | Platform default |
-| `WT_STORAGE_DIR` | Override platform storage directory | Platform default |
+| Variable           | Effect                                         | Default          |
+| ------------------ | ---------------------------------------------- | ---------------- |
+| `WT_SYNC_AUTO`     | Enable/disable auto-sync                       | `true`           |
+| `WT_SNAPSHOT_AUTO` | Enable/disable auto-snapshots                  | `true`           |
+| `WT_LOG_LEVEL`     | Daemon log level (trace/debug/info/warn/error) | `info`           |
+| `WT_SYNC_INTERVAL` | Sync interval in seconds                       | `30`             |
+| `WT_WORKER_SOCKET` | Override IPC socket path                       | Platform default |
+| `WT_STORAGE_DIR`   | Override platform storage directory            | Platform default |
 
 ### 15.3 Full Configuration Reference
 
@@ -1139,14 +1139,14 @@ secrets_patterns = []           # Additional patterns to scan for
 
 ### 16.1 Platform Matrix
 
-| Capability | Linux | macOS | Windows |
-|---|---|---|---|
-| **File watcher** | `notify` (inotify) | `notify` (FSEvents) | `notify` (ReadDirectoryChangesW) |
-| **Large file VFS** | FUSE | FUSE-T | ProjFS |
-| **IPC** | Unix domain socket | Unix domain socket | Named pipe |
-| **Service manager** | systemd user service | launchd agent | Windows Service |
-| **Storage path** | `~/.local/share/w0rktree/` | `~/Library/Application Support/W0rkTree/` | `%APPDATA%\W0rkTree\` |
-| **PID file** | `.wt/worker.pid` | `.wt/worker.pid` | `.wt/worker.pid` |
+| Capability          | Linux                      | macOS                                     | Windows                          |
+| ------------------- | -------------------------- | ----------------------------------------- | -------------------------------- |
+| **File watcher**    | `notify` (inotify)         | `notify` (FSEvents)                       | `notify` (ReadDirectoryChangesW) |
+| **Large file VFS**  | FUSE                       | FUSE-T                                    | ProjFS                           |
+| **IPC**             | Unix domain socket         | Unix domain socket                        | Named pipe                       |
+| **Service manager** | systemd user service       | launchd agent                             | Windows Service                  |
+| **Storage path**    | `~/.local/share/w0rktree/` | `~/Library/Application Support/W0rkTree/` | `%APPDATA%\W0rkTree\`            |
+| **PID file**        | `.wt/worker.pid`           | `.wt/worker.pid`                          | `.wt/worker.pid`                 |
 
 ### 16.2 Service Management
 
@@ -1154,6 +1154,7 @@ The bgprocess integrates with the platform service manager for automatic start
 on login and restart on crash:
 
 **Linux (systemd):**
+
 ```ini
 [Unit]
 Description=W0rkTree Worker for %i
@@ -1170,6 +1171,7 @@ WantedBy=default.target
 ```
 
 **macOS (launchd):**
+
 ```xml
 <plist version="1.0">
 <dict>
@@ -1237,14 +1239,14 @@ On snapshot creation, the bgprocess optionally scans changed files for secrets:
 
 ### 18.1 Worker Management
 
-| Command | Description |
-|---|---|
-| `wt worker start` | Start the bgprocess for the current worktree |
-| `wt worker stop` | Gracefully stop the bgprocess |
-| `wt worker restart` | Stop and restart the bgprocess |
-| `wt worker status` | Show bgprocess status (uptime, sync state, watcher health) |
-| `wt worker logs` | View bgprocess logs (tail mode by default) |
-| `wt worker logs --follow` | Stream bgprocess logs in real-time |
+| Command                   | Description                                                |
+| ------------------------- | ---------------------------------------------------------- |
+| `wt worker start`         | Start the bgprocess for the current worktree               |
+| `wt worker stop`          | Gracefully stop the bgprocess                              |
+| `wt worker restart`       | Stop and restart the bgprocess                             |
+| `wt worker status`        | Show bgprocess status (uptime, sync state, watcher health) |
+| `wt worker logs`          | View bgprocess logs (tail mode by default)                 |
+| `wt worker logs --follow` | Stream bgprocess logs in real-time                         |
 
 ### 18.2 Status Output
 
@@ -1287,12 +1289,12 @@ Large Files
 
 ### 19.1 Error Categories
 
-| Category | Examples | Recovery |
-|---|---|---|
-| **Transient** | Network timeout, server 503 | Automatic retry with backoff |
-| **Permanent** | Invalid auth token, worktree deleted | Log error, notify user, pause affected subsystem |
-| **Filesystem** | Permission denied, disk full | Log error, notify user, continue other operations |
-| **Corruption** | Damaged object store, invalid snapshot | Log error, attempt repair, fall back to server |
+| Category       | Examples                               | Recovery                                          |
+| -------------- | -------------------------------------- | ------------------------------------------------- |
+| **Transient**  | Network timeout, server 503            | Automatic retry with backoff                      |
+| **Permanent**  | Invalid auth token, worktree deleted   | Log error, notify user, pause affected subsystem  |
+| **Filesystem** | Permission denied, disk full           | Log error, notify user, continue other operations |
+| **Corruption** | Damaged object store, invalid snapshot | Log error, attempt repair, fall back to server    |
 
 ### 19.2 Retry Policy
 
@@ -1328,18 +1330,18 @@ on restart to ensure consistency.
 The bgprocess tracks internal metrics (exposed via `wt worker status` and
 optionally via Prometheus endpoint):
 
-| Metric | Type | Description |
-|---|---|---|
-| `wt_watcher_events_total` | Counter | Total filesystem events received |
-| `wt_watcher_events_ignored` | Counter | Events dropped by ignore matcher |
-| `wt_snapshots_created_total` | Counter | Snapshots created (auto + manual) |
-| `wt_sync_cycles_total` | Counter | Sync cycles completed |
-| `wt_sync_duration_seconds` | Histogram | Sync cycle duration |
-| `wt_sync_bytes_uploaded` | Counter | Total bytes uploaded |
-| `wt_sync_bytes_downloaded` | Counter | Total bytes downloaded |
-| `wt_pending_changes` | Gauge | Files in pending changeset |
-| `wt_staged_snapshots` | Gauge | Staged snapshots awaiting push |
-| `wt_chunk_cache_bytes` | Gauge | Large file chunk cache size |
+| Metric                       | Type      | Description                       |
+| ---------------------------- | --------- | --------------------------------- |
+| `wt_watcher_events_total`    | Counter   | Total filesystem events received  |
+| `wt_watcher_events_ignored`  | Counter   | Events dropped by ignore matcher  |
+| `wt_snapshots_created_total` | Counter   | Snapshots created (auto + manual) |
+| `wt_sync_cycles_total`       | Counter   | Sync cycles completed             |
+| `wt_sync_duration_seconds`   | Histogram | Sync cycle duration               |
+| `wt_sync_bytes_uploaded`     | Counter   | Total bytes uploaded              |
+| `wt_sync_bytes_downloaded`   | Counter   | Total bytes downloaded            |
+| `wt_pending_changes`         | Gauge     | Files in pending changeset        |
+| `wt_staged_snapshots`        | Gauge     | Staged snapshots awaiting push    |
+| `wt_chunk_cache_bytes`       | Gauge     | Large file chunk cache size       |
 
 ---
 
@@ -1350,44 +1352,44 @@ optionally via Prometheus endpoint):
 The following code exists in `worktree-server` but **belongs in the bgprocess**
 (`worktree-worker`):
 
-| Module | Location | Status |
-|---|---|---|
-| `Debouncer` | `worktree-server/src/watcher/debounce.rs` | ✅ Implemented with tests |
-| `EventKind` | `worktree-server/src/watcher/debounce.rs` | ✅ Implemented |
-| `DebouncedEvent` | `worktree-server/src/watcher/debounce.rs` | ✅ Implemented |
-| `WatcherConfig` | `worktree-server/src/config/settings.rs` | ✅ Implemented |
-| `AutoSnapshotConfig` | `worktree-server/src/config/settings.rs` | ✅ Implemented |
-| `SemanticEvent` | `worktree-server/src/engine/event.rs` | ⚠️ Types defined, `classify_event` is `todo!()` |
-| `Daemon` | `worktree-server/src/service/daemon.rs` | ⚠️ Skeleton, `start()` is `todo!()` |
-| `handle_init` | `worktree-server/src/api/handlers.rs` | ⚠️ Skeleton, all handlers are `todo!()` |
+| Module               | Location                                  | Status                                          |
+| -------------------- | ----------------------------------------- | ----------------------------------------------- |
+| `Debouncer`          | `worktree-server/src/watcher/debounce.rs` | ✅ Implemented with tests                       |
+| `EventKind`          | `worktree-server/src/watcher/debounce.rs` | ✅ Implemented                                  |
+| `DebouncedEvent`     | `worktree-server/src/watcher/debounce.rs` | ✅ Implemented                                  |
+| `WatcherConfig`      | `worktree-server/src/config/settings.rs`  | ✅ Implemented                                  |
+| `AutoSnapshotConfig` | `worktree-server/src/config/settings.rs`  | ✅ Implemented                                  |
+| `SemanticEvent`      | `worktree-server/src/engine/event.rs`     | ⚠️ Types defined, `classify_event` is `todo!()` |
+| `Daemon`             | `worktree-server/src/service/daemon.rs`   | ⚠️ Skeleton, `start()` is `todo!()`             |
+| `handle_init`        | `worktree-server/src/api/handlers.rs`     | ⚠️ Skeleton, all handlers are `todo!()`         |
 
 ### 21.2 What Exists in worktree-protocol
 
 The protocol crate provides shared types and algorithms used by the bgprocess:
 
-| Module | Purpose | Status |
-|---|---|---|
-| `feature::diff::compute` | Diff computation (`compute_diff`, `compute_diff_default`) | ✅ Fully implemented with tests |
-| `feature::diff::delta` | Delta types (`Delta`, `DeltaKind`) | ✅ Implemented |
-| `feature::diff::manifest` | Manifest types for diffing | ✅ Implemented |
-| `core::id` | ID types (`TreeId`, `SnapshotId`, `BranchId`) | ✅ Implemented |
-| `core::hash` | Content-addressable hashing | ✅ Implemented |
+| Module                    | Purpose                                                   | Status                          |
+| ------------------------- | --------------------------------------------------------- | ------------------------------- |
+| `feature::diff::compute`  | Diff computation (`compute_diff`, `compute_diff_default`) | ✅ Fully implemented with tests |
+| `feature::diff::delta`    | Delta types (`Delta`, `DeltaKind`)                        | ✅ Implemented                  |
+| `feature::diff::manifest` | Manifest types for diffing                                | ✅ Implemented                  |
+| `core::id`                | ID types (`TreeId`, `SnapshotId`, `BranchId`)             | ✅ Implemented                  |
+| `core::hash`              | Content-addressable hashing                               | ✅ Implemented                  |
 
 ### 21.3 What Needs to Be Built
 
-| Component | Priority | Complexity |
-|---|---|---|
-| **`worktree-worker` crate** | 🔴 Critical | High — new crate, extract from server |
-| **IPC server** | 🔴 Critical | Medium — socket/pipe listener, JSON protocol |
-| **Auto-snapshot engine** | 🔴 Critical | Medium — rule evaluation, changeset tracking |
-| **Sync engine** | 🔴 Critical | High — delta sync, conflict detection |
-| **Ignore pattern compiler** | 🟡 High | Low — glob set compilation |
-| **Reflog writer** | 🟡 High | Low — append-only log files |
-| **Large file manager** | 🟡 High | High — FastCDC, VFS integration |
-| **Config hot-reload** | 🟢 Medium | Low — watch config files, recompile |
-| **Service manager integration** | 🟢 Medium | Medium — systemd/launchd/Windows Service |
-| **Secrets scanning** | 🔵 Low | Low — regex scanning on snapshot |
-| **Metrics/Prometheus** | 🔵 Low | Low — counter/gauge exports |
+| Component                       | Priority    | Complexity                                   |
+| ------------------------------- | ----------- | -------------------------------------------- |
+| **`worktree-worker` crate**     | 🔴 Critical | High — new crate, extract from server        |
+| **IPC server**                  | 🔴 Critical | Medium — socket/pipe listener, JSON protocol |
+| **Auto-snapshot engine**        | 🔴 Critical | Medium — rule evaluation, changeset tracking |
+| **Sync engine**                 | 🔴 Critical | High — delta sync, conflict detection        |
+| **Ignore pattern compiler**     | 🟡 High     | Low — glob set compilation                   |
+| **Reflog writer**               | 🟡 High     | Low — append-only log files                  |
+| **Large file manager**          | 🟡 High     | High — FastCDC, VFS integration              |
+| **Config hot-reload**           | 🟢 Medium   | Low — watch config files, recompile          |
+| **Service manager integration** | 🟢 Medium   | Medium — systemd/launchd/Windows Service     |
+| **Secrets scanning**            | 🔵 Low      | Low — regex scanning on snapshot             |
+| **Metrics/Prometheus**          | 🔵 Low      | Low — counter/gauge exports                  |
 
 ---
 
@@ -1439,29 +1441,29 @@ The protocol crate provides shared types and algorithms used by the bgprocess:
 
 ## Appendix A: Glossary
 
-| Term | Definition |
-|---|---|
-| **bgprocess** | The local W0rkTree daemon running on the developer's machine |
-| **staged snapshot** | A snapshot synced to the server but not yet part of branch history |
-| **pushed snapshot** | A snapshot that is part of canonical branch history |
-| **pending changeset** | In-memory set of tracked changes since the last snapshot |
-| **sync cycle** | One complete upload + download + reconciliation pass |
-| **sync cursor** | Position marker tracking what has been synced |
-| **chunk** | A content-defined segment of a large file |
-| **chunk manifest** | Ordered list of chunk references composing a large file |
-| **debounce** | Collapsing rapid successive events to the same path into one event |
-| **semantic event** | A classified filesystem event (code change, config change, etc.) |
-| **IPC** | Inter-process communication between the CLI and bgprocess |
-| **reflog** | Chronological log of all branch-tip-changing operations |
+| Term                  | Definition                                                         |
+| --------------------- | ------------------------------------------------------------------ |
+| **bgprocess**         | The local W0rkTree daemon running on the developer's machine       |
+| **staged snapshot**   | A snapshot synced to the server but not yet part of branch history |
+| **pushed snapshot**   | A snapshot that is part of canonical branch history                |
+| **pending changeset** | In-memory set of tracked changes since the last snapshot           |
+| **sync cycle**        | One complete upload + download + reconciliation pass               |
+| **sync cursor**       | Position marker tracking what has been synced                      |
+| **chunk**             | A content-defined segment of a large file                          |
+| **chunk manifest**    | Ordered list of chunk references composing a large file            |
+| **debounce**          | Collapsing rapid successive events to the same path into one event |
+| **semantic event**    | A classified filesystem event (code change, config change, etc.)   |
+| **IPC**               | Inter-process communication between the CLI and bgprocess          |
+| **reflog**            | Chronological log of all branch-tip-changing operations            |
 
 ## Appendix B: Related Specifications
 
-| Specification | Relevance |
-|---|---|
-| `specs/WorkTree.md` | Master specification; sections 3, 6, 9, 11, 12, 15 are directly relevant |
-| `specs/dot-wt/` | `.wt/` directory structure and configuration |
-| `specs/dot-wt-tree/` | `.wt-tree/` directory structure and per-tree configuration |
-| `specs/sync/` | Sync protocol details (planned) |
-| `specs/server/` | Remote server specification (planned) |
-| `specs/storage/` | Object storage specification (planned) |
-| `specs/security/` | Security model specification (planned) |
+| Specification        | Relevance                                                                |
+| -------------------- | ------------------------------------------------------------------------ |
+| `specs/WorkTree.md`  | Master specification; sections 3, 6, 9, 11, 12, 15 are directly relevant |
+| `specs/dot-wt/`      | `.wt/` directory structure and configuration                             |
+| `specs/dot-wt-tree/` | `.wt-tree/` directory structure and per-tree configuration               |
+| `specs/sync/`        | Sync protocol details (planned)                                          |
+| `specs/server/`      | Remote server specification (planned)                                    |
+| `specs/storage/`     | Object storage specification (planned)                                   |
+| `specs/security/`    | Security model specification (planned)                                   |

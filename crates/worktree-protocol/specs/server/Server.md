@@ -35,10 +35,10 @@ The `worktree-server` is the remote multi-tenant server that hosts worktrees for
 
 Every W0rkTree deployment has exactly two runtimes:
 
-| Runtime | Location | Role |
-|---|---|---|
+| Runtime                                         | Location            | Role                                              |
+| ----------------------------------------------- | ------------------- | ------------------------------------------------- |
 | `worktree-bgprocess` (a.k.a. `worktree-worker`) | Developer's machine | Watches files, creates snapshots, syncs to server |
-| `worktree-server` | Remote host | Source of truth for history, access, compliance |
+| `worktree-server`                               | Remote host         | Source of truth for history, access, compliance   |
 
 The server is the **source of truth**. If a local history diverges from the server, the server wins. The bgprocess syncs with the server but cannot bypass its enforcement. Every operation that crosses a trust boundary — pushing, merging, granting access, exporting — flows through the server.
 
@@ -54,8 +54,8 @@ The server is **not** the local daemon. The bgprocess (`worktree-worker`) handle
 - **Never creates auto-snapshots** — it only stores what the bgprocess sends.
 - **Never touches the working directory** — no reads, no writes, no filesystem events.
 - **Never runs on the developer's machine** — it is always a remote process.
-- **Never performs auto-merge** — merge conflict detection is local. The server enforces merge *rules* (reviews, CI gates) but the bgprocess computes the merge itself.
-- **Never stores `.wt/` or `.wt-tree/` folders as local state** — it stores the *contents* of access and config files as part of snapshot data, but does not maintain a working directory.
+- **Never performs auto-merge** — merge conflict detection is local. The server enforces merge _rules_ (reviews, CI gates) but the bgprocess computes the merge itself.
+- **Never stores `.wt/` or `.wt-tree/` folders as local state** — it stores the _contents_ of access and config files as part of snapshot data, but does not maintain a working directory.
 
 If you are looking for the local daemon spec, see the bgprocess specification.
 
@@ -63,22 +63,22 @@ If you are looking for the local daemon spec, see the bgprocess specification.
 
 ## 3. Responsibilities Summary
 
-| Responsibility | Description |
-|---|---|
-| **Multi-tenant hosting** | Logical isolation with namespace separation. Physical isolation as enterprise option. |
-| **IAM enforcement** | Tenants, accounts, teams, roles, policies — evaluated on every operation. |
-| **Cross-tenant access** | Enforces sharing rules between tenants with identity resolution and policy evaluation. |
-| **Canonical history** | Stores the authoritative snapshot DAG for every branch. Server history is the truth. |
-| **Staged snapshot storage** | Receives and stores staged snapshots from bgprocess clients for team visibility. |
-| **License compliance** | Per-path SPDX license enforcement on sync, export, fork, copy, and archive. |
-| **Branch protection** | Merge request reviews, required CI checks, signature requirements — all server-side. |
-| **Merge request system** | Built-in create, review, approve, reject, merge workflow with stale review handling. |
-| **Tag & release management** | Immutable tags and releases with artifact storage. Naming and uniqueness enforced. |
-| **Sync engine** | Delta sync, shallow sync, partial tree sync — serves and receives objects efficiently. |
-| **Storage backend** | Content-addressable object store with BLAKE3 hashing, deduplication, and per-tenant namespacing. |
-| **API surface** | gRPC for bgprocess sync, REST for admin panel and SDK, WebSocket for real-time events. |
-| **Quota enforcement** | Storage limits, worktree count limits, and rate limiting per tenant plan. |
-| **Audit logging** | Every access decision logged with full context for compliance and debugging. |
+| Responsibility               | Description                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ |
+| **Multi-tenant hosting**     | Logical isolation with namespace separation. Physical isolation as enterprise option.            |
+| **IAM enforcement**          | Tenants, accounts, teams, roles, policies — evaluated on every operation.                        |
+| **Cross-tenant access**      | Enforces sharing rules between tenants with identity resolution and policy evaluation.           |
+| **Canonical history**        | Stores the authoritative snapshot DAG for every branch. Server history is the truth.             |
+| **Staged snapshot storage**  | Receives and stores staged snapshots from bgprocess clients for team visibility.                 |
+| **License compliance**       | Per-path SPDX license enforcement on sync, export, fork, copy, and archive.                      |
+| **Branch protection**        | Merge request reviews, required CI checks, signature requirements — all server-side.             |
+| **Merge request system**     | Built-in create, review, approve, reject, merge workflow with stale review handling.             |
+| **Tag & release management** | Immutable tags and releases with artifact storage. Naming and uniqueness enforced.               |
+| **Sync engine**              | Delta sync, shallow sync, partial tree sync — serves and receives objects efficiently.           |
+| **Storage backend**          | Content-addressable object store with BLAKE3 hashing, deduplication, and per-tenant namespacing. |
+| **API surface**              | gRPC for bgprocess sync, REST for admin panel and SDK, WebSocket for real-time events.           |
+| **Quota enforcement**        | Storage limits, worktree count limits, and rate limiting per tenant plan.                        |
+| **Audit logging**            | Every access decision logged with full context for compliance and debugging.                     |
 
 ---
 
@@ -88,17 +88,17 @@ A **tenant** is the identity unit in W0rkTree. Every action — creating a snaps
 
 ### Tenant Properties
 
-| Property | Type | Description |
-|---|---|---|
-| `id` | UUID | Immutable, server-generated unique identifier. |
-| `username` | String (slug) | Unique, URL-safe slug. Used in paths, access grants, and API routes. Example: `acme-corp`, `alice`. |
-| `email` | String | Verified email address. Used for notifications, identity verification, and cross-tenant resolution. |
-| `display_name` | String | Human-readable name. Not unique. |
-| `type` | Enum | `personal` (individual developer) or `organization` (team/company with member accounts). |
-| `status` | Enum | `Active`, `Suspended`, `Deactivated`. Suspended tenants cannot push or create but can read. |
-| `plan` | Enum | `Free`, `Pro`, `Enterprise`, `Custom`. Determines resource limits. |
-| `created_at` | Timestamp | When the tenant was registered. |
-| `updated_at` | Timestamp | Last modification to tenant record. |
+| Property       | Type          | Description                                                                                         |
+| -------------- | ------------- | --------------------------------------------------------------------------------------------------- |
+| `id`           | UUID          | Immutable, server-generated unique identifier.                                                      |
+| `username`     | String (slug) | Unique, URL-safe slug. Used in paths, access grants, and API routes. Example: `acme-corp`, `alice`. |
+| `email`        | String        | Verified email address. Used for notifications, identity verification, and cross-tenant resolution. |
+| `display_name` | String        | Human-readable name. Not unique.                                                                    |
+| `type`         | Enum          | `personal` (individual developer) or `organization` (team/company with member accounts).            |
+| `status`       | Enum          | `Active`, `Suspended`, `Deactivated`. Suspended tenants cannot push or create but can read.         |
+| `plan`         | Enum          | `Free`, `Pro`, `Enterprise`, `Custom`. Determines resource limits.                                  |
+| `created_at`   | Timestamp     | When the tenant was registered.                                                                     |
+| `updated_at`   | Timestamp     | Last modification to tenant record.                                                                 |
 
 ### Tenant Types
 
@@ -106,11 +106,11 @@ A **tenant** is the identity unit in W0rkTree. Every action — creating a snaps
 
 **Organization tenants** contain member accounts and teams. An organization tenant has:
 
-| Component | Description |
-|---|---|
-| **Accounts** | Individual user accounts within the organization. Each account has its own credentials and identity. |
-| **Teams** | Named groups of accounts. Used as IAM principals (e.g., `team:frontend-devs`). |
-| **Org roles** | Organization-wide roles assigned to accounts (e.g., Org Owner, Org Admin, Org Member). |
+| Component     | Description                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------- |
+| **Accounts**  | Individual user accounts within the organization. Each account has its own credentials and identity. |
+| **Teams**     | Named groups of accounts. Used as IAM principals (e.g., `team:frontend-devs`).                       |
+| **Org roles** | Organization-wide roles assigned to accounts (e.g., Org Owner, Org Admin, Org Member).               |
 
 ### Tenant Status Transitions
 
@@ -142,10 +142,10 @@ All storage paths, object references, and API routes are prefixed with the tenan
 
 Enterprise tenants may opt into physical isolation:
 
-| Isolation Level | Storage | Compute | Network |
-|---|---|---|---|
-| **Logical** (default) | Shared object store, namespace-separated | Shared server processes | Shared endpoints |
-| **Physical** (enterprise) | Dedicated storage volume or bucket | Dedicated worker pool (optional) | Dedicated endpoint (optional) |
+| Isolation Level           | Storage                                  | Compute                          | Network                       |
+| ------------------------- | ---------------------------------------- | -------------------------------- | ----------------------------- |
+| **Logical** (default)     | Shared object store, namespace-separated | Shared server processes          | Shared endpoints              |
+| **Physical** (enterprise) | Dedicated storage volume or bucket       | Dedicated worker pool (optional) | Dedicated endpoint (optional) |
 
 Physical isolation is configured at the server level by an operator, not by the tenant. It is transparent to the bgprocess — the sync protocol is identical regardless of isolation mode.
 
@@ -164,11 +164,11 @@ Both must pass. Failure of either results in denial.
 
 Every worktree has a visibility mode set in `.wt/config.toml` under `[worktree] visibility`:
 
-| Mode | Default Access | Description |
-|---|---|---|
-| **Private** (default) | Owner-only | Other tenants must be explicitly granted access via IAM policies or `tenant_access` entries. Nothing is visible to outsiders. |
-| **Shared** | Named tenants | Specific tenants are granted access by username or email. The worktree does not appear in public listings. |
-| **Public** | All tenants read | All authenticated tenants can read, clone, and sync. Write access (push, branch create, merge) still requires explicit grants. License compliance governs what can be copied or redistributed. |
+| Mode                  | Default Access   | Description                                                                                                                                                                                    |
+| --------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Private** (default) | Owner-only       | Other tenants must be explicitly granted access via IAM policies or `tenant_access` entries. Nothing is visible to outsiders.                                                                  |
+| **Shared**            | Named tenants    | Specific tenants are granted access by username or email. The worktree does not appear in public listings.                                                                                     |
+| **Public**            | All tenants read | All authenticated tenants can read, clone, and sync. Write access (push, branch create, merge) still requires explicit grants. License compliance governs what can be copied or redistributed. |
 
 ### Visibility Enforcement
 
@@ -183,24 +183,24 @@ Every worktree has a visibility mode set in `.wt/config.toml` under `[worktree] 
 
 ### IAM Components
 
-| Component | Description |
-|---|---|
-| **Tenants** | Users or organizations. The top-level identity. |
-| **Accounts** | Individual user accounts within an organization tenant. |
-| **Teams** | Named groups of accounts within a tenant. Referenced as `team:<name>` in policies. |
-| **Roles** | Named permission sets. Built-in and custom. |
+| Component    | Description                                                                                              |
+| ------------ | -------------------------------------------------------------------------------------------------------- |
+| **Tenants**  | Users or organizations. The top-level identity.                                                          |
+| **Accounts** | Individual user accounts within an organization tenant.                                                  |
+| **Teams**    | Named groups of accounts within a tenant. Referenced as `team:<name>` in policies.                       |
+| **Roles**    | Named permission sets. Built-in and custom.                                                              |
 | **Policies** | RBAC + ABAC rules binding subjects (principals) to permissions (actions) at specific scopes (resources). |
-| **Scopes** | Hierarchy of resource granularity for policy evaluation. |
+| **Scopes**   | Hierarchy of resource granularity for policy evaluation.                                                 |
 
 ### Built-in Roles
 
-| Role | Permissions | Description |
-|---|---|---|
-| **Owner** | `*` | Full control. Can delete the worktree, transfer ownership, manage billing. Only one per worktree. |
-| **Admin** | `*` except ownership transfer | Full access including IAM management, branch protection config, and tenant access grants. |
-| **Maintainer** | `snapshot:*`, `branch:*`, `tag:*`, `merge-request:merge`, `release:*` | Can merge to protected branches, manage tags and releases. Cannot modify access policies. |
-| **Developer** | `snapshot:read`, `snapshot:create`, `branch:list`, `branch:create`, `branch:push` | Can create snapshots and push to non-protected branches. Cannot merge to protected branches. |
-| **Viewer** | `snapshot:read`, `branch:list`, `tree:sync` | Read-only access. Can clone and sync but not modify anything. |
+| Role           | Permissions                                                                       | Description                                                                                       |
+| -------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **Owner**      | `*`                                                                               | Full control. Can delete the worktree, transfer ownership, manage billing. Only one per worktree. |
+| **Admin**      | `*` except ownership transfer                                                     | Full access including IAM management, branch protection config, and tenant access grants.         |
+| **Maintainer** | `snapshot:*`, `branch:*`, `tag:*`, `merge-request:merge`, `release:*`             | Can merge to protected branches, manage tags and releases. Cannot modify access policies.         |
+| **Developer**  | `snapshot:read`, `snapshot:create`, `branch:list`, `branch:create`, `branch:push` | Can create snapshots and push to non-protected branches. Cannot merge to protected branches.      |
+| **Viewer**     | `snapshot:read`, `branch:list`, `tree:sync`                                       | Read-only access. Can clone and sync but not modify anything.                                     |
 
 Custom roles are defined in `.wt/access/roles.toml` and `.wt-tree/access/roles.toml`.
 
@@ -244,32 +244,32 @@ Access files (`.wt/access/roles.toml`, `.wt/access/policies.toml`, and their `.w
 
 ### Permission Actions
 
-| Action | Description |
-|---|---|
-| `snapshot:read` | Read snapshot content and metadata |
-| `snapshot:create` | Create new snapshots |
-| `branch:list` | List branches |
-| `branch:create` | Create new branches |
-| `branch:push` | Push to a branch (non-protected) |
-| `branch:merge` | Merge into a branch (protected or not) |
-| `branch:delete` | Delete a branch |
-| `tag:create` | Create tags |
-| `tag:delete` | Delete tags |
-| `release:create` | Create releases |
-| `release:delete` | Delete releases |
-| `tree:sync` | Sync (clone/pull) tree content |
-| `tree:create` | Create new trees |
-| `tree:delete` | Delete trees |
-| `merge-request:create` | Create merge requests |
-| `merge-request:review` | Approve or request changes |
-| `merge-request:merge` | Merge a merge request |
-| `policy:manage` | Create, modify, or delete access policies |
-| `policy:view` | Read access policies |
-| `config:manage` | Modify worktree or tree configuration |
-| `file:read` | Read file content (used in license grants) |
-| `file:modify` | Modify file content (used in license grants) |
-| `file:redistribute` | Include file in exports/forks (used in license grants) |
-| `*` | Wildcard — all actions |
+| Action                 | Description                                            |
+| ---------------------- | ------------------------------------------------------ |
+| `snapshot:read`        | Read snapshot content and metadata                     |
+| `snapshot:create`      | Create new snapshots                                   |
+| `branch:list`          | List branches                                          |
+| `branch:create`        | Create new branches                                    |
+| `branch:push`          | Push to a branch (non-protected)                       |
+| `branch:merge`         | Merge into a branch (protected or not)                 |
+| `branch:delete`        | Delete a branch                                        |
+| `tag:create`           | Create tags                                            |
+| `tag:delete`           | Delete tags                                            |
+| `release:create`       | Create releases                                        |
+| `release:delete`       | Delete releases                                        |
+| `tree:sync`            | Sync (clone/pull) tree content                         |
+| `tree:create`          | Create new trees                                       |
+| `tree:delete`          | Delete trees                                           |
+| `merge-request:create` | Create merge requests                                  |
+| `merge-request:review` | Approve or request changes                             |
+| `merge-request:merge`  | Merge a merge request                                  |
+| `policy:manage`        | Create, modify, or delete access policies              |
+| `policy:view`          | Read access policies                                   |
+| `config:manage`        | Modify worktree or tree configuration                  |
+| `file:read`            | Read file content (used in license grants)             |
+| `file:modify`          | Modify file content (used in license grants)           |
+| `file:redistribute`    | Include file in exports/forks (used in license grants) |
+| `*`                    | Wildcard — all actions                                 |
 
 ---
 
@@ -325,21 +325,21 @@ The server indexes license assignments per worktree and keeps them current as sn
 
 ### License Grant Levels
 
-| Grant | Description |
-|---|---|
-| **Read-only** | Tenant can view the file content but cannot modify or include it in exports. |
-| **Modify** | Tenant can view and modify the file within the worktree. |
+| Grant            | Description                                                                   |
+| ---------------- | ----------------------------------------------------------------------------- |
+| **Read-only**    | Tenant can view the file content but cannot modify or include it in exports.  |
+| **Modify**       | Tenant can view and modify the file within the worktree.                      |
 | **Redistribute** | Tenant can include the file in exports, forks, archives, and `wt git export`. |
 
 ### Enforcement Points
 
-| Operation | Enforcement |
-|---|---|
-| **Sync / Clone** | License grants checked per-path. Paths without read grant are excluded (stub metadata only). |
-| **Export (`wt git export`)** | Proprietary paths excluded unless tenant has redistribute grant. |
-| **Fork** | Cross-tenant forks respect license boundaries. Proprietary paths stripped from fork unless granted. |
-| **Archive (`wt archive`)** | Same as export — redistribute grant required for inclusion. |
-| **Copy between trees** | License compatibility checked. Incompatible licenses block the copy. |
+| Operation                    | Enforcement                                                                                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| **Sync / Clone**             | License grants checked per-path. Paths without read grant are excluded (stub metadata only).        |
+| **Export (`wt git export`)** | Proprietary paths excluded unless tenant has redistribute grant.                                    |
+| **Fork**                     | Cross-tenant forks respect license boundaries. Proprietary paths stripped from fork unless granted. |
+| **Archive (`wt archive`)**   | Same as export — redistribute grant required for inclusion.                                         |
+| **Copy between trees**       | License compatibility checked. Incompatible licenses block the copy.                                |
 
 ### Dual Enforcement Rule
 
@@ -361,16 +361,16 @@ The server enforces branch protection rules defined in `.wt/config.toml` and `.w
 
 ### Protection Rules
 
-| Rule | Description |
-|---|---|
-| `no_direct_push` | Reject direct pushes. Changes must go through a merge request. |
-| `require_merge_review` | At least one approval required before merge. |
-| `required_reviewers` | Minimum number of approving reviewers. |
-| `no_delete` | Branch cannot be deleted. |
-| `no_force` | Force-push is forbidden. History cannot be rewritten. |
-| `require_ci_pass` | All specified CI checks must pass before merge is allowed. |
-| `required_ci_checks` | List of CI check names that must report success. |
-| `require_snapshot_signature` | Snapshots must carry a valid cryptographic signature. |
+| Rule                         | Description                                                    |
+| ---------------------------- | -------------------------------------------------------------- |
+| `no_direct_push`             | Reject direct pushes. Changes must go through a merge request. |
+| `require_merge_review`       | At least one approval required before merge.                   |
+| `required_reviewers`         | Minimum number of approving reviewers.                         |
+| `no_delete`                  | Branch cannot be deleted.                                      |
+| `no_force`                   | Force-push is forbidden. History cannot be rewritten.          |
+| `require_ci_pass`            | All specified CI checks must pass before merge is allowed.     |
+| `required_ci_checks`         | List of CI check names that must report success.               |
+| `require_snapshot_signature` | Snapshots must carry a valid cryptographic signature.          |
 
 ### Protection Inheritance (Ceiling Model)
 
@@ -416,31 +416,31 @@ Created → Open → Approved → Merged
 
 ### Merge Request Properties
 
-| Property | Type | Description |
-|---|---|---|
-| `id` | Integer | Auto-incrementing, unique within the worktree. |
-| `title` | String | Human-readable title. |
-| `description` | String | Markdown description. |
-| `source_branch` | String | Branch to merge from. |
-| `target_branch` | String | Branch to merge into. |
-| `author` | TenantId | Who created the merge request. |
-| `status` | Enum | `Open`, `Approved`, `Merged`, `Closed`. |
-| `created_at` | Timestamp | Creation time. |
-| `updated_at` | Timestamp | Last modification time. |
-| `reviews` | List | Review records with reviewer identity, decision, and timestamp. |
-| `ci_status` | Map | CI check name → status (`pending`, `running`, `passed`, `failed`). |
+| Property        | Type      | Description                                                        |
+| --------------- | --------- | ------------------------------------------------------------------ |
+| `id`            | Integer   | Auto-incrementing, unique within the worktree.                     |
+| `title`         | String    | Human-readable title.                                              |
+| `description`   | String    | Markdown description.                                              |
+| `source_branch` | String    | Branch to merge from.                                              |
+| `target_branch` | String    | Branch to merge into.                                              |
+| `author`        | TenantId  | Who created the merge request.                                     |
+| `status`        | Enum      | `Open`, `Approved`, `Merged`, `Closed`.                            |
+| `created_at`    | Timestamp | Creation time.                                                     |
+| `updated_at`    | Timestamp | Last modification time.                                            |
+| `reviews`       | List      | Review records with reviewer identity, decision, and timestamp.    |
+| `ci_status`     | Map       | CI check name → status (`pending`, `running`, `passed`, `failed`). |
 
 ### Review Tracking
 
 Each review records:
 
-| Field | Description |
-|---|---|
-| `reviewer` | TenantId of the reviewer. |
-| `role` | Role of the reviewer at the time of review (for audit). |
-| `decision` | `approved`, `changes_requested`, or `commented`. |
-| `snapshot_id` | The snapshot hash at the time of the review. |
-| `timestamp` | When the review was submitted. |
+| Field         | Description                                             |
+| ------------- | ------------------------------------------------------- |
+| `reviewer`    | TenantId of the reviewer.                               |
+| `role`        | Role of the reviewer at the time of review (for audit). |
+| `decision`    | `approved`, `changes_requested`, or `commented`.        |
+| `snapshot_id` | The snapshot hash at the time of the review.            |
+| `timestamp`   | When the review was submitted.                          |
 
 ### Stale Review Handling
 
@@ -470,6 +470,7 @@ W0rktree rejects Git's commit-by-commit replay (like rebase or cherry-pick) in f
 #### Group-Based Snapshot Diffing
 
 When merging `source_branch` into `target_branch`:
+
 1. **Base Identification**: The server identifies the Most Recent Common Ancestor (MRCA) snapshot between the two branches.
 2. **Snapshot Diffing**: The server compares the MRCA directly against the tip of `source_branch` and the tip of `target_branch` (ignoring intermediate snapshots entirely).
 3. **Conflict Detection**: If both branch tips modified the same file differently from the MRCA (e.g. content conflict, modify/delete), a conflict is registered using the protocol's `MergeConflict` primitive.
@@ -477,6 +478,7 @@ When merging `source_branch` into `target_branch`:
 #### Conflict Resolution Flow
 
 If conflicts are detected during a merge attempt:
+
 1. The server rejects the merge execution and marks the Merge Request as `Conflicted`.
 2. The server exposes a **Conflict Manifest** via the API containing base, source, and target file hashes for all conflicting files.
 3. A collaborator fetches the conflict state, resolves the files locally, and stages/pushes a **resolution snapshot** to the `source_branch`.
@@ -507,13 +509,13 @@ The server stores staged snapshots from all connected bgprocess clients. Staged 
 
 ### Staged vs. Pushed
 
-| Aspect | Staged Snapshot | Pushed Snapshot |
-|---|---|---|
-| **Visibility** | Visible to team via API and dashboard | Part of branch history |
-| **Persistence** | Temporary, configurable retention | Permanent (append-only DAG) |
-| **Creation** | Auto-uploaded by bgprocess during sync | Explicit `wt push` by developer |
-| **Branch DAG** | Not part of branch DAG | Linked into branch DAG |
-| **Conflict** | Cannot conflict (not on a branch tip) | May conflict with branch tip |
+| Aspect          | Staged Snapshot                        | Pushed Snapshot                 |
+| --------------- | -------------------------------------- | ------------------------------- |
+| **Visibility**  | Visible to team via API and dashboard  | Part of branch history          |
+| **Persistence** | Temporary, configurable retention      | Permanent (append-only DAG)     |
+| **Creation**    | Auto-uploaded by bgprocess during sync | Explicit `wt push` by developer |
+| **Branch DAG**  | Not part of branch DAG                 | Linked into branch DAG          |
+| **Conflict**    | Cannot conflict (not on a branch tip)  | May conflict with branch tip    |
 
 ### Staged Snapshot Indexing
 
@@ -534,22 +536,22 @@ WS /api/v1/ws/staged/<tenant-slug>/<worktree-name>
 
 Events:
 
-| Event | Description |
-|---|---|
-| `staged.created` | A new staged snapshot was received. Includes snapshot metadata and changed file list. |
-| `staged.updated` | A staged snapshot was replaced by a newer one from the same user/branch. |
-| `staged.promoted` | A staged snapshot was pushed and is now part of branch history. |
-| `staged.expired` | A staged snapshot was removed due to retention policy. |
+| Event             | Description                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| `staged.created`  | A new staged snapshot was received. Includes snapshot metadata and changed file list. |
+| `staged.updated`  | A staged snapshot was replaced by a newer one from the same user/branch.              |
+| `staged.promoted` | A staged snapshot was pushed and is now part of branch history.                       |
+| `staged.expired`  | A staged snapshot was removed due to retention policy.                                |
 
 ### Retention Policy
 
 Staged snapshot retention is configurable per tenant plan:
 
-| Plan | Default Retention | Max Retention |
-|---|---|---|
-| Free | 24 hours | 7 days |
-| Pro | 7 days | 30 days |
-| Enterprise | 30 days | Unlimited |
+| Plan       | Default Retention | Max Retention |
+| ---------- | ----------------- | ------------- |
+| Free       | 24 hours          | 7 days        |
+| Pro        | 7 days            | 30 days       |
+| Enterprise | 30 days           | Unlimited     |
 
 Staged snapshots are automatically purged after retention expires. A push promotes the staged snapshot to permanent history, removing it from the staged index.
 
@@ -561,14 +563,14 @@ The server stores the canonical snapshot DAG — the authoritative history of ev
 
 ### Branch Data Model
 
-| Property | Description |
-|---|---|
-| `name` | Branch name (e.g., `main`, `feature/auth`). |
-| `head` | Snapshot hash of the current branch tip. |
+| Property           | Description                                    |
+| ------------------ | ---------------------------------------------- |
+| `name`             | Branch name (e.g., `main`, `feature/auth`).    |
+| `head`             | Snapshot hash of the current branch tip.       |
 | `parent_snapshots` | DAG links from each snapshot to its parent(s). |
-| `created_at` | When the branch was created. |
-| `created_by` | TenantId of the creator. |
-| `protection` | Computed effective protection rules. |
+| `created_at`       | When the branch was created.                   |
+| `created_by`       | TenantId of the creator.                       |
+| `protection`       | Computed effective protection rules.           |
 
 ### Append-Only History
 
@@ -591,14 +593,14 @@ The server uses a content-addressable object store with BLAKE3 hashing.
 
 ### Object Types
 
-| Type | Description |
-|---|---|
-| **Blob** | Raw file content. Identified by BLAKE3 hash of content. |
-| **Tree** | Directory listing — maps file names to blob or subtree hashes. |
+| Type         | Description                                                                                   |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| **Blob**     | Raw file content. Identified by BLAKE3 hash of content.                                       |
+| **Tree**     | Directory listing — maps file names to blob or subtree hashes.                                |
 | **Snapshot** | Point-in-time record. References a tree hash, parent snapshot(s), author, timestamp, message. |
-| **Manifest** | Lists all objects required to reconstruct a snapshot. Used for sync optimization. |
-| **Delta** | Binary diff between two blobs. Used for efficient transfer, not stored long-term. |
-| **Chunk** | Large file chunk (from FastCDC splitting). Content-addressed, deduplicated. |
+| **Manifest** | Lists all objects required to reconstruct a snapshot. Used for sync optimization.             |
+| **Delta**    | Binary diff between two blobs. Used for efficient transfer, not stored long-term.             |
+| **Chunk**    | Large file chunk (from FastCDC splitting). Content-addressed, deduplicated.                   |
 
 ### Deduplication
 
@@ -642,22 +644,22 @@ The sync engine handles bidirectional data transfer between bgprocess clients an
 
 ### Inbound Operations (bgprocess → server)
 
-| Operation | Description |
-|---|---|
-| **Stage** | Upload staged snapshot. Server indexes it for team visibility. |
-| **Push** | Push snapshot(s) to a branch. Server validates, runs checks, updates branch DAG. |
+| Operation       | Description                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| **Stage**       | Upload staged snapshot. Server indexes it for team visibility.                               |
+| **Push**        | Push snapshot(s) to a branch. Server validates, runs checks, updates branch DAG.             |
 | **Config sync** | Upload changes to `.wt/` and `.wt-tree/` config/access files. Server validates and compiles. |
-| **Tag push** | Create or update a tag on the server. |
+| **Tag push**    | Create or update a tag on the server.                                                        |
 
 ### Outbound Operations (server → bgprocess)
 
-| Operation | Description |
-|---|---|
-| **Branch update** | Serve new snapshots on a branch since the client's last known head. |
-| **Clone** | Serve all objects needed to reconstruct a worktree at a given snapshot. |
-| **Shallow clone** | Serve objects for a limited depth of history. |
-| **Partial tree sync** | Serve metadata-only stubs for trees the client doesn't need locally. |
-| **Tag pull** | Serve tag references and their target snapshots. |
+| Operation             | Description                                                             |
+| --------------------- | ----------------------------------------------------------------------- |
+| **Branch update**     | Serve new snapshots on a branch since the client's last known head.     |
+| **Clone**             | Serve all objects needed to reconstruct a worktree at a given snapshot. |
+| **Shallow clone**     | Serve objects for a limited depth of history.                           |
+| **Partial tree sync** | Serve metadata-only stubs for trees the client doesn't need locally.    |
+| **Tag pull**          | Serve tag references and their target snapshots.                        |
 
 ### Delta Sync Protocol
 
@@ -793,14 +795,14 @@ All flow through the same `audit.Recorder` interface as staged audit events.
 
 Tags are immutable pointers to specific snapshots:
 
-| Property | Description |
-|---|---|
-| `name` | Unique within the worktree. Follows naming rules (no spaces, URL-safe). |
-| `target` | Snapshot hash the tag points to. |
-| `author` | TenantId of the creator. |
-| `message` | Optional annotation message. |
-| `signature` | Optional cryptographic signature. |
-| `created_at` | Creation timestamp. |
+| Property     | Description                                                             |
+| ------------ | ----------------------------------------------------------------------- |
+| `name`       | Unique within the worktree. Follows naming rules (no spaces, URL-safe). |
+| `target`     | Snapshot hash the tag points to.                                        |
+| `author`     | TenantId of the creator.                                                |
+| `message`    | Optional annotation message.                                            |
+| `signature`  | Optional cryptographic signature.                                       |
+| `created_at` | Creation timestamp.                                                     |
 
 Tags are **immutable once created**. To "move" a tag, delete and recreate it (requires `tag:delete` permission). The deletion is logged in the audit trail.
 
@@ -808,14 +810,14 @@ Tags are **immutable once created**. To "move" a tag, delete and recreate it (re
 
 Releases are named, publishable milestones associated with a tag:
 
-| Property | Description |
-|---|---|
-| `tag` | The tag this release is associated with. |
-| `name` | Human-readable release name (e.g., "v2.1.0 — Performance Release"). |
-| `notes` | Markdown release notes. |
-| `artifacts` | List of attached files (binaries, archives, documentation). |
-| `created_at` | Creation timestamp. |
-| `created_by` | TenantId of the creator. |
+| Property     | Description                                                         |
+| ------------ | ------------------------------------------------------------------- |
+| `tag`        | The tag this release is associated with.                            |
+| `name`       | Human-readable release name (e.g., "v2.1.0 — Performance Release"). |
+| `notes`      | Markdown release notes.                                             |
+| `artifacts`  | List of attached files (binaries, archives, documentation).         |
+| `created_at` | Creation timestamp.                                                 |
+| `created_by` | TenantId of the creator.                                            |
 
 Release artifacts are stored in the content-addressable store and referenced by hash. They are subject to the same deduplication and quota rules as other objects.
 
@@ -845,21 +847,21 @@ The server exposes three API transports:
 - **Base path**: `/api/v1/`
 - **Key endpoints**:
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `GET` | `/metrics` | Prometheus metrics |
-| `GET` | `/tenants/:slug` | Get tenant info |
-| `GET` | `/tenants/:slug/worktrees` | List worktrees |
-| `GET` | `/tenants/:slug/worktrees/:name/branches` | List branches |
-| `GET` | `/tenants/:slug/worktrees/:name/merge-requests` | List merge requests |
-| `POST` | `/tenants/:slug/worktrees/:name/merge-requests` | Create merge request |
-| `POST` | `/tenants/:slug/worktrees/:name/merge-requests/:id/review` | Submit review |
-| `POST` | `/tenants/:slug/worktrees/:name/merge-requests/:id/merge` | Merge |
-| `GET` | `/tenants/:slug/worktrees/:name/tags` | List tags |
-| `GET` | `/tenants/:slug/worktrees/:name/releases` | List releases |
-| `POST` | `/ci/status` | CI status webhook |
-| `GET` | `/tenants/:slug/worktrees/:name/staged` | List staged snapshots |
+| Method | Path                                                       | Description           |
+| ------ | ---------------------------------------------------------- | --------------------- |
+| `GET`  | `/health`                                                  | Health check          |
+| `GET`  | `/metrics`                                                 | Prometheus metrics    |
+| `GET`  | `/tenants/:slug`                                           | Get tenant info       |
+| `GET`  | `/tenants/:slug/worktrees`                                 | List worktrees        |
+| `GET`  | `/tenants/:slug/worktrees/:name/branches`                  | List branches         |
+| `GET`  | `/tenants/:slug/worktrees/:name/merge-requests`            | List merge requests   |
+| `POST` | `/tenants/:slug/worktrees/:name/merge-requests`            | Create merge request  |
+| `POST` | `/tenants/:slug/worktrees/:name/merge-requests/:id/review` | Submit review         |
+| `POST` | `/tenants/:slug/worktrees/:name/merge-requests/:id/merge`  | Merge                 |
+| `GET`  | `/tenants/:slug/worktrees/:name/tags`                      | List tags             |
+| `GET`  | `/tenants/:slug/worktrees/:name/releases`                  | List releases         |
+| `POST` | `/ci/status`                                               | CI status webhook     |
+| `GET`  | `/tenants/:slug/worktrees/:name/staged`                    | List staged snapshots |
 
 ### Rust Prototype Compatibility API
 
@@ -867,14 +869,14 @@ The current Rust prototype also exposes a local-development REST surface on `127
 These endpoints exist to exercise the bgprocess/SDK flow before the production Go server boundary
 is complete:
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Prototype health check |
-| `POST` | `/init` | Initialize/open local SDK state for demo flows |
-| `POST` | `/status` | Return local SDK status for demo flows |
-| `POST` | `/snapshot` | Create a local SDK snapshot for demo/manual compatibility |
-| `POST` | `/branch` | Create or switch a local SDK branch for demo flows |
-| `POST` | `/staged` | Accept one staged snapshot upload, verify BLAKE3 object bytes, and persist prototype staged metadata |
+| Method | Path        | Description                                                                                          |
+| ------ | ----------- | ---------------------------------------------------------------------------------------------------- |
+| `GET`  | `/health`   | Prototype health check                                                                               |
+| `POST` | `/init`     | Initialize/open local SDK state for demo flows                                                       |
+| `POST` | `/status`   | Return local SDK status for demo flows                                                               |
+| `POST` | `/snapshot` | Create a local SDK snapshot for demo/manual compatibility                                            |
+| `POST` | `/branch`   | Create or switch a local SDK branch for demo flows                                                   |
+| `POST` | `/staged`   | Accept one staged snapshot upload, verify BLAKE3 object bytes, and persist prototype staged metadata |
 
 The production server must not preserve the local-working-directory behavior of `/init`,
 `/status`, `/snapshot`, or `/branch`. The reusable contract is the `/staged` semantic boundary:
@@ -885,12 +887,12 @@ clients upload snapshot objects, and the server verifies, authorizes, stores, in
 The production-boundary Go server currently exposes the staged semantic boundary over REST and
 gRPC:
 
-| Transport | Method | Description |
-|---|---|---|
-| REST | `POST /staged` | Upload one staged snapshot using JSON `content` bytes encoded as base64 |
-| REST | `GET /staged` | List staged snapshots with tenant, worktree, and branch filters |
-| gRPC | `SyncService.StageSnapshot` | Upload one staged snapshot using protobuf bytes |
-| gRPC | `SyncService.ListStagedSnapshots` | List staged snapshots with tenant, worktree, and branch filters |
+| Transport | Method                            | Description                                                             |
+| --------- | --------------------------------- | ----------------------------------------------------------------------- |
+| REST      | `POST /staged`                    | Upload one staged snapshot using JSON `content` bytes encoded as base64 |
+| REST      | `GET /staged`                     | List staged snapshots with tenant, worktree, and branch filters         |
+| gRPC      | `SyncService.StageSnapshot`       | Upload one staged snapshot using protobuf bytes                         |
+| gRPC      | `SyncService.ListStagedSnapshots` | List staged snapshots with tenant, worktree, and branch filters         |
 
 Both transports share BLAKE3 object verification, staged storage, audit recording, and IAM
 authorization. The gRPC server listens on `WT_SERVER_GRPC_ADDR`, default `127.0.0.1:9877`.
@@ -1018,19 +1020,19 @@ GET /metrics
 
 Prometheus-format metrics:
 
-| Metric | Type | Description |
-|---|---|---|
-| `wt_server_requests_total` | Counter | Total API requests by method, path, status. |
-| `wt_server_request_duration_seconds` | Histogram | Request latency distribution. |
-| `wt_sync_pushes_total` | Counter | Total pushes by tenant, worktree, result. |
-| `wt_sync_pulls_total` | Counter | Total pulls by tenant, worktree. |
-| `wt_sync_bytes_transferred` | Counter | Total bytes transferred (in/out). |
-| `wt_staged_snapshots_active` | Gauge | Currently stored staged snapshots. |
-| `wt_tenants_active` | Gauge | Number of active tenants. |
-| `wt_storage_used_bytes` | Gauge | Storage used per tenant. |
-| `wt_iam_decisions_total` | Counter | Access decisions by result (allow/deny). |
-| `wt_merge_requests_total` | Counter | Merge requests by status. |
-| `wt_websocket_connections` | Gauge | Active WebSocket connections. |
+| Metric                               | Type      | Description                                 |
+| ------------------------------------ | --------- | ------------------------------------------- |
+| `wt_server_requests_total`           | Counter   | Total API requests by method, path, status. |
+| `wt_server_request_duration_seconds` | Histogram | Request latency distribution.               |
+| `wt_sync_pushes_total`               | Counter   | Total pushes by tenant, worktree, result.   |
+| `wt_sync_pulls_total`                | Counter   | Total pulls by tenant, worktree.            |
+| `wt_sync_bytes_transferred`          | Counter   | Total bytes transferred (in/out).           |
+| `wt_staged_snapshots_active`         | Gauge     | Currently stored staged snapshots.          |
+| `wt_tenants_active`                  | Gauge     | Number of active tenants.                   |
+| `wt_storage_used_bytes`              | Gauge     | Storage used per tenant.                    |
+| `wt_iam_decisions_total`             | Counter   | Access decisions by result (allow/deny).    |
+| `wt_merge_requests_total`            | Counter   | Merge requests by status.                   |
+| `wt_websocket_connections`           | Gauge     | Active WebSocket connections.               |
 
 ### Audit Logging
 
@@ -1051,6 +1053,7 @@ Every access decision is logged with full context:
 ```
 
 Audit logs are:
+
 - Written to the configured `audit.log_path`.
 - Rotated daily with configurable retention.
 - Include every IAM decision, license check, branch protection evaluation, and administrative action.
@@ -1064,14 +1067,15 @@ Audit logs are:
 
 Each tenant has storage limits based on their plan:
 
-| Plan | Worktree Limit | Storage Limit |
-|---|---|---|
-| Free | 5 | 1 GB |
-| Pro | 50 | 50 GB |
-| Enterprise | Unlimited | Unlimited (or custom) |
-| Custom | Configurable | Configurable |
+| Plan       | Worktree Limit | Storage Limit         |
+| ---------- | -------------- | --------------------- |
+| Free       | 5              | 1 GB                  |
+| Pro        | 50             | 50 GB                 |
+| Enterprise | Unlimited      | Unlimited (or custom) |
+| Custom     | Configurable   | Configurable          |
 
 When a tenant exceeds their storage quota:
+
 1. New pushes are rejected with `QuotaExceeded` error.
 2. Staged snapshot uploads are rejected.
 3. Existing data is preserved — no automatic deletion.
@@ -1081,11 +1085,11 @@ When a tenant exceeds their storage quota:
 
 Rate limits are enforced per tenant per time window:
 
-| Plan | Requests/minute | Concurrent sync connections |
-|---|---|---|
-| Free | 60 | 2 |
-| Pro | 600 | 10 |
-| Enterprise | Unlimited | Unlimited |
+| Plan       | Requests/minute | Concurrent sync connections |
+| ---------- | --------------- | --------------------------- |
+| Free       | 60              | 2                           |
+| Pro        | 600             | 10                          |
+| Enterprise | Unlimited       | Unlimited                   |
 
 Rate limit responses include standard headers:
 
@@ -1102,24 +1106,24 @@ X-RateLimit-Reset: 1720958460
 
 The server uses structured errors with machine-readable codes:
 
-| Code | HTTP Status | Description |
-|---|---|---|
-| `AuthenticationRequired` | 401 | No valid credentials provided. |
-| `AccessDenied` | 403 | IAM policy denies the requested action. |
-| `LicenseDenied` | 403 | License compliance denies the requested action. |
-| `BranchProtectionViolation` | 403 | Branch protection rule prevents the operation. |
-| `TenantNotFound` | 404 | Referenced tenant does not exist. |
-| `WorktreeNotFound` | 404 | Referenced worktree does not exist. |
-| `BranchNotFound` | 404 | Referenced branch does not exist. |
-| `ConflictDetected` | 409 | Push is not a fast-forward. Client must merge and retry. |
-| `QuotaExceeded` | 413 | Tenant has exceeded their storage or worktree quota. |
-| `RateLimitExceeded` | 429 | Too many requests. |
-| `InvalidPolicy` | 422 | Pushed access policy file has syntax or semantic errors. |
-| `InvalidConfig` | 422 | Pushed config file has syntax or semantic errors. |
-| `StaleReview` | 422 | Merge request has stale approvals due to source branch changes. |
-| `CIChecksPending` | 422 | Required CI checks have not all passed. |
-| `UnknownTenant` | 422 | Policy references a tenant that doesn't exist on this server. |
-| `InternalError` | 500 | Unexpected server error. Logged for investigation. |
+| Code                        | HTTP Status | Description                                                     |
+| --------------------------- | ----------- | --------------------------------------------------------------- |
+| `AuthenticationRequired`    | 401         | No valid credentials provided.                                  |
+| `AccessDenied`              | 403         | IAM policy denies the requested action.                         |
+| `LicenseDenied`             | 403         | License compliance denies the requested action.                 |
+| `BranchProtectionViolation` | 403         | Branch protection rule prevents the operation.                  |
+| `TenantNotFound`            | 404         | Referenced tenant does not exist.                               |
+| `WorktreeNotFound`          | 404         | Referenced worktree does not exist.                             |
+| `BranchNotFound`            | 404         | Referenced branch does not exist.                               |
+| `ConflictDetected`          | 409         | Push is not a fast-forward. Client must merge and retry.        |
+| `QuotaExceeded`             | 413         | Tenant has exceeded their storage or worktree quota.            |
+| `RateLimitExceeded`         | 429         | Too many requests.                                              |
+| `InvalidPolicy`             | 422         | Pushed access policy file has syntax or semantic errors.        |
+| `InvalidConfig`             | 422         | Pushed config file has syntax or semantic errors.               |
+| `StaleReview`               | 422         | Merge request has stale approvals due to source branch changes. |
+| `CIChecksPending`           | 422         | Required CI checks have not all passed.                         |
+| `UnknownTenant`             | 422         | Policy references a tenant that doesn't exist on this server.   |
+| `InternalError`             | 500         | Unexpected server error. Logged for investigation.              |
 
 Error responses include the code, a human-readable message, and an optional `details` field:
 
@@ -1141,23 +1145,23 @@ Error responses include the code, a human-readable message, and an optional `det
 
 ## 23. Implementation Status
 
-| Area | Status | Notes |
-|---|---|---|
-| Routing & basic handlers | **Implemented** | In `worktree-server` crate, but mixed with bgprocess code. |
-| Go server runtime | **Implemented initial slice** | HTTP health/readiness/metrics, request IDs, graceful shutdown, TLS 1.3 config, Dockerfile, Compose. |
-| gRPC sync protocol | **Partial** | Go `SyncService.StageSnapshot` and `ListStagedSnapshots` are implemented. Canonical push/pull is REST-only in v1; gRPC parity is deferred. |
-| REST API | **Partial** | Go `POST /staged`, `GET /staged`, and the canonical sync surface (`POST /api/push`, `POST /api/pull`, `POST /api/objects/check`, `PUT/GET /api/objects/{hash}`, `GET /api/refs`) are implemented. Full admin API is TODO. |
-| Canonical push/pull | **Implemented v1** | Postgres-backed `canonical_branches` (CAS), `canonical_snapshots`, `canonical_snapshot_objects`. `ObjectStore` interface with `LocalObjectStore` impl. Client logic in `crates/worktree-server/src/sync/{push,pull}.rs`. Horizontal-scale-safe via DB CAS; multi-pod object storage requires shared volume or S3 adapter (v2). |
-| Tenant management | **TODO** | Tenant CRUD, plan management, org structure. |
-| IAM enforcement | **Partial** | Go `Authorizer` seam is wired into staged REST/gRPC create/list. Production bearer principal extraction, gRPC auth interceptor, and default-deny policy authorizer are in progress; full RBAC/ABAC parity remains TODO. |
-| License compliance | **TODO** | Data model exists in protocol crate but enforcement engine is not implemented. |
-| Merge request system | **TODO** | Data model planned, no implementation. |
-| Staged snapshot storage | **Partial** | Rust prototype and Go server accept staged uploads. Go supports file-store metadata and Postgres metadata with canonical staged identity idempotency and conflict detection, plus REST/gRPC listing. Retention and WebSocket fanout remain TODO. |
-| Branch protection | **TODO** | Rules are parsed from config but not enforced on push. |
-| WebSocket streaming | **TODO** | No real-time event system yet. |
-| Storage quotas | **TODO** | No quota tracking or enforcement. |
-| Audit logging | **Partial** | Go records staged create/list allow/deny decisions; durable audit querying remains TODO. |
-| CI integration | **TODO** | No webhook endpoints for CI status. |
+| Area                     | Status                        | Notes                                                                                                                                                                                                                                                                                                                          |
+| ------------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Routing & basic handlers | **Implemented**               | In `worktree-server` crate, but mixed with bgprocess code.                                                                                                                                                                                                                                                                     |
+| Go server runtime        | **Implemented initial slice** | HTTP health/readiness/metrics, request IDs, graceful shutdown, TLS 1.3 config, Dockerfile, Compose.                                                                                                                                                                                                                            |
+| gRPC sync protocol       | **Partial**                   | Go `SyncService.StageSnapshot` and `ListStagedSnapshots` are implemented. Canonical push/pull is REST-only in v1; gRPC parity is deferred.                                                                                                                                                                                     |
+| REST API                 | **Partial**                   | Go `POST /staged`, `GET /staged`, and the canonical sync surface (`POST /api/push`, `POST /api/pull`, `POST /api/objects/check`, `PUT/GET /api/objects/{hash}`, `GET /api/refs`) are implemented. Full admin API is TODO.                                                                                                      |
+| Canonical push/pull      | **Implemented v1**            | Postgres-backed `canonical_branches` (CAS), `canonical_snapshots`, `canonical_snapshot_objects`. `ObjectStore` interface with `LocalObjectStore` impl. Client logic in `crates/worktree-server/src/sync/{push,pull}.rs`. Horizontal-scale-safe via DB CAS; multi-pod object storage requires shared volume or S3 adapter (v2). |
+| Tenant management        | **TODO**                      | Tenant CRUD, plan management, org structure.                                                                                                                                                                                                                                                                                   |
+| IAM enforcement          | **Partial**                   | Go `Authorizer` seam is wired into staged REST/gRPC create/list. Production bearer principal extraction, gRPC auth interceptor, and default-deny policy authorizer are in progress; full RBAC/ABAC parity remains TODO.                                                                                                        |
+| License compliance       | **TODO**                      | Data model exists in protocol crate but enforcement engine is not implemented.                                                                                                                                                                                                                                                 |
+| Merge request system     | **TODO**                      | Data model planned, no implementation.                                                                                                                                                                                                                                                                                         |
+| Staged snapshot storage  | **Partial**                   | Rust prototype and Go server accept staged uploads. Go supports file-store metadata and Postgres metadata with canonical staged identity idempotency and conflict detection, plus REST/gRPC listing. Retention and WebSocket fanout remain TODO.                                                                               |
+| Branch protection        | **TODO**                      | Rules are parsed from config but not enforced on push.                                                                                                                                                                                                                                                                         |
+| WebSocket streaming      | **TODO**                      | No real-time event system yet.                                                                                                                                                                                                                                                                                                 |
+| Storage quotas           | **TODO**                      | No quota tracking or enforcement.                                                                                                                                                                                                                                                                                              |
+| Audit logging            | **Partial**                   | Go records staged create/list allow/deny decisions; durable audit querying remains TODO.                                                                                                                                                                                                                                       |
+| CI integration           | **TODO**                      | No webhook endpoints for CI status.                                                                                                                                                                                                                                                                                            |
 
 ### Migration Plan
 

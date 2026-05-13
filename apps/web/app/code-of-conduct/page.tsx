@@ -46,8 +46,8 @@ export default function CodeOfConductPage() {
           Our Standards
         </h2>
         <p className="mb-4 leading-relaxed text-muted-foreground">
-          Examples of behavior that contributes to a positive environment for our
-          community include:
+          Examples of behavior that contributes to a positive environment for
+          our community include:
         </p>
         <ul className="mb-6 list-inside list-disc space-y-2 text-muted-foreground">
           <li>Using welcoming and inclusive language</li>
@@ -65,8 +65,8 @@ export default function CodeOfConductPage() {
             advances of any kind
           </li>
           <li>
-            Trolling, insulting or derogatory comments, and personal or political
-            attacks
+            Trolling, insulting or derogatory comments, and personal or
+            political attacks
           </li>
           <li>Public or private harassment</li>
           <li>
@@ -74,8 +74,8 @@ export default function CodeOfConductPage() {
             email address, without their explicit permission
           </li>
           <li>
-            Other conduct which could reasonably be considered inappropriate in a
-            professional setting
+            Other conduct which could reasonably be considered inappropriate in
+            a professional setting
           </li>
         </ul>
       </section>
@@ -92,8 +92,8 @@ export default function CodeOfConductPage() {
           inappropriate, threatening, offensive, or harmful.
         </p>
         <p className="leading-relaxed text-muted-foreground">
-          Community leaders have the right and responsibility to remove, edit, or
-          reject comments, commits, code, wiki edits, issues, and other
+          Community leaders have the right and responsibility to remove, edit,
+          or reject comments, commits, code, wiki edits, issues, and other
           contributions that are not aligned to this Code of Conduct, and will
           communicate reasons for moderation decisions when appropriate.
         </p>
@@ -107,7 +107,8 @@ export default function CodeOfConductPage() {
           applies when an individual is officially representing the community in
           public spaces. Examples of representing our community include using an
           official e-mail address, posting via an official social media account,
-          or acting as an appointed representative at an online or offline event.
+          or acting as an appointed representative at an online or offline
+          event.
         </p>
       </section>
 
@@ -130,8 +131,8 @@ export default function CodeOfConductPage() {
         </p>
         <p className="mb-4 leading-relaxed text-muted-foreground">
           All complaints will be reviewed and investigated promptly and fairly.
-          All community leaders are obligated to respect the privacy and security
-          of the reporter of any incident.
+          All community leaders are obligated to respect the privacy and
+          security of the reporter of any incident.
         </p>
         <p className="leading-relaxed text-muted-foreground">
           Community leaders will follow these impact guidelines in determining
@@ -160,11 +161,12 @@ export default function CodeOfConductPage() {
               violation through a single incident or series of actions.
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              <strong className="text-foreground">Consequence:</strong> A warning
-              with consequences for continued behavior. No interaction with the
-              people involved, including unsolicited interaction with those
-              enforcing the Code of Conduct, for a specified period of time.
-              Violating these terms may lead to a temporary or permanent ban.
+              <strong className="text-foreground">Consequence:</strong> A
+              warning with consequences for continued behavior. No interaction
+              with the people involved, including unsolicited interaction with
+              those enforcing the Code of Conduct, for a specified period of
+              time. Violating these terms may lead to a temporary or permanent
+              ban.
             </p>
           </div>
           <div className="rounded-lg border p-4">

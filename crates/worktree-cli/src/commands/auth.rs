@@ -40,14 +40,20 @@ pub async fn execute(action: AuthAction) -> Result<(), Box<dyn std::error::Error
                             format::print_success("Login successful!");
 
                             #[cfg(unix)]
-                            format::print_kv("Command", &format!("export WT_SERVER_AUTH_TOKEN={}", token));
+                            format::print_kv(
+                                "Command",
+                                &format!("export WT_SERVER_AUTH_TOKEN={}", token),
+                            );
                             #[cfg(windows)]
-                            format::print_kv("Command", &format!("set WT_SERVER_AUTH_TOKEN={}", token));
+                            format::print_kv(
+                                "Command",
+                                &format!("set WT_SERVER_AUTH_TOKEN={}", token),
+                            );
 
                             if let Ok(engine) = WorktreeEngine::open(Path::new(".")) {
                                 let auth_file = engine.wt_dir().join("cache").join("auth_token");
                                 let _ = std::fs::create_dir_all(auth_file.parent().unwrap());
-                                if let Ok(_) = std::fs::write(&auth_file, token) {
+                                if std::fs::write(&auth_file, token).is_ok() {
                                     format::print_info("Token also saved to local worktree cache.");
                                 }
                             }
@@ -65,11 +71,11 @@ pub async fn execute(action: AuthAction) -> Result<(), Box<dyn std::error::Error
                     let response_str = String::from_utf8_lossy(&out.stdout);
                     format::print_error(&format!("Login failed with status: {}", out.status));
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_str) {
-                         if let Some(err) = json.get("error") {
-                             format::print_error(&format!("Server error: {}", err));
-                         }
+                        if let Some(err) = json.get("error") {
+                            format::print_error(&format!("Server error: {}", err));
+                        }
                     } else {
-                         format::print_error(&String::from_utf8_lossy(&out.stderr));
+                        format::print_error(&String::from_utf8_lossy(&out.stderr));
                     }
                 }
                 Err(e) => {

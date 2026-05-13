@@ -82,17 +82,17 @@ binary can also apply embedded migrations with `WT_SERVER_RUN_MIGRATIONS=true`.
 
 Current prototype HTTP endpoints:
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `GET` | `/ready` | Readiness check |
-| `GET` | `/metrics` | Prometheus-style HTTP request counters |
-| `POST` | `/init` | Demo initialization through SDK state |
-| `POST` | `/status` | Demo status through SDK state |
-| `POST` | `/snapshot` | Demo/manual snapshot creation |
-| `POST` | `/branch` | Demo branch create/switch |
-| `POST` | `/staged` | Upload one local snapshot as staged work |
-| `GET` | `/staged` | List staged snapshots, filtered by tenant/worktree/branch |
+| Method | Path        | Purpose                                                   |
+| ------ | ----------- | --------------------------------------------------------- |
+| `GET`  | `/health`   | Health check                                              |
+| `GET`  | `/ready`    | Readiness check                                           |
+| `GET`  | `/metrics`  | Prometheus-style HTTP request counters                    |
+| `POST` | `/init`     | Demo initialization through SDK state                     |
+| `POST` | `/status`   | Demo status through SDK state                             |
+| `POST` | `/snapshot` | Demo/manual snapshot creation                             |
+| `POST` | `/branch`   | Demo branch create/switch                                 |
+| `POST` | `/staged`   | Upload one local snapshot as staged work                  |
+| `GET`  | `/staged`   | List staged snapshots, filtered by tenant/worktree/branch |
 
 `/staged` is the important contract for the production rewrite: the client sends snapshot metadata
 and added/modified file bytes, while the server verifies hashes, stores objects, indexes staged
@@ -115,9 +115,9 @@ scoped to that tenant; an explicit mismatched `tenant` query parameter is reject
 
 The Go server also exposes:
 
-| Service | Method | Purpose |
-|---|---|---|
-| `SyncService` | `StageSnapshot` | Upload one staged snapshot using protobuf bytes |
+| Service       | Method                | Purpose                                                   |
+| ------------- | --------------------- | --------------------------------------------------------- |
+| `SyncService` | `StageSnapshot`       | Upload one staged snapshot using protobuf bytes           |
 | `SyncService` | `ListStagedSnapshots` | List staged snapshots with tenant/worktree/branch filters |
 
 The gRPC service shares object storage, staged storage, audit, auth, and IAM with REST. A unary auth
@@ -128,8 +128,8 @@ exercise the same server boundary.
 
 `server-go/docker-compose.yml` provides a local production-shaped stack:
 
-| Service | Purpose |
-|---|---|
-| `postgres` | Metadata database |
-| `migrate` | Applies `server-go/migrations` |
-| `server` | Runs HTTP on `8080` and gRPC on `9877` |
+| Service    | Purpose                                |
+| ---------- | -------------------------------------- |
+| `postgres` | Metadata database                      |
+| `migrate`  | Applies `server-go/migrations`         |
+| `server`   | Runs HTTP on `8080` and gRPC on `9877` |

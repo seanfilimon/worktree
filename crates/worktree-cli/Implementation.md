@@ -65,28 +65,28 @@ The `Commands` enum defines **20 top-level subcommands** with **10 nested sub-en
 
 ### Top-Level Commands
 
-| Command | Sub-actions | Description |
-|---------|-------------|-------------|
-| `Init` | — | Initialize a new worktree |
-| `Status` | `--team` flag | Show working tree status |
-| `Snapshot` | `-m`, `-t` | Create a snapshot |
-| `Log` | `-n count` | Show snapshot history |
-| `Branch` | `Create/List/Switch/Delete` | Branch management |
-| `Merge` | `--strategy` | Merge branches |
-| `Sync` | `Push/Pull/Pause/Resume` | Remote synchronization |
-| `Tree` | `Add/List/Remove/Status` | Sub-project management |
-| `Diff` | `--name-only`, `--stat` | Show differences |
-| `Tag` | `Create/List/Delete` | Tag management |
-| `Config` | `Show/Get/Set` | Configuration management |
-| `Reflog` | `-n count` | Operation history |
-| `Revert` | — | Revert a snapshot |
-| `Archive` | `--format`, `--tree` | Create archive |
-| `Depend` | `Add/List/Todo` | Dependency management |
-| `Staged` | `List/Clear` | Team activity |
-| `Ignore` | `List/Add` | Ignore patterns |
-| `Permission` | `Set/Get/List` | Access control |
-| `Git` | `Import/Export/Clone/Remote/Push/Pull/Mirror` | Git interop |
-| `Server` | `Start/Stop/Status` | Background process |
+| Command      | Sub-actions                                   | Description               |
+| ------------ | --------------------------------------------- | ------------------------- |
+| `Init`       | —                                             | Initialize a new worktree |
+| `Status`     | `--team` flag                                 | Show working tree status  |
+| `Snapshot`   | `-m`, `-t`                                    | Create a snapshot         |
+| `Log`        | `-n count`                                    | Show snapshot history     |
+| `Branch`     | `Create/List/Switch/Delete`                   | Branch management         |
+| `Merge`      | `--strategy`                                  | Merge branches            |
+| `Sync`       | `Push/Pull/Pause/Resume`                      | Remote synchronization    |
+| `Tree`       | `Add/List/Remove/Status`                      | Sub-project management    |
+| `Diff`       | `--name-only`, `--stat`                       | Show differences          |
+| `Tag`        | `Create/List/Delete`                          | Tag management            |
+| `Config`     | `Show/Get/Set`                                | Configuration management  |
+| `Reflog`     | `-n count`                                    | Operation history         |
+| `Revert`     | —                                             | Revert a snapshot         |
+| `Archive`    | `--format`, `--tree`                          | Create archive            |
+| `Depend`     | `Add/List/Todo`                               | Dependency management     |
+| `Staged`     | `List/Clear`                                  | Team activity             |
+| `Ignore`     | `List/Add`                                    | Ignore patterns           |
+| `Permission` | `Set/Get/List`                                | Access control            |
+| `Git`        | `Import/Export/Clone/Remote/Push/Pull/Mirror` | Git interop               |
+| `Server`     | `Start/Stop/Status`                           | Background process        |
 
 The `execute()` function pattern-matches on `Commands` and delegates to the appropriate module's `execute()` function.
 
@@ -96,16 +96,16 @@ The `execute()` function pattern-matches on `Commands` and delegates to the appr
 
 ### `format.rs` — Colored Print Helpers
 
-| Function | Visual | Purpose |
-|----------|--------|---------|
-| `print_header(text)` | **bold underline** | Section titles |
-| `print_success(text)` | ✔ green | Success messages |
-| `print_error(text)` | ✖ red | Error messages |
-| `print_info(text)` | ℹ cyan | Informational |
-| `print_warning(text)` | ⚠ yellow | Warnings |
-| `print_kv(key, value)` | `  key: value` | Key-value pairs (dimmed key) |
-| `print_list_item(text)` | `  • text` | Bulleted list items |
-| `styled_hash(hash)` | yellow bold | Snapshot ID formatting |
+| Function                | Visual             | Purpose                      |
+| ----------------------- | ------------------ | ---------------------------- |
+| `print_header(text)`    | **bold underline** | Section titles               |
+| `print_success(text)`   | ✔ green            | Success messages             |
+| `print_error(text)`     | ✖ red              | Error messages               |
+| `print_info(text)`      | ℹ cyan             | Informational                |
+| `print_warning(text)`   | ⚠ yellow           | Warnings                     |
+| `print_kv(key, value)`  | `  key: value`     | Key-value pairs (dimmed key) |
+| `print_list_item(text)` | `  • text`         | Bulleted list items          |
+| `styled_hash(hash)`     | yellow bold        | Snapshot ID formatting       |
 
 ### `color.rs` — Theme System
 
@@ -122,8 +122,9 @@ Calls `WorktreeEngine::init(path)` with the provided path (defaults to `.`). Dis
 ### `status.rs` — Working Tree Status
 
 Calls `worktree_sdk::engine::status::compute_status()`. Displays tree name, branch, snapshot count. Shows changes categorized as:
+
 - `+ path` — added (green)
-- `~ path` — modified (yellow)  
+- `~ path` — modified (yellow)
 - `- path` — deleted (red)
 
 With `--team` flag, shows staged snapshots from other team members.
@@ -146,11 +147,13 @@ Displays git-log-style output: yellow short IDs, auto-generated markers, author,
 ### `diff.rs` — Difference Display
 
 Four modes based on `(from, to)` argument combinations:
+
 - `(None, None)` or `("working", None)` → working tree diff
 - `(Some(from), Some(to))` → snapshot-to-snapshot diff
 - Other combinations → fall back to working tree diff
 
 Three output modes:
+
 - **Default:** Status prefix + path + hash details
 - **`--name-only`:** Just prefix + path
 - **`--stat`:** Prefix + path + byte-level size delta
@@ -192,6 +195,7 @@ The largest command module. Most operations are **scaffolding stubs** that print
 ### `server.rs` — Background Process
 
 Manages via PID file (`.wt/cache/bgprocess.pid`):
+
 - **Start:** Writes current PID, warns if already running.
 - **Stop:** Removes PID file.
 - **Status:** Reads PID file, shows auto-sync state and snapshot counts.
@@ -224,20 +228,20 @@ Every command module follows the same pattern:
 
 Based on what the CLI reads/writes:
 
-| Path | Purpose |
-|------|---------|
-| `.wt/config.toml` | Repository configuration |
-| `.wt/ignore` | Ignore patterns |
-| `.wt/state.json` | Full repository state |
-| `.wt/access/policies.toml` | Permission policies |
-| `.wt/access/roles.toml` | Custom roles |
-| `.wt/cache/sync_paused` | Sync pause sentinel |
-| `.wt/cache/bgprocess.pid` | Background process PID |
-| `.wt/cache/staged/` | Staged snapshot data |
-| `.wt/cache/staged_index.json` | Staged snapshot index |
-| `.wt/cache/remotes/<name>.url` | Git remote URLs |
-| `.wt/cache/mirrors/<tree>.toml` | Git mirror configs |
-| `<tree>/.wt-tree/config.toml` | Per-tree config + dependencies |
+| Path                            | Purpose                        |
+| ------------------------------- | ------------------------------ |
+| `.wt/config.toml`               | Repository configuration       |
+| `.wt/ignore`                    | Ignore patterns                |
+| `.wt/state.json`                | Full repository state          |
+| `.wt/access/policies.toml`      | Permission policies            |
+| `.wt/access/roles.toml`         | Custom roles                   |
+| `.wt/cache/sync_paused`         | Sync pause sentinel            |
+| `.wt/cache/bgprocess.pid`       | Background process PID         |
+| `.wt/cache/staged/`             | Staged snapshot data           |
+| `.wt/cache/staged_index.json`   | Staged snapshot index          |
+| `.wt/cache/remotes/<name>.url`  | Git remote URLs                |
+| `.wt/cache/mirrors/<tree>.toml` | Git mirror configs             |
+| `<tree>/.wt-tree/config.toml`   | Per-tree config + dependencies |
 
 ---
 

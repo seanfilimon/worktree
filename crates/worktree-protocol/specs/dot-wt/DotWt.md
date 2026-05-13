@@ -58,18 +58,18 @@ further** within the bounds the root establishes.
 
 ### File Ownership
 
-| Path | Written by | Synced to server |
-|------|-----------|-----------------|
-| `config.toml` | User / CLI | Yes |
-| `ignore` | User / CLI | Yes |
-| `identity/token` | CLI (`wt auth login`) | **No** — local only |
-| `identity/identity.toml` | User / CLI | Yes |
-| `access/roles.toml` | User / CLI (requires PolicyManage) | Yes |
-| `access/policies.toml` | User / CLI (requires PolicyManage) | Yes |
-| `hooks/*` | User / CLI | Yes |
-| `reflog/*` | bgprocess | Configurable |
-| `conflicts/*` | bgprocess | No — local only |
-| `cache/*` | bgprocess | No — local only |
+| Path                     | Written by                         | Synced to server    |
+| ------------------------ | ---------------------------------- | ------------------- |
+| `config.toml`            | User / CLI                         | Yes                 |
+| `ignore`                 | User / CLI                         | Yes                 |
+| `identity/token`         | CLI (`wt auth login`)              | **No** — local only |
+| `identity/identity.toml` | User / CLI                         | Yes                 |
+| `access/roles.toml`      | User / CLI (requires PolicyManage) | Yes                 |
+| `access/policies.toml`   | User / CLI (requires PolicyManage) | Yes                 |
+| `hooks/*`                | User / CLI                         | Yes                 |
+| `reflog/*`               | bgprocess                          | Configurable        |
+| `conflicts/*`            | bgprocess                          | No — local only     |
+| `cache/*`                | bgprocess                          | No — local only     |
 
 ---
 
@@ -250,17 +250,17 @@ require_from_roles = ["Maintainer", "Admin"]
 
 The ignore file follows `.gitignore` syntax with the following rules:
 
-| Syntax | Meaning |
-|--------|---------|
-| `# comment` | Comment line (ignored) |
-| `pattern` | Match files/dirs anywhere in the worktree |
-| `/pattern` | Match relative to worktree root only |
-| `pattern/` | Match directories only |
-| `*` | Match any sequence of non-`/` characters |
-| `**` | Match any sequence of characters including `/` |
-| `?` | Match any single non-`/` character |
-| `[abc]` | Character class |
-| `!pattern` | Negate a previous pattern |
+| Syntax      | Meaning                                        |
+| ----------- | ---------------------------------------------- |
+| `# comment` | Comment line (ignored)                         |
+| `pattern`   | Match files/dirs anywhere in the worktree      |
+| `/pattern`  | Match relative to worktree root only           |
+| `pattern/`  | Match directories only                         |
+| `*`         | Match any sequence of non-`/` characters       |
+| `**`        | Match any sequence of characters including `/` |
+| `?`         | Match any single non-`/` character             |
+| `[abc]`     | Character class                                |
+| `!pattern`  | Negate a previous pattern                      |
 
 ### Authoritativeness
 
@@ -383,13 +383,13 @@ signing_key = "ssh-ed25519 AAAA..."     # Optional — for snapshot signing
 
 The following roles always exist and cannot be deleted or redefined:
 
-| Role | Description |
-|------|-------------|
-| **Owner** | Full control. Can transfer ownership, delete worktree. |
-| **Admin** | Full control except ownership transfer and worktree deletion. |
+| Role           | Description                                                          |
+| -------------- | -------------------------------------------------------------------- |
+| **Owner**      | Full control. Can transfer ownership, delete worktree.               |
+| **Admin**      | Full control except ownership transfer and worktree deletion.        |
 | **Maintainer** | Manage branches, merge, manage trees. Cannot modify access policies. |
-| **Developer** | Read/write to allowed trees and branches. |
-| **Viewer** | Read-only access. |
+| **Developer**  | Read/write to allowed trees and branches.                            |
+| **Viewer**     | Read-only access.                                                    |
 
 ### `access/roles.toml` — Custom Role Definitions
 
@@ -485,22 +485,22 @@ unless = { role = ["Admin", "Owner"] }
 
 #### Subject Types
 
-| Subject | Syntax | Example |
-|---------|--------|---------|
-| Specific account | `{ account = "alice" }` | Single user |
-| Team | `{ team = "backend" }` | All members of a team |
-| Role | `{ role = "Developer" }` | All users with a role |
-| Tenant | `{ tenant = "partner-corp" }` | All users in a tenant |
-| All authenticated | `"all_authenticated"` | Any logged-in user |
+| Subject           | Syntax                        | Example               |
+| ----------------- | ----------------------------- | --------------------- |
+| Specific account  | `{ account = "alice" }`       | Single user           |
+| Team              | `{ team = "backend" }`        | All members of a team |
+| Role              | `{ role = "Developer" }`      | All users with a role |
+| Tenant            | `{ tenant = "partner-corp" }` | All users in a tenant |
+| All authenticated | `"all_authenticated"`         | Any logged-in user    |
 
 #### Scope Types
 
-| Scope | Syntax | Example |
-|-------|--------|---------|
-| Worktree-wide | `"worktree"` | Entire worktree |
-| Specific tree | `{ tree = "auth-service" }` | One tree |
-| Specific branch | `{ branch = "main" }` | One branch |
-| Specific path | `{ path = "secrets" }` | Registered path |
+| Scope           | Syntax                      | Example         |
+| --------------- | --------------------------- | --------------- |
+| Worktree-wide   | `"worktree"`                | Entire worktree |
+| Specific tree   | `{ tree = "auth-service" }` | One tree        |
+| Specific branch | `{ branch = "main" }`       | One branch      |
+| Specific path   | `{ path = "secrets" }`      | Registered path |
 
 #### Policy Evaluation Order
 
@@ -591,17 +591,17 @@ Each line is a single operation, tab-separated:
 
 #### Operations
 
-| Operation | Description |
-|-----------|-------------|
-| `snapshot` | New snapshot created |
-| `merge` | Branch merged |
-| `revert` | Snapshot reverted |
-| `branch:create` | New branch created |
-| `branch:delete` | Branch deleted |
-| `branch:rename` | Branch renamed |
-| `reset` | Ref reset (e.g., `wt reset --to`) |
-| `sync:pull` | Pulled from server |
-| `sync:push` | Pushed to server |
+| Operation       | Description                       |
+| --------------- | --------------------------------- |
+| `snapshot`      | New snapshot created              |
+| `merge`         | Branch merged                     |
+| `revert`        | Snapshot reverted                 |
+| `branch:create` | New branch created                |
+| `branch:delete` | Branch deleted                    |
+| `branch:rename` | Branch renamed                    |
+| `reset`         | Ref reset (e.g., `wt reset --to`) |
+| `sync:pull`     | Pulled from server                |
+| `sync:push`     | Pushed to server                  |
 
 #### Example
 
@@ -694,14 +694,14 @@ bgprocess uses the `cache/` directory for ephemeral, machine-local data:
 
 The following are explicitly **outside** the `.wt/` directory:
 
-| Concern | Where it lives |
-|---------|---------------|
+| Concern                                | Where it lives                     |
+| -------------------------------------- | ---------------------------------- |
 | Object store (blobs, snapshots, trees) | bgprocess-managed external storage |
-| Full version history | bgprocess + server |
-| Large binary data | bgprocess chunked storage layer |
-| Tree-specific config | `.wt-tree/` inside each tree |
-| Global user config | `~/.config/w0rktree/config.toml` |
-| Server-side enforcement | Server process |
+| Full version history                   | bgprocess + server                 |
+| Large binary data                      | bgprocess chunked storage layer    |
+| Tree-specific config                   | `.wt-tree/` inside each tree       |
+| Global user config                     | `~/.config/w0rktree/config.toml`   |
+| Server-side enforcement                | Server process                     |
 
 ---
 

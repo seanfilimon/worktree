@@ -198,11 +198,11 @@ async fn ws_staged_loop(root: std::path::PathBuf) {
                 if c == '=' {
                     continue;
                 }
-                let val = if c >= 'A' && c <= 'Z' {
+                let val = if c.is_ascii_uppercase() {
                     c as u32 - 65
-                } else if c >= 'a' && c <= 'z' {
+                } else if c.is_ascii_lowercase() {
                     c as u32 - 71
-                } else if c >= '0' && c <= '9' {
+                } else if c.is_ascii_digit() {
                     c as u32 + 4
                 } else if c == '+' {
                     62

@@ -182,13 +182,13 @@ Full narrator script for this scene:
 
 ### SFX
 
-| Timecode  | Sound                              | Level                    |
-| --------- | ---------------------------------- | ------------------------ |
-| 0:36      | BitKeeper text crumbling           | -24dB, granular texture  |
-| 0:36.5    | "REVOKED" stamp                    | -20dB, percussive hit    |
-| 0:42–0:45 | Clock ticks (day counter)          | -30dB per tick           |
-| 1:00–1:02 | 2005 text cracking                 | -22dB, clean crack       |
-| 1:10–1:30 | Stack Overflow cards whooshing in  | -32dB, subtle air movement per card |
+| Timecode  | Sound                             | Level                               |
+| --------- | --------------------------------- | ----------------------------------- |
+| 0:36      | BitKeeper text crumbling          | -24dB, granular texture             |
+| 0:36.5    | "REVOKED" stamp                   | -20dB, percussive hit               |
+| 0:42–0:45 | Clock ticks (day counter)         | -30dB per tick                      |
+| 1:00–1:02 | 2005 text cracking                | -22dB, clean crack                  |
+| 1:10–1:30 | Stack Overflow cards whooshing in | -32dB, subtle air movement per card |
 
 ---
 
@@ -196,12 +196,12 @@ Full narrator script for this scene:
 
 This scene uses a UNIQUE warm palette that does NOT appear elsewhere in the video:
 
-| Color                  | Hex       | Use                                                             |
-| ---------------------- | --------- | --------------------------------------------------------------- |
-| Sepia warm             | `#C4956A` | 2005-era illustrations, timeline nodes                          |
-| Dark sepia             | `#8B6E4E` | Illustration shadows, secondary elements                        |
-| Light sepia            | `#E8D5B7` | Illustration highlights                                         |
-| Branch green (muted)   | `#7FB069` | Git's branch diagram merge points (muted, not the W0rkTree green) |
+| Color                | Hex       | Use                                                               |
+| -------------------- | --------- | ----------------------------------------------------------------- |
+| Sepia warm           | `#C4956A` | 2005-era illustrations, timeline nodes                            |
+| Dark sepia           | `#8B6E4E` | Illustration shadows, secondary elements                          |
+| Light sepia          | `#E8D5B7` | Illustration highlights                                           |
+| Branch green (muted) | `#7FB069` | Git's branch diagram merge points (muted, not the W0rkTree green) |
 
 These warm colors are ONLY used in Segments 3A and 3B (0:30–0:55). By Segment 3C, they desaturate and are replaced by the standard cool palette. This color temperature shift is one of the most important visual storytelling devices in the entire video — it physically shows the viewer that the world moved from warm nostalgia to cold reality.
 

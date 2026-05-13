@@ -111,16 +111,16 @@ Storage  Auth   Push Queue (MPSC)  Sync (QUIC/TCP) Git Layer
 
 `ServerError` has 8 variants — one per subsystem:
 
-| Variant | Source |
-|---------|--------|
-| `Config` | Configuration parsing |
-| `Io` | `std::io::Error` (auto-conversion) |
-| `Watcher` | FS watcher failures |
-| `Storage` | Object store errors |
-| `Engine` | Automation engine errors |
-| `Auth` | Authentication/authorization |
-| `Api` | API layer errors |
-| `Git` | Git interoperability |
+| Variant   | Source                             |
+| --------- | ---------------------------------- |
+| `Config`  | Configuration parsing              |
+| `Io`      | `std::io::Error` (auto-conversion) |
+| `Watcher` | FS watcher failures                |
+| `Storage` | Object store errors                |
+| `Engine`  | Automation engine errors           |
+| `Auth`    | Authentication/authorization       |
+| `Api`     | API layer errors                   |
+| `Git`     | Git interoperability               |
 
 ---
 
@@ -128,11 +128,11 @@ Storage  Auth   Push Queue (MPSC)  Sync (QUIC/TCP) Git Layer
 
 `ServerConfig` is loaded from a TOML file via `ServerConfig::load(path)`:
 
-| Section | Fields | Defaults |
-|---------|--------|----------|
-| Top-level | `data_dir`, `listen_addr` | — |
-| `auto_snapshot` | `enabled`, `inactivity_timeout_secs`, `max_changed_files` | `true`, `30`, `50` |
-| `watcher` | `debounce_ms`, `ignore_patterns` | `200`, `[.git/**, .worktree/**, target/**, node_modules/**]` |
+| Section         | Fields                                                    | Defaults                                                     |
+| --------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
+| Top-level       | `data_dir`, `listen_addr`                                 | —                                                            |
+| `auto_snapshot` | `enabled`, `inactivity_timeout_secs`, `max_changed_files` | `true`, `30`, `50`                                           |
+| `watcher`       | `debounce_ms`, `ignore_patterns`                          | `200`, `[.git/**, .worktree/**, target/**, node_modules/**]` |
 
 ---
 
@@ -141,6 +141,7 @@ Storage  Auth   Push Queue (MPSC)  Sync (QUIC/TCP) Git Layer
 **Fully implemented.**
 
 `FileSystemWatcher` wraps `notify::RecommendedWatcher` (platform-native FS events):
+
 - `new()` — Creates watcher + `mpsc` channel for event delivery.
 - `watch(path)` — Start recursive watching.
 - `unwatch(path)` — Stop watching.
@@ -170,12 +171,12 @@ Tests verify: same-path deduplication, different-path preservation, `flush_all` 
 
 `SemanticEvent` enum classifies raw FS events into meaningful categories:
 
-| Variant | When |
-|---------|------|
-| `CodeChange { tree_id, paths }` | Source code files changed |
-| `DependencyChange { tree_id, path }` | `Cargo.toml`, `package.json`, etc. |
-| `ConfigChange { tree_id, path }` | `.wt/config.toml`, `.wt-tree/config.toml` |
-| `CrossTreeChange { tree_ids, paths }` | Changes spanning multiple trees |
+| Variant                               | When                                      |
+| ------------------------------------- | ----------------------------------------- |
+| `CodeChange { tree_id, paths }`       | Source code files changed                 |
+| `DependencyChange { tree_id, path }`  | `Cargo.toml`, `package.json`, etc.        |
+| `ConfigChange { tree_id, path }`      | `.wt/config.toml`, `.wt-tree/config.toml` |
+| `CrossTreeChange { tree_ids, paths }` | Changes spanning multiple trees           |
 
 `classify_event(raw)` inspects file extensions and names — currently a `todo!()` stub.
 
@@ -184,6 +185,7 @@ Tests verify: same-path deduplication, different-path preservation, `flush_all` 
 ## `engine/auto_commit` — Automatic Snapshot Engine
 
 `AutoCommitEngine` decides when to auto-snapshot:
+
 - `min_event_threshold: 1` — Minimum events before considering.
 - `max_event_threshold: 100` — Force snapshot above this count.
 - `evaluate(events)` — Returns `Option<String>` commit message. Stub.
@@ -213,6 +215,7 @@ Serializable rule system:
 **Fully implemented with tests.**
 
 `Session` binds a `user_id: AccountId` to a `token: String` with `expires_at: DateTime<Utc>`:
+
 - `is_expired()` — Past expiry time.
 - `remaining()` — Time until expiry (`None` if expired).
 
@@ -225,6 +228,7 @@ Tests verify: future session not expired, past session is expired.
 **Fully implemented with 6 tests.**
 
 `PermissionEnforcer` stores `Vec<PermissionGrant>` where each grant is `(AccountId, Permission, Scope)`:
+
 - `grant(user_id, permission, scope)` — Add a grant.
 - `check(user, permission, scope) -> bool` — Uses `Scope::covers()` from `worktree-protocol` for hierarchical matching (Global covers Tree).
 - `revoke_all(user) -> usize` — Remove all grants for a user.
@@ -236,6 +240,7 @@ Tests cover: no grants → deny, exact match → allow, Global covers Tree, diff
 ## `api/grpc` — gRPC Server
 
 `GrpcServer` skeleton for future tonic integration:
+
 - Tracks `addr: String` and `running: bool`.
 - `start()` / `stop()` are `todo!()` stubs.
 
@@ -245,18 +250,19 @@ Tests cover: no grants → deny, exact match → allow, Global covers Tree, diff
 
 4 request/response pairs, all stubs:
 
-| Handler | Request | Response | Purpose |
-|---------|---------|----------|---------|
-| `handle_init` | `name`, `root_path` | `tree_id` | Create new tree |
-| `handle_status` | `tree_id` | `branch`, `changed_files`, `watcher_active` | Query state |
-| `handle_snapshot` | `tree_id`, `message` | `snapshot_id`, `manifest_hash` | Create snapshot |
-| `handle_branch` | `tree_id`, `branch_name`, `create` | `branch_id`, `branch_name` | Branch management |
+| Handler           | Request                            | Response                                    | Purpose           |
+| ----------------- | ---------------------------------- | ------------------------------------------- | ----------------- |
+| `handle_init`     | `name`, `root_path`                | `tree_id`                                   | Create new tree   |
+| `handle_status`   | `tree_id`                          | `branch`, `changed_files`, `watcher_active` | Query state       |
+| `handle_snapshot` | `tree_id`, `message`               | `snapshot_id`, `manifest_hash`              | Create snapshot   |
+| `handle_branch`   | `tree_id`, `branch_name`, `create` | `branch_id`, `branch_name`                  | Branch management |
 
 ---
 
 ## `storage/backend` — Storage Abstraction
 
 `StorageBackend` trait (`Send + Sync`):
+
 - `store(hash, data)` — Write content-addressed blob.
 - `retrieve(hash)` — Read blob by hash.
 - `exists(hash)` — Check existence.
@@ -291,6 +297,7 @@ Stores staged snapshot records for prototype sync flows. These records support t
 **Fully implemented with 7 tests.**
 
 `ObjectIndex` maps `HashMap<ContentHash, String>` (hash → kind label: `"blob"`, `"manifest"`, `"snapshot"`, `"delta"`):
+
 - Full CRUD: `insert`, `lookup`, `remove`, `clear`, `contains`, `is_empty`, `count`, `iter`.
 
 ---
@@ -300,6 +307,7 @@ Stores staged snapshot records for prototype sync flows. These records support t
 **Fully implemented with tests.**
 
 `Transport` enum: `Quic(addr)` and `Tcp(addr)`:
+
 - `address()` / `protocol_name()` — Accessors.
 - `connect()` — `todo!()` stub.
 
@@ -318,6 +326,7 @@ Builder-pattern structs:
 ## `git/import` — Git Import Service
 
 `GitImportService` with branch filtering and shallow mode:
+
 - Uses `worktree_git::import::repo::GitRepo::open()` from sibling crate.
 - Lists branches, filters if `branch_filter` is set.
 - Commit walking + conversion is `todo!()`.
@@ -335,6 +344,7 @@ Builder-pattern structs:
 ## `git/remote` — Git Remote Management
 
 `GitRemoteService` manages `(name, url)` pairs for a specific tree:
+
 - `add_remote`, `remove_remote` — Validates duplicates/existence.
 - `push`, `pull` — Validate remote exists first, then `todo!()`.
 
@@ -343,6 +353,7 @@ Builder-pattern structs:
 ## `git/mirror` — Continuous Mirroring
 
 `GitMirrorService` tracks active `MirrorEntry` triples `(tree_id, remote, branch)`:
+
 - `start_mirror` — Prevents duplicates.
 - `stop_mirror` — Removes entry.
 - `is_mirroring`, `active_count` — Query state.
@@ -352,6 +363,7 @@ Builder-pattern structs:
 ## `service/daemon` — Lifecycle Coordinator
 
 `Daemon` uses `Arc<AtomicBool>` for thread-safe running state:
+
 - `start()` — Guards against double-start. Will launch all subsystems.
 - `stop()` — Guards against double-stop. Will gracefully shut down.
 - `is_running()` — Atomic read.
@@ -361,6 +373,7 @@ Builder-pattern structs:
 ## `service/health` — Health Monitoring
 
 `HealthTracker` records `Instant::now()` at construction:
+
 - `set_trees_watched(count)`, `record_snapshot()` — Update counters.
 - `status()` — Produces `HealthStatus { uptime_secs, trees_watched, snapshots_created }`.
 
@@ -369,6 +382,7 @@ Builder-pattern structs:
 ## `service/install` — Platform Service Installation
 
 Platform-dispatched via `cfg!(target_os)`:
+
 - **Linux:** systemd unit file installation.
 - **macOS:** launchd plist installation.
 - **Windows:** `sc.exe` service registration.
@@ -378,30 +392,30 @@ Platform-dispatched via `cfg!(target_os)`:
 
 ## Implementation Maturity
 
-| Component | Status |
-|-----------|--------|
-| `error` | ✅ Complete |
-| `config::settings` | ✅ Complete |
-| `watcher::fs` | ✅ Complete |
-| `watcher::debounce` | ✅ Complete (with tests) |
-| `auth::session` | ✅ Complete (with tests) |
-| `auth::enforcer` | ✅ Complete (with 6 tests) |
-| `storage::index` | ✅ Complete (with 7 tests) |
-| `storage::disk` | 🔶 Partial (paths + exists only) |
-| `storage::staged` | 🔶 In progress |
-| `storage::backend` | ✅ Trait defined |
-| `sync::transport` | ✅ Complete (with tests) |
-| `engine::rules` | ✅ Types complete |
-| `engine::event` | 🔶 Types only (classify stub) |
-| `engine::auto_commit` | 🔶 Structure only (evaluate stub) |
-| `engine::auto_branch` | 🔶 Structure only (evaluate stub) |
-| `api::grpc` | 🔶 Skeleton (start/stop stubs) |
-| `api::handlers` | 🔶 All stubs |
-| `git::*` | 🔶 Structures defined, logic stubs |
-| `service::daemon` | 🔶 State management (start/stop stubs) |
-| `service::health` | ✅ Complete |
-| `service::install` | 🔶 All platform stubs |
-| `sync::push/pull` | 🔶 Structures defined (execute stubs) |
+| Component             | Status                                 |
+| --------------------- | -------------------------------------- |
+| `error`               | ✅ Complete                            |
+| `config::settings`    | ✅ Complete                            |
+| `watcher::fs`         | ✅ Complete                            |
+| `watcher::debounce`   | ✅ Complete (with tests)               |
+| `auth::session`       | ✅ Complete (with tests)               |
+| `auth::enforcer`      | ✅ Complete (with 6 tests)             |
+| `storage::index`      | ✅ Complete (with 7 tests)             |
+| `storage::disk`       | 🔶 Partial (paths + exists only)       |
+| `storage::staged`     | 🔶 In progress                         |
+| `storage::backend`    | ✅ Trait defined                       |
+| `sync::transport`     | ✅ Complete (with tests)               |
+| `engine::rules`       | ✅ Types complete                      |
+| `engine::event`       | 🔶 Types only (classify stub)          |
+| `engine::auto_commit` | 🔶 Structure only (evaluate stub)      |
+| `engine::auto_branch` | 🔶 Structure only (evaluate stub)      |
+| `api::grpc`           | 🔶 Skeleton (start/stop stubs)         |
+| `api::handlers`       | 🔶 All stubs                           |
+| `git::*`              | 🔶 Structures defined, logic stubs     |
+| `service::daemon`     | 🔶 State management (start/stop stubs) |
+| `service::health`     | ✅ Complete                            |
+| `service::install`    | 🔶 All platform stubs                  |
+| `sync::push/pull`     | 🔶 Structures defined (execute stubs)  |
 
 ---
 

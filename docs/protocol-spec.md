@@ -43,23 +43,23 @@ prototype boundary and now has an equivalent gRPC `StageSnapshot` method.
 
 Request fields:
 
-| Field | Type | Required | Description |
-|---|---|---:|---|
-| `snapshot_id` | string | yes | Client-created snapshot identifier. |
-| `tenant` | string | yes | Tenant slug that owns or stages the work. |
-| `worktree` | string | yes | Worktree name within the tenant namespace. |
-| `tree_id` | string | yes | Tree identifier associated with the snapshot. |
-| `branch` | string | yes | Branch name where the staged work was produced. |
-| `objects` | array | yes | Uploaded added/modified objects required by the staged snapshot. |
+| Field         | Type   | Required | Description                                                      |
+| ------------- | ------ | -------: | ---------------------------------------------------------------- |
+| `snapshot_id` | string |      yes | Client-created snapshot identifier.                              |
+| `tenant`      | string |      yes | Tenant slug that owns or stages the work.                        |
+| `worktree`    | string |      yes | Worktree name within the tenant namespace.                       |
+| `tree_id`     | string |      yes | Tree identifier associated with the snapshot.                    |
+| `branch`      | string |      yes | Branch name where the staged work was produced.                  |
+| `objects`     | array  |      yes | Uploaded added/modified objects required by the staged snapshot. |
 
 Each object entry contains:
 
-| Field | Type | Required | Description |
-|---|---|---:|---|
-| `path` | string | yes | Relative worktree path for diagnostics and future policy checks. |
-| `hash` | string | yes | 64-character BLAKE3 hex digest of `content`. |
-| `size` | integer | yes | Byte length of decoded `content`. |
-| `content` | base64 bytes | yes | Raw object bytes encoded by JSON as base64. |
+| Field     | Type         | Required | Description                                                      |
+| --------- | ------------ | -------: | ---------------------------------------------------------------- |
+| `path`    | string       |      yes | Relative worktree path for diagnostics and future policy checks. |
+| `hash`    | string       |      yes | 64-character BLAKE3 hex digest of `content`.                     |
+| `size`    | integer      |      yes | Byte length of decoded `content`.                                |
+| `content` | base64 bytes |      yes | Raw object bytes encoded by JSON as base64.                      |
 
 Server behavior:
 
@@ -92,11 +92,11 @@ visibility.
 
 Query parameters:
 
-| Parameter | Required | Description |
-|---|---:|---|
-| `tenant` | no | Tenant slug. If authenticated tenant context is present, it must match. |
-| `worktree` | no | Worktree name filter. |
-| `branch` | no | Branch name filter. |
+| Parameter  | Required | Description                                                             |
+| ---------- | -------: | ----------------------------------------------------------------------- |
+| `tenant`   |       no | Tenant slug. If authenticated tenant context is present, it must match. |
+| `worktree` |       no | Worktree name filter.                                                   |
+| `branch`   |       no | Branch name filter.                                                     |
 
 Response:
 
@@ -141,20 +141,20 @@ All Go server error responses use this envelope:
 }
 ```
 
-| Code | HTTP Status | Meaning |
-|---|---|---|
-| `InvalidJSON` | 400 | Request body is not valid JSON |
-| `InvalidStagedSnapshot` | 422 | Required field missing or invalid |
-| `InvalidObject` | 422 | Object size mismatch or BLAKE3 hash/content mismatch |
-| `StagedUploadTooLarge` | 413 | Object count or byte size exceeds server limits |
-| `TenantMismatch` | 403 | Authenticated tenant does not match payload tenant |
-| `AuthenticationRequired` | 401 | Missing or invalid bearer token |
-| `AuthenticationFailed` | 401 | Authentication backend rejected the request |
-| `Forbidden` | 403 | IAM authorizer denied the action |
-| `StagedConflict` | 409 | Staged retry conflicts with an existing canonical staged identity |
-| `StagedStoreFailed` | 500 | Persistence layer error |
-| `StagedListFailed` | 500 | Read-side storage error |
-| `MethodNotAllowed` | 405 | Wrong HTTP method for route |
+| Code                     | HTTP Status | Meaning                                                           |
+| ------------------------ | ----------- | ----------------------------------------------------------------- |
+| `InvalidJSON`            | 400         | Request body is not valid JSON                                    |
+| `InvalidStagedSnapshot`  | 422         | Required field missing or invalid                                 |
+| `InvalidObject`          | 422         | Object size mismatch or BLAKE3 hash/content mismatch              |
+| `StagedUploadTooLarge`   | 413         | Object count or byte size exceeds server limits                   |
+| `TenantMismatch`         | 403         | Authenticated tenant does not match payload tenant                |
+| `AuthenticationRequired` | 401         | Missing or invalid bearer token                                   |
+| `AuthenticationFailed`   | 401         | Authentication backend rejected the request                       |
+| `Forbidden`              | 403         | IAM authorizer denied the action                                  |
+| `StagedConflict`         | 409         | Staged retry conflicts with an existing canonical staged identity |
+| `StagedStoreFailed`      | 500         | Persistence layer error                                           |
+| `StagedListFailed`       | 500         | Read-side storage error                                           |
+| `MethodNotAllowed`       | 405         | Wrong HTTP method for route                                       |
 
 For gRPC, missing/invalid bearer metadata maps to `Unauthenticated`, validation failures map to
 `InvalidArgument`, IAM denials map to `PermissionDenied`, staged idempotency conflicts map to
@@ -165,14 +165,14 @@ For gRPC, missing/invalid bearer metadata maps to `Unauthenticated`, validation 
 IAM permission strings follow the pattern `<resource>:<verb>`. Server implementations
 must use these exact strings when recording audit events and calling the authorizer.
 
-| Action | Description |
-|---|---|
-| `staged:create` | Upload a staged snapshot via `POST /staged` |
-| `staged:list` | List staged snapshots via `GET /staged` |
-| `branch:push` | Finalize staged snapshots into branch history |
-| `branch:pull` | Download branch history to local store |
-| `tree:init` | Initialize a new tree on the server |
-| `tenant:read` | Read tenant metadata |
+| Action          | Description                                   |
+| --------------- | --------------------------------------------- |
+| `staged:create` | Upload a staged snapshot via `POST /staged`   |
+| `staged:list`   | List staged snapshots via `GET /staged`       |
+| `branch:push`   | Finalize staged snapshots into branch history |
+| `branch:pull`   | Download branch history to local store        |
+| `tree:init`     | Initialize a new tree on the server           |
+| `tenant:read`   | Read tenant metadata                          |
 
 ## Idempotency
 

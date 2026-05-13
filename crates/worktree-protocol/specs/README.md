@@ -52,28 +52,28 @@ W0rkTree does not patch these problems. It replaces the system that causes them.
 
 ## Git vs W0rkTree — Full Comparison
 
-| Aspect | Git | W0rkTree |
-|---|---|---|
-| **Architecture** | Monolithic local tool + separate hosting | Two-runtime system: local bgprocess + remote server |
-| **Organization** | Single flat repository per project | Multi-tenant trees with nested subtrees |
-| **Identity** | Name + email in config (no verification) | Tenant identity: username + verified email, cross-tenant access |
-| **Terminology** | commit, repository, push, pull, checkout | snapshot, tree, sync — plain language throughout |
-| **Staging** | Explicit staging area (`git add`) required | No staging area, no index — snapshot captures working state |
-| **Commands** | 150+ commands, many overloaded (`checkout` does 3 things) | One job per command, no overloading |
-| **Branches** | Global namespace, naming conflicts | Tree-scoped branches with independent strategies |
-| **Access Control** | None built-in; relies on hosting platform | Declarative `.wt/access/` and `.wt-tree/access/` with TOML config |
-| **Merge** | Merge, rebase, cherry-pick, squash — user chooses | Merge only. No rebase. Append-only history. |
-| **Large Files** | Requires Git LFS (separate system) | Native chunked storage with lazy loading — no LFS needed |
-| **Protocol** | Git protocol (smart/dumb HTTP, SSH) | Native W0rkTree protocol + Git compatibility layer for migration |
-| **Collaboration** | No visibility until push | Staged snapshot visibility — team sees WIP in real-time |
-| **History** | Rewritable (`rebase`, `reset`, `force-push`) | Append-only, non-destructive — soft deletes with recovery windows |
-| **Monitoring** | None built-in | Server-side telemetry, sync health, tenant activity |
-| **Deployment** | External CI/CD reads Git events | Server-enforced branch protection, CI gates, release artifacts |
-| **License Enforcement** | None | Per-path SPDX license tracking, server-enforced compliance |
-| **Automation** | Manual everything | Auto-snapshot, auto-sync by default |
-| **Recovery** | `git reflog` (local only, expires) | Full reflog, soft deletes, configurable recovery windows |
-| **Configuration** | `.git/config` + global config | Hierarchical: system → user → `.wt/` → `.wt-tree/` → subtree |
-| **Multi-tenancy** | Not supported | First-class tenants, cross-tenant sharing, visibility modes |
+| Aspect                  | Git                                                       | W0rkTree                                                          |
+| ----------------------- | --------------------------------------------------------- | ----------------------------------------------------------------- |
+| **Architecture**        | Monolithic local tool + separate hosting                  | Two-runtime system: local bgprocess + remote server               |
+| **Organization**        | Single flat repository per project                        | Multi-tenant trees with nested subtrees                           |
+| **Identity**            | Name + email in config (no verification)                  | Tenant identity: username + verified email, cross-tenant access   |
+| **Terminology**         | commit, repository, push, pull, checkout                  | snapshot, tree, sync — plain language throughout                  |
+| **Staging**             | Explicit staging area (`git add`) required                | No staging area, no index — snapshot captures working state       |
+| **Commands**            | 150+ commands, many overloaded (`checkout` does 3 things) | One job per command, no overloading                               |
+| **Branches**            | Global namespace, naming conflicts                        | Tree-scoped branches with independent strategies                  |
+| **Access Control**      | None built-in; relies on hosting platform                 | Declarative `.wt/access/` and `.wt-tree/access/` with TOML config |
+| **Merge**               | Merge, rebase, cherry-pick, squash — user chooses         | Merge only. No rebase. Append-only history.                       |
+| **Large Files**         | Requires Git LFS (separate system)                        | Native chunked storage with lazy loading — no LFS needed          |
+| **Protocol**            | Git protocol (smart/dumb HTTP, SSH)                       | Native W0rkTree protocol + Git compatibility layer for migration  |
+| **Collaboration**       | No visibility until push                                  | Staged snapshot visibility — team sees WIP in real-time           |
+| **History**             | Rewritable (`rebase`, `reset`, `force-push`)              | Append-only, non-destructive — soft deletes with recovery windows |
+| **Monitoring**          | None built-in                                             | Server-side telemetry, sync health, tenant activity               |
+| **Deployment**          | External CI/CD reads Git events                           | Server-enforced branch protection, CI gates, release artifacts    |
+| **License Enforcement** | None                                                      | Per-path SPDX license tracking, server-enforced compliance        |
+| **Automation**          | Manual everything                                         | Auto-snapshot, auto-sync by default                               |
+| **Recovery**            | `git reflog` (local only, expires)                        | Full reflog, soft deletes, configurable recovery windows          |
+| **Configuration**       | `.git/config` + global config                             | Hierarchical: system → user → `.wt/` → `.wt-tree/` → subtree      |
+| **Multi-tenancy**       | Not supported                                             | First-class tenants, cross-tenant sharing, visibility modes       |
 
 ---
 
@@ -81,22 +81,24 @@ W0rkTree does not patch these problems. It replaces the system that causes them.
 
 W0rkTree uses plain language. If you know what a word means in English, you know what it means in W0rkTree.
 
-| W0rkTree Term | Replaces (Git) | Meaning |
-|---|---|---|
-| **Snapshot** | Commit | An immutable point-in-time capture of file state |
-| **Tree** | Repository | A versioned collection of files with its own history and branches |
-| **Sync** | Push / Pull | Bidirectional transfer of snapshots between bgprocess and server |
-| **Branch** | Branch | Same concept, but tree-scoped and independently configured |
-| **Tag** | Tag | Immutable named reference to a snapshot |
-| **Release** | (no equivalent) | A tag with attached build artifacts and metadata |
-| **Tenant** | (no equivalent) | A user or organization with verified identity |
+| W0rkTree Term       | Replaces (Git)  | Meaning                                                           |
+| ------------------- | --------------- | ----------------------------------------------------------------- |
+| **Snapshot**        | Commit          | An immutable point-in-time capture of file state                  |
+| **Tree**            | Repository      | A versioned collection of files with its own history and branches |
+| **Sync**            | Push / Pull     | Bidirectional transfer of snapshots between bgprocess and server  |
+| **Branch**          | Branch          | Same concept, but tree-scoped and independently configured        |
+| **Tag**             | Tag             | Immutable named reference to a snapshot                           |
+| **Release**         | (no equivalent) | A tag with attached build artifacts and metadata                  |
+| **Tenant**          | (no equivalent) | A user or organization with verified identity                     |
 | **Staged Snapshot** | (no equivalent) | A snapshot visible to the team but not yet part of branch history |
 
 **Configuration paths:**
+
 - `.wt/` — Root W0rkTree configuration directory (one per root tree)
 - `.wt-tree/` — Per-tree configuration directory (one per individual tree)
 
 **What does not exist in W0rkTree:**
+
 - No staging area. No index. No `add` command.
 - No rebase. No `reset --hard`. No `force-push`.
 - No `checkout` that does three different things.
@@ -150,6 +152,7 @@ W0rkTree is split into two cooperating runtimes. Neither is optional. The local 
 The background process runs continuously on the developer's machine. It is the only process that touches the working directory.
 
 **Responsibilities:**
+
 - **File watching** — Monitors the working directory for changes in real-time.
 - **Auto-snapshots** — Automatically creates snapshots as the developer works. No manual `add` or `commit` required (manual snapshots are also supported).
 - **Local history** — Maintains the full local snapshot history and branch state.
@@ -163,6 +166,7 @@ The background process runs continuously on the developer's machine. It is the o
 The server is the source of truth. It is multi-tenant by design.
 
 **Responsibilities:**
+
 - **Canonical history** — The server's snapshot history is authoritative. Local histories sync to it.
 - **Tenant management** — Users and organizations are first-class entities with verified identity.
 - **IAM enforcement** — All access control rules defined in `.wt/access/` and `.wt-tree/access/` are enforced server-side. The bgprocess cannot bypass them.
@@ -277,6 +281,7 @@ system config          (machine-wide defaults)
 ```
 
 **Key rules:**
+
 - Each level can restrict what lower levels are allowed to do. It can never grant more than what the level above allows.
 - The server enforces the ceiling. A `.wt-tree/` config cannot override a `.wt/` restriction.
 - Configuration is TOML, version-controlled, and auditable.
@@ -321,29 +326,29 @@ W0rkTree speaks its own native protocol for full functionality. It also speaks G
 
 ### Existing Specifications
 
-| Document | Path | Description |
-|---|---|---|
-| **Core Concepts** | [`WorkTree.md`](./WorkTree.md) | Core W0rkTree concepts, dependency system, linked branches, design philosophy, and comparison with Git monorepos |
-| **Tree Structure** | [`tree/Tree.md`](./tree/Tree.md) | Detailed specification for trees, branches, snapshots, cross-tree coordination, and the TODO system |
+| Document           | Path                             | Description                                                                                                      |
+| ------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Core Concepts**  | [`WorkTree.md`](./WorkTree.md)   | Core W0rkTree concepts, dependency system, linked branches, design philosophy, and comparison with Git monorepos |
+| **Tree Structure** | [`tree/Tree.md`](./tree/Tree.md) | Detailed specification for trees, branches, snapshots, cross-tree coordination, and the TODO system              |
 
 ### Planned Specifications
 
 The following specifications are **to be created** as the protocol documentation expands:
 
-| Document | Path | Description |
-|---|---|---|
-| **Background Process** | `bgprocess/BgProcess.md` | Full specification for the local background process — file watching, auto-snapshot engine, local storage layout, sync client behavior, `.wt/` management, and platform-specific integration |
-| **Server** | `server/Server.md` | Remote multi-tenant server specification — canonical history storage, tenant lifecycle, enforcement architecture, multi-protocol endpoints, and operational requirements |
-| **IAM** | `iam/IAM.md` | Complete IAM specification — authentication, authorization, role model, permission resolution, and enforcement boundaries between bgprocess and server |
-| **Declarative Access** | `iam/DeclarativeAccess.md` | Terraform-style declarative access model — `.wt/access/` and `.wt-tree/access/` TOML schema, explicit path registration, idempotent application, and audit trail |
-| **Tenant Model** | `iam/TenantModel.md` | Tenant identity specification — username and email verification, tenant types (user vs. organization), cross-tenant access grants, and visibility mode enforcement |
-| **License Compliance** | `licensing/LicenseCompliance.md` | Per-path license enforcement — SPDX expression syntax, server-side validation rules, export control policies, and compliance audit logging |
-| **Sync Protocol** | `sync/Sync.md` | Sync protocol between bgprocess and server — transport layer, snapshot transfer format, conflict resolution, staged snapshot lifecycle, and Git compatibility wire format |
-| **Staged Visibility** | `visibility/StagedVisibility.md` | Staged snapshot visibility specification — staging lifecycle, team visibility rules, finalization and discard flows, and real-time notification model |
-| **Storage** | `storage/Storage.md` | Storage architecture — content-addressable chunked storage, deduplication, lazy loading, large file handling, local cache management, and server-side storage layout |
-| **Security** | `security/Security.md` | Security model — cryptographic snapshot signing, transport encryption, tenant isolation guarantees, recovery window policies, and threat model |
-| **`.wt/` Folder** | `dot-wt/DotWt.md` | Root `.wt/` folder specification — directory layout, configuration files, access rules, and relationship to the root tree |
-| **`.wt-tree/` Folder** | `dot-wt-tree/DotWtTree.md` | Per-tree `.wt-tree/` folder specification — directory layout, tree-specific configuration, access overrides, and nested tree behavior |
+| Document               | Path                             | Description                                                                                                                                                                                 |
+| ---------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Background Process** | `bgprocess/BgProcess.md`         | Full specification for the local background process — file watching, auto-snapshot engine, local storage layout, sync client behavior, `.wt/` management, and platform-specific integration |
+| **Server**             | `server/Server.md`               | Remote multi-tenant server specification — canonical history storage, tenant lifecycle, enforcement architecture, multi-protocol endpoints, and operational requirements                    |
+| **IAM**                | `iam/IAM.md`                     | Complete IAM specification — authentication, authorization, role model, permission resolution, and enforcement boundaries between bgprocess and server                                      |
+| **Declarative Access** | `iam/DeclarativeAccess.md`       | Terraform-style declarative access model — `.wt/access/` and `.wt-tree/access/` TOML schema, explicit path registration, idempotent application, and audit trail                            |
+| **Tenant Model**       | `iam/TenantModel.md`             | Tenant identity specification — username and email verification, tenant types (user vs. organization), cross-tenant access grants, and visibility mode enforcement                          |
+| **License Compliance** | `licensing/LicenseCompliance.md` | Per-path license enforcement — SPDX expression syntax, server-side validation rules, export control policies, and compliance audit logging                                                  |
+| **Sync Protocol**      | `sync/Sync.md`                   | Sync protocol between bgprocess and server — transport layer, snapshot transfer format, conflict resolution, staged snapshot lifecycle, and Git compatibility wire format                   |
+| **Staged Visibility**  | `visibility/StagedVisibility.md` | Staged snapshot visibility specification — staging lifecycle, team visibility rules, finalization and discard flows, and real-time notification model                                       |
+| **Storage**            | `storage/Storage.md`             | Storage architecture — content-addressable chunked storage, deduplication, lazy loading, large file handling, local cache management, and server-side storage layout                        |
+| **Security**           | `security/Security.md`           | Security model — cryptographic snapshot signing, transport encryption, tenant isolation guarantees, recovery window policies, and threat model                                              |
+| **`.wt/` Folder**      | `dot-wt/DotWt.md`                | Root `.wt/` folder specification — directory layout, configuration files, access rules, and relationship to the root tree                                                                   |
+| **`.wt-tree/` Folder** | `dot-wt-tree/DotWtTree.md`       | Per-tree `.wt-tree/` folder specification — directory layout, tree-specific configuration, access overrides, and nested tree behavior                                                       |
 
 ---
 

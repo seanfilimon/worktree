@@ -205,6 +205,7 @@ All require `Authorization: Bearer <token>`. All emit audit events via the share
 Promotes a snapshot chain from local (or staged) into the canonical branch tip with compare-and-swap conflict detection.
 
 Request body (JSON):
+
 ```json
 {
   "tenant": "acme",
@@ -213,14 +214,19 @@ Request body (JSON):
   "branch": "main",
   "expected_tip": "snapshot-id-or-null",
   "new_tip": "snapshot-id",
-  "snapshot_chain": [ { /* full Snapshot record */ } ],
-  "objects": [ { "hash": "blake3hex", "size": 1234, "path": "src/foo.rs" } ]
+  "snapshot_chain": [
+    {
+      /* full Snapshot record */
+    }
+  ],
+  "objects": [{ "hash": "blake3hex", "size": 1234, "path": "src/foo.rs" }]
 }
 ```
 
 `objects[]` lists hashes referenced by the chain — **metadata only**, no bytes. Client must first call `POST /api/objects/check` and upload missing blobs via `PUT /api/objects/{hash}` (see below) before invoking `/api/push`. This keeps push idempotent and lightweight.
 
 Server actions in a single Postgres txn:
+
 1. IAM check `branch:push` on `tenant:${tenant}/${worktree}/${tree_id}/branches/${branch}`.
 2. Verify every hash in `objects[]` exists in `ObjectStore` (reject 412 Precondition Failed otherwise).
 3. CAS: `UPDATE canonical_branches SET tip_snapshot_id = $new WHERE ... AND tip_snapshot_id IS NOT DISTINCT FROM $expected`. Zero rows → 409 Conflict.
@@ -229,18 +235,25 @@ Server actions in a single Postgres txn:
 6. Audit emit `canonical_push` with decision/reason.
 
 Response (200):
+
 ```json
 { "status": "accepted", "new_tip": "snapshot-id", "snapshots_committed": 3 }
 ```
 
 Conflict (409):
+
 ```json
-{ "status": "conflict", "actual_tip": "snapshot-id", "message": "branch advanced by another client" }
+{
+  "status": "conflict",
+  "actual_tip": "snapshot-id",
+  "message": "branch advanced by another client"
+}
 ```
 
 Missing-objects precondition (412):
+
 ```json
-{ "status": "missing_objects", "missing": [ "hash1", "hash2" ] }
+{ "status": "missing_objects", "missing": ["hash1", "hash2"] }
 ```
 
 ### POST /api/pull
@@ -248,22 +261,33 @@ Missing-objects precondition (412):
 Returns the snapshot chain and object set the client needs to advance to the current canonical tip.
 
 Request:
+
 ```json
-{ "tenant": "acme", "worktree": "main", "tree_id": "uuid", "branch": "main", "last_known_tip": "snapshot-id-or-null" }
+{
+  "tenant": "acme",
+  "worktree": "main",
+  "tree_id": "uuid",
+  "branch": "main",
+  "last_known_tip": "snapshot-id-or-null"
+}
 ```
 
 Server actions:
+
 1. IAM check `branch:pull`.
 2. Read current `tip_snapshot_id` from `canonical_branches`.
 3. Walk parent chain from current tip back to `last_known_tip` (or genesis), collecting snapshots and their object hashes.
 4. Emit `canonical_pull` audit event.
 
 Response:
+
 ```json
 {
   "new_tip": "snapshot-id",
-  "snapshots": [ /* in oldest-to-newest order */ ],
-  "objects_needed": [ "hash1", "hash2" ],
+  "snapshots": [
+    /* in oldest-to-newest order */
+  ],
+  "objects_needed": ["hash1", "hash2"],
   "up_to_date": false
 }
 ```
@@ -296,8 +320,9 @@ IAM check `object:read`. `Content-Type: application/octet-stream`.
 List branch tips for a tree.
 
 Response:
+
 ```json
-{ "branches": [ { "name": "main", "tip": "snapshot-id", "updated_at": "..." } ] }
+{ "branches": [{ "name": "main", "tip": "snapshot-id", "updated_at": "..." }] }
 ```
 
 IAM check `ref:list`.
@@ -338,7 +363,7 @@ Client                                    Server
 
 ### Access Config Sync
 
-1. User edits .wt/access/*.toml or .wt-tree/access/*.toml
+1. User edits .wt/access/_.toml or .wt-tree/access/_.toml
 2. BGProcess detects change, validates locally
 3. BGProcess syncs to server
 4. Server validates (tenant resolution, path registration, policy consistency)

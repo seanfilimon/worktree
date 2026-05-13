@@ -5,6 +5,7 @@
 W0rkTree has a native, built-in IAM (Identity and Access Management) system. Unlike Git, where access control is bolted on by hosting platforms (GitHub, GitLab, Bitbucket), W0rkTree's IAM is a **first-class protocol concept** enforced at the server level.
 
 This means:
+
 - Access control is part of the protocol, not an afterthought
 - Policies are version-controlled alongside your code
 - Permissions are enforced on every sync operation by the server
@@ -30,13 +31,13 @@ These components work together to provide fine-grained, auditable access control
 
 W0rkTree ships with five built-in roles that form a strict superset hierarchy:
 
-| Role       | Permissions                                      | Description                                  |
-|------------|--------------------------------------------------|----------------------------------------------|
-| Owner      | All permissions                                  | Full control. Cannot be restricted.          |
-| Admin      | All except owner-transfer                        | Manages tenants, access, config              |
-| Maintainer | Branch merge, tree admin, policy management      | Manages branches and deployments             |
-| Developer  | Read, write, snapshot, branch create             | Standard development work                    |
-| Viewer     | Read-only across all scopes                      | Can see but not modify                       |
+| Role       | Permissions                                 | Description                         |
+| ---------- | ------------------------------------------- | ----------------------------------- |
+| Owner      | All permissions                             | Full control. Cannot be restricted. |
+| Admin      | All except owner-transfer                   | Manages tenants, access, config     |
+| Maintainer | Branch merge, tree admin, policy management | Manages branches and deployments    |
+| Developer  | Read, write, snapshot, branch create        | Standard development work           |
+| Viewer     | Read-only across all scopes                 | Can see but not modify              |
 
 ### Superset Hierarchy
 
@@ -45,6 +46,7 @@ Owner ⊃ Admin ⊃ Maintainer ⊃ Developer ⊃ Viewer
 ```
 
 This means:
+
 - Every permission a Viewer has, a Developer also has
 - Every permission a Developer has, a Maintainer also has
 - Every permission a Maintainer has, an Admin also has
@@ -53,6 +55,7 @@ This means:
 ### Role Assignment
 
 Roles can be assigned at any scope level:
+
 - A user can be a **Developer** at the Tenant scope (all trees)
 - But a **Maintainer** for a specific tree
 - And **Viewer** only on a specific branch of another tree
@@ -68,7 +71,7 @@ W0rkTree defines a comprehensive set of atomic permissions organized by category
 ### Tree Permissions
 
 | Permission    | Description                                           |
-|---------------|-------------------------------------------------------|
+| ------------- | ----------------------------------------------------- |
 | `tree:read`   | Read tree contents (files, directories, metadata)     |
 | `tree:write`  | Write to tree contents (create, modify, delete files) |
 | `tree:delete` | Delete an entire tree                                 |
@@ -76,48 +79,48 @@ W0rkTree defines a comprehensive set of atomic permissions organized by category
 
 ### Branch Permissions
 
-| Permission       | Description                                        |
-|------------------|----------------------------------------------------|
-| `branch:read`    | Read branch contents and metadata                  |
-| `branch:create`  | Create new branches                                |
-| `branch:delete`  | Delete branches                                    |
-| `branch:merge`   | Merge branches together                            |
-| `branch:protect` | Modify branch protection rules                     |
+| Permission       | Description                       |
+| ---------------- | --------------------------------- |
+| `branch:read`    | Read branch contents and metadata |
+| `branch:create`  | Create new branches               |
+| `branch:delete`  | Delete branches                   |
+| `branch:merge`   | Merge branches together           |
+| `branch:protect` | Modify branch protection rules    |
 
 ### Snapshot Permissions
 
-| Permission         | Description                                      |
-|--------------------|--------------------------------------------------|
-| `snapshot:create`  | Create new snapshots (commits)                   |
-| `snapshot:read`    | Read snapshot history and contents               |
-| `snapshot:restore` | Restore a previous snapshot                      |
+| Permission         | Description                        |
+| ------------------ | ---------------------------------- |
+| `snapshot:create`  | Create new snapshots (commits)     |
+| `snapshot:read`    | Read snapshot history and contents |
+| `snapshot:restore` | Restore a previous snapshot        |
 
 ### Sync Permissions
 
-| Permission   | Description                                           |
-|--------------|-------------------------------------------------------|
-| `sync:push`  | Push local changes to the server                      |
-| `sync:pull`  | Pull remote changes from the server                   |
+| Permission  | Description                         |
+| ----------- | ----------------------------------- |
+| `sync:push` | Push local changes to the server    |
+| `sync:pull` | Pull remote changes from the server |
 
 ### Staged Permissions
 
-| Permission      | Description                                      |
-|-----------------|--------------------------------------------------|
-| `staged:create` | Upload a staged snapshot to the server           |
-| `staged:list`   | List staged snapshots visible to the requester   |
+| Permission      | Description                                    |
+| --------------- | ---------------------------------------------- |
+| `staged:create` | Upload a staged snapshot to the server         |
+| `staged:list`   | List staged snapshots visible to the requester |
 
 Production servers must evaluate these permissions for both REST and gRPC staged APIs. A Viewer may list staged snapshots but cannot create them; Developer and above may create and list staged snapshots subject to branch/tree policy ceilings.
 
 ### Canonical Push/Pull Permissions
 
-| Permission       | Description                                                          |
-|------------------|----------------------------------------------------------------------|
-| `branch:push`    | Promote a snapshot chain into a canonical branch tip via `/api/push` |
-| `branch:pull`    | Read canonical snapshots and branch tip via `/api/pull`              |
-| `object:check`   | Query which object hashes the server is missing                      |
-| `object:write`   | Upload a content-addressed object blob via `PUT /api/objects/{hash}` |
-| `object:read`    | Download a content-addressed object blob via `GET /api/objects/{hash}` |
-| `ref:list`       | List canonical branch tips via `GET /api/refs`                       |
+| Permission     | Description                                                            |
+| -------------- | ---------------------------------------------------------------------- |
+| `branch:push`  | Promote a snapshot chain into a canonical branch tip via `/api/push`   |
+| `branch:pull`  | Read canonical snapshots and branch tip via `/api/pull`                |
+| `object:check` | Query which object hashes the server is missing                        |
+| `object:write` | Upload a content-addressed object blob via `PUT /api/objects/{hash}`   |
+| `object:read`  | Download a content-addressed object blob via `GET /api/objects/{hash}` |
+| `ref:list`     | List canonical branch tips via `GET /api/refs`                         |
 
 `branch:push` supersedes the legacy `sync:push`; `branch:pull` supersedes `sync:pull`. The legacy names remain valid aliases until v2 to avoid breaking existing policy files. Server-side authorizer maps `sync:push → branch:push` and `sync:pull → branch:pull` transparently.
 
@@ -125,74 +128,74 @@ Object-level permissions (`object:read`, `object:write`, `object:check`) are ten
 
 ### Management Permissions
 
-| Permission      | Description                                        |
-|-----------------|----------------------------------------------------|
-| `PolicyManage`  | Create, modify, delete access policies             |
-| `RoleManage`    | Create, modify, delete custom roles                |
-| `TeamManage`    | Create, modify, delete teams and team membership   |
-| `AccountManage` | Create, modify, delete accounts within a tenant    |
+| Permission      | Description                                      |
+| --------------- | ------------------------------------------------ |
+| `PolicyManage`  | Create, modify, delete access policies           |
+| `RoleManage`    | Create, modify, delete custom roles              |
+| `TeamManage`    | Create, modify, delete teams and team membership |
+| `AccountManage` | Create, modify, delete accounts within a tenant  |
 
 ### Admin Permissions
 
-| Permission    | Description                                          |
-|---------------|------------------------------------------------------|
-| `TreeAdmin`   | Full administrative control over a tree              |
-| `TenantAdmin` | Full administrative control over a tenant            |
+| Permission    | Description                               |
+| ------------- | ----------------------------------------- |
+| `TreeAdmin`   | Full administrative control over a tree   |
+| `TenantAdmin` | Full administrative control over a tenant |
 
 ### Tag & Release Permissions
 
-| Permission       | Description                                       |
-|------------------|---------------------------------------------------|
-| `tag:create`     | Create tags on snapshots                          |
-| `tag:delete`     | Delete existing tags                              |
-| `release:create` | Create releases from tags or snapshots            |
-| `release:delete` | Delete existing releases                          |
+| Permission       | Description                            |
+| ---------------- | -------------------------------------- |
+| `tag:create`     | Create tags on snapshots               |
+| `tag:delete`     | Delete existing tags                   |
+| `release:create` | Create releases from tags or snapshots |
+| `release:delete` | Delete existing releases               |
 
 ### Merge Request Permissions
 
-| Permission              | Description                                |
-|-------------------------|--------------------------------------------|
-| `merge_request:create`  | Open a new merge request                   |
-| `merge_request:approve` | Approve a merge request                    |
-| `merge_request:merge`   | Execute the merge of an approved request   |
+| Permission              | Description                              |
+| ----------------------- | ---------------------------------------- |
+| `merge_request:create`  | Open a new merge request                 |
+| `merge_request:approve` | Approve a merge request                  |
+| `merge_request:merge`   | Execute the merge of an approved request |
 
 ### Role → Permission Mapping
 
-| Permission                | Owner | Admin | Maintainer | Developer | Viewer |
-|---------------------------|:-----:|:-----:|:----------:|:---------:|:------:|
-| `tree:read`               |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `tree:write`              |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `tree:delete`             |   ✓   |   ✓   |            |           |        |
-| `tree:admin`              |   ✓   |   ✓   |     ✓      |           |        |
-| `branch:read`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `branch:create`           |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `branch:delete`           |   ✓   |   ✓   |     ✓      |           |        |
-| `branch:merge`            |   ✓   |   ✓   |     ✓      |           |        |
-| `branch:protect`          |   ✓   |   ✓   |     ✓      |           |        |
-| `snapshot:create`         |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `snapshot:read`           |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `snapshot:restore`        |   ✓   |   ✓   |     ✓      |           |        |
-| `sync:push`               |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `sync:pull`               |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `branch:push`             |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `branch:pull`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `object:check`            |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `object:write`            |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `object:read`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `ref:list`                |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `PolicyManage`            |   ✓   |   ✓   |     ✓      |           |        |
-| `RoleManage`              |   ✓   |   ✓   |            |           |        |
-| `TeamManage`              |   ✓   |   ✓   |            |           |        |
-| `AccountManage`           |   ✓   |   ✓   |            |           |        |
-| `TreeAdmin`               |   ✓   |   ✓   |     ✓      |           |        |
-| `TenantAdmin`             |   ✓   |   ✓   |            |           |        |
-| `tag:create`              |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `tag:delete`              |   ✓   |   ✓   |     ✓      |           |        |
-| `release:create`          |   ✓   |   ✓   |     ✓      |           |        |
-| `release:delete`          |   ✓   |   ✓   |     ✓      |           |        |
-| `merge_request:create`    |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `merge_request:approve`   |   ✓   |   ✓   |     ✓      |           |        |
-| `merge_request:merge`     |   ✓   |   ✓   |     ✓      |           |        |
+| Permission              | Owner | Admin | Maintainer | Developer | Viewer |
+| ----------------------- | :---: | :---: | :--------: | :-------: | :----: |
+| `tree:read`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `tree:write`            |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `tree:delete`           |   ✓   |   ✓   |            |           |        |
+| `tree:admin`            |   ✓   |   ✓   |     ✓      |           |        |
+| `branch:read`           |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `branch:create`         |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `branch:delete`         |   ✓   |   ✓   |     ✓      |           |        |
+| `branch:merge`          |   ✓   |   ✓   |     ✓      |           |        |
+| `branch:protect`        |   ✓   |   ✓   |     ✓      |           |        |
+| `snapshot:create`       |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `snapshot:read`         |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `snapshot:restore`      |   ✓   |   ✓   |     ✓      |           |        |
+| `sync:push`             |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `sync:pull`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `branch:push`           |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `branch:pull`           |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `object:check`          |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `object:write`          |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `object:read`           |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `ref:list`              |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
+| `PolicyManage`          |   ✓   |   ✓   |     ✓      |           |        |
+| `RoleManage`            |   ✓   |   ✓   |            |           |        |
+| `TeamManage`            |   ✓   |   ✓   |            |           |        |
+| `AccountManage`         |   ✓   |   ✓   |            |           |        |
+| `TreeAdmin`             |   ✓   |   ✓   |     ✓      |           |        |
+| `TenantAdmin`           |   ✓   |   ✓   |            |           |        |
+| `tag:create`            |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `tag:delete`            |   ✓   |   ✓   |     ✓      |           |        |
+| `release:create`        |   ✓   |   ✓   |     ✓      |           |        |
+| `release:delete`        |   ✓   |   ✓   |     ✓      |           |        |
+| `merge_request:create`  |   ✓   |   ✓   |     ✓      |     ✓     |        |
+| `merge_request:approve` |   ✓   |   ✓   |     ✓      |           |        |
+| `merge_request:merge`   |   ✓   |   ✓   |     ✓      |           |        |
 
 ---
 
@@ -210,13 +213,13 @@ Global                           ← Server-wide (superadmin only)
 
 ### Scope Properties
 
-| Scope          | Identifier             | Who Can Set             | Typical Use Case                     |
-|----------------|------------------------|-------------------------|--------------------------------------|
-| Global         | (implicit)             | Server superadmin       | Platform-wide policies               |
-| Tenant         | Tenant slug or email   | Tenant owner/admin      | Org-wide defaults                    |
-| Tree           | Tree name/ID           | Tree owner/admin        | Per-project access                   |
-| Branch         | Branch name            | Tree maintainer+        | Protected branches                   |
-| RegisteredPath | File/directory path    | Tree maintainer+        | Sensitive file protection            |
+| Scope          | Identifier           | Who Can Set        | Typical Use Case          |
+| -------------- | -------------------- | ------------------ | ------------------------- |
+| Global         | (implicit)           | Server superadmin  | Platform-wide policies    |
+| Tenant         | Tenant slug or email | Tenant owner/admin | Org-wide defaults         |
+| Tree           | Tree name/ID         | Tree owner/admin   | Per-project access        |
+| Branch         | Branch name          | Tree maintainer+   | Protected branches        |
+| RegisteredPath | File/directory path  | Tree maintainer+   | Sensitive file protection |
 
 ### Scope Resolution Rules
 
@@ -233,10 +236,10 @@ Policies are the core mechanism for binding subjects to permissions at scopes. T
 
 ### Policy Storage Locations
 
-| Location                          | Scope              | Description                          |
-|-----------------------------------|--------------------|-----------------------------------------|
-| `.wt/access/policies.toml`       | Worktree-wide      | Root-level policies for the worktree    |
-| `.wt-tree/access/policies.toml`  | Tree-specific      | Policies scoped to a specific tree      |
+| Location                        | Scope         | Description                          |
+| ------------------------------- | ------------- | ------------------------------------ |
+| `.wt/access/policies.toml`      | Worktree-wide | Root-level policies for the worktree |
+| `.wt-tree/access/policies.toml` | Tree-specific | Policies scoped to a specific tree   |
 
 ### Policy Structure
 
@@ -356,6 +359,7 @@ permissions = [
 #### Example 4: Path-Level Restriction (Lock Production Config)
 
 First, register the path in `.wt/config.toml`:
+
 ```toml
 [[registered_path]]
 path = "config/production.toml"
@@ -363,6 +367,7 @@ description = "Production configuration — restricted access"
 ```
 
 Then deny writes in `.wt/access/policies.toml`:
+
 ```toml
 [[policy]]
 name = "lock-production-config"
@@ -373,6 +378,7 @@ permissions = ["tree:write"]
 ```
 
 And allow only specific maintainers:
+
 ```toml
 [[policy]]
 name = "allow-infra-team-production"
@@ -489,29 +495,29 @@ conditions = [
 
 ### Supported Operators
 
-| Operator     | Description                      | Example                                           |
-|--------------|----------------------------------|---------------------------------------------------|
-| `Equals`     | Exact match                      | `{ attribute = "env", operator = "Equals", value = "production" }` |
-| `NotEquals`  | Not equal                        | `{ attribute = "env", operator = "NotEquals", value = "test" }` |
-| `Contains`   | String contains                  | `{ attribute = "email", operator = "Contains", value = "@company.com" }` |
-| `StartsWith` | String prefix match              | `{ attribute = "ip", operator = "StartsWith", value = "10.0." }` |
-| `GreaterThan`| Numeric greater than             | `{ attribute = "time.hour", operator = "GreaterThan", value = "8" }` |
-| `LessThan`   | Numeric less than                | `{ attribute = "time.hour", operator = "LessThan", value = "18" }` |
-| `In`         | Value in list                    | `{ attribute = "department", operator = "In", value = "engineering,security" }` |
-| `NotIn`      | Value not in list                | `{ attribute = "region", operator = "NotIn", value = "restricted-zone" }` |
+| Operator      | Description          | Example                                                                         |
+| ------------- | -------------------- | ------------------------------------------------------------------------------- |
+| `Equals`      | Exact match          | `{ attribute = "env", operator = "Equals", value = "production" }`              |
+| `NotEquals`   | Not equal            | `{ attribute = "env", operator = "NotEquals", value = "test" }`                 |
+| `Contains`    | String contains      | `{ attribute = "email", operator = "Contains", value = "@company.com" }`        |
+| `StartsWith`  | String prefix match  | `{ attribute = "ip", operator = "StartsWith", value = "10.0." }`                |
+| `GreaterThan` | Numeric greater than | `{ attribute = "time.hour", operator = "GreaterThan", value = "8" }`            |
+| `LessThan`    | Numeric less than    | `{ attribute = "time.hour", operator = "LessThan", value = "18" }`              |
+| `In`          | Value in list        | `{ attribute = "department", operator = "In", value = "engineering,security" }` |
+| `NotIn`       | Value not in list    | `{ attribute = "region", operator = "NotIn", value = "restricted-zone" }`       |
 
 ### Built-in Attributes
 
-| Attribute        | Type    | Description                                  |
-|------------------|---------|----------------------------------------------|
-| `time.hour`      | Integer | Current hour (0-23) in UTC                   |
-| `time.day`       | String  | Day of week (Monday, Tuesday, ...)           |
-| `time.date`      | String  | ISO 8601 date                                |
-| `ip.address`     | String  | Client IP address                            |
-| `ip.range`       | String  | Client IP CIDR range                         |
-| `tenant.plan`    | String  | Requesting tenant's subscription plan        |
-| `tenant.type`    | String  | personal or organization                     |
-| `tenant.status`  | String  | Active or Suspended                          |
+| Attribute       | Type    | Description                           |
+| --------------- | ------- | ------------------------------------- |
+| `time.hour`     | Integer | Current hour (0-23) in UTC            |
+| `time.day`      | String  | Day of week (Monday, Tuesday, ...)    |
+| `time.date`     | String  | ISO 8601 date                         |
+| `ip.address`    | String  | Client IP address                     |
+| `ip.range`      | String  | Client IP CIDR range                  |
+| `tenant.plan`   | String  | Requesting tenant's subscription plan |
+| `tenant.type`   | String  | personal or organization              |
+| `tenant.status` | String  | Active or Suspended                   |
 
 ### Custom Attributes
 
@@ -593,6 +599,7 @@ All conditions are AND-evaluated: every condition must be true for the policy to
 When the server evaluates an access request, it follows this deterministic algorithm:
 
 ### Input
+
 - **Subject**: The requesting user (account, tenant, teams, roles)
 - **Permission**: The atomic permission being requested (e.g., `tree:write`)
 - **Resource**: The target resource with its scope (e.g., branch "main", path "config/prod.toml")
@@ -726,6 +733,7 @@ function evaluate_with_tree_override(subject, permission, resource):
 ### Example
 
 Root policies (`.wt/access/policies.toml`):
+
 ```toml
 [[policy]]
 name = "team-access"
@@ -736,6 +744,7 @@ permissions = ["tree:read", "tree:write", "branch:create", "sync:push", "sync:pu
 ```
 
 Tree policies (`.wt-tree/access/policies.toml`):
+
 ```toml
 # Restrict dev-team to read-only in this tree
 [[policy]]
@@ -756,13 +765,13 @@ A key design principle of W0rkTree IAM is that access configuration is treated a
 
 ### Storage
 
-| File                              | Purpose                            |
-|-----------------------------------|------------------------------------|
-| `.wt/config.toml`                 | Worktree config, path registration |
-| `.wt/access/roles.toml`          | Custom role definitions            |
-| `.wt/access/policies.toml`       | Root-level access policies         |
-| `.wt-tree/config.toml`           | Tree-level config, path registration|
-| `.wt-tree/access/policies.toml`  | Tree-level access policies         |
+| File                            | Purpose                              |
+| ------------------------------- | ------------------------------------ |
+| `.wt/config.toml`               | Worktree config, path registration   |
+| `.wt/access/roles.toml`         | Custom role definitions              |
+| `.wt/access/policies.toml`      | Root-level access policies           |
+| `.wt-tree/config.toml`          | Tree-level config, path registration |
+| `.wt-tree/access/policies.toml` | Tree-level access policies           |
 
 ### Properties
 

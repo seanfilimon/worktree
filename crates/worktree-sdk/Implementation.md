@@ -51,14 +51,14 @@ The single entry point for all SDK operations. Holds a `root: PathBuf` pointing 
 
 ### Path Accessors
 
-| Method | Returns |
-|--------|---------|
-| `root()` | Project root directory |
-| `wt_dir()` | `.wt/` metadata directory |
-| `state_file()` | `.wt/state.json` |
-| `objects_dir()` | `.wt/objects/` |
-| `refs_dir()` | `.wt/refs/` |
-| `reflog_dir()` | `.wt/reflog/` |
+| Method          | Returns                   |
+| --------------- | ------------------------- |
+| `root()`        | Project root directory    |
+| `wt_dir()`      | `.wt/` metadata directory |
+| `state_file()`  | `.wt/state.json`          |
+| `objects_dir()` | `.wt/objects/`            |
+| `refs_dir()`    | `.wt/refs/`               |
+| `reflog_dir()`  | `.wt/reflog/`             |
 
 ---
 
@@ -91,6 +91,7 @@ WorktreeState
 ### State Persistence Pattern
 
 Every mutating operation follows the same pattern:
+
 1. `load_state(engine)` — Read + deserialize `.wt/state.json`
 2. Mutate `WorktreeState` in memory
 3. `save_state(engine, &state)` — Atomic write via temp file (`.json.tmp`) + `fs::rename()`
@@ -104,6 +105,7 @@ The atomic rename prevents corruption if the process crashes mid-write.
 `initialize(root)` creates the full `.wt/` directory structure:
 
 **Directories created:**
+
 - `.wt/objects/` — Content-addressable object store (reserved, not yet used)
 - `.wt/refs/branches/`, `.wt/refs/tags/` — Reference storage (reserved)
 - `.wt/reflog/` — Operation history
@@ -114,6 +116,7 @@ The atomic rename prevents corruption if the process crashes mid-write.
 - `.wt/conflicts/` — Conflict resolution workspace
 
 **Files created:**
+
 - `.wt/config.toml` — Default configuration with sections: `[worktree]`, `[sync]`, `[auto_snapshot]`, `[large_files]`, `[reflog]`
 - `.wt/ignore` — Default ignore patterns (`.wt/`, `.git/`, `node_modules/`, `target/`, etc.)
 - `.wt/state.json` — Initial state with one `root` tree on `main` branch
@@ -241,6 +244,7 @@ Two modes:
 ## Module: `reflog` — Operation History
 
 `show_reflog(engine, count)` generates reflog entries from snapshot history, formatted as:
+
 ```
 main@{0}: abcd1234 — message (2024-01-01T00:00:00Z)
 ```
@@ -258,21 +262,21 @@ main@{0}: abcd1234 — message (2024-01-01T00:00:00Z)
 
 `SdkError` enum with 13 variants:
 
-| Variant | Meaning |
-|---------|---------|
-| `NotAWorktree` | No `.wt/` directory found |
-| `AlreadyInitialized` | `.wt/` already exists |
-| `TreeNotFound(name)` | Tree doesn't exist |
-| `BranchNotFound(name)` | Branch doesn't exist |
-| `SnapshotNotFound(id)` | Snapshot doesn't exist |
-| `NoChanges` | Nothing to snapshot |
-| `MergeConflict(msg)` | Conflicting file changes |
-| `BranchProtection(msg)` | Protected branch violation |
-| `PermissionDenied(msg)` | Access denied |
-| `InvalidConfig(msg)` | Bad configuration |
-| `Io(std::io::Error)` | Filesystem error |
-| `Serialization(msg)` | JSON serialization error |
-| `TagExists(name)` / `TagNotFound(name)` | Tag conflicts |
+| Variant                                 | Meaning                    |
+| --------------------------------------- | -------------------------- |
+| `NotAWorktree`                          | No `.wt/` directory found  |
+| `AlreadyInitialized`                    | `.wt/` already exists      |
+| `TreeNotFound(name)`                    | Tree doesn't exist         |
+| `BranchNotFound(name)`                  | Branch doesn't exist       |
+| `SnapshotNotFound(id)`                  | Snapshot doesn't exist     |
+| `NoChanges`                             | Nothing to snapshot        |
+| `MergeConflict(msg)`                    | Conflicting file changes   |
+| `BranchProtection(msg)`                 | Protected branch violation |
+| `PermissionDenied(msg)`                 | Access denied              |
+| `InvalidConfig(msg)`                    | Bad configuration          |
+| `Io(std::io::Error)`                    | Filesystem error           |
+| `Serialization(msg)`                    | JSON serialization error   |
+| `TagExists(name)` / `TagNotFound(name)` | Tag conflicts              |
 
 ---
 

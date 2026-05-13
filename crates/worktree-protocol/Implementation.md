@@ -93,12 +93,14 @@ src/
 The `ContentHash` struct wraps a `[u8; 32]` BLAKE3 digest and serves as the universal content-addressing primitive. Every blob, manifest, snapshot, and delta references content through this hash.
 
 **Key type:**
+
 - `ContentHash` — 32-byte BLAKE3 hash with `Copy`, `Eq`, `Hash`, `Ord`, `Serialize`/`Deserialize`.
 - `ContentHash::ZERO` — The all-zeros hash constant.
 - `to_hex()` / `FromStr` — Round-trip to/from 64-char lowercase hex.
 - Custom `Serialize`/`Deserialize` — hex for human-readable formats, raw bytes for binary (bincode).
 
 **Free functions:**
+
 - `hash_bytes(data: &[u8]) -> ContentHash` — BLAKE3 hash arbitrary data.
 - `hash_file(path: &Path) -> io::Result<ContentHash>` — BLAKE3 hash a file on disk.
 
@@ -110,17 +112,17 @@ This module is the foundation of the entire content-addressable storage model.
 
 A `define_id!` macro generates 9 strongly-typed UUID wrapper types to prevent accidental mixing:
 
-| Type | Purpose |
-|------|---------|
-| `TreeId` | Worktree (tracked directory) |
-| `SnapshotId` | Snapshot (immutable commit) |
-| `BranchId` | Branch (mutable pointer) |
-| `TenantId` | Multi-tenant organization |
-| `AccountId` | User account |
-| `TeamId` | Team grouping |
-| `RoleId` | RBAC role |
-| `PolicyId` | ABAC policy |
-| `SessionId` | Auth session |
+| Type         | Purpose                      |
+| ------------ | ---------------------------- |
+| `TreeId`     | Worktree (tracked directory) |
+| `SnapshotId` | Snapshot (immutable commit)  |
+| `BranchId`   | Branch (mutable pointer)     |
+| `TenantId`   | Multi-tenant organization    |
+| `AccountId`  | User account                 |
+| `TeamId`     | Team grouping                |
+| `RoleId`     | RBAC role                    |
+| `PolicyId`   | ABAC policy                  |
+| `SessionId`  | Auth session                 |
 
 Each ID type provides: `new()` (random UUIDv4), `from_uuid()`, `as_uuid()`, `nil()`, and full `Display`/`FromStr`/`Serialize`/`Deserialize` support.
 
@@ -135,6 +137,7 @@ Each ID type provides: `new()` (random UUIDv4), `from_uuid()`, `as_uuid()`, `nil
 ## `object::blob` — Content Blobs
 
 A `Blob` holds raw file content along with its pre-computed `ContentHash` and size. Methods:
+
 - `from_bytes(data)` — Creates blob, auto-computes BLAKE3 hash.
 - `from_file(path)` — Reads file from disk, creates blob.
 - `verify()` — Recomputes hash and checks integrity.
@@ -144,6 +147,7 @@ A `Blob` holds raw file content along with its pre-computed `ContentHash` and si
 ## `object::tree` — Worktrees
 
 A `Tree` represents a tracked directory with:
+
 - `id: TreeId`, `name: String`, `parent: Option<TreeId>`, `root_path: PathBuf`
 - `config: TreeConfig` (auto_snapshot, ignore_patterns)
 - `with_parent()` for nested/linked tree hierarchies.
@@ -153,6 +157,7 @@ A `Tree` represents a tracked directory with:
 ## `object::snapshot` — Snapshots (Commits)
 
 A `Snapshot` is an immutable point-in-time capture forming a DAG:
+
 - `id: SnapshotId`, `tree_id: TreeId`, `manifest_hash: ContentHash`
 - `parents: Vec<SnapshotId>` — DAG linkage for history + merge tracking.
 - `message`, `author: AccountId`, `timestamp`, `auto_generated: bool`
@@ -163,6 +168,7 @@ A `Snapshot` is an immutable point-in-time capture forming a DAG:
 ## `object::branch` — Branches
 
 A `Branch` is a named mutable pointer:
+
 - `id: BranchId`, `tree_id: TreeId`, `name`, `tip: SnapshotId`
 - `advance(new_tip)` — Moves tip forward, returns old tip.
 
@@ -171,6 +177,7 @@ A `Branch` is a named mutable pointer:
 ## `object::manifest` — File Manifests
 
 A `Manifest` lists every tracked file/directory in a tree:
+
 - `ManifestEntry` — `path`, `kind` (File/Directory/Symlink), `hash`, `size`, `executable`
 - `compute_hash()` — Deterministic BLAKE3 of sorted entries (the hash stored in snapshots).
 - `find_entry(path)` — Lookup by path.
@@ -180,6 +187,7 @@ A `Manifest` lists every tracked file/directory in a tree:
 ## `object::delta` — Change Deltas
 
 A `Delta` represents a single file change:
+
 - `DeltaKind` — `Add`, `Modify`, `Delete`, `Rename { from }`, `Copy { from }`
 - `old_hash`/`new_hash`, `old_size`/`new_size`
 - Convenience constructors: `add()`, `modify()`, `delete()`, `rename()`, `copy()`
@@ -207,6 +215,7 @@ A `Release` bundles a tag with notes and `ReleaseArtifact`s (downloadable files)
 ## `object::dependency` — Dependencies & TODOs
 
 A comprehensive cross-tree dependency system:
+
 - `TreeDependency` — declared in `.wt-tree/config.toml`.
 - `BranchDependency` — runtime branch-to-branch links with `Active/Completed/Blocked/Stale` lifecycle.
 - `LinkedBranchGroup` — coordinated branch groups across trees.
@@ -219,6 +228,7 @@ A comprehensive cross-tree dependency system:
 ## `object::staged` — Staged Snapshots
 
 `StagedSnapshot` enables team visibility of in-progress work before push:
+
 - `StagedStatus` — `Staged → Pushed/Cleared/Expired`
 - `StagedIndex` — server-side collection with `check_conflicts(user, files)` for overlap detection and `gc(retention_days)` for cleanup.
 
@@ -227,6 +237,7 @@ A comprehensive cross-tree dependency system:
 ## `object::merge_request` — Merge Requests
 
 First-class protocol object with:
+
 - `MergeRequestStatus` — `Open → InReview → Approved/ChangesRequested → Merged/Closed`
 - `Review` with stale detection (new snapshots invalidate old reviews).
 - `CiCheck` with `Pending/Running/Passed/Failed/Skipped`.
@@ -256,6 +267,7 @@ First-class protocol object with:
 ## `iam::role` — RBAC Roles
 
 `Role` holds `HashSet<Permission>`. Five built-in roles form a superset hierarchy:
+
 - **Owner** — all 20 permissions
 - **Admin** — tree/branch/management (no GlobalAdmin/TenantAdmin)
 - **Maintainer** — write + branch lifecycle + snapshot + sync
@@ -269,6 +281,7 @@ Custom roles are tenant-defined with arbitrary permission sets.
 ## `iam::permission` — 20 Atomic Permissions
 
 Organized into 6 categories:
+
 - **Tree:** `TreeRead`, `TreeWrite`, `TreeCreate`, `TreeDelete`, `TreeAdmin`
 - **Branch:** `BranchRead`, `BranchCreate`, `BranchDelete`, `BranchMerge`, `BranchProtect`
 - **Snapshot:** `SnapshotCreate`, `SnapshotRead`
@@ -291,6 +304,7 @@ The critical `covers(&self, other)` method implements scope inheritance: broader
 ## `iam::policy` — ABAC Policies
 
 `Policy` combines:
+
 - `effect: PolicyEffect` (`Allow`/`Deny`)
 - `subjects: Vec<PolicySubject>` (`Account`, `Team`, `Role`, `AllAuthenticated`, `Everyone`)
 - `scope: Scope`
@@ -307,6 +321,7 @@ The critical `covers(&self, other)` method implements scope inheritance: broader
 The heart of authorization. The `AccessEngine::evaluate()` function takes an `AccessRequest` plus all context (account, teams, roles, policies) and returns `AccessDecision::Allow` or `AccessDecision::Deny { reason }`.
 
 **Algorithm:**
+
 1. Check account is `Active` (inactive → deny).
 2. Collect all roles from all teams the account belongs to.
 3. **RBAC check:** If any role has the requested permission AND its tenant scope covers the request scope → tentatively allow.
@@ -333,6 +348,7 @@ The heart of authorization. The `AccessEngine::evaluate()` function takes an `Ac
 ## `access::branch_access` — Per-Branch ACL + Protection
 
 `BranchAccessList` mirrors tree access at branch granularity. `BranchProtection` adds:
+
 - `require_snapshot_review`, `require_passing_checks`
 - `restrict_push`/`restrict_merge` to specific subjects
 - `allow_force_push`, `allow_deletion`
@@ -342,6 +358,7 @@ The heart of authorization. The `AccessEngine::evaluate()` function takes an `Ac
 ## `config::worktree_config` — Root Configuration
 
 `WorktreeConfig` represents `.wt/config.toml` with sections:
+
 - `worktree` — name, server, tenant, visibility (`Private/Shared/Public`)
 - `sync` — auto, interval, retry, conflict strategy (`Auto/Manual/Ours/Theirs`)
 - `auto_snapshot` — enabled, timeout, max files/bytes, on_branch_switch
@@ -363,6 +380,7 @@ The heart of authorization. The `AccessEngine::evaluate()` function takes an `Ac
 ## `config::hierarchy` — Permission Ceiling Model
 
 `ResolvedConfig::resolve(root, tree_config)` merges root + tree using the ceiling model:
+
 - **Numeric values:** tree can only go lower (`.min()`)
 - **Booleans:** tree can only make more restrictive (set to `true`)
 - **Branch protection:** tree can raise required reviewers, add CI checks, but never relax
@@ -374,6 +392,7 @@ The heart of authorization. The `AccessEngine::evaluate()` function takes an `Ac
 ## `feature::diff` — Diff Computation
 
 `compute_diff(old_manifest, new_manifest, options)` produces `Vec<Delta>`:
+
 1. Build HashMap of old/new entries by path.
 2. Detect modifications (same path, different hash).
 3. Collect deletions and additions.
@@ -398,6 +417,7 @@ The heart of authorization. The `AccessEngine::evaluate()` function takes an `Ac
 ## `feature::wire` — Binary Wire Protocol
 
 **Header format (13 bytes):**
+
 - Magic: `0x57 0x4B 0x54 0x52` ("WKTR")
 - Version: `u32` (currently 1)
 - Payload length: `u32`
@@ -469,7 +489,7 @@ Content-defined chunking via `FastCDC` or `FixedSize` algorithms. `chunk_data(da
 - [ ] Implement `feature::diff::compute_diff` rename detection for partial content matches (currently exact-hash only)
 - [ ] Implement `feature::merge::strategy` — actual three-way merge algorithm (currently types only, no merge execution)
 - [ ] Add `feature::wire` compression support (ZSTD) when `COMPRESSED` flag is set
-- [ ] Add `feature::wire` checksum support (CRC32/BLAKE3 trailer) when `CHECKSUMMED` flag is set  
+- [ ] Add `feature::wire` checksum support (CRC32/BLAKE3 trailer) when `CHECKSUMMED` flag is set
 - [ ] Add `feature::wire` encryption support when `ENCRYPTED` flag is set
 - [ ] Implement `feature::large_file::chunk_data` with actual FastCDC algorithm (currently placeholder)
 - [ ] Add persistent `HashIndex` implementation backed by SQLite or RocksDB for large repos

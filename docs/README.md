@@ -24,6 +24,7 @@ Welcome to the Worktree documentation! This directory contains comprehensive gui
 ### Components
 
 #### Worktree Server
+
 The current Rust crate is a local daemon/prototype server; the production remote authority is
 implemented in `server-go/` as the active production-boundary work. Recent work added Rust/Go
 staged request compatibility, canonical staged idempotency, bearer auth, policy-backed IAM hooks,
@@ -36,6 +37,7 @@ Postgres.
 - Deployment strategies
 
 #### Worktree CLI
+
 Command-line interface for interacting with repositories.
 
 - Command reference
@@ -44,6 +46,7 @@ Command-line interface for interacting with repositories.
 - Scripting and automation
 
 #### Worktree Admin Panel
+
 Web-based management interface for server monitoring and control.
 
 - Setup and configuration
@@ -52,6 +55,7 @@ Web-based management interface for server monitoring and control.
 - Monitoring and metrics
 
 #### Worktree SDK
+
 Library for building custom integrations and tools.
 
 - API documentation
@@ -143,6 +147,7 @@ cargo test -p worktree-cli
 #### Contributing
 
 See the main [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines on:
+
 - Code style
 - Pull request process
 - Issue reporting
@@ -351,6 +356,7 @@ We welcome contributions to improve our documentation! To contribute:
 4. Submit a pull request
 
 Documentation should be:
+
 - Clear and concise
 - Well-organized with headers
 - Include practical examples
@@ -368,5 +374,5 @@ If you can't find what you're looking for in the documentation:
 
 ---
 
-*Last updated: 2026*
-*Worktree Version: 0.1.0*
+_Last updated: 2026_
+_Worktree Version: 0.1.0_

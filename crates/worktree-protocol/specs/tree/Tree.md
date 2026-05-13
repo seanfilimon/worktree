@@ -43,6 +43,7 @@ monorepo/
 ```
 
 **All directories share:**
+
 - A single commit history — every commit touches the entire repo
 - A single branching model — `feature-x` applies to everything
 - All-or-nothing clone and checkout operations
@@ -72,6 +73,7 @@ my-platform/
 ```
 
 **Each tree has:**
+
 - Independent snapshot history — frontend snapshots contain only frontend changes
 - Own branching strategy — backend can use trunk-based while frontend uses feature branches
 - Isolated operations — `wt snapshot` in one tree does not touch another
@@ -263,12 +265,12 @@ branch_strategy = "feature-branch"
 
 **Available strategies:**
 
-| Strategy | Description |
-|---|---|
-| `feature-branch` | Developers create feature branches off `main`, merge back via review. Default strategy. |
-| `trunk-based` | All work happens on `main` with short-lived branches. Emphasizes continuous integration. |
+| Strategy         | Description                                                                               |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| `feature-branch` | Developers create feature branches off `main`, merge back via review. Default strategy.   |
+| `trunk-based`    | All work happens on `main` with short-lived branches. Emphasizes continuous integration.  |
 | `release-branch` | Long-lived release branches (`release/1.x`, `release/2.x`) with cherry-picks from `main`. |
-| `custom` | No enforced strategy. Teams define their own workflow. |
+| `custom`         | No enforced strategy. Teams define their own workflow.                                    |
 
 The strategy is advisory for `custom` and enforced by the server for the other options. For example, `trunk-based` may reject branches older than a configurable threshold.
 
@@ -288,13 +290,13 @@ rules = ["no_direct_push", "require_merge_review", "require_ci_pass"]
 
 **Available protection rules:**
 
-| Rule | Description |
-|---|---|
-| `no_direct_push` | Snapshots cannot be pushed directly to this branch. Must go through merge. |
-| `require_merge_review` | Merges into this branch require at least one review approval. |
-| `require_ci_pass` | Merges into this branch require all CI checks to pass. |
-| `require_signature` | All snapshots must be cryptographically signed. |
-| `no_force_delete` | Branch cannot be deleted, even soft-deleted. |
+| Rule                   | Description                                                                |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `no_direct_push`       | Snapshots cannot be pushed directly to this branch. Must go through merge. |
+| `require_merge_review` | Merges into this branch require at least one review approval.              |
+| `require_ci_pass`      | Merges into this branch require all CI checks to pass.                     |
+| `require_signature`    | All snapshots must be cryptographically signed.                            |
+| `no_force_delete`      | Branch cannot be deleted, even soft-deleted.                               |
 
 ### Linked Branches Across Trees
 
@@ -354,6 +356,7 @@ wt branch merge-linked feature-payment-flow
 A Snapshot is an immutable, content-addressed record of a tree's state at a specific point in time. Snapshots are the fundamental unit of history in W0rkTree — they replace Git's commits with a clearer name and a richer structure.
 
 **Key properties:**
+
 - **Immutable**: Once created, a snapshot cannot be modified. There is no rebase, no amend, no history rewriting.
 - **Content-addressed**: The snapshot's ID is derived from its content. Identical content always produces the same ID.
 - **Tree-scoped**: A snapshot belongs to exactly one tree. It contains only changes relevant to that tree.
@@ -502,13 +505,13 @@ Change:
 
 Operations:
 
-| Operation | Description |
-|---|---|
-| `Added` | New file created |
-| `Modified` | Existing file changed |
-| `Deleted` | File removed |
+| Operation          | Description                          |
+| ------------------ | ------------------------------------ |
+| `Added`            | New file created                     |
+| `Modified`         | Existing file changed                |
+| `Deleted`          | File removed                         |
 | `Renamed { from }` | File moved/renamed from another path |
-| `Copied { from }` | File copied from another path |
+| `Copied { from }`  | File copied from another path        |
 
 #### 3. Diff Structure
 
@@ -582,14 +585,14 @@ This creates a powerful collaboration primitive: team members can see what other
 
 ### Staged vs Pushed
 
-| Aspect | Staged Snapshot | Pushed Snapshot |
-|---|---|---|
-| **Created by** | bgprocess (auto or manual) | Explicit `wt push` |
-| **Visible to team** | Yes — via `wt status --team` | Yes — in branch history |
-| **Part of branch history** | No | Yes |
-| **Can be superseded** | Yes — next snapshot replaces it | No — immutable in DAG |
-| **Server stores it** | Yes, temporarily | Yes, permanently |
-| **Triggers branch protection** | No | Yes |
+| Aspect                         | Staged Snapshot                 | Pushed Snapshot         |
+| ------------------------------ | ------------------------------- | ----------------------- |
+| **Created by**                 | bgprocess (auto or manual)      | Explicit `wt push`      |
+| **Visible to team**            | Yes — via `wt status --team`    | Yes — in branch history |
+| **Part of branch history**     | No                              | Yes                     |
+| **Can be superseded**          | Yes — next snapshot replaces it | No — immutable in DAG   |
+| **Server stores it**           | Yes, temporarily                | Yes, permanently        |
+| **Triggers branch protection** | No                              | Yes                     |
 
 ### Team Visibility
 
@@ -617,6 +620,7 @@ wt status --team
 ```
 
 Team members can see:
+
 - Who has staged snapshots in this tree
 - Which branch they are working on
 - Which files they are touching
@@ -664,12 +668,12 @@ effect = "deny"
 
 Policies can target different subject types:
 
-| Subject Type | Syntax | Description |
-|---|---|---|
-| Tenant | `{ tenant = "alice" }` | A specific user |
-| Team | `{ team = "backend-team" }` | A team within a tenant's organization |
-| Role | `{ role = "reviewer" }` | Anyone with a specific role |
-| Wildcard | `"*"` | Everyone |
+| Subject Type | Syntax                      | Description                           |
+| ------------ | --------------------------- | ------------------------------------- |
+| Tenant       | `{ tenant = "alice" }`      | A specific user                       |
+| Team         | `{ team = "backend-team" }` | A team within a tenant's organization |
+| Role         | `{ role = "reviewer" }`     | Anyone with a specific role           |
+| Wildcard     | `"*"`                       | Everyone                              |
 
 ### Cross-Tenant Policies
 
@@ -853,6 +857,7 @@ Modified: docs/api/authentication.md
 ```
 
 **This creates organizational chaos in large teams:**
+
 - Changes scattered across unrelated subsections
 - No structured coordination between teams
 - Hard to track what depends on what
@@ -907,6 +912,7 @@ linked = false
 ```
 
 **When you create a branch dependency:**
+
 1. W0rkTree tracks the relationship across trees
 2. Can automatically create TODO branches in target trees
 3. Updates status as dependencies are satisfied
@@ -1117,6 +1123,7 @@ wt branch merge-linked feature-analytics
 Complete workflow showing how trees coordinate:
 
 **Step 1: Frontend creates feature branch**
+
 ```bash
 # In frontend tree
 wt branch create feature-user-profile
@@ -1124,6 +1131,7 @@ wt snapshot -m "Add user profile page UI"
 ```
 
 **Step 2: Frontend declares dependency with linked branch**
+
 ```bash
 wt snapshot -m "Wire up profile API client" \
   --depend backend:"Need GET /api/users/:id/profile endpoint" \
@@ -1134,6 +1142,7 @@ wt snapshot -m "Wire up profile API client" \
 ```
 
 **Step 3: Backend receives TODO automatically**
+
 ```bash
 # In backend tree
 wt todo list
@@ -1144,6 +1153,7 @@ wt todo claim 1
 ```
 
 **Step 4: Backend implements and completes**
+
 ```bash
 # ... implement the endpoint ...
 wt snapshot -m "Add user profile endpoint"
@@ -1152,6 +1162,7 @@ wt todo complete 1
 ```
 
 **Step 5: Frontend can now merge (linked)**
+
 ```bash
 # In frontend tree
 wt deps check
@@ -1334,12 +1345,12 @@ This enables IDE integrations and automated tools to parse and present conflicts
 
 ### Merge Strategies
 
-| Strategy | Description |
-|---|---|
-| `auto` | BGProcess auto-merges if no conflicts. Halts on conflict. Default. |
-| `manual` | Always halt and require manual review, even if no conflicts. |
-| `ours` | On conflict, keep the target branch's version. |
-| `theirs` | On conflict, keep the source branch's version. |
+| Strategy | Description                                                        |
+| -------- | ------------------------------------------------------------------ |
+| `auto`   | BGProcess auto-merges if no conflicts. Halts on conflict. Default. |
+| `manual` | Always halt and require manual review, even if no conflicts.       |
+| `ours`   | On conflict, keep the target branch's version.                     |
+| `theirs` | On conflict, keep the source branch's version.                     |
 
 ```bash
 wt branch merge feature-auth --strategy theirs
@@ -2055,6 +2066,7 @@ System defaults
 ```
 
 **Override rules:**
+
 - More specific config overrides less specific config for the same key.
 - Trees can restrict root policies but cannot expand them (access control, ignore patterns).
 - Trees can lower large file thresholds but cannot raise them above root limits.

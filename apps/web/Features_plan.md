@@ -22,34 +22,34 @@
 
 ### Site-wide infrastructure
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Root layout (`app/layout.tsx`) | ✅ Done | GeistMono font, fumadocs `RootProvider`, global metadata |
-| Site header (`components/site-header.tsx`) | ✅ Done | Mega-dropdown with Features, Docs, Resources tabs |
-| Theme toggle | ✅ Done | Dark/light mode via `next-themes` |
-| MDX pipeline (`source.config.ts`) | ✅ Done | Collections: `docs`, `guides`, `articles`, `maintainers` |
-| Footer | ✅ Done | Links to Features, Changelog, Roadmap, Security, Discord, etc. |
-| Homepage (`/`) | ✅ Done | Hero, install commands, features grid, performance bars, FAQ, testimonials, footer |
+| Component                                  | Status  | Notes                                                                              |
+| ------------------------------------------ | ------- | ---------------------------------------------------------------------------------- |
+| Root layout (`app/layout.tsx`)             | ✅ Done | GeistMono font, fumadocs `RootProvider`, global metadata                           |
+| Site header (`components/site-header.tsx`) | ✅ Done | Mega-dropdown with Features, Docs, Resources tabs                                  |
+| Theme toggle                               | ✅ Done | Dark/light mode via `next-themes`                                                  |
+| MDX pipeline (`source.config.ts`)          | ✅ Done | Collections: `docs`, `guides`, `articles`, `maintainers`                           |
+| Footer                                     | ✅ Done | Links to Features, Changelog, Roadmap, Security, Discord, etc.                     |
+| Homepage (`/`)                             | ✅ Done | Hero, install commands, features grid, performance bars, FAQ, testimonials, footer |
 
 ### Navigation dropdown structure (site-header.tsx)
 
-| Dropdown | Tabs | Status |
-|----------|------|--------|
-| **Features** | Core VCS · What's Different · Collaboration · Security · Performance | ✅ Links defined, pages **not yet created** |
-| **Docs** | Getting Started · References · Infrastructure | ✅ Links to `/docs/*` and `/guides/*` |
-| **Resources** | Articles · Guides · Maintainers | ✅ Links to existing content |
+| Dropdown      | Tabs                                                                 | Status                                      |
+| ------------- | -------------------------------------------------------------------- | ------------------------------------------- |
+| **Features**  | Core VCS · What's Different · Collaboration · Security · Performance | ✅ Links defined, pages **not yet created** |
+| **Docs**      | Getting Started · References · Infrastructure                        | ✅ Links to `/docs/*` and `/guides/*`       |
+| **Resources** | Articles · Guides · Maintainers                                      | ✅ Links to existing content                |
 
 ### Pages referenced in footer/nav but NOT yet created
 
-| Route | Linked from | Status |
-|-------|-------------|--------|
-| `/features` | Footer → Product | ❌ Not created |
-| `/changelog` | Footer → Product | ❌ Not created |
-| `/roadmap` | Footer → Product | ❌ Not created |
-| `/security` | Footer → Product | ❌ Not created |
-| `/contributing` | Footer → Community | ❌ Not created |
-| `/code-of-conduct` | Footer → Community | ❌ Not created |
-| `/protocol` | Hero CTA button | ❌ Not created (redirects to `/docs/protocol`) |
+| Route              | Linked from        | Status                                         |
+| ------------------ | ------------------ | ---------------------------------------------- |
+| `/features`        | Footer → Product   | ❌ Not created                                 |
+| `/changelog`       | Footer → Product   | ❌ Not created                                 |
+| `/roadmap`         | Footer → Product   | ❌ Not created                                 |
+| `/security`        | Footer → Product   | ❌ Not created                                 |
+| `/contributing`    | Footer → Community | ❌ Not created                                 |
+| `/code-of-conduct` | Footer → Community | ❌ Not created                                 |
+| `/protocol`        | Hero CTA button    | ❌ Not created (redirects to `/docs/protocol`) |
 
 ---
 
@@ -57,31 +57,31 @@
 
 ### Articles (`content/articles/`)
 
-| File | Route | Title | Author | Date |
-|------|-------|-------|--------|------|
-| `hello-world.mdx` | `/articles/hello-world` | Introducing W0rkTree | W0rkTree Team | 2025-01-15 |
-| `performance-benchmarks.mdx` | `/articles/performance-benchmarks` | Performance Benchmarks: W0rkTree vs Git | Sean Filimon | 2025-02-10 |
+| File                         | Route                              | Title                                   | Author        | Date       |
+| ---------------------------- | ---------------------------------- | --------------------------------------- | ------------- | ---------- |
+| `hello-world.mdx`            | `/articles/hello-world`            | Introducing W0rkTree                    | W0rkTree Team | 2025-01-15 |
+| `performance-benchmarks.mdx` | `/articles/performance-benchmarks` | Performance Benchmarks: W0rkTree vs Git | Sean Filimon  | 2025-02-10 |
 
 **Schema** (`source.config.ts`): `author` (required), `date` (required), `image`, `tags[]`, `summary`
 
 ### Guides (`content/guides/`)
 
-| File | Route | Title |
-|------|-------|-------|
-| `index.mdx` | `/guides` | Guides overview |
-| `quick-start.mdx` | `/guides/quick-start` | Quick Start |
-| `migration.mdx` | `/guides/migration` | Migration from Git |
+| File               | Route                  | Title                 |
+| ------------------ | ---------------------- | --------------------- |
+| `index.mdx`        | `/guides`              | Guides overview       |
+| `quick-start.mdx`  | `/guides/quick-start`  | Quick Start           |
+| `migration.mdx`    | `/guides/migration`    | Migration from Git    |
 | `architecture.mdx` | `/guides/architecture` | Architecture Overview |
-| `versioning.mdx` | `/guides/versioning` | Versioning Reference |
-| `admin/` (6 files) | `/guides/admin/*` | Admin Panel guides |
+| `versioning.mdx`   | `/guides/versioning`   | Versioning Reference  |
+| `admin/` (6 files) | `/guides/admin/*`      | Admin Panel guides    |
 
 ### Maintainers (`content/maintainers/`)
 
-| File | Route | Title | Role |
-|------|-------|-------|------|
-| `index.mdx` | `/maintainers` | Maintainers overview | — |
-| `sean.mdx` | `/maintainers/sean` | Sean Filimon | Lead Developer & Creator |
-| `core-team.mdx` | `/maintainers/core-team` | Core Team | Core Maintainers |
+| File            | Route                    | Title                | Role                     |
+| --------------- | ------------------------ | -------------------- | ------------------------ |
+| `index.mdx`     | `/maintainers`           | Maintainers overview | —                        |
+| `sean.mdx`      | `/maintainers/sean`      | Sean Filimon         | Lead Developer & Creator |
+| `core-team.mdx` | `/maintainers/core-team` | Core Team            | Core Maintainers         |
 
 **Schema**: `name`, `role`, `avatar`, `github`, `twitter`, `bio` (all optional)
 
@@ -91,36 +91,36 @@
 
 ### 3.1 New Articles
 
-| File | Title | Topic | Priority |
-|------|-------|-------|----------|
-| `why-not-git.mdx` | Why Not Git? | Core positioning — what's wrong with the status quo | 🔴 High |
-| `nested-trees-explained.mdx` | Nested Trees Explained | Deep dive into the tree model that defines W0rkTree | 🔴 High |
-| `rust-for-vcs.mdx` | Why We Chose Rust for Version Control | Language choice, safety, and performance tradeoffs | 🟡 Medium |
-| `auto-tracking-deep-dive.mdx` | How Auto Tracking Works | The background daemon, snapshot rules, debounce | 🟡 Medium |
-| `dependency-graph-power.mdx` | The Power of Dependency Graphs in VCS | Cross-tree deps, auto TODOs, build ordering | 🟡 Medium |
-| `monorepo-at-scale.mdx` | Monorepos at Scale with W0rkTree | Comparison to git submodules, nx, turborepo | 🟡 Medium |
-| `git-compatibility-story.mdx` | Git Compatibility: Import, Export, Bridge | Full story of the two-way Git compat layer | 🟢 Low |
-| `security-model.mdx` | W0rkTree's Security Model | Permissions, audit log, branch protection in depth | 🟢 Low |
-| `blake3-content-addressing.mdx` | BLAKE3 and Content-Addressable Storage | Why BLAKE3, dedup, integrity guarantees | 🟢 Low |
-| `linked-branches-atomic-deploys.mdx` | Linked Branches for Atomic Deploys | Multi-tree atomic merges, coordinated shipping | 🟢 Low |
+| File                                 | Title                                     | Topic                                               | Priority  |
+| ------------------------------------ | ----------------------------------------- | --------------------------------------------------- | --------- |
+| `why-not-git.mdx`                    | Why Not Git?                              | Core positioning — what's wrong with the status quo | 🔴 High   |
+| `nested-trees-explained.mdx`         | Nested Trees Explained                    | Deep dive into the tree model that defines W0rkTree | 🔴 High   |
+| `rust-for-vcs.mdx`                   | Why We Chose Rust for Version Control     | Language choice, safety, and performance tradeoffs  | 🟡 Medium |
+| `auto-tracking-deep-dive.mdx`        | How Auto Tracking Works                   | The background daemon, snapshot rules, debounce     | 🟡 Medium |
+| `dependency-graph-power.mdx`         | The Power of Dependency Graphs in VCS     | Cross-tree deps, auto TODOs, build ordering         | 🟡 Medium |
+| `monorepo-at-scale.mdx`              | Monorepos at Scale with W0rkTree          | Comparison to git submodules, nx, turborepo         | 🟡 Medium |
+| `git-compatibility-story.mdx`        | Git Compatibility: Import, Export, Bridge | Full story of the two-way Git compat layer          | 🟢 Low    |
+| `security-model.mdx`                 | W0rkTree's Security Model                 | Permissions, audit log, branch protection in depth  | 🟢 Low    |
+| `blake3-content-addressing.mdx`      | BLAKE3 and Content-Addressable Storage    | Why BLAKE3, dedup, integrity guarantees             | 🟢 Low    |
+| `linked-branches-atomic-deploys.mdx` | Linked Branches for Atomic Deploys        | Multi-tree atomic merges, coordinated shipping      | 🟢 Low    |
 
 ### 3.2 New Guides
 
-| File | Title | Description | Priority |
-|------|-------|-------------|----------|
-| `nested-trees.mdx` | Working with Nested Trees | Create, navigate, and manage nested trees | 🔴 High |
-| `dependency-management.mdx` | Managing Cross-Tree Dependencies | Set up, visualize, and resolve deps | 🔴 High |
-| `ci-cd-integration.mdx` | CI/CD Integration | Build pipelines driven by the dep graph | 🟡 Medium |
-| `permissions-and-acl.mdx` | Permissions & Access Control | Configure tree/branch-level ACLs | 🟡 Medium |
-| `git-interop.mdx` | Git Interop Guide | Import, export, remote bridge, live mirror | 🟡 Medium |
-| `auto-tracking-setup.mdx` | Auto Tracking Setup | Configure the daemon, rules, ignore patterns | 🟡 Medium |
-| `linked-branches.mdx` | Linked Branches | Create and merge linked multi-tree branches | 🟢 Low |
-| `self-hosting.mdx` | Self-Hosting W0rkTree | Run the server on your own infrastructure | 🟢 Low |
+| File                        | Title                            | Description                                  | Priority  |
+| --------------------------- | -------------------------------- | -------------------------------------------- | --------- |
+| `nested-trees.mdx`          | Working with Nested Trees        | Create, navigate, and manage nested trees    | 🔴 High   |
+| `dependency-management.mdx` | Managing Cross-Tree Dependencies | Set up, visualize, and resolve deps          | 🔴 High   |
+| `ci-cd-integration.mdx`     | CI/CD Integration                | Build pipelines driven by the dep graph      | 🟡 Medium |
+| `permissions-and-acl.mdx`   | Permissions & Access Control     | Configure tree/branch-level ACLs             | 🟡 Medium |
+| `git-interop.mdx`           | Git Interop Guide                | Import, export, remote bridge, live mirror   | 🟡 Medium |
+| `auto-tracking-setup.mdx`   | Auto Tracking Setup              | Configure the daemon, rules, ignore patterns | 🟡 Medium |
+| `linked-branches.mdx`       | Linked Branches                  | Create and merge linked multi-tree branches  | 🟢 Low    |
+| `self-hosting.mdx`          | Self-Hosting W0rkTree            | Run the server on your own infrastructure    | 🟢 Low    |
 
 ### 3.3 New Maintainer Profiles
 
-| File | Title | Description |
-|------|-------|-------------|
+| File               | Title                  | Description                                 |
+| ------------------ | ---------------------- | ------------------------------------------- |
 | `contributors.mdx` | Community Contributors | Acknowledge active open-source contributors |
 
 > Additional maintainer profiles should be added as the team grows. Each new team member gets their own `content/maintainers/<name>.mdx` file following the profile template.
@@ -139,7 +139,7 @@ The features landing page is the **single most important page** for communicatin
 
 **Content structure:**
 
-1. **Hero** — Bold headline: *"Version control, redesigned from the protocol up."* Sub-line explains this isn't a Git wrapper. CTA to docs/quick-start.
+1. **Hero** — Bold headline: _"Version control, redesigned from the protocol up."_ Sub-line explains this isn't a Git wrapper. CTA to docs/quick-start.
 2. **Trees** — The foundational concept. Covers:
    - Nested tree model (tree isolation, ownership, independent branches)
    - Tree-scoped history and snapshots
@@ -174,9 +174,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.2 Changelog Page
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/changelog` | Changelog | - [ ] |
+| Route        | Title     | Status |
+| ------------ | --------- | ------ |
+| `/changelog` | Changelog | - [ ]  |
 
 **Content requirements:**
 
@@ -188,9 +188,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.3 Roadmap Page
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/roadmap` | Roadmap | - [ ] |
+| Route      | Title   | Status |
+| ---------- | ------- | ------ |
+| `/roadmap` | Roadmap | - [ ]  |
 
 **Content requirements:**
 
@@ -201,9 +201,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.4 Community / Discord Page
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/community` | Community | - [ ] |
+| Route        | Title     | Status |
+| ------------ | --------- | ------ |
+| `/community` | Community | - [ ]  |
 
 **Content requirements:**
 
@@ -215,9 +215,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.5 Security Page
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/security` | Security | - [ ] |
+| Route       | Title    | Status |
+| ----------- | -------- | ------ |
+| `/security` | Security | - [ ]  |
 
 **Content requirements:**
 
@@ -228,9 +228,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.6 About Page
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/about` | About W0rkTree | - [ ] |
+| Route    | Title          | Status |
+| -------- | -------------- | ------ |
+| `/about` | About W0rkTree | - [ ]  |
 
 **Content requirements:**
 
@@ -242,9 +242,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.7 Contact Page
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/contact` | Contact | - [ ] |
+| Route      | Title   | Status |
+| ---------- | ------- | ------ |
+| `/contact` | Contact | - [ ]  |
 
 **Content requirements:**
 
@@ -255,9 +255,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.8 Contributing Page
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/contributing` | Contributing to W0rkTree | - [ ] |
+| Route           | Title                    | Status |
+| --------------- | ------------------------ | ------ |
+| `/contributing` | Contributing to W0rkTree | - [ ]  |
 
 **Content requirements:**
 
@@ -269,9 +269,9 @@ The features landing page is the **single most important page** for communicatin
 
 ### 4.9 Code of Conduct
 
-| Route | Title | Status |
-|-------|-------|--------|
-| `/code-of-conduct` | Code of Conduct | - [ ] |
+| Route              | Title           | Status |
+| ------------------ | --------------- | ------ |
+| `/code-of-conduct` | Code of Conduct | - [ ]  |
 
 ### 4.10 Blog vs Articles Distinction
 
@@ -287,13 +287,13 @@ Every article in `content/articles/*.mdx` must include:
 
 ```yaml
 ---
-title: "Article Title"                    # Required — displayed as h1
-description: "One-line SEO description"   # Required — meta description
-author: "Author Name"                     # Required — displayed in byline
-date: "YYYY-MM-DD"                        # Required — ISO date string
-image: "/blog/slug.png"                   # Optional — OG image / hero
-tags: ["tag1", "tag2"]                    # Optional — for filtering
-summary: "2-3 sentence summary."          # Optional — shown on index cards
+title: "Article Title" # Required — displayed as h1
+description: "One-line SEO description" # Required — meta description
+author: "Author Name" # Required — displayed in byline
+date: "YYYY-MM-DD" # Required — ISO date string
+image: "/blog/slug.png" # Optional — OG image / hero
+tags: ["tag1", "tag2"] # Optional — for filtering
+summary: "2-3 sentence summary." # Optional — shown on index cards
 ---
 ```
 
@@ -311,7 +311,7 @@ Every guide in `content/guides/*.mdx` must include:
 
 ```yaml
 ---
-title: "Guide Title"                      # Required
+title: "Guide Title" # Required
 description: "What the reader will learn" # Required
 ---
 ```
@@ -332,14 +332,14 @@ Every maintainer in `content/maintainers/*.mdx` must include:
 
 ```yaml
 ---
-title: "Display Name"                     # Required
-description: "One-line bio"               # Required
-name: "Full Name"                         # Optional — structured data
-role: "Role Title"                        # Optional
-avatar: "/maintainers/name.jpg"           # Optional — profile photo
-github: "username"                        # Optional
-twitter: "username"                       # Optional
-bio: "Short bio for cards."               # Optional
+title: "Display Name" # Required
+description: "One-line bio" # Required
+name: "Full Name" # Optional — structured data
+role: "Role Title" # Optional
+avatar: "/maintainers/name.jpg" # Optional — profile photo
+github: "username" # Optional
+twitter: "username" # Optional
+bio: "Short bio for cards." # Optional
 ---
 ```
 
@@ -366,6 +366,7 @@ The features page (`app/features/page.tsx`) should be a single React page:
 8. **CTA section** — "Get Started" and "Read the Protocol" buttons.
 
 Each section should include:
+
 - A clear heading and one-line tagline
 - 2–4 feature cards within the section for the sub-features
 - Visual element: diagram, animation, or code snippet
@@ -550,23 +551,23 @@ apps/web/
 
 All `featureTabs` hrefs in `site-header.tsx` have been updated to point to anchor sections on the single `/features` page:
 
-| Feature Item | `href` |
-|--------------|--------|
-| Nested Trees | `/features#trees` |
-| Branching & Merging | `/features#branches` |
-| Snapshots & History | `/features#trees` |
-| Dependency Graph | `/features#automation` |
-| Linked Branches | `/features#branches` |
-| Auto Tracking | `/features#automation` |
-| Built-in PM | `/features#collaboration` |
-| Auto TODOs | `/features#automation` |
-| CI/CD Integration | `/features#automation` |
-| Tree Permissions | `/features#collaboration` |
-| Branch Protection | `/features#branches` |
-| Audit Log | `/features#collaboration` |
-| Rust Engine | `/features#performance` |
-| Dedup Storage | `/features#performance` |
-| 10× Faster Checkout | `/features#performance` |
+| Feature Item        | `href`                    |
+| ------------------- | ------------------------- |
+| Nested Trees        | `/features#trees`         |
+| Branching & Merging | `/features#branches`      |
+| Snapshots & History | `/features#trees`         |
+| Dependency Graph    | `/features#automation`    |
+| Linked Branches     | `/features#branches`      |
+| Auto Tracking       | `/features#automation`    |
+| Built-in PM         | `/features#collaboration` |
+| Auto TODOs          | `/features#automation`    |
+| CI/CD Integration   | `/features#automation`    |
+| Tree Permissions    | `/features#collaboration` |
+| Branch Protection   | `/features#branches`      |
+| Audit Log           | `/features#collaboration` |
+| Rust Engine         | `/features#performance`   |
+| Dedup Storage       | `/features#performance`   |
+| 10× Faster Checkout | `/features#performance`   |
 
 Footer updated: Pricing link removed from Product column.
 
@@ -574,12 +575,12 @@ Footer updated: Pricing link removed from Product column.
 
 ## Summary — By the Numbers
 
-| Category | Existing | To Create | Total |
-|----------|----------|-----------|-------|
-| **Articles** | 2 | 10 ✅ | 12 |
-| **Guides** | 10 (incl. admin sub-pages) | 8 ✅ | 18 |
-| **Maintainer profiles** | 2 (+1 index) | 1 ✅ | 3 (+1 index) |
-| **Features page** | 0 | 1 ✅ | 1 |
-| **Product pages** (Changelog, Roadmap) | 0 | 2 ✅ | 2 |
-| **Community pages** (About, Contact, Community, Contributing, CoC, Security) | 0 | 6 ✅ | 6 |
-| **Total new pages** | — | **28 ✅ all created** | — |
+| Category                                                                     | Existing                   | To Create             | Total        |
+| ---------------------------------------------------------------------------- | -------------------------- | --------------------- | ------------ |
+| **Articles**                                                                 | 2                          | 10 ✅                 | 12           |
+| **Guides**                                                                   | 10 (incl. admin sub-pages) | 8 ✅                  | 18           |
+| **Maintainer profiles**                                                      | 2 (+1 index)               | 1 ✅                  | 3 (+1 index) |
+| **Features page**                                                            | 0                          | 1 ✅                  | 1            |
+| **Product pages** (Changelog, Roadmap)                                       | 0                          | 2 ✅                  | 2            |
+| **Community pages** (About, Contact, Community, Contributing, CoC, Security) | 0                          | 6 ✅                  | 6            |
+| **Total new pages**                                                          | —                          | **28 ✅ all created** | —            |

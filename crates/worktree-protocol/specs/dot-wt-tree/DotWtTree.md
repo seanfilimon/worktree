@@ -167,17 +167,17 @@ require_from_roles = ["Maintainer", "Admin"]
 
 ### Inheritance Semantics
 
-| Key                          | Inheritance Rule                                            |
-|------------------------------|-------------------------------------------------------------|
-| `tree.name`                  | Defaults to directory name; no inheritance                  |
-| `tree.branch_strategy`       | Defaults to root's implicit `feature-branch`                |
-| `auto_snapshot.*`            | Omitted keys inherit from root `[auto_snapshot]`            |
-| `large_files.*`              | Omitted keys inherit from root `[large_files]`              |
-| `reflog.*`                   | Omitted keys inherit from root `[reflog]`                   |
-| `license.license`            | Overrides root `[license].default` for this tree            |
-| `license.path`               | Tree-scoped; does not merge with root `[[license.path]]`    |
-| `registered_path`            | Tree-scoped; root registered paths still apply globally     |
-| `branch_protection`          | **Additive** — merges with root rules, cannot remove        |
+| Key                    | Inheritance Rule                                         |
+| ---------------------- | -------------------------------------------------------- |
+| `tree.name`            | Defaults to directory name; no inheritance               |
+| `tree.branch_strategy` | Defaults to root's implicit `feature-branch`             |
+| `auto_snapshot.*`      | Omitted keys inherit from root `[auto_snapshot]`         |
+| `large_files.*`        | Omitted keys inherit from root `[large_files]`           |
+| `reflog.*`             | Omitted keys inherit from root `[reflog]`                |
+| `license.license`      | Overrides root `[license].default` for this tree         |
+| `license.path`         | Tree-scoped; does not merge with root `[[license.path]]` |
+| `registered_path`      | Tree-scoped; root registered paths still apply globally  |
+| `branch_protection`    | **Additive** — merges with root rules, cannot remove     |
 
 ---
 
@@ -205,17 +205,17 @@ The following settings can be freely customized per tree:
 
 The following are controlled exclusively by the root `.wt/` and cannot be overridden:
 
-| Setting                         | Reason                                                     |
-|---------------------------------|------------------------------------------------------------|
-| Server connection               | Single source of truth in `.wt/config.toml`                |
-| Tenant identity                 | Bound to the worktree, not to individual trees             |
-| Worktree visibility             | Global property of the worktree                            |
-| Root-level ignore patterns      | Security/policy — cannot negate root ignores               |
-| Root-level access roles         | Role definitions are worktree-wide                         |
-| Root-level access policies      | Cannot grant more than root allows                         |
-| Root license defaults           | Server respects root for cross-tenant enforcement          |
-| Sync interval                   | Controlled by bgprocess at the worktree level              |
-| Shallow clone settings          | Controlled at worktree level                               |
+| Setting                    | Reason                                            |
+| -------------------------- | ------------------------------------------------- |
+| Server connection          | Single source of truth in `.wt/config.toml`       |
+| Tenant identity            | Bound to the worktree, not to individual trees    |
+| Worktree visibility        | Global property of the worktree                   |
+| Root-level ignore patterns | Security/policy — cannot negate root ignores      |
+| Root-level access roles    | Role definitions are worktree-wide                |
+| Root-level access policies | Cannot grant more than root allows                |
+| Root license defaults      | Server respects root for cross-tenant enforcement |
+| Sync interval              | Controlled by bgprocess at the worktree level     |
+| Shallow clone settings     | Controlled at worktree level                      |
 
 ### 4.3 Enforcement
 
@@ -373,12 +373,12 @@ scope = "tree"
 
 ### Scope Options
 
-| Scope                          | Meaning                                              |
-|--------------------------------|------------------------------------------------------|
-| `scope = "tree"`               | Entire tree                                          |
-| `path = "src/crypto"`         | Specific registered path within this tree            |
-| `branch = "main"`             | Specific branch within this tree                     |
-| `branch = "release/*"`        | Branch pattern within this tree                      |
+| Scope                  | Meaning                                   |
+| ---------------------- | ----------------------------------------- |
+| `scope = "tree"`       | Entire tree                               |
+| `path = "src/crypto"`  | Specific registered path within this tree |
+| `branch = "main"`      | Specific branch within this tree          |
+| `branch = "release/*"` | Branch pattern within this tree           |
 
 ### Restriction-Only Invariant
 
@@ -423,15 +423,15 @@ For nested subtrees, the order extends:
 
 Hooks are **executable scripts or programs**. They receive context via environment variables:
 
-| Variable                     | Description                                           |
-|------------------------------|-------------------------------------------------------|
-| `WT_TREE_NAME`              | Name of the tree being snapshotted                    |
-| `WT_TREE_PATH`              | Absolute path to the tree directory                   |
-| `WT_BRANCH`                 | Current branch name                                   |
-| `WT_SNAPSHOT_ID`            | Snapshot ID (only in post-snapshot)                    |
-| `WT_CHANGED_FILES`          | Newline-separated list of changed file paths          |
-| `WT_USER`                   | Current user identity                                 |
-| `WT_HOOK_PHASE`             | `pre-snapshot` or `post-snapshot`                     |
+| Variable           | Description                                  |
+| ------------------ | -------------------------------------------- |
+| `WT_TREE_NAME`     | Name of the tree being snapshotted           |
+| `WT_TREE_PATH`     | Absolute path to the tree directory          |
+| `WT_BRANCH`        | Current branch name                          |
+| `WT_SNAPSHOT_ID`   | Snapshot ID (only in post-snapshot)          |
+| `WT_CHANGED_FILES` | Newline-separated list of changed file paths |
+| `WT_USER`          | Current user identity                        |
+| `WT_HOOK_PHASE`    | `pre-snapshot` or `post-snapshot`            |
 
 ### Behavior
 
@@ -450,17 +450,17 @@ Hooks are **executable scripts or programs**. They receive context via environme
 
 The following are explicitly **out of scope** for `.wt-tree/`:
 
-| Concern                        | Where It Lives                                        |
-|--------------------------------|-------------------------------------------------------|
-| Object store (blobs, snapshots)| Managed by bgprocess externally                       |
-| Full history                   | Managed by bgprocess + synced to server               |
-| Identity / authentication      | Root `.wt/identity/`                                  |
-| Server connection config       | Root `.wt/config.toml` `[worktree]`                   |
-| Tenant configuration           | Root `.wt/config.toml` `[worktree]`                   |
-| Custom role definitions        | Root `.wt/access/roles.toml`                          |
-| Global reflog                  | Root `.wt/reflog/_global.log`                         |
-| Conflict metadata              | Root `.wt/conflicts/`                                 |
-| Cache                          | Root `.wt/cache/`                                     |
+| Concern                         | Where It Lives                          |
+| ------------------------------- | --------------------------------------- |
+| Object store (blobs, snapshots) | Managed by bgprocess externally         |
+| Full history                    | Managed by bgprocess + synced to server |
+| Identity / authentication       | Root `.wt/identity/`                    |
+| Server connection config        | Root `.wt/config.toml` `[worktree]`     |
+| Tenant configuration            | Root `.wt/config.toml` `[worktree]`     |
+| Custom role definitions         | Root `.wt/access/roles.toml`            |
+| Global reflog                   | Root `.wt/reflog/_global.log`           |
+| Conflict metadata               | Root `.wt/conflicts/`                   |
+| Cache                           | Root `.wt/cache/`                       |
 
 ---
 
@@ -522,6 +522,7 @@ bgprocess validates `.wt-tree/` contents during every sync cycle:
 6. **Branch protection merge** — tree rules are merged with root rules; conflicts logged
 
 Validation errors are reported via:
+
 - CLI output during `wt tree validate`
 - bgprocess logs
 - Server-side rejection during sync (for authority violations)

@@ -4,16 +4,16 @@ This document defines every reusable animation component in the W0rkTree launch 
 
 > **Design System Colors Reference**
 >
-> | Token | Hex | Usage |
-> |---|---|---|
-> | Deep Navy | `#0A0F1A` | Primary background |
-> | Code Background | `#111827` | Terminal / card backgrounds |
-> | White | `#F0F0F0` | Primary text |
-> | Accent Cyan | `#00D4FF` | Accents, highlights, interactive elements |
-> | Warning Red | `#FF3B3B` | Errors, problems, danger |
-> | Confident Green | `#00C48F` | Success, confirmation |
-> | Muted Gray | `#6B7280` | Labels, secondary text |
-> | Dim Gray | `#374151` | Borders, dividers |
+> | Token           | Hex       | Usage                                     |
+> | --------------- | --------- | ----------------------------------------- |
+> | Deep Navy       | `#0A0F1A` | Primary background                        |
+> | Code Background | `#111827` | Terminal / card backgrounds               |
+> | White           | `#F0F0F0` | Primary text                              |
+> | Accent Cyan     | `#00D4FF` | Accents, highlights, interactive elements |
+> | Warning Red     | `#FF3B3B` | Errors, problems, danger                  |
+> | Confident Green | `#00C48F` | Success, confirmation                     |
+> | Muted Gray      | `#6B7280` | Labels, secondary text                    |
+> | Dim Gray        | `#374151` | Borders, dividers                         |
 
 ---
 
@@ -38,15 +38,15 @@ The most-used animation in the video. Used in **Cold Open** and **Act IV**.
 
 ### Parameters
 
-| Parameter | Default | Description |
-|---|---|---|
-| `char_delay` | 40ms | Time between each character appearing |
-| `char_delay_slow` | 80ms | Slower typing for emphasis |
-| `space_pause` | 0ms | Additional pause after space characters (set to 0 for normal flow, 100ms for thoughtful typing) |
-| `command_pause` | 300ms | Pause after command fully typed, before output begins |
-| `output_line_delay` | 80ms | Time between each output line appearing |
-| `cursor_blink_interval` | 500ms | Block cursor blink rate |
-| `cursor_color` | `#00D4FF` | Cursor fill color |
+| Parameter               | Default   | Description                                                                                     |
+| ----------------------- | --------- | ----------------------------------------------------------------------------------------------- |
+| `char_delay`            | 40ms      | Time between each character appearing                                                           |
+| `char_delay_slow`       | 80ms      | Slower typing for emphasis                                                                      |
+| `space_pause`           | 0ms       | Additional pause after space characters (set to 0 for normal flow, 100ms for thoughtful typing) |
+| `command_pause`         | 300ms     | Pause after command fully typed, before output begins                                           |
+| `output_line_delay`     | 80ms      | Time between each output line appearing                                                         |
+| `cursor_blink_interval` | 500ms     | Block cursor blink rate                                                                         |
+| `cursor_color`          | `#00D4FF` | Cursor fill color                                                                               |
 
 ### Behavior Spec
 
@@ -73,25 +73,25 @@ The prompt symbol and space are **NEVER** typed — they are pre-rendered when t
 
 ### Color Rules for Terminal Text
 
-| Element | Color |
-|---|---|
-| Prompt `$` | `#6B7280` (Muted Gray) |
-| `wt` command prefix | `#00D4FF` (Accent Cyan) |
-| `git` command prefix | `#FF3B3B` (Warning Red) |
-| Command arguments | `#F0F0F0` (White) |
-| Flags (`--message`, `--team`) | `#6B7280` (Muted Gray) |
-| String arguments (`"message text"`) | `#F0F0F0` (White) |
-| Output text (normal) | `#F0F0F0` at 80% opacity |
-| Success checkmark `✓` | `#00C48F` (Confident Green) |
-| Failure cross `✗` | `#FF3B3B` (Warning Red) |
-| Error text / `CONFLICT` / `DENIED` | `#FF3B3B` (Warning Red) |
-| File paths in output | `#00D4FF` (Accent Cyan) |
-| Branch names in output | `#00D4FF` (Accent Cyan) |
-| Snapshot IDs | `#00D4FF` (Accent Cyan) |
-| Labels (`Branch:`, `Worker:`, `Policy:`) | `#6B7280` (Muted Gray) |
-| Email addresses | `#F0F0F0` (White) |
-| Metadata (`Scope:`, `Source:`) | `#6B7280` (Muted Gray) |
-| Numeric values | `#00D4FF` (Accent Cyan) |
+| Element                                  | Color                       |
+| ---------------------------------------- | --------------------------- |
+| Prompt `$`                               | `#6B7280` (Muted Gray)      |
+| `wt` command prefix                      | `#00D4FF` (Accent Cyan)     |
+| `git` command prefix                     | `#FF3B3B` (Warning Red)     |
+| Command arguments                        | `#F0F0F0` (White)           |
+| Flags (`--message`, `--team`)            | `#6B7280` (Muted Gray)      |
+| String arguments (`"message text"`)      | `#F0F0F0` (White)           |
+| Output text (normal)                     | `#F0F0F0` at 80% opacity    |
+| Success checkmark `✓`                    | `#00C48F` (Confident Green) |
+| Failure cross `✗`                        | `#FF3B3B` (Warning Red)     |
+| Error text / `CONFLICT` / `DENIED`       | `#FF3B3B` (Warning Red)     |
+| File paths in output                     | `#00D4FF` (Accent Cyan)     |
+| Branch names in output                   | `#00D4FF` (Accent Cyan)     |
+| Snapshot IDs                             | `#00D4FF` (Accent Cyan)     |
+| Labels (`Branch:`, `Worker:`, `Policy:`) | `#6B7280` (Muted Gray)      |
+| Email addresses                          | `#F0F0F0` (White)           |
+| Metadata (`Scope:`, `Source:`)           | `#6B7280` (Muted Gray)      |
+| Numeric values                           | `#00D4FF` (Accent Cyan)     |
 
 ### Implementation Notes
 
@@ -109,21 +109,21 @@ Used in **Act II** for each of the 5 problem numbers.
 
 ### Parameters
 
-| Parameter | Value |
-|---|---|
-| `number_font` | Inter Tight, 900 weight |
-| `number_size` | `display-xl` (192px at 4K) |
-| `number_color` | `#FF3B3B` (Warning Red) |
-| `glow_color` | `#FF3B3B` at 15% opacity |
-| `glow_radius` | 400px at 4K |
-| `subtitle_font` | Inter, 700 weight |
-| `subtitle_size` | `heading-1` (96px at 4K) |
-| `subtitle_color` | `#F0F0F0` (White) |
-| `slam_duration` | 400ms |
-| `slam_easing` | ease-bounce: `cubic-bezier(0.34, 1.56, 0.64, 1.0)` |
-| `subtitle_delay` | 400ms after number lands |
-| `subtitle_duration` | 600ms |
-| `subtitle_easing` | ease-enter: `cubic-bezier(0.0, 0.0, 0.2, 1.0)` |
+| Parameter           | Value                                              |
+| ------------------- | -------------------------------------------------- |
+| `number_font`       | Inter Tight, 900 weight                            |
+| `number_size`       | `display-xl` (192px at 4K)                         |
+| `number_color`      | `#FF3B3B` (Warning Red)                            |
+| `glow_color`        | `#FF3B3B` at 15% opacity                           |
+| `glow_radius`       | 400px at 4K                                        |
+| `subtitle_font`     | Inter, 700 weight                                  |
+| `subtitle_size`     | `heading-1` (96px at 4K)                           |
+| `subtitle_color`    | `#F0F0F0` (White)                                  |
+| `slam_duration`     | 400ms                                              |
+| `slam_easing`       | ease-bounce: `cubic-bezier(0.34, 1.56, 0.64, 1.0)` |
+| `subtitle_delay`    | 400ms after number lands                           |
+| `subtitle_duration` | 600ms                                              |
+| `subtitle_easing`   | ease-enter: `cubic-bezier(0.0, 0.0, 0.2, 1.0)`     |
 
 ### Animation Sequence
 
@@ -148,13 +148,13 @@ A percussive hit synchronized to the number reaching `scale(1.0)`. Sound: low to
 
 ### Per-Problem Content
 
-| Problem # | Number Text | Subtitle Text |
-|---|---|---|
-| 1 | `1` | The jargon wall |
-| 2 | `2` | Merge roulette |
-| 3 | `3` | History rewrites |
-| 4 | `4` | Secret sprawl |
-| 5 | `5` | Tribal knowledge |
+| Problem # | Number Text | Subtitle Text    |
+| --------- | ----------- | ---------------- |
+| 1         | `1`         | The jargon wall  |
+| 2         | `2`         | Merge roulette   |
+| 3         | `3`         | History rewrites |
+| 4         | `4`         | Secret sprawl    |
+| 5         | `5`         | Tribal knowledge |
 
 ---
 
@@ -164,20 +164,20 @@ Used in **Act III Segment 5D** for the four feature pillar cards.
 
 ### Parameters
 
-| Parameter | Value |
-|---|---|
-| `card_width` | 800px at 4K |
-| `card_bg` | `#111827` (Code Background) |
-| `card_border` | 1px solid `#374151` (Dim Gray) |
-| `card_accent` | 4px solid `#00D4FF` (Accent Cyan) on left edge |
-| `card_radius` | 24px |
-| `card_padding` | 48px all sides |
-| `title_style` | `heading-2`, `#F0F0F0` (White) |
-| `body_style` | `body-lg`, `#F0F0F0` at 80% opacity |
-| `entry_translate_x` | 80px |
-| `entry_duration` | 400ms |
-| `entry_easing` | ease-enter: `cubic-bezier(0.0, 0.0, 0.2, 1.0)` |
-| `stagger_delay` | 200ms between cards |
+| Parameter           | Value                                          |
+| ------------------- | ---------------------------------------------- |
+| `card_width`        | 800px at 4K                                    |
+| `card_bg`           | `#111827` (Code Background)                    |
+| `card_border`       | 1px solid `#374151` (Dim Gray)                 |
+| `card_accent`       | 4px solid `#00D4FF` (Accent Cyan) on left edge |
+| `card_radius`       | 24px                                           |
+| `card_padding`      | 48px all sides                                 |
+| `title_style`       | `heading-2`, `#F0F0F0` (White)                 |
+| `body_style`        | `body-lg`, `#F0F0F0` at 80% opacity            |
+| `entry_translate_x` | 80px                                           |
+| `entry_duration`    | 400ms                                          |
+| `entry_easing`      | ease-enter: `cubic-bezier(0.0, 0.0, 0.2, 1.0)` |
+| `stagger_delay`     | 200ms between cards                            |
 
 ### Animation Sequence (Per Card)
 
@@ -191,12 +191,12 @@ Multiple cards enter sequentially. Card N+1 begins its entry **200ms after Card 
 
 **Stagger timeline for 4 cards:**
 
-| Card | Entry Start | Entry End | Content Fade Start | Content Fade End |
-|---|---|---|---|---|
-| Card 1 | 0ms | 400ms | 500ms | 700ms |
-| Card 2 | 200ms | 600ms | 700ms | 900ms |
-| Card 3 | 400ms | 800ms | 900ms | 1100ms |
-| Card 4 | 600ms | 1000ms | 1100ms | 1300ms |
+| Card   | Entry Start | Entry End | Content Fade Start | Content Fade End |
+| ------ | ----------- | --------- | ------------------ | ---------------- |
+| Card 1 | 0ms         | 400ms     | 500ms              | 700ms            |
+| Card 2 | 200ms       | 600ms     | 700ms              | 900ms            |
+| Card 3 | 400ms       | 800ms     | 900ms              | 1100ms           |
+| Card 4 | 600ms       | 1000ms    | 1100ms             | 1300ms           |
 
 Total time from first card entry to all content visible: **1300ms**.
 
@@ -356,10 +356,10 @@ Used for **BitKeeper text crumbling** (Act I), **2005 text cracking** (Act I), a
 
 #### Usage Table
 
-| Instance | Duration | Fragment Count | Notes |
-|---|---|---|---|
-| BitKeeper text (Act I) | 800ms | ~30 per char | Fast, decisive. The text was struck down. |
-| 2005 text (Act I) | 1200ms | ~25 per char | Dramatic. Cracks appear first (200ms), then fragments separate. |
+| Instance               | Duration | Fragment Count | Notes                                                           |
+| ---------------------- | -------- | -------------- | --------------------------------------------------------------- |
+| BitKeeper text (Act I) | 800ms    | ~30 per char   | Fast, decisive. The text was struck down.                       |
+| 2005 text (Act I)      | 1200ms   | ~25 per char   | Dramatic. Cracks appear first (200ms), then fragments separate. |
 
 ### Crack Pre-Animation (2005 variant only)
 
@@ -426,15 +426,15 @@ Used in **Act I Segment 3D**.
 
 ### Card Template
 
-| Parameter | Value |
-|---|---|
-| Width | `random(600px, 900px)` at 4K (randomized per card) |
-| Height | Auto (based on content, typically 120–200px) |
-| Background | `#111827` (Code Background) |
-| Border | 1px solid `#374151` (Dim Gray) |
-| Border-radius | 16px |
-| Padding | 32px |
-| Left accent | 4px solid `#FF8A3B` (Stack Overflow orange nod — **not** a design system color; used only here) |
+| Parameter     | Value                                                                                           |
+| ------------- | ----------------------------------------------------------------------------------------------- |
+| Width         | `random(600px, 900px)` at 4K (randomized per card)                                              |
+| Height        | Auto (based on content, typically 120–200px)                                                    |
+| Background    | `#111827` (Code Background)                                                                     |
+| Border        | 1px solid `#374151` (Dim Gray)                                                                  |
+| Border-radius | 16px                                                                                            |
+| Padding       | 32px                                                                                            |
+| Left accent   | 4px solid `#FF8A3B` (Stack Overflow orange nod — **not** a design system color; used only here) |
 
 ### Card Content
 
@@ -482,9 +482,9 @@ Used in **Act II Problem 2** (Merge Roulette).
 
 ### Panel Content
 
-| Panel | Content | Background |
-|---|---|---|
-| Left | Developer A's terminal / code view | `#111827` (Code Background) |
+| Panel | Content                            | Background                  |
+| ----- | ---------------------------------- | --------------------------- |
+| Left  | Developer A's terminal / code view | `#111827` (Code Background) |
 | Right | Developer B's terminal / code view | `#111827` (Code Background) |
 
 Both panels show simultaneous, conflicting work. The terminals inside the panels use the standard Terminal Typing Animation component but at **70% scale** to fit within half-frame.
@@ -499,15 +499,15 @@ Both panels show simultaneous, conflicting work. The terminals inside the panels
 
 ### Timing Summary
 
-| Event | Start | Duration |
-|---|---|---|
-| Panels slide in | 0ms | 400ms |
-| Divider visible | 400ms | holds |
-| Content plays in panels | 400ms | ~6000ms (varies per scene spec) |
-| Divider shatters | ~6400ms | 300ms |
-| Panels slam together | ~6500ms | 200ms |
-| CONFLICT text slam | ~6700ms | 300ms |
-| Red flash | ~6700ms | 300ms |
+| Event                   | Start   | Duration                        |
+| ----------------------- | ------- | ------------------------------- |
+| Panels slide in         | 0ms     | 400ms                           |
+| Divider visible         | 400ms   | holds                           |
+| Content plays in panels | 400ms   | ~6000ms (varies per scene spec) |
+| Divider shatters        | ~6400ms | 300ms                           |
+| Panels slam together    | ~6500ms | 200ms                           |
+| CONFLICT text slam      | ~6700ms | 300ms                           |
+| Red flash               | ~6700ms | 300ms                           |
 
 (Exact timings depend on the scene spec. The above is the relative sequence.)
 
@@ -537,17 +537,17 @@ A subtle "strike" or "slash" sound, timed to the start of the line draw. -28dB L
 
 When multiple wrong answers are struck through in sequence:
 
-| Step | Timing | Text |
-|---|---|---|
-| Denial 1 appears | 0ms | (see scene spec for text) |
-| Denial 1 strikethrough | 400ms | |
-| Denial 1 fades to 40% | 700ms | |
-| Denial 2 appears | 800ms | (appears below Denial 1) |
-| Denial 2 strikethrough | 1200ms | |
-| Denial 2 fades to 40% | 1500ms | |
-| Denial 3 appears | 1600ms | (appears below Denial 2) |
-| Denial 3 strikethrough | 2000ms | |
-| Denial 3 fades to 40% | 2300ms | |
+| Step                   | Timing | Text                      |
+| ---------------------- | ------ | ------------------------- |
+| Denial 1 appears       | 0ms    | (see scene spec for text) |
+| Denial 1 strikethrough | 400ms  |                           |
+| Denial 1 fades to 40%  | 700ms  |                           |
+| Denial 2 appears       | 800ms  | (appears below Denial 1)  |
+| Denial 2 strikethrough | 1200ms |                           |
+| Denial 2 fades to 40%  | 1500ms |                           |
+| Denial 3 appears       | 1600ms | (appears below Denial 2)  |
+| Denial 3 strikethrough | 2000ms |                           |
+| Denial 3 fades to 40%  | 2300ms |                           |
 
 Each denial stacks vertically with **24px spacing** between lines. The stack is vertically centered in the frame, adjusting as new items are added.
 
@@ -557,14 +557,14 @@ Each denial stacks vertically with **24px spacing** between lines. The stack is 
 
 All easing functions used in this document, collected for convenience:
 
-| Name | Value | Usage |
-|---|---|---|
-| `ease-standard` | `cubic-bezier(0.2, 0.0, 0.0, 1.0)` | General-purpose smooth motion |
-| `ease-enter` | `cubic-bezier(0.0, 0.0, 0.2, 1.0)` | Elements entering the frame |
-| `ease-exit` | `cubic-bezier(0.4, 0.0, 1.0, 1.0)` | Elements leaving the frame |
-| `ease-bounce` | `cubic-bezier(0.34, 1.56, 0.64, 1.0)` | Impactful, attention-grabbing entries |
-| `ease-sharp` | `cubic-bezier(0.4, 0.0, 0.6, 1.0)` | Quick, decisive movements |
-| `linear` | `cubic-bezier(0.0, 0.0, 1.0, 1.0)` | Constant-speed motion (dash offsets, scrolls) |
+| Name            | Value                                 | Usage                                         |
+| --------------- | ------------------------------------- | --------------------------------------------- |
+| `ease-standard` | `cubic-bezier(0.2, 0.0, 0.0, 1.0)`    | General-purpose smooth motion                 |
+| `ease-enter`    | `cubic-bezier(0.0, 0.0, 0.2, 1.0)`    | Elements entering the frame                   |
+| `ease-exit`     | `cubic-bezier(0.4, 0.0, 1.0, 1.0)`    | Elements leaving the frame                    |
+| `ease-bounce`   | `cubic-bezier(0.34, 1.56, 0.64, 1.0)` | Impactful, attention-grabbing entries         |
+| `ease-sharp`    | `cubic-bezier(0.4, 0.0, 0.6, 1.0)`    | Quick, decisive movements                     |
+| `linear`        | `cubic-bezier(0.0, 0.0, 1.0, 1.0)`    | Constant-speed motion (dash offsets, scrolls) |
 
 ---
 
@@ -572,19 +572,19 @@ All easing functions used in this document, collected for convenience:
 
 Quick reference showing where each component is used:
 
-| Component | Scenes |
-|---|---|
-| Terminal Typing Animation | Cold Open (0:00–0:14), Act IV (4:15–4:40) |
-| Number Card Slam | Act II — Problems 1–5 (1:30–2:36) |
-| Feature Card Entry | Act III Segment 5D (3:45–4:05) |
-| Diagram Node Build | Act III Segment 5B (2:55–3:15) |
-| Text Entry Animation | Throughout — all scenes |
-| Break-Apart / Dissolution | Act I (0:36, 1:00), Act II Problem 3 (1:57–2:06) |
-| Logo Glow Animation | Title Card (0:25–0:30), Close (4:45–5:00) |
-| Stack Overflow Card Scroll | Act I Segment 3D (1:10–1:30) |
-| Split-Screen Wipe | Act II Problem 2 (1:42–1:54) |
-| Strikethrough Animation | Act III Segment 5A (2:45–2:55) |
+| Component                  | Scenes                                           |
+| -------------------------- | ------------------------------------------------ |
+| Terminal Typing Animation  | Cold Open (0:00–0:14), Act IV (4:15–4:40)        |
+| Number Card Slam           | Act II — Problems 1–5 (1:30–2:36)                |
+| Feature Card Entry         | Act III Segment 5D (3:45–4:05)                   |
+| Diagram Node Build         | Act III Segment 5B (2:55–3:15)                   |
+| Text Entry Animation       | Throughout — all scenes                          |
+| Break-Apart / Dissolution  | Act I (0:36, 1:00), Act II Problem 3 (1:57–2:06) |
+| Logo Glow Animation        | Title Card (0:25–0:30), Close (4:45–5:00)        |
+| Stack Overflow Card Scroll | Act I Segment 3D (1:10–1:30)                     |
+| Split-Screen Wipe          | Act II Problem 2 (1:42–1:54)                     |
+| Strikethrough Animation    | Act III Segment 5A (2:45–2:55)                   |
 
 ---
 
-*This document is the single source of truth for all animation components. Scene specs reference components by name (e.g., "Use **Number Card Slam** component"). Any changes to animation behavior must be made here, not in the scene specs.*
+_This document is the single source of truth for all animation components. Scene specs reference components by name (e.g., "Use **Number Card Slam** component"). Any changes to animation behavior must be made here, not in the scene specs._

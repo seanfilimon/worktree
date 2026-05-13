@@ -141,13 +141,13 @@ The declarative access configuration lives in two locations:
 
 ### File Responsibilities
 
-| File | Purpose | Who Can Edit |
-|---|---|---|
-| `.wt/config.toml` | Register paths, tenant grants, worktree settings | Owner, Admin |
-| `.wt/access/roles.toml` | Define custom roles beyond the 5 built-ins | Owner, Admin |
-| `.wt/access/policies.toml` | Root-level access policies | PolicyManage, TreeAdmin |
-| `.wt-tree/config.toml` | Tree-scoped path registration | PolicyManage, TreeAdmin |
-| `.wt-tree/access/policies.toml` | Tree-level restriction policies | PolicyManage, TreeAdmin |
+| File                            | Purpose                                          | Who Can Edit            |
+| ------------------------------- | ------------------------------------------------ | ----------------------- |
+| `.wt/config.toml`               | Register paths, tenant grants, worktree settings | Owner, Admin            |
+| `.wt/access/roles.toml`         | Define custom roles beyond the 5 built-ins       | Owner, Admin            |
+| `.wt/access/policies.toml`      | Root-level access policies                       | PolicyManage, TreeAdmin |
+| `.wt-tree/config.toml`          | Tree-scoped path registration                    | PolicyManage, TreeAdmin |
+| `.wt-tree/access/policies.toml` | Tree-level restriction policies                  | PolicyManage, TreeAdmin |
 
 ---
 
@@ -696,46 +696,46 @@ configuration on their next sync cycle. They update their local copies of the ac
 
 ### Syntax and Schema
 
-| Rule | Error If Violated |
-|---|---|
-| TOML must parse without errors | `E1001: Invalid TOML syntax at line X` |
-| Policy must have `name` field | `E1002: Policy missing required field 'name'` |
-| Policy must have `effect` field | `E1003: Policy missing required field 'effect'` |
-| Effect must be "allow" or "deny" | `E1004: Invalid effect 'X', must be 'allow' or 'deny'` |
-| Policy must have `subjects` array | `E1005: Policy missing required field 'subjects'` |
-| Subjects must have at least one entry | `E1006: Policy subjects cannot be empty` |
-| Policy must have `scope` field | `E1007: Policy missing required field 'scope'` |
-| Policy must have `permissions` array | `E1008: Policy missing required field 'permissions'` |
-| Permissions must have at least one entry | `E1009: Policy permissions cannot be empty` |
+| Rule                                     | Error If Violated                                      |
+| ---------------------------------------- | ------------------------------------------------------ |
+| TOML must parse without errors           | `E1001: Invalid TOML syntax at line X`                 |
+| Policy must have `name` field            | `E1002: Policy missing required field 'name'`          |
+| Policy must have `effect` field          | `E1003: Policy missing required field 'effect'`        |
+| Effect must be "allow" or "deny"         | `E1004: Invalid effect 'X', must be 'allow' or 'deny'` |
+| Policy must have `subjects` array        | `E1005: Policy missing required field 'subjects'`      |
+| Subjects must have at least one entry    | `E1006: Policy subjects cannot be empty`               |
+| Policy must have `scope` field           | `E1007: Policy missing required field 'scope'`         |
+| Policy must have `permissions` array     | `E1008: Policy missing required field 'permissions'`   |
+| Permissions must have at least one entry | `E1009: Policy permissions cannot be empty`            |
 
 ### Referential Integrity
 
-| Rule | Error If Violated |
-|---|---|
-| Role refs must exist (built-in or custom) | `E2001: Unknown role 'X' in policy 'Y'` |
-| Permission names must be valid | `E2002: Unknown permission 'X' in policy 'Y'` |
+| Rule                                        | Error If Violated                               |
+| ------------------------------------------- | ----------------------------------------------- |
+| Role refs must exist (built-in or custom)   | `E2001: Unknown role 'X' in policy 'Y'`         |
+| Permission names must be valid              | `E2002: Unknown permission 'X' in policy 'Y'`   |
 | Path scopes must reference registered paths | `E2003: Path 'X' not registered in config.toml` |
-| Tenant subjects must resolve (server-side) | `E2004: Tenant 'X' not found on server` |
-| Account subjects must resolve (server-side) | `E2005: Account 'X' not found` |
-| Team subjects must resolve (server-side) | `E2006: Team 'X' not found` |
+| Tenant subjects must resolve (server-side)  | `E2004: Tenant 'X' not found on server`         |
+| Account subjects must resolve (server-side) | `E2005: Account 'X' not found`                  |
+| Team subjects must resolve (server-side)    | `E2006: Team 'X' not found`                     |
 
 ### Logical Consistency
 
-| Rule | Error If Violated |
-|---|---|
-| No duplicate policy names in same file | `E3001: Duplicate policy name 'X'` |
-| No duplicate path registrations | `E3002: Duplicate registered path 'X'` |
-| No duplicate custom role names | `E3003: Duplicate role name 'X'` |
-| Custom role names must not shadow built-ins | `E3004: Role 'X' conflicts with built-in role` |
-| No circular role dependencies | `E3005: Circular dependency detected in role 'X'` |
+| Rule                                        | Error If Violated                                 |
+| ------------------------------------------- | ------------------------------------------------- |
+| No duplicate policy names in same file      | `E3001: Duplicate policy name 'X'`                |
+| No duplicate path registrations             | `E3002: Duplicate registered path 'X'`            |
+| No duplicate custom role names              | `E3003: Duplicate role name 'X'`                  |
+| Custom role names must not shadow built-ins | `E3004: Role 'X' conflicts with built-in role`    |
+| No circular role dependencies               | `E3005: Circular dependency detected in role 'X'` |
 
 ### Security Rules
 
-| Rule | Error If Violated |
-|---|---|
+| Rule                                       | Error If Violated                                        |
+| ------------------------------------------ | -------------------------------------------------------- |
 | Editor must have PolicyManage or TreeAdmin | `E4001: Insufficient permission to modify access config` |
-| Cannot grant permissions you don't have | `E4002: Permission escalation — cannot grant 'X'` |
-| Tree policies cannot expand root access | `E4003: Tree policy 'X' attempts to expand root access` |
+| Cannot grant permissions you don't have    | `E4002: Permission escalation — cannot grant 'X'`        |
+| Tree policies cannot expand root access    | `E4003: Tree policy 'X' attempts to expand root access`  |
 
 ---
 
@@ -829,6 +829,7 @@ permissions = ["tree:read", "branch:read", "sync:pull"]
 ```
 
 Auto-generated policies from shorthand:
+
 - Have names prefixed with `__auto_tenant_grant_`.
 - Are always `effect = "allow"`.
 - Are always scoped to `"worktree"`.

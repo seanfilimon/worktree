@@ -76,27 +76,28 @@ Usernames (slugs) must conform to the following rules:
 
 ## Tenant Properties
 
-| Property           | Type                        | Required | Description                             |
-|--------------------|-----------------------------|----------|-----------------------------------------|
-| `id`               | `TenantId` (UUID v7)       | Yes      | Internal unique identifier              |
-| `name`             | `String`                    | Yes      | Display name (human-readable)           |
-| `slug`             | `String`                    | Yes      | URL-safe username (unique)              |
-| `email`            | `String`                    | Yes      | Primary email address (unique)          |
-| `type`             | `personal` / `organization` | Yes      | Account type                            |
-| `status`           | `Active` / `Suspended`      | Yes      | Account status                          |
-| `plan`             | `Free` / `Pro` / `Enterprise` / `Custom` | Yes | Subscription plan              |
-| `max_accounts`     | `u32`                       | No       | Max accounts (org tenants only)         |
-| `max_trees`        | `u32`                       | Yes      | Maximum number of worktrees             |
-| `max_storage_bytes`| `u64`                       | Yes      | Total storage quota in bytes            |
-| `created_at`       | `DateTime<Utc>`             | Yes      | Account creation timestamp              |
-| `updated_at`       | `DateTime<Utc>`             | Yes      | Last modification timestamp             |
-| `attributes`       | `HashMap<String, String>`   | No       | Custom attributes for ABAC conditions   |
+| Property            | Type                                     | Required | Description                           |
+| ------------------- | ---------------------------------------- | -------- | ------------------------------------- |
+| `id`                | `TenantId` (UUID v7)                     | Yes      | Internal unique identifier            |
+| `name`              | `String`                                 | Yes      | Display name (human-readable)         |
+| `slug`              | `String`                                 | Yes      | URL-safe username (unique)            |
+| `email`             | `String`                                 | Yes      | Primary email address (unique)        |
+| `type`              | `personal` / `organization`              | Yes      | Account type                          |
+| `status`            | `Active` / `Suspended`                   | Yes      | Account status                        |
+| `plan`              | `Free` / `Pro` / `Enterprise` / `Custom` | Yes      | Subscription plan                     |
+| `max_accounts`      | `u32`                                    | No       | Max accounts (org tenants only)       |
+| `max_trees`         | `u32`                                    | Yes      | Maximum number of worktrees           |
+| `max_storage_bytes` | `u64`                                    | Yes      | Total storage quota in bytes          |
+| `created_at`        | `DateTime<Utc>`                          | Yes      | Account creation timestamp            |
+| `updated_at`        | `DateTime<Utc>`                          | Yes      | Last modification timestamp           |
+| `attributes`        | `HashMap<String, String>`                | No       | Custom attributes for ABAC conditions |
 
 ### Property Details
 
 **`id` — TenantId**
 
 A UUID v7 (time-ordered) that serves as the internal primary key. This ID is:
+
 - Never exposed in URLs or user-facing interfaces
 - Used internally for policy resolution and storage
 - Immutable once assigned
@@ -105,6 +106,7 @@ A UUID v7 (time-ordered) that serves as the internal primary key. This ID is:
 **`slug` — Username**
 
 The tenant's public identifier. Used in:
+
 - Worktree URLs: `wt://server/alice-dev/my-project`
 - Cross-tenant grants: `{ tenant = "alice-dev" }`
 - CLI commands: `wt clone alice-dev/my-project`
@@ -112,6 +114,7 @@ The tenant's public identifier. Used in:
 **`email` — Primary Email**
 
 Used for:
+
 - Account verification and recovery
 - Cross-tenant grants by email: `{ tenant = "alice@company.com" }`
 - Notifications (snapshot activity, access changes, etc.)
@@ -278,14 +281,14 @@ permissions = ["tree:read", "branch:read"]
 
 ### When to Use Which Method
 
-| Scenario                          | Recommended Method      |
-|-----------------------------------|-------------------------|
-| Simple read/write access          | `[[tenant_access]]`     |
-| Branch-scoped access              | Full IAM policy         |
-| Path-scoped access                | Full IAM policy         |
-| Deny rules                        | Full IAM policy         |
-| Conditional access (ABAC)         | Full IAM policy         |
-| Quick collaboration setup         | `[[tenant_access]]`     |
+| Scenario                  | Recommended Method  |
+| ------------------------- | ------------------- |
+| Simple read/write access  | `[[tenant_access]]` |
+| Branch-scoped access      | Full IAM policy     |
+| Path-scoped access        | Full IAM policy     |
+| Deny rules                | Full IAM policy     |
+| Conditional access (ABAC) | Full IAM policy     |
+| Quick collaboration setup | `[[tenant_access]]` |
 
 ### Cross-Tenant Access Principles
 
@@ -338,12 +341,12 @@ resolve_tenant(reference: String) -> Result<TenantId, Error>:
 
 ### Error Handling
 
-| Scenario                          | Behavior                                      |
-|-----------------------------------|-----------------------------------------------|
-| Tenant not found                  | Error on config sync; policy not applied       |
-| Tenant suspended                  | Policy stored but not active; access denied    |
-| Tenant deleted                    | Policy marked invalid; access denied           |
-| Ambiguous reference               | Not possible — slug and email are both unique  |
+| Scenario            | Behavior                                      |
+| ------------------- | --------------------------------------------- |
+| Tenant not found    | Error on config sync; policy not applied      |
+| Tenant suspended    | Policy stored but not active; access denied   |
+| Tenant deleted      | Policy marked invalid; access denied          |
+| Ambiguous reference | Not possible — slug and email are both unique |
 
 ---
 
@@ -352,11 +355,11 @@ resolve_tenant(reference: String) -> Result<TenantId, Error>:
 Every worktree has a visibility mode that determines default access for tenants
 that are NOT explicitly granted access.
 
-| Mode      | Default Access | Who Can Read                | Who Can Write                        |
-|-----------|----------------|-----------------------------|--------------------------------------|
-| `private` | None           | Owner + explicit grants     | Owner + explicit grants              |
-| `shared`  | None           | Owner + listed tenants      | Owner + listed tenants with write    |
-| `public`  | Read-all       | All authenticated tenants   | Owner + explicit grants              |
+| Mode      | Default Access | Who Can Read              | Who Can Write                     |
+| --------- | -------------- | ------------------------- | --------------------------------- |
+| `private` | None           | Owner + explicit grants   | Owner + explicit grants           |
+| `shared`  | None           | Owner + listed tenants    | Owner + listed tenants with write |
+| `public`  | Read-all       | All authenticated tenants | Owner + explicit grants           |
 
 ### Private Mode (Default)
 
@@ -441,21 +444,21 @@ Organization Tenant (e.g., "acme-corp")
 
 An **account** is an individual user within an organization tenant.
 
-| Property   | Type               | Description                          |
-|------------|--------------------|--------------------------------------|
-| `id`       | `AccountId` (UUID) | Unique account identifier            |
-| `username` | `String`           | Account username within the org      |
-| `email`    | `String`           | Account email                        |
-| `role`     | `Role`             | Account's role within the org        |
-| `status`   | `Active`/`Suspended`| Account status                      |
+| Property   | Type                 | Description                     |
+| ---------- | -------------------- | ------------------------------- |
+| `id`       | `AccountId` (UUID)   | Unique account identifier       |
+| `username` | `String`             | Account username within the org |
+| `email`    | `String`             | Account email                   |
+| `role`     | `Role`               | Account's role within the org   |
+| `status`   | `Active`/`Suspended` | Account status                  |
 
 ### Account Roles within an Organization
 
-| Role        | Capabilities                                              |
-|-------------|-----------------------------------------------------------|
-| `owner`     | Full control — transfer ownership, delete org, manage all |
-| `admin`     | Manage accounts, teams, worktrees, policies               |
-| `member`    | Access worktrees based on team membership and policies     |
+| Role     | Capabilities                                              |
+| -------- | --------------------------------------------------------- |
+| `owner`  | Full control — transfer ownership, delete org, manage all |
+| `admin`  | Manage accounts, teams, worktrees, policies               |
+| `member` | Access worktrees based on team membership and policies    |
 
 ### Teams
 
@@ -481,12 +484,12 @@ permissions = ["tree:read", "tree:write", "branch:create", "snapshot:create"]
 
 ### Organization Limits
 
-| Plan         | Max Accounts | Max Trees | Max Storage |
-|--------------|-------------|-----------|-------------|
-| Free         | 5           | 10        | 1 GB        |
-| Pro          | 50          | 100       | 50 GB       |
-| Enterprise   | Unlimited   | Unlimited | Custom      |
-| Custom       | Custom      | Custom    | Custom      |
+| Plan       | Max Accounts | Max Trees | Max Storage |
+| ---------- | ------------ | --------- | ----------- |
+| Free       | 5            | 10        | 1 GB        |
+| Pro        | 50           | 100       | 50 GB       |
+| Enterprise | Unlimited    | Unlimited | Custom      |
+| Custom     | Custom       | Custom    | Custom      |
 
 ---
 
@@ -602,13 +605,13 @@ Tenants are stored server-side. The wire format (for API responses) uses JSON:
 
 Limits are enforced at several points in the protocol:
 
-| Limit                | Enforcement Point                    | Behavior on Exceed                  |
-|----------------------|--------------------------------------|-------------------------------------|
-| `max_trees`          | Tree creation                        | Error: "tree limit reached"         |
-| `max_storage_bytes`  | Snapshot sync (push)                 | Error: "storage quota exceeded"     |
-| `max_accounts`       | Account creation (org only)          | Error: "account limit reached"      |
-| `max_snapshot_size`  | Snapshot creation                    | Error: "snapshot too large"         |
-| `max_branches`       | Branch creation                      | Error: "branch limit reached"       |
+| Limit               | Enforcement Point           | Behavior on Exceed              |
+| ------------------- | --------------------------- | ------------------------------- |
+| `max_trees`         | Tree creation               | Error: "tree limit reached"     |
+| `max_storage_bytes` | Snapshot sync (push)        | Error: "storage quota exceeded" |
+| `max_accounts`      | Account creation (org only) | Error: "account limit reached"  |
+| `max_snapshot_size` | Snapshot creation           | Error: "snapshot too large"     |
+| `max_branches`      | Branch creation             | Error: "branch limit reached"   |
 
 ### Quota Tracking
 
@@ -626,12 +629,12 @@ Access Control) policy conditions.
 
 ### Built-in Attributes
 
-| Attribute      | Description                    | Example Values          |
-|----------------|--------------------------------|-------------------------|
-| `department`   | Organizational department      | `"engineering"`, `"qa"` |
-| `location`     | Geographic location            | `"us-west"`, `"eu"`     |
-| `clearance`    | Security clearance level       | `"public"`, `"secret"`  |
-| `team_size`    | Number of team members         | `"5"`, `"50"`           |
+| Attribute    | Description               | Example Values          |
+| ------------ | ------------------------- | ----------------------- |
+| `department` | Organizational department | `"engineering"`, `"qa"` |
+| `location`   | Geographic location       | `"us-west"`, `"eu"`     |
+| `clearance`  | Security clearance level  | `"public"`, `"secret"`  |
+| `team_size`  | Number of team members    | `"5"`, `"50"`           |
 
 ### Using Attributes in Policies
 

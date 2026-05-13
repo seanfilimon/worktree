@@ -77,14 +77,14 @@ max_file_size_mb = 100
 
 All configuration options can be overridden using environment variables:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `WORKTREE_ADMIN_CONFIG` | Path to config file | None |
-| `WORKTREE_ADMIN_HOST` | Host address to bind | `127.0.0.1` |
-| `WORKTREE_ADMIN_PORT` | Port number | `8080` |
+| Variable                   | Description                     | Default              |
+| -------------------------- | ------------------------------- | -------------------- |
+| `WORKTREE_ADMIN_CONFIG`    | Path to config file             | None                 |
+| `WORKTREE_ADMIN_HOST`      | Host address to bind            | `127.0.0.1`          |
+| `WORKTREE_ADMIN_PORT`      | Port number                     | `8080`               |
 | `WORKTREE_SERVER_ENDPOINT` | Worktree server socket/endpoint | `/tmp/worktree.sock` |
-| `WORKTREE_ADMIN_API_KEY` | API key for authentication | None |
-| `RUST_LOG` | Log level | `info` |
+| `WORKTREE_ADMIN_API_KEY`   | API key for authentication      | None                 |
+| `RUST_LOG`                 | Log level                       | `info`               |
 
 ### Example: Starting with Environment Variables
 
@@ -113,15 +113,17 @@ http://localhost:8080/api
 All responses follow a standard JSON format:
 
 **Success Response:**
+
 ```json
 {
   "status": "success",
   "message": "Operation completed",
-  "data": { }
+  "data": {}
 }
 ```
 
 **Error Response:**
+
 ```json
 {
   "status": "error",
@@ -137,6 +139,7 @@ All responses follow a standard JSON format:
 Health check endpoint for monitoring tools.
 
 **Response:**
+
 ```json
 {
   "status": "healthy",
@@ -149,6 +152,7 @@ Health check endpoint for monitoring tools.
 Get current server status and connection information.
 
 **Response:**
+
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -166,6 +170,7 @@ Get current server status and connection information.
 Get admin panel and connection metrics.
 
 **Response:**
+
 ```json
 {
   "admin_panel": {
@@ -190,6 +195,7 @@ Get admin panel and connection metrics.
 Start the worktree server.
 
 **Response:**
+
 ```json
 {
   "status": "success",
@@ -202,6 +208,7 @@ Start the worktree server.
 Stop the worktree server gracefully.
 
 **Response:**
+
 ```json
 {
   "status": "success",
@@ -214,6 +221,7 @@ Stop the worktree server gracefully.
 Restart the worktree server.
 
 **Response:**
+
 ```json
 {
   "status": "success",
@@ -228,6 +236,7 @@ Restart the worktree server.
 List all tracked repositories.
 
 **Response:**
+
 ```json
 [
   {
@@ -254,9 +263,11 @@ List all tracked repositories.
 Get detailed information about a specific repository.
 
 **Parameters:**
+
 - `id` (UUID): Repository identifier
 
 **Response:**
+
 ```json
 {
   "id": "123e4567-e89b-12d3-a456-426614174000",
@@ -275,6 +286,7 @@ Get detailed information about a specific repository.
 Get aggregated statistics across all repositories.
 
 **Response:**
+
 ```json
 {
   "total_repositories": 25,
@@ -293,6 +305,7 @@ Get aggregated statistics across all repositories.
 Trigger garbage collection to reclaim disk space.
 
 **Response:**
+
 ```json
 {
   "status": "success",
@@ -324,6 +337,7 @@ curl -H "Authorization: Bearer your-secret-api-key" \
 ### Error Responses
 
 **401 Unauthorized** - Missing or invalid API key:
+
 ```json
 {
   "status": "error",
@@ -333,6 +347,7 @@ curl -H "Authorization: Bearer your-secret-api-key" \
 ```
 
 **403 Forbidden** - Valid API key but insufficient permissions:
+
 ```json
 {
   "status": "error",
@@ -351,15 +366,15 @@ The admin panel exposes metrics in a format compatible with Prometheus and other
 
 ### Key Metrics
 
-| Metric | Description | Type |
-|--------|-------------|------|
-| `admin_panel_uptime_seconds` | Admin panel uptime | Gauge |
-| `admin_panel_requests_total` | Total requests received | Counter |
-| `admin_panel_errors_total` | Total errors encountered | Counter |
-| `server_connection_status` | Server connection status (0=disconnected, 1=connected) | Gauge |
-| `server_repositories_total` | Number of tracked repositories | Gauge |
-| `server_commits_total` | Total commits across all repositories | Gauge |
-| `server_storage_bytes` | Total storage used | Gauge |
+| Metric                       | Description                                            | Type    |
+| ---------------------------- | ------------------------------------------------------ | ------- |
+| `admin_panel_uptime_seconds` | Admin panel uptime                                     | Gauge   |
+| `admin_panel_requests_total` | Total requests received                                | Counter |
+| `admin_panel_errors_total`   | Total errors encountered                               | Counter |
+| `server_connection_status`   | Server connection status (0=disconnected, 1=connected) | Gauge   |
+| `server_repositories_total`  | Number of tracked repositories                         | Gauge   |
+| `server_commits_total`       | Total commits across all repositories                  | Gauge   |
+| `server_storage_bytes`       | Total storage used                                     | Gauge   |
 
 ### Health Checks
 
@@ -443,6 +458,7 @@ curl http://localhost:8080/api/repositories/123e4567-e89b-12d3-a456-426614174000
 ### Repository Metrics
 
 Each repository includes:
+
 - **Path**: Filesystem path to the repository
 - **Branch Count**: Number of branches
 - **Commit Count**: Total number of commits
@@ -460,6 +476,7 @@ curl -X POST http://localhost:8080/api/maintenance/gc
 ```
 
 This will:
+
 1. Remove unreferenced objects
 2. Compress object database
 3. Optimize repository structures
@@ -535,6 +552,7 @@ CMD ["worktree-admin"]
 **Symptom:** `SERVER_CONNECTION` errors in logs
 
 **Solutions:**
+
 1. Verify worktree-server is running:
    ```bash
    ps aux | grep worktree-server
@@ -551,6 +569,7 @@ CMD ["worktree-admin"]
 **Symptom:** `Address already in use` error on startup
 
 **Solutions:**
+
 1. Check what's using the port:
    ```bash
    lsof -i :8080
@@ -565,6 +584,7 @@ CMD ["worktree-admin"]
 **Symptom:** 401 Unauthorized responses
 
 **Solutions:**
+
 1. Verify API key is correct
 2. Check Authorization header format: `Bearer <key>`
 3. Ensure `auth_enabled = true` in config if using API key
@@ -575,6 +595,7 @@ CMD ["worktree-admin"]
 **Symptom:** Admin panel consuming excessive memory
 
 **Solutions:**
+
 1. Check for connection leaks in metrics endpoint
 2. Reduce `max_connections` in configuration
 3. Enable request timeout
@@ -591,6 +612,7 @@ RUST_LOG=debug,worktree_admin=trace worktree-admin
 ### Log Files
 
 Default log locations:
+
 - **stdout/stderr**: Console output
 - **syslog**: System logs (if configured)
 - **Custom file**: As configured in `logging.file_path`

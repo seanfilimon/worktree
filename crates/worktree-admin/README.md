@@ -272,6 +272,7 @@ trunk build --release
 ```
 
 The optimized bundle will be in `./dist/`:
+
 - `index.html` - Entry point
 - `*.wasm` - WebAssembly binary
 - `*.js` - JS glue code
@@ -280,6 +281,7 @@ The optimized bundle will be in `./dist/`:
 ### Build Size Optimization
 
 The production build is optimized for size:
+
 - LTO enabled
 - Opt-level "z" (size optimization)
 - Single codegen unit
@@ -309,7 +311,7 @@ server {
     listen 80;
     server_name admin.worktree.dev;
     root /var/www/worktree-admin/dist;
-    
+
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -368,6 +370,7 @@ info!("Debug message");
 ```
 
 Set log level:
+
 ```rust
 wasm_logger::init(wasm_logger::Config::new(log::Level::Debug));
 ```
@@ -384,7 +387,7 @@ Toggle between light and dark themes:
 
 ```javascript
 // In browser console or via button
-document.documentElement.setAttribute('data-theme', 'dark');
+document.documentElement.setAttribute("data-theme", "dark");
 ```
 
 ## 🐛 Troubleshooting
@@ -392,6 +395,7 @@ document.documentElement.setAttribute('data-theme', 'dark');
 ### WASM file not loading
 
 Check browser console for CORS errors. Ensure your server serves `.wasm` files with correct MIME type:
+
 ```
 application/wasm
 ```
@@ -399,6 +403,7 @@ application/wasm
 ### Styles not applying
 
 Ensure CSS is linked in `index.html`:
+
 ```html
 <link data-trunk rel="css" href="styles/main.css" />
 ```
@@ -406,6 +411,7 @@ Ensure CSS is linked in `index.html`:
 ### Build fails
 
 Clear Trunk cache:
+
 ```bash
 rm -rf dist/
 trunk clean

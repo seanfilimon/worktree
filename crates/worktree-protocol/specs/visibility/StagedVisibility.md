@@ -57,6 +57,7 @@ When a developer has staged snapshots, authorized team members can see:
 - **Optional message** — if the developer used `wt snapshot --message "WIP: fixing token refresh"`
 
 This is enough information to:
+
 - Know who's working on what
 - Detect potential conflicts early ("Alice and Bob are both touching `pricing.rs`")
 - Gauge progress on features
@@ -80,22 +81,22 @@ Staged visibility has deliberate limits:
 
 Staged snapshot visibility is exposed through multiple surfaces:
 
-| Surface | Command / Endpoint | What it shows |
-|---|---|---|
-| CLI | `wt status --team` | Staged snapshots from all team members on current tree |
-| CLI | `wt staged` | All staged (unpushed) snapshots, per user and branch |
-| CLI | `wt staged --user alice` | Staged snapshots from a specific user |
-| CLI | `wt staged --branch feature/oauth` | Staged snapshots on a specific branch |
-| Admin panel | Dashboard | Real-time staged activity per tenant/tree |
-| Admin panel | User activity view | Per-user staged snapshot history |
-| SDK | Event subscription | Subscribe to staged snapshot events for tooling |
-| SDK | Query API | Programmatic access to staged snapshot metadata |
-| WebSocket | `/api/repositories/:id/staged/live` | Real-time stream of staged snapshot updates |
-| REST API | `GET /api/repositories/:id/staged` | List current staged snapshots |
-| Prototype REST API | `POST /staged` | Upload one local snapshot as staged work in the Rust prototype and Go server |
-| Prototype REST API | `GET /staged` | List staged snapshots by tenant, worktree, and branch |
-| gRPC | `SyncService.StageSnapshot` | Upload one staged snapshot using protobuf bytes |
-| gRPC | `SyncService.ListStagedSnapshots` | List staged snapshots by tenant, worktree, and branch |
+| Surface            | Command / Endpoint                  | What it shows                                                                |
+| ------------------ | ----------------------------------- | ---------------------------------------------------------------------------- |
+| CLI                | `wt status --team`                  | Staged snapshots from all team members on current tree                       |
+| CLI                | `wt staged`                         | All staged (unpushed) snapshots, per user and branch                         |
+| CLI                | `wt staged --user alice`            | Staged snapshots from a specific user                                        |
+| CLI                | `wt staged --branch feature/oauth`  | Staged snapshots on a specific branch                                        |
+| Admin panel        | Dashboard                           | Real-time staged activity per tenant/tree                                    |
+| Admin panel        | User activity view                  | Per-user staged snapshot history                                             |
+| SDK                | Event subscription                  | Subscribe to staged snapshot events for tooling                              |
+| SDK                | Query API                           | Programmatic access to staged snapshot metadata                              |
+| WebSocket          | `/api/repositories/:id/staged/live` | Real-time stream of staged snapshot updates                                  |
+| REST API           | `GET /api/repositories/:id/staged`  | List current staged snapshots                                                |
+| Prototype REST API | `POST /staged`                      | Upload one local snapshot as staged work in the Rust prototype and Go server |
+| Prototype REST API | `GET /staged`                       | List staged snapshots by tenant, worktree, and branch                        |
+| gRPC               | `SyncService.StageSnapshot`         | Upload one staged snapshot using protobuf bytes                              |
+| gRPC               | `SyncService.ListStagedSnapshots`   | List staged snapshots by tenant, worktree, and branch                        |
 
 ### CLI Examples
 
@@ -226,6 +227,7 @@ Staged visibility is powerful, but developers need control over their visibility
 ### Opt-Out Per Tree
 
 In `.wt-tree/config.toml`:
+
 ```toml
 [sync]
 auto = false        # Disables auto-sync, which disables auto-staging
@@ -245,6 +247,7 @@ Staged snapshot sync resumed.
 ```
 
 `wt sync pause` pauses staged snapshot visibility temporarily. Useful for:
+
 - Experimental/throwaway work you don't want visible
 - Sensitive refactoring you want to reveal all at once
 - Personal preference during deep focus time
@@ -260,6 +263,7 @@ Staged snapshots from private branches are only visible to users with `branch:re
 ### Public Worktree Behavior
 
 In public worktrees:
+
 - Staged snapshot metadata (file paths, user, branch) is visible to all authenticated users
 - File contents in staged snapshots respect license restrictions
 - Unauthenticated users cannot see staged snapshots
@@ -271,11 +275,13 @@ In public worktrees:
 Staged snapshots are ephemeral by design. Retention policy:
 
 ### Pushed Snapshots
+
 - Staged snapshots that are pushed to a branch via `wt push`: marked as `Pushed`
 - Metadata retained indefinitely (part of branch history audit trail)
 - The snapshot itself becomes a branch snapshot — the staged copy is just a status marker
 
 ### Unpushed Snapshots
+
 - Staged snapshots never pushed: server retains per configurable policy
 - **Default retention: 30 days** from creation timestamp
 - After retention window: marked as `Expired`, then garbage collected
@@ -309,20 +315,23 @@ Cleared snapshots are marked as `Cleared` and garbage collected on next GC cycle
 Staged visibility respects license compliance at all times. This interaction is critical:
 
 ### Metadata Is Always Visible
+
 Staged snapshot metadata (file paths, user, branch, timestamp) is always visible to authorized users, regardless of license. You can always see:
+
 - "Alice is working on `billing-engine/src/pricing.rs`"
 - "Bob modified `vendor/sdk/internal.rs` on `feature/sdk-update`"
 
 ### Content Respects Licenses
+
 Actual file CONTENTS in staged snapshots respect license restrictions:
 
-| File License | Viewer Has Grant? | Can See Path? | Can Read Content? |
-|---|---|---|---|
-| MIT / Apache-2.0 | N/A | ✓ | ✓ |
-| Proprietary | No | ✓ | ✗ |
-| Proprietary | Yes (read-only) | ✓ | ✓ |
-| Proprietary | Yes (modify) | ✓ | ✓ |
-| Proprietary | Yes (redistribute) | ✓ | ✓ |
+| File License     | Viewer Has Grant?  | Can See Path? | Can Read Content? |
+| ---------------- | ------------------ | ------------- | ----------------- |
+| MIT / Apache-2.0 | N/A                | ✓             | ✓                 |
+| Proprietary      | No                 | ✓             | ✗                 |
+| Proprietary      | Yes (read-only)    | ✓             | ✓                 |
+| Proprietary      | Yes (modify)       | ✓             | ✓                 |
+| Proprietary      | Yes (redistribute) | ✓             | ✓                 |
 
 ### Example Scenario
 

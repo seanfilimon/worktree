@@ -185,40 +185,40 @@ W0rkTree is split into two cooperating runtimes. Neither is optional. The local 
 
 The background process (`worktree-bgprocess`) runs continuously on the developer's machine. It is the **only process that touches the working directory**. The server never reads or writes files on the developer's machine.
 
-| Responsibility | Details |
-|---|---|
-| **Filesystem watching** | Monitors the working directory for changes in real-time using OS-native APIs (inotify, FSEvents, ReadDirectoryChangesW). |
-| **Auto-snapshot engine** | Automatically creates snapshots as the developer works. Configurable interval and change threshold. Manual snapshots via `wt snapshot` are also supported. |
-| **Local history & DAG** | Maintains the full local snapshot history and directed acyclic graph. Branch pointers, parent relationships, and merge records are all local-first. |
-| **Branch management** | Creates, switches, lists, deletes, and merges branches. All branch operations happen locally first, then sync to server. |
-| **`.wt/` folder management** | Owns the root `.wt/` configuration directory. Reads config, applies settings, manages identity, hooks, and reflog. |
-| **`.wt-tree/` folder management** | Manages per-tree `.wt-tree/` directories for all trees in the worktree. |
-| **Staged snapshot sync** | Uploads staged snapshots to the server. These appear in the team visibility layer but do not become part of branch history until the developer runs `wt push`. |
-| **Remote branch sync** | Downloads branch updates from the server. Keeps local branch pointers in sync with canonical server state. |
-| **Large file chunking** | Splits large files into content-addressable chunks using FastCDC. Deduplication is automatic. |
-| **Lazy loading** | Downloads file content on demand via FUSE (Linux/macOS) or ProjFS (Windows). Cloning a tree does not require downloading every file. |
-| **Auto-merge** | Handles automatic merges for non-conflicting changes. Conflicts are surfaced to the developer with machine-readable metadata. |
-| **Platform-native storage** | Stores all internal data in the platform-appropriate location: |
-| | — Windows: `%APPDATA%\W0rkTree\` |
-| | — Linux: `~/.local/share/w0rktree/` |
-| | — macOS: `~/Library/Application Support/W0rkTree/` |
+| Responsibility                    | Details                                                                                                                                                        |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Filesystem watching**           | Monitors the working directory for changes in real-time using OS-native APIs (inotify, FSEvents, ReadDirectoryChangesW).                                       |
+| **Auto-snapshot engine**          | Automatically creates snapshots as the developer works. Configurable interval and change threshold. Manual snapshots via `wt snapshot` are also supported.     |
+| **Local history & DAG**           | Maintains the full local snapshot history and directed acyclic graph. Branch pointers, parent relationships, and merge records are all local-first.            |
+| **Branch management**             | Creates, switches, lists, deletes, and merges branches. All branch operations happen locally first, then sync to server.                                       |
+| **`.wt/` folder management**      | Owns the root `.wt/` configuration directory. Reads config, applies settings, manages identity, hooks, and reflog.                                             |
+| **`.wt-tree/` folder management** | Manages per-tree `.wt-tree/` directories for all trees in the worktree.                                                                                        |
+| **Staged snapshot sync**          | Uploads staged snapshots to the server. These appear in the team visibility layer but do not become part of branch history until the developer runs `wt push`. |
+| **Remote branch sync**            | Downloads branch updates from the server. Keeps local branch pointers in sync with canonical server state.                                                     |
+| **Large file chunking**           | Splits large files into content-addressable chunks using FastCDC. Deduplication is automatic.                                                                  |
+| **Lazy loading**                  | Downloads file content on demand via FUSE (Linux/macOS) or ProjFS (Windows). Cloning a tree does not require downloading every file.                           |
+| **Auto-merge**                    | Handles automatic merges for non-conflicting changes. Conflicts are surfaced to the developer with machine-readable metadata.                                  |
+| **Platform-native storage**       | Stores all internal data in the platform-appropriate location:                                                                                                 |
+|                                   | — Windows: `%APPDATA%\W0rkTree\`                                                                                                                               |
+|                                   | — Linux: `~/.local/share/w0rktree/`                                                                                                                            |
+|                                   | — macOS: `~/Library/Application Support/W0rkTree/`                                                                                                             |
 
 ### Server Responsibilities
 
 The server (`worktree-server`) is the **source of truth**. It is multi-tenant by design. The bgprocess syncs with the server but cannot bypass its enforcement.
 
-| Responsibility | Details |
-|---|---|
-| **Canonical history** | The server's snapshot history is authoritative. If a local history diverges, the server wins. |
-| **Multi-tenant hosting** | Users and organizations are first-class tenants with isolated data, configurable visibility, and cross-tenant access grants. |
-| **IAM enforcement** | Tenants, teams, roles, and policies. All access rules defined in `.wt/access/` and `.wt-tree/access/` are enforced server-side. The bgprocess cannot bypass them. |
-| **Cross-tenant access** | Enforces cross-tenant sharing rules. A tenant can grant read, write, or admin access to specific trees for other tenants. |
-| **Staged snapshot aggregation** | Stores staged snapshots uploaded by all team members. Provides a unified view of active work across the worktree. |
-| **Branch protection** | Enforces protection rules: required reviews, required CI, no direct push, snapshot signature requirements. Server-side enforcement — the bgprocess cannot override it. |
-| **License compliance** | Enforces per-path SPDX license rules on every sync. Rejects snapshots that violate license policy. Controls export and redistribution. |
-| **Merge request system** | Built-in merge requests with review, approval, and CI gate integration. No external platform required. |
-| **Tag & release management** | Immutable tags and releases with artifact storage. Server enforces naming and uniqueness. |
-| **API surface** | Exposes API for the admin panel, CLI tools, SDKs, and third-party integrations. |
+| Responsibility                  | Details                                                                                                                                                                |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Canonical history**           | The server's snapshot history is authoritative. If a local history diverges, the server wins.                                                                          |
+| **Multi-tenant hosting**        | Users and organizations are first-class tenants with isolated data, configurable visibility, and cross-tenant access grants.                                           |
+| **IAM enforcement**             | Tenants, teams, roles, and policies. All access rules defined in `.wt/access/` and `.wt-tree/access/` are enforced server-side. The bgprocess cannot bypass them.      |
+| **Cross-tenant access**         | Enforces cross-tenant sharing rules. A tenant can grant read, write, or admin access to specific trees for other tenants.                                              |
+| **Staged snapshot aggregation** | Stores staged snapshots uploaded by all team members. Provides a unified view of active work across the worktree.                                                      |
+| **Branch protection**           | Enforces protection rules: required reviews, required CI, no direct push, snapshot signature requirements. Server-side enforcement — the bgprocess cannot override it. |
+| **License compliance**          | Enforces per-path SPDX license rules on every sync. Rejects snapshots that violate license policy. Controls export and redistribution.                                 |
+| **Merge request system**        | Built-in merge requests with review, approval, and CI gate integration. No external platform required.                                                                 |
+| **Tag & release management**    | Immutable tags and releases with artifact storage. Server enforces naming and uniqueness.                                                                              |
+| **API surface**                 | Exposes API for the admin panel, CLI tools, SDKs, and third-party integrations.                                                                                        |
 
 ### Separation of Concerns
 
@@ -381,23 +381,23 @@ default = "main"
 
 A **tenant** is the identity unit in W0rkTree. Every action — creating a snapshot, pushing to a branch, granting access — is performed by a tenant.
 
-| Property | Description |
-|---|---|
+| Property   | Description                                                                            |
+| ---------- | -------------------------------------------------------------------------------------- |
 | `username` | Unique, URL-safe slug. Used in paths and access grants. Example: `acme-corp`, `alice`. |
-| `email` | Verified email address. Used for notifications and identity verification. |
-| `type` | `user` (individual) or `org` (organization with team members). |
-| `created` | Timestamp of tenant registration. |
-| `status` | `active`, `suspended`, or `deactivated`. |
+| `email`    | Verified email address. Used for notifications and identity verification.              |
+| `type`     | `user` (individual) or `org` (organization with team members).                         |
+| `created`  | Timestamp of tenant registration.                                                      |
+| `status`   | `active`, `suspended`, or `deactivated`.                                               |
 
 ### Worktree Visibility
 
 Every worktree has a visibility mode that controls its default access:
 
-| Mode | Behavior |
-|---|---|
-| **Private** (default) | Only the owning tenant and explicitly granted tenants can see it. |
-| **Shared** | Visible to a defined set of tenants (e.g., all members of an organization). |
-| **Public** | Visible to everyone. Snapshots can be synced by anyone. Write access still requires explicit grants. |
+| Mode                  | Behavior                                                                                             |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| **Private** (default) | Only the owning tenant and explicitly granted tenants can see it.                                    |
+| **Shared**            | Visible to a defined set of tenants (e.g., all members of an organization).                          |
+| **Public**            | Visible to everyone. Snapshots can be synced by anyone. Write access still requires explicit grants. |
 
 ### Simple Tenant Access
 
@@ -510,6 +510,7 @@ git commit -m "WIP: Big feature touching everything"
 ```
 
 **Problems:**
+
 - Changes scattered across unrelated subsystems
 - In large organizations, this creates organizational chaos
 - No way to track what depends on what
@@ -578,6 +579,7 @@ branches = [
 ```
 
 **When branches are linked:**
+
 - All linked branches must be at the same hierarchical level.
 - When one branch is merged to `main`, all linked branches must also merge to their respective `main` branches.
 - If `frontend/feature-oauth` is merged to `frontend/main`, then `backend/feature-oauth` must merge to `backend/main`.
@@ -823,6 +825,7 @@ wt tag create v1.0.0 --annotate --message "Signed release" --sign
 ```
 
 **Tag properties:**
+
 - Tags are **global to the worktree** — they are not scoped to a single tree.
 - Tags sync between bgprocess and server. The server is the source of truth.
 - Tag names must be unique within a worktree.
@@ -832,13 +835,13 @@ wt tag create v1.0.0 --annotate --message "Signed release" --sign
 
 Releases are a **first-class concept** built on top of tags. A release is a tag plus:
 
-| Property | Description |
-|---|---|
-| `notes` | Markdown-formatted release notes. |
-| `artifacts` | Attached binary files (build outputs, documentation, etc.). |
-| `status` | `draft`, `pre-release`, or `stable`. |
-| `created_by` | Tenant who created the release. |
-| `created_at` | Timestamp. |
+| Property     | Description                                                 |
+| ------------ | ----------------------------------------------------------- |
+| `notes`      | Markdown-formatted release notes.                           |
+| `artifacts`  | Attached binary files (build outputs, documentation, etc.). |
+| `status`     | `draft`, `pre-release`, or `stable`.                        |
+| `created_by` | Tenant who created the release.                             |
+| `created_at` | Timestamp.                                                  |
 
 ```bash
 # Create a release from an existing tag
@@ -923,12 +926,12 @@ type = "content"    # content | delete-modify | rename
 
 ### Merge Strategies
 
-| Strategy | Description |
-|---|---|
+| Strategy           | Description                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------- |
 | **Auto** (default) | Three-way merge. Auto-resolve non-conflicts. Surface conflicts for manual resolution. |
-| **Manual** | No auto-resolution. Every changed file requires explicit review. |
-| **Ours** | In case of conflict, keep the current branch's version. |
-| **Theirs** | In case of conflict, keep the incoming branch's version. |
+| **Manual**         | No auto-resolution. Every changed file requires explicit review.                      |
+| **Ours**           | In case of conflict, keep the current branch's version.                               |
+| **Theirs**         | In case of conflict, keep the incoming branch's version.                              |
 
 ```bash
 wt merge feature-branch                    # Auto strategy (default)
@@ -988,11 +991,11 @@ The server enforces license compliance on every sync, export, fork, and copy ope
 
 ### License Grant Model
 
-| Grant | Description |
-|---|---|
-| **Read-only** | Tenant can view the file but not modify or redistribute. |
-| **Modify** | Tenant can view and modify the file. |
-| **Redistribute** | Tenant can include the file in their own distributions. |
+| Grant            | Description                                              |
+| ---------------- | -------------------------------------------------------- |
+| **Read-only**    | Tenant can view the file but not modify or redistribute. |
+| **Modify**       | Tenant can view and modify the file.                     |
+| **Redistribute** | Tenant can include the file in their own distributions.  |
 
 ```toml
 # .wt/access/policies.toml
@@ -1023,11 +1026,11 @@ W0rkTree uses a hierarchical ignore system with gitignore-compatible syntax.
 
 ### Ignore File Locations
 
-| File | Scope | Authority |
-|---|---|---|
-| `.wt/ignore` | Root worktree | **Authoritative** — patterns here cannot be negated by any tree |
-| `.wt-tree/ignore` | Specific tree | **Additive** — adds patterns for this tree, cannot negate root |
-| Subtree `.wt-tree/ignore` | Nested tree | **Additive** — adds patterns for the subtree, cannot negate parent |
+| File                      | Scope         | Authority                                                          |
+| ------------------------- | ------------- | ------------------------------------------------------------------ |
+| `.wt/ignore`              | Root worktree | **Authoritative** — patterns here cannot be negated by any tree    |
+| `.wt-tree/ignore`         | Specific tree | **Additive** — adds patterns for this tree, cannot negate root     |
+| Subtree `.wt-tree/ignore` | Nested tree   | **Additive** — adds patterns for the subtree, cannot negate parent |
 
 ### Pattern Syntax
 
@@ -1115,14 +1118,14 @@ The bgprocess downloads file content **on demand**, not eagerly:
 
 ### No Separate LFS
 
-| Git + LFS | W0rkTree |
-|---|---|
-| Install LFS extension | Nothing to install |
-| Configure `.gitattributes` tracking patterns | Nothing to configure |
-| `git lfs track "*.psd"` | Just add the file |
-| Separate LFS server/storage | Same storage pipeline |
-| LFS pointer files in repo | Real files everywhere |
-| LFS bandwidth limits/quotas | Unified storage management |
+| Git + LFS                                    | W0rkTree                   |
+| -------------------------------------------- | -------------------------- |
+| Install LFS extension                        | Nothing to install         |
+| Configure `.gitattributes` tracking patterns | Nothing to configure       |
+| `git lfs track "*.psd"`                      | Just add the file          |
+| Separate LFS server/storage                  | Same storage pipeline      |
+| LFS pointer files in repo                    | Real files everywhere      |
+| LFS bandwidth limits/quotas                  | Unified storage management |
 
 ---
 
@@ -1432,12 +1435,12 @@ wt diff main abc123
 
 ### Diff Modes
 
-| Mode | Flag | Description |
-|---|---|---|
-| **Full** (default) | (none) | Show full diff with context lines |
-| **Stat** | `--stat` | Show file-level summary (insertions, deletions, changes) |
-| **Name only** | `--name-only` | Show only the names of changed files |
-| **Word-level** | `--word-diff` | Show word-level changes instead of line-level |
+| Mode               | Flag          | Description                                              |
+| ------------------ | ------------- | -------------------------------------------------------- |
+| **Full** (default) | (none)        | Show full diff with context lines                        |
+| **Stat**           | `--stat`      | Show file-level summary (insertions, deletions, changes) |
+| **Name only**      | `--name-only` | Show only the names of changed files                     |
+| **Word-level**     | `--word-diff` | Show word-level changes instead of line-level            |
 
 ```bash
 wt diff --stat
@@ -1481,11 +1484,11 @@ context_lines = 3        # Lines of context around changes (default: 3)
 
 ### Output Formats
 
-| Format | Flag | Description |
-|---|---|---|
-| **Colored** (default) | (none) | Terminal-colored diff output |
-| **Patch** | `--patch` | Standard unified diff format (compatible with `patch` utility) |
-| **JSON** | `--json` | Machine-readable JSON diff output |
+| Format                | Flag      | Description                                                    |
+| --------------------- | --------- | -------------------------------------------------------------- |
+| **Colored** (default) | (none)    | Terminal-colored diff output                                   |
+| **Patch**             | `--patch` | Standard unified diff format (compatible with `patch` utility) |
+| **JSON**              | `--json`  | Machine-readable JSON diff output                              |
 
 ```bash
 # Colored terminal output (default)
@@ -1519,12 +1522,12 @@ wt init --from-git https://github.com/org/repo.git --branches main,develop
 
 The importer maps Git concepts to W0rkTree concepts:
 
-| Git | W0rkTree |
-|---|---|
-| Commits | Snapshots |
-| Tags | Tags |
-| Branches | Branches |
-| `.git/` | `.wt/` |
+| Git          | W0rkTree                              |
+| ------------ | ------------------------------------- |
+| Commits      | Snapshots                             |
+| Tags         | Tags                                  |
+| Branches     | Branches                              |
+| `.git/`      | `.wt/`                                |
 | `.gitignore` | `.wt/ignore` (imported and converted) |
 
 ### Export to Git
@@ -1574,45 +1577,45 @@ Live mirror mode is a migration tool. It allows teams to adopt W0rkTree incremen
 
 ### Round-Trip Guarantees
 
-| Entity | Git → W0rkTree → Git |
-|---|---|
+| Entity            | Git → W0rkTree → Git                                                    |
+| ----------------- | ----------------------------------------------------------------------- |
 | Commits/Snapshots | ✓ Content preserved. Hashes will differ (different content-addressing). |
-| Tags | ✓ Lightweight and annotated tags round-trip. |
-| Branches | ✓ Branch names and targets preserved. |
-| File content | ✓ Byte-for-byte identical. |
-| Author/Date | ✓ Preserved in snapshot metadata. |
-| Merge history | ✓ Merge structure preserved. Parent relationships maintained. |
+| Tags              | ✓ Lightweight and annotated tags round-trip.                            |
+| Branches          | ✓ Branch names and targets preserved.                                   |
+| File content      | ✓ Byte-for-byte identical.                                              |
+| Author/Date       | ✓ Preserved in snapshot metadata.                                       |
+| Merge history     | ✓ Merge structure preserved. Parent relationships maintained.           |
 
 ---
 
 ## 20. Comparison with Git
 
-| Aspect | Git | W0rkTree |
-|---|---|---|
-| **Architecture** | Monolithic local tool + separate hosting | Two-runtime: local bgprocess + remote server |
-| **Organization** | Single flat repository per project | Multi-tenant trees with nested subtrees |
-| **Identity** | Name + email in config (no verification) | Verified tenant identity: username + email |
-| **Terminology** | commit, repository, checkout, stash | snapshot, tree, switch, (no stash needed) |
-| **Staging** | Explicit staging area (`git add`) required | No staging area. Snapshot captures working state. |
-| **Commands** | 150+ commands, many overloaded | One job per command, no overloading |
-| **Branches** | Global namespace, naming conflicts | Tree-scoped with independent strategies |
-| **Access Control** | None built-in — relies on hosting platform | Declarative `.wt/access/` with TOML, ceiling model |
-| **Merge** | Merge, rebase, cherry-pick, squash | Merge only. No rebase. Append-only history. |
-| **History** | Rewritable (rebase, reset, force-push) | Append-only. Non-destructive. Soft deletes. |
-| **Large Files** | Requires Git LFS (separate system) | Native chunked storage with lazy loading |
-| **Protocol** | Git protocol (smart/dumb HTTP, SSH) | Native W0rkTree + Git compatibility layer |
-| **Collaboration** | No visibility until push | Staged snapshots — team sees WIP in real-time |
-| **License Tracking** | None | Per-path SPDX, server-enforced compliance |
-| **Automation** | Manual everything | Auto-snapshot, auto-sync by default |
-| **Recovery** | `git reflog` (local only, expires) | Full reflog, server-synced, configurable retention |
-| **Configuration** | `.git/config` + global config | Hierarchical: system → user → `.wt/` → `.wt-tree/` |
-| **Multi-tenancy** | Not supported | First-class tenants, cross-tenant sharing |
-| **Monitoring** | None built-in | Server-side telemetry, sync health, activity |
-| **Deployment** | External CI/CD reads Git events | Server-enforced branch protection, CI gates |
-| **Submodules** | Separate system, notoriously painful | Nested trees — native, consistent, reliable |
-| **Dependencies** | None built-in | Three-level dependency system with TODO generation |
-| **Project Management** | External tools only | Built-in per-tree task management |
-| **Conflict Resolution** | Basic markers, no machine-readable format | Three-way markers + machine-readable `.wt/conflicts/` |
+| Aspect                  | Git                                        | W0rkTree                                              |
+| ----------------------- | ------------------------------------------ | ----------------------------------------------------- |
+| **Architecture**        | Monolithic local tool + separate hosting   | Two-runtime: local bgprocess + remote server          |
+| **Organization**        | Single flat repository per project         | Multi-tenant trees with nested subtrees               |
+| **Identity**            | Name + email in config (no verification)   | Verified tenant identity: username + email            |
+| **Terminology**         | commit, repository, checkout, stash        | snapshot, tree, switch, (no stash needed)             |
+| **Staging**             | Explicit staging area (`git add`) required | No staging area. Snapshot captures working state.     |
+| **Commands**            | 150+ commands, many overloaded             | One job per command, no overloading                   |
+| **Branches**            | Global namespace, naming conflicts         | Tree-scoped with independent strategies               |
+| **Access Control**      | None built-in — relies on hosting platform | Declarative `.wt/access/` with TOML, ceiling model    |
+| **Merge**               | Merge, rebase, cherry-pick, squash         | Merge only. No rebase. Append-only history.           |
+| **History**             | Rewritable (rebase, reset, force-push)     | Append-only. Non-destructive. Soft deletes.           |
+| **Large Files**         | Requires Git LFS (separate system)         | Native chunked storage with lazy loading              |
+| **Protocol**            | Git protocol (smart/dumb HTTP, SSH)        | Native W0rkTree + Git compatibility layer             |
+| **Collaboration**       | No visibility until push                   | Staged snapshots — team sees WIP in real-time         |
+| **License Tracking**    | None                                       | Per-path SPDX, server-enforced compliance             |
+| **Automation**          | Manual everything                          | Auto-snapshot, auto-sync by default                   |
+| **Recovery**            | `git reflog` (local only, expires)         | Full reflog, server-synced, configurable retention    |
+| **Configuration**       | `.git/config` + global config              | Hierarchical: system → user → `.wt/` → `.wt-tree/`    |
+| **Multi-tenancy**       | Not supported                              | First-class tenants, cross-tenant sharing             |
+| **Monitoring**          | None built-in                              | Server-side telemetry, sync health, activity          |
+| **Deployment**          | External CI/CD reads Git events            | Server-enforced branch protection, CI gates           |
+| **Submodules**          | Separate system, notoriously painful       | Nested trees — native, consistent, reliable           |
+| **Dependencies**        | None built-in                              | Three-level dependency system with TODO generation    |
+| **Project Management**  | External tools only                        | Built-in per-tree task management                     |
+| **Conflict Resolution** | Basic markers, no machine-readable format  | Three-way markers + machine-readable `.wt/conflicts/` |
 
 ### Why Not Just Improve Git?
 
@@ -1717,27 +1720,27 @@ These are not aspirations. They are constraints enforced by the protocol.
 
 Every W0rkTree command does exactly one thing. There is no `checkout` that creates branches, switches branches, and restores files depending on the flags you pass. If a command name describes the action, that is the only action it performs.
 
-| Git (overloaded) | W0rkTree (one job) |
-|---|---|
-| `git checkout -b feature` | `wt branch create feature` |
-| `git checkout main` | `wt branch switch main` |
-| `git checkout -- file.txt` | `wt restore file.txt` |
-| `git reset --soft HEAD~1` | `wt snapshot undo` |
-| `git reset --hard HEAD~1` | (not supported — history is append-only) |
+| Git (overloaded)           | W0rkTree (one job)                       |
+| -------------------------- | ---------------------------------------- |
+| `git checkout -b feature`  | `wt branch create feature`               |
+| `git checkout main`        | `wt branch switch main`                  |
+| `git checkout -- file.txt` | `wt restore file.txt`                    |
+| `git reset --soft HEAD~1`  | `wt snapshot undo`                       |
+| `git reset --hard HEAD~1`  | (not supported — history is append-only) |
 
 ### 2. Plain Terminology
 
 If you have to explain what a word means, it is the wrong word. W0rkTree uses words that mean what they say.
 
-| Git term | Problem | W0rkTree term |
-|---|---|---|
-| Commit | Not intuitive for non-developers | **Snapshot** — a picture of the state |
-| Repository | Overloaded meaning | **Tree** — a collection of files |
-| Push/Pull | Two words for sync | **Sync** / **Push** — clear direction |
-| Checkout | Does three different things | **Switch** (branch) / **Restore** (file) |
-| Stash | Unexplained metaphor | (Not needed — auto-snapshots capture everything) |
-| HEAD | Cryptic pointer name | **Current snapshot** |
-| Index/staging area | Confusing indirection | (Does not exist — snapshot captures working state) |
+| Git term           | Problem                          | W0rkTree term                                      |
+| ------------------ | -------------------------------- | -------------------------------------------------- |
+| Commit             | Not intuitive for non-developers | **Snapshot** — a picture of the state              |
+| Repository         | Overloaded meaning               | **Tree** — a collection of files                   |
+| Push/Pull          | Two words for sync               | **Sync** / **Push** — clear direction              |
+| Checkout           | Does three different things      | **Switch** (branch) / **Restore** (file)           |
+| Stash              | Unexplained metaphor             | (Not needed — auto-snapshots capture everything)   |
+| HEAD               | Cryptic pointer name             | **Current snapshot**                               |
+| Index/staging area | Confusing indirection            | (Does not exist — snapshot captures working state) |
 
 ### 3. Automatic by Default
 
@@ -1802,60 +1805,60 @@ W0rkTree speaks its own native protocol for full functionality. It also speaks G
 
 ## Appendix A: Command Reference Summary
 
-| Command | Description |
-|---|---|
-| `wt init` | Initialize a new worktree |
-| `wt init --from <url>` | Initialize from a remote worktree |
-| `wt init --from-git <url>` | Import from a Git repository |
-| `wt snapshot` | Create a manual snapshot |
-| `wt snapshot -m <msg>` | Create a snapshot with a message |
-| `wt push` | Finalize staged snapshots into branch history |
-| `wt sync` | Bidirectional sync with server |
-| `wt branch create <name>` | Create a new branch |
-| `wt branch switch <name>` | Switch to a branch |
-| `wt branch list` | List branches in current tree |
-| `wt branch delete <name>` | Soft-delete a branch |
-| `wt merge <branch>` | Merge a branch into current branch |
-| `wt diff` | Show changes |
-| `wt log` | Show snapshot history |
-| `wt tag create <name>` | Create a tag |
-| `wt release create <tag>` | Create a release from a tag |
-| `wt revert <snapshot>` | Revert a snapshot |
-| `wt archive <format>` | Export tree as archive |
-| `wt reflog` | Show operation log |
-| `wt todo list` | Show pending TODOs for current tree |
-| `wt todo claim <id>` | Claim a TODO |
-| `wt todo complete <id>` | Mark a TODO as complete |
-| `wt depend add <tree>` | Add a dependency on another tree |
-| `wt deps graph` | Visualize dependency graph |
-| `wt merge-request create` | Create a merge request |
-| `wt remote add <name>` | Add a remote (W0rkTree or Git) |
-| `wt tree sync <name>` | Sync a specific tree |
-| `wt restore <file>` | Restore a file to its last snapshot state |
+| Command                    | Description                                   |
+| -------------------------- | --------------------------------------------- |
+| `wt init`                  | Initialize a new worktree                     |
+| `wt init --from <url>`     | Initialize from a remote worktree             |
+| `wt init --from-git <url>` | Import from a Git repository                  |
+| `wt snapshot`              | Create a manual snapshot                      |
+| `wt snapshot -m <msg>`     | Create a snapshot with a message              |
+| `wt push`                  | Finalize staged snapshots into branch history |
+| `wt sync`                  | Bidirectional sync with server                |
+| `wt branch create <name>`  | Create a new branch                           |
+| `wt branch switch <name>`  | Switch to a branch                            |
+| `wt branch list`           | List branches in current tree                 |
+| `wt branch delete <name>`  | Soft-delete a branch                          |
+| `wt merge <branch>`        | Merge a branch into current branch            |
+| `wt diff`                  | Show changes                                  |
+| `wt log`                   | Show snapshot history                         |
+| `wt tag create <name>`     | Create a tag                                  |
+| `wt release create <tag>`  | Create a release from a tag                   |
+| `wt revert <snapshot>`     | Revert a snapshot                             |
+| `wt archive <format>`      | Export tree as archive                        |
+| `wt reflog`                | Show operation log                            |
+| `wt todo list`             | Show pending TODOs for current tree           |
+| `wt todo claim <id>`       | Claim a TODO                                  |
+| `wt todo complete <id>`    | Mark a TODO as complete                       |
+| `wt depend add <tree>`     | Add a dependency on another tree              |
+| `wt deps graph`            | Visualize dependency graph                    |
+| `wt merge-request create`  | Create a merge request                        |
+| `wt remote add <name>`     | Add a remote (W0rkTree or Git)                |
+| `wt tree sync <name>`      | Sync a specific tree                          |
+| `wt restore <file>`        | Restore a file to its last snapshot state     |
 
 ---
 
 ## Appendix B: Glossary
 
-| Term | Definition |
-|---|---|
-| **W0rkTree** | The top-level organizational unit containing one or more trees. Marketing name uses zero. Code uses `worktree`. |
-| **Tree** | The fundamental unit of code organization. Has its own snapshot history, branches, and access rules. |
-| **Snapshot** | An immutable, content-addressed record of the complete state of a tree at a point in time. |
-| **Staged Snapshot** | A snapshot synced to the server for team visibility but not yet part of branch history. |
-| **Branch** | A named pointer to a snapshot chain within a tree. |
-| **Linked Branch** | Branches across different trees that must be merged together. |
-| **Tenant** | A user or organization with verified identity on the W0rkTree server. |
-| **BGProcess** | The local background process (`worktree-bgprocess`) that runs on the developer's machine. |
-| **Server** | The remote server (`worktree-server`) that is the source of truth. |
-| **Tag** | An immutable named reference to a specific snapshot. |
-| **Release** | A tag with attached artifacts, notes, and status. |
-| **Merge Request** | A request to merge one branch into another, with review and CI gate support. |
-| **Reflog** | Chronological log of all operations that change branch tips. |
-| **Ceiling Model** | Access control model where parent levels set maximum permissions that children cannot exceed. |
-| **Stub Tree** | A tree that exists in metadata but whose files have not been synced locally. |
-| **FastCDC** | Content-defined chunking algorithm used for large file storage. |
-| **SPDX** | Software Package Data Exchange — standard for license identifiers. |
+| Term                | Definition                                                                                                      |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **W0rkTree**        | The top-level organizational unit containing one or more trees. Marketing name uses zero. Code uses `worktree`. |
+| **Tree**            | The fundamental unit of code organization. Has its own snapshot history, branches, and access rules.            |
+| **Snapshot**        | An immutable, content-addressed record of the complete state of a tree at a point in time.                      |
+| **Staged Snapshot** | A snapshot synced to the server for team visibility but not yet part of branch history.                         |
+| **Branch**          | A named pointer to a snapshot chain within a tree.                                                              |
+| **Linked Branch**   | Branches across different trees that must be merged together.                                                   |
+| **Tenant**          | A user or organization with verified identity on the W0rkTree server.                                           |
+| **BGProcess**       | The local background process (`worktree-bgprocess`) that runs on the developer's machine.                       |
+| **Server**          | The remote server (`worktree-server`) that is the source of truth.                                              |
+| **Tag**             | An immutable named reference to a specific snapshot.                                                            |
+| **Release**         | A tag with attached artifacts, notes, and status.                                                               |
+| **Merge Request**   | A request to merge one branch into another, with review and CI gate support.                                    |
+| **Reflog**          | Chronological log of all operations that change branch tips.                                                    |
+| **Ceiling Model**   | Access control model where parent levels set maximum permissions that children cannot exceed.                   |
+| **Stub Tree**       | A tree that exists in metadata but whose files have not been synced locally.                                    |
+| **FastCDC**         | Content-defined chunking algorithm used for large file storage.                                                 |
+| **SPDX**            | Software Package Data Exchange — standard for license identifiers.                                              |
 
 ---
 

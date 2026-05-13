@@ -341,8 +341,6 @@ shape.
 - Fixed `HashMapping` field refs: `git_hash`/`content_hash` → `sha1`/`blake3`
 - Updated tests; added coverage for remove operations and idempotent insert
 
-**Also:** Added note to `CLAUDE.md` to keep `worktree-git` local impls in sync with protocol trait changes.
-\n### Step 4 — `feat(server): fix Two-Runtime architectural violation`\n**Files:**\n- `crates/worktree-server/src/storage/server_state.rs`\n- `crates/worktree-server/src/api/handlers.rs`\n- `crates/worktree-server/src/lib.rs`\n- `agents.md`\n\n- Created an independent server-side canonical storage for the local daemon using `ServerStateStore` instead of relying on the local working directory's SDK `.wt/state.json`.\n- Decoupled API handlers (`handle_init`, `handle_status`, `handle_snapshot`, and `handle_branch`) from the local `WorktreeEngine` allowing the daemon/prototype server HTTP endpoints to safely manage server canonical state locally.\n- Kept the `watcher_loop_blocking` correctly connected to the SDK `WorktreeEngine` to honor the bgprocess responsibilities, completely decoupling the background watcher from the server's remote API emulation.\n- Updated `agents.md` to reflect that the server-side canonical storage constraint has now been implemented.
 
 ### `fix(daemon/server): resolve detached environment and sync edge cases`
 - **Detached Daemon Authentication Bug:** Fixed a `403 Forbidden` tenant mismatch. When `worktree-server.exe` spawns as a detached background process, it drops its environment variables. Refactored the local daemon to deeply parse the `tenant` directly from the base64-encoded JWT payload loaded from `.wt/cache/auth_token` instead of relying on ephemeral environment variables.

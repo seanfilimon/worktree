@@ -1,7 +1,11 @@
 import { SiteHeader } from "@/components/site-header";
 import type { ReactNode } from "react";
 
-export default function CodeOfConductLayout({ children }: { children: ReactNode }) {
+export default function CodeOfConductLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <SiteHeader />

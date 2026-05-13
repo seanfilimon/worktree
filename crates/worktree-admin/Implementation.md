@@ -14,27 +14,27 @@ The `worktree-admin` crate is a **dual-mode admin panel** for the Worktree versi
 
 ### Dependencies (CSR — Default)
 
-| Dependency | Version | Purpose |
-|-----------|---------|---------|
-| `yew` | 0.21 (csr) | Reactive UI framework |
-| `yew-router` | 0.18 | Client-side routing |
-| `yew-hooks` | 0.3 | Utility hooks |
-| `wasm-bindgen` | 0.2 | JS interop |
-| `web-sys` | 0.3 | DOM APIs |
-| `gloo` / `gloo-net` | 0.11 / 0.5 | HTTP, storage, timers |
-| `serde` / `serde_json` | 1 | Serialization |
-| `uuid` | 1 (v4, js) | ID generation |
-| `chrono` | 0.4 (wasmbind) | Timestamps |
-| `wasm-logger` | 0.2 | Logging |
+| Dependency             | Version        | Purpose               |
+| ---------------------- | -------------- | --------------------- |
+| `yew`                  | 0.21 (csr)     | Reactive UI framework |
+| `yew-router`           | 0.18           | Client-side routing   |
+| `yew-hooks`            | 0.3            | Utility hooks         |
+| `wasm-bindgen`         | 0.2            | JS interop            |
+| `web-sys`              | 0.3            | DOM APIs              |
+| `gloo` / `gloo-net`    | 0.11 / 0.5     | HTTP, storage, timers |
+| `serde` / `serde_json` | 1              | Serialization         |
+| `uuid`                 | 1 (v4, js)     | ID generation         |
+| `chrono`               | 0.4 (wasmbind) | Timestamps            |
+| `wasm-logger`          | 0.2            | Logging               |
 
 ### Dependencies (SSR — `--features ssr`)
 
-| Dependency | Version | Purpose |
-|-----------|---------|---------|
-| `axum` | 0.7 (macros) | HTTP framework |
-| `tokio` | 1 (full) | Async runtime |
-| `tower` / `tower-http` | 0.5 | Middleware (CORS, trace, static files) |
-| `tracing` / `tracing-subscriber` | 0.1 / 0.3 | Structured logging |
+| Dependency                       | Version      | Purpose                                |
+| -------------------------------- | ------------ | -------------------------------------- |
+| `axum`                           | 0.7 (macros) | HTTP framework                         |
+| `tokio`                          | 1 (full)     | Async runtime                          |
+| `tower` / `tower-http`           | 0.5          | Middleware (CORS, trace, static files) |
+| `tracing` / `tracing-subscriber` | 0.1 / 0.3    | Structured logging                     |
 
 ---
 
@@ -80,6 +80,7 @@ Trunk.toml          # Trunk build configuration
 ### Application Startup
 
 `run_app()` in `lib.rs`:
+
 1. Initializes `wasm_logger` for browser console logging.
 2. Creates `yew::Renderer::<App>::new().render()` — mounts the Yew app to the DOM.
 
@@ -87,43 +88,43 @@ Trunk.toml          # Trunk build configuration
 
 `Route` enum with 6 routes:
 
-| Route | Path | Component |
-|-------|------|-----------|
-| `Dashboard` | `/` | `pages::Dashboard` |
-| `Repositories` | `/repositories` | `pages::Repositories` |
+| Route              | Path                | Component                 |
+| ------------------ | ------------------- | ------------------------- |
+| `Dashboard`        | `/`                 | `pages::Dashboard`        |
+| `Repositories`     | `/repositories`     | `pages::Repositories`     |
 | `RepositoryDetail` | `/repositories/:id` | `pages::RepositoryDetail` |
-| `Statistics` | `/stats` | `pages::Statistics` |
-| `Settings` | `/settings` | `pages::Settings` |
-| `NotFound` | `/404` | `pages::NotFound` |
+| `Statistics`       | `/stats`            | `pages::Statistics`       |
+| `Settings`         | `/settings`         | `pages::Settings`         |
+| `NotFound`         | `/404`              | `pages::NotFound`         |
 
 **Note:** `pages/` module is currently empty — page components are declared in `lib.rs`'s `switch()` but not yet implemented.
 
 ### Components (8 Yew Function Components)
 
-| Component | Props | Description |
-|-----------|-------|-------------|
-| `Navbar` | none | Sticky top nav with brand (`🌳 Worktree Admin`), route links with emoji icons, theme toggle (🌙) and refresh (🔄) buttons. All styled with inline CSS using shadcn CSS variables. |
-| `Footer` | none | Copyright year, links (GitHub, Docs, API, Support), version display. |
-| `Card` / `CardFooter` | `title`, `class`, `children`, `header_actions` | Generic container with optional title header and body. |
-| `Badge` | `children`, `variant`, `class`, `outlined`, `pill` | Status indicator with 6 color variants: Success, Warning, Error, Secondary, Primary, Info. |
-| `Button` | `variant`, `onclick`, `disabled`, `button_type`, `class`, `children` | Styled button with Primary/Secondary/Danger variants. |
-| `StatCard` | `icon`, `value`, `label`, `trend`, `class` | Dashboard stat display with icon + value + label + optional trend indicator. |
-| `RepoCard` | `repo: RepositoryInfo`, `on_click` | Full repository card: name + status badge, path (📁), stats (🌿 branches, 📝 commits, 💾 size), last activity (🕒). |
-| `Loading` / `SimpleLoading` / `FullscreenLoading` | `message`, `size`, `fullscreen` | Spinner with small/medium/large sizes and optional fullscreen overlay. |
+| Component                                         | Props                                                                | Description                                                                                                                                                                       |
+| ------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Navbar`                                          | none                                                                 | Sticky top nav with brand (`🌳 Worktree Admin`), route links with emoji icons, theme toggle (🌙) and refresh (🔄) buttons. All styled with inline CSS using shadcn CSS variables. |
+| `Footer`                                          | none                                                                 | Copyright year, links (GitHub, Docs, API, Support), version display.                                                                                                              |
+| `Card` / `CardFooter`                             | `title`, `class`, `children`, `header_actions`                       | Generic container with optional title header and body.                                                                                                                            |
+| `Badge`                                           | `children`, `variant`, `class`, `outlined`, `pill`                   | Status indicator with 6 color variants: Success, Warning, Error, Secondary, Primary, Info.                                                                                        |
+| `Button`                                          | `variant`, `onclick`, `disabled`, `button_type`, `class`, `children` | Styled button with Primary/Secondary/Danger variants.                                                                                                                             |
+| `StatCard`                                        | `icon`, `value`, `label`, `trend`, `class`                           | Dashboard stat display with icon + value + label + optional trend indicator.                                                                                                      |
+| `RepoCard`                                        | `repo: RepositoryInfo`, `on_click`                                   | Full repository card: name + status badge, path (📁), stats (🌿 branches, 📝 commits, 💾 size), last activity (🕒).                                                               |
+| `Loading` / `SimpleLoading` / `FullscreenLoading` | `message`, `size`, `fullscreen`                                      | Spinner with small/medium/large sizes and optional fullscreen overlay.                                                                                                            |
 
 ---
 
 ## Shared Data Types (`types.rs`)
 
-| Type | Key Fields |
-|------|-----------|
-| `ServerStatus` | `id`, `name`, `running`, `uptime_seconds`, `active_connections`, `tracked_repositories`, `last_updated` |
-| `RepositoryInfo` | `id`, `name`, `path`, `branch_count`, `commit_count`, `last_activity`, `size_bytes`, `status` |
-| `RepositoryStatus` | `Active`, `Idle`, `Syncing`, `Error` |
-| `ServerStats` | `total_repositories`, `total_commits`, `total_branches`, `total_storage_bytes`, `total_operations` |
-| `AppSettings` | `theme: Theme`, `auto_refresh`, `refresh_interval_secs`, `items_per_page` |
-| `Theme` | `Light`, `Dark`, `Auto` |
-| `ApiResponse<T>` | Tagged union: `Success { data }` or `Error { message }` |
+| Type               | Key Fields                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| `ServerStatus`     | `id`, `name`, `running`, `uptime_seconds`, `active_connections`, `tracked_repositories`, `last_updated` |
+| `RepositoryInfo`   | `id`, `name`, `path`, `branch_count`, `commit_count`, `last_activity`, `size_bytes`, `status`           |
+| `RepositoryStatus` | `Active`, `Idle`, `Syncing`, `Error`                                                                    |
+| `ServerStats`      | `total_repositories`, `total_commits`, `total_branches`, `total_storage_bytes`, `total_operations`      |
+| `AppSettings`      | `theme: Theme`, `auto_refresh`, `refresh_interval_secs`, `items_per_page`                               |
+| `Theme`            | `Light`, `Dark`, `Auto`                                                                                 |
+| `ApiResponse<T>`   | Tagged union: `Success { data }` or `Error { message }`                                                 |
 
 All types implement `Serialize`/`Deserialize` for API transport and `Clone`/`PartialEq` for Yew component rendering.
 
@@ -134,19 +135,25 @@ All types implement `Serialize`/`Deserialize` for API transport and `Clone`/`Par
 The app uses a **shadcn/ui-inspired CSS variable system**:
 
 ### CSS Variables (`styles/variables.css`)
+
 Defines HSL color tokens for light (`:root`) and dark (`[data-theme="dark"]`) themes:
+
 - Background, foreground, card, popover, primary, secondary, muted, accent, destructive, success, warning, info, border, input, ring, radius
 - 5 chart colors
 
 ### CSS Framework (`styles/main.css`)
+
 Hand-written utility classes (Tailwind-like):
+
 - CSS Reset, Typography (h1-h6), Layout (.app, .main-content, .container)
 - Grid system (.grid-cols-1 through .grid-cols-4)
 - Flexbox, spacing, width/height, text, opacity, cursor, position utilities
 - Animations: spin, fadeIn, skeleton shimmer
 
 ### Rust Inline Style Helpers (`utils.rs`)
+
 Sub-modules generate CSS strings referencing `hsl(var(--*))` variables:
+
 - `colors` — `bg()`, `text()`, `border()` + presets
 - `layout` — `flex()`, `flex_col()`, `items_center()`, `gap()`, `padding()`, `margin()`
 - `border` — `rounded()`, `rounded_lg()`, `border_primary()`
@@ -155,6 +162,7 @@ Sub-modules generate CSS strings referencing `hsl(var(--*))` variables:
 - `typography` — `text_xs()` through `text_3xl()`, font weights
 
 ### Build Pipeline (Trunk)
+
 - Pre-build + build hooks run Tailwind CSS: `npx tailwindcss -i styles/input.css -o dist/output.css --minify`
 - Release profile: `opt-level = "z"`, LTO, single codegen unit (optimized for WASM size)
 
@@ -165,6 +173,7 @@ Sub-modules generate CSS strings referencing `hsl(var(--*))` variables:
 ### Configuration (`config.rs`)
 
 `AdminConfig` with 4 sections:
+
 - `ServerConfig` — host (127.0.0.1), port (3000), worker threads, max connections (1000), request timeout (30s)
 - `UiConfig` — title, theme, page size (20), realtime updates, refresh interval (30s)
 - `SecurityConfig` — auth enabled, API key, CORS, TLS cert/key paths
@@ -177,6 +186,7 @@ Validation: port > 0; if auth enabled, API key must be set.
 ### State Management (`state.rs`)
 
 `AdminState` is `Clone`-able shared state:
+
 - `config: Arc<AdminConfig>`
 - `server_connection: Arc<RwLock<ServerConnection>>` — tracks connection status, server ID, attempt counts, uptime
 - `metrics: Arc<RwLock<Metrics>>` — request/error counters, started_at, error rate
@@ -184,6 +194,7 @@ Validation: port > 0; if auth enabled, API key must be set.
 ### Error Handling (`error.rs`)
 
 `AdminError` enum with 11 variants mapping to HTTP status codes:
+
 - `ServerConnection` → 502 Bad Gateway
 - `Authentication` → 401 Unauthorized
 - `Authorization` → 403 Forbidden
@@ -197,18 +208,18 @@ Implements `IntoResponse` for Axum — returns JSON error bodies with tracing.
 
 Routes nested under `/api`:
 
-| Method | Path | Handler |
-|--------|------|---------|
-| GET | `/health` | `health` |
-| GET | `/status` | `server_status` |
-| GET | `/metrics` | `metrics` |
-| POST | `/server/start` | `start_server` |
-| POST | `/server/stop` | `stop_server` |
-| POST | `/server/restart` | `restart_server` |
-| GET | `/repositories` | `list_repositories` |
-| GET | `/repositories/:id` | `get_repository` |
-| GET | `/stats` | `get_stats` |
-| POST | `/maintenance/gc` | `run_garbage_collection` |
+| Method | Path                | Handler                  |
+| ------ | ------------------- | ------------------------ |
+| GET    | `/health`           | `health`                 |
+| GET    | `/status`           | `server_status`          |
+| GET    | `/metrics`          | `metrics`                |
+| POST   | `/server/start`     | `start_server`           |
+| POST   | `/server/stop`      | `stop_server`            |
+| POST   | `/server/restart`   | `restart_server`         |
+| GET    | `/repositories`     | `list_repositories`      |
+| GET    | `/repositories/:id` | `get_repository`         |
+| GET    | `/stats`            | `get_stats`              |
+| POST   | `/maintenance/gc`   | `run_garbage_collection` |
 
 All routes go through `auth_middleware` (Bearer token validation, skippable if auth disabled). Router includes CORS (permissive) and tracing layers.
 
@@ -226,6 +237,7 @@ All routes go through `auth_middleware` (Bearer token validation, skippable if a
 ### HTML Templates (`ui.rs`)
 
 Maud-based server-side rendering:
+
 - `layout(title, content)` — Full HTML document.
 - `dashboard_page(status, stats, repos)` — 4 status cards + server detail + recent repos + chart placeholder.
 - `repositories_page(repos)` — Search/filter + grid of repo cards.

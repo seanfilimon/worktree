@@ -38,6 +38,7 @@ fn app() -> Html {
 ```
 
 ### Features
+
 - Automatic current year detection
 - Quick links (GitHub, Documentation, API, Support)
 - Version information display
@@ -50,12 +51,12 @@ A generic card container component with optional title and header actions.
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `title` | `Option<AttrValue>` | `None` | Optional card title |
-| `class` | `Classes` | `Classes::default()` | Additional CSS classes |
-| `children` | `Children` | Required | Card content |
-| `header_actions` | `Option<Html>` | `None` | Optional buttons/actions in header |
+| Prop             | Type                | Default              | Description                        |
+| ---------------- | ------------------- | -------------------- | ---------------------------------- |
+| `title`          | `Option<AttrValue>` | `None`               | Optional card title                |
+| `class`          | `Classes`           | `Classes::default()` | Additional CSS classes             |
+| `children`       | `Children`          | Required             | Card content                       |
+| `header_actions` | `Option<Html>`      | `None`               | Optional buttons/actions in header |
 
 ### Usage
 
@@ -78,7 +79,7 @@ fn example() -> Html {
 
 ```rust
 html! {
-    <Card 
+    <Card
         title="Settings"
         header_actions={html! {
             <button>{"Edit"}</button>
@@ -124,13 +125,13 @@ A badge component for displaying status indicators and labels with various color
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `children` | `Children` | Required | Badge text content |
-| `variant` | `BadgeVariant` | `Secondary` | Color variant |
-| `class` | `Classes` | `Classes::default()` | Additional CSS classes |
-| `outlined` | `bool` | `false` | Show outline style |
-| `pill` | `bool` | `false` | Show rounded pill style |
+| Prop       | Type           | Default              | Description             |
+| ---------- | -------------- | -------------------- | ----------------------- |
+| `children` | `Children`     | Required             | Badge text content      |
+| `variant`  | `BadgeVariant` | `Secondary`          | Color variant           |
+| `class`    | `Classes`      | `Classes::default()` | Additional CSS classes  |
+| `outlined` | `bool`         | `false`              | Show outline style      |
+| `pill`     | `bool`         | `false`              | Show rounded pill style |
 
 ### Usage
 
@@ -180,14 +181,14 @@ A button component with multiple variants and full event handling support.
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `children` | `Children` | Required | Button content |
-| `variant` | `ButtonVariant` | `Primary` | Button style variant |
-| `onclick` | `Callback<MouseEvent>` | No-op | Click event handler |
-| `disabled` | `bool` | `false` | Whether button is disabled |
-| `button_type` | `String` | `"button"` | HTML button type attribute |
-| `class` | `Classes` | `Classes::default()` | Additional CSS classes |
+| Prop          | Type                   | Default              | Description                |
+| ------------- | ---------------------- | -------------------- | -------------------------- |
+| `children`    | `Children`             | Required             | Button content             |
+| `variant`     | `ButtonVariant`        | `Primary`            | Button style variant       |
+| `onclick`     | `Callback<MouseEvent>` | No-op                | Click event handler        |
+| `disabled`    | `bool`                 | `false`              | Whether button is disabled |
+| `button_type` | `String`               | `"button"`           | HTML button type attribute |
+| `class`       | `Classes`              | `Classes::default()` | Additional CSS classes     |
 
 ### Usage
 
@@ -239,13 +240,13 @@ A statistics card component for displaying key metrics with icons.
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `icon` | `AttrValue` | Required | Icon (emoji or text) |
-| `value` | `AttrValue` | Required | The statistic value |
-| `label` | `AttrValue` | Required | Label describing the stat |
-| `trend` | `Option<AttrValue>` | `None` | Optional trend indicator |
-| `class` | `Classes` | `Classes::default()` | Additional CSS classes |
+| Prop    | Type                | Default              | Description               |
+| ------- | ------------------- | -------------------- | ------------------------- |
+| `icon`  | `AttrValue`         | Required             | Icon (emoji or text)      |
+| `value` | `AttrValue`         | Required             | The statistic value       |
+| `label` | `AttrValue`         | Required             | Label describing the stat |
+| `trend` | `Option<AttrValue>` | `None`               | Optional trend indicator  |
+| `class` | `Classes`           | `Classes::default()` | Additional CSS classes    |
 
 ### Usage
 
@@ -293,10 +294,10 @@ A specialized card component for displaying repository information with status b
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `repo` | `RepositoryInfo` | Required | Repository data |
-| `on_click` | `Option<Callback<RepositoryInfo>>` | `None` | Click handler |
+| Prop       | Type                               | Default  | Description     |
+| ---------- | ---------------------------------- | -------- | --------------- |
+| `repo`     | `RepositoryInfo`                   | Required | Repository data |
+| `on_click` | `Option<Callback<RepositoryInfo>>` | `None`   | Click handler   |
 
 ### Usage
 
@@ -348,11 +349,11 @@ A loading spinner component with multiple size variants and fullscreen support.
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `message` | `Option<String>` | `None` | Optional loading message |
-| `size` | `String` | `"medium"` | Size: "small", "medium", "large" |
-| `fullscreen` | `bool` | `false` | Show as fullscreen overlay |
+| Prop         | Type             | Default    | Description                      |
+| ------------ | ---------------- | ---------- | -------------------------------- |
+| `message`    | `Option<String>` | `None`     | Optional loading message         |
+| `size`       | `String`         | `"medium"` | Size: "small", "medium", "large" |
+| `fullscreen` | `bool`           | `false`    | Show as fullscreen overlay       |
 
 ### Usage
 
@@ -450,7 +451,7 @@ fn dashboard() -> Html {
                 </div>
             </Card>
 
-            <Card 
+            <Card
                 title="Recent Repositories"
                 header_actions={html! {
                     <Button variant={ButtonVariant::Primary} onclick={handle_refresh}>
@@ -503,6 +504,7 @@ Make sure to define appropriate styles in your CSS files to match your applicati
 ## Contributing
 
 When adding new components:
+
 1. Create the component file in `src/components/`
 2. Export it from `src/components/mod.rs`
 3. Add comprehensive documentation with examples
