@@ -175,18 +175,61 @@ async fn ws_staged_loop(root: std::path::PathBuf) {
         base_url.replacen("http", "ws", 1) + "/staged/ws"
     };
 
-    let token = std::env::var("WT_SERVER_AUTH_TOKEN").unwrap_or_else(|_| {
-        if let Ok(engine) = worktree_sdk::WorktreeEngine::open(&root) {
-            let auth_file = engine.wt_dir().join("cache").join("auth_token");
-            if let Ok(t) = std::fs::read_to_string(auth_file) {
-                return t.trim().to_string();
+    loop {
+        let token = std::env::var("WT_SERVER_AUTH_TOKEN").unwrap_or_else(|_| {
+            if let Ok(engine) = worktree_sdk::WorktreeEngine::open(&root) {
+                let auth_file = engine.wt_dir().join("cache").join("auth_token");
+                if let Ok(t) = std::fs::read_to_string(auth_file) {
+                    return t.trim().to_string();
+                }
+            }
+            "dev-secret".to_string()
+        });
+
+        let mut tenant = std::env::var("WT_TENANT").unwrap_or_else(|_| "default".to_string());
+
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() == 3 {
+            let s = parts[1].replace('-', "+").replace('_', "/");
+            let mut out = Vec::new();
+            let mut buf = 0u32;
+            let mut bits = 0;
+            for c in s.chars() {
+                if c == '=' {
+                    continue;
+                }
+                let val = if c >= 'A' && c <= 'Z' {
+                    c as u32 - 65
+                } else if c >= 'a' && c <= 'z' {
+                    c as u32 - 71
+                } else if c >= '0' && c <= '9' {
+                    c as u32 + 4
+                } else if c == '+' {
+                    62
+                } else if c == '/' {
+                    63
+                } else {
+                    continue;
+                };
+                buf = (buf << 6) | val;
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    out.push((buf >> bits) as u8);
+                }
+            }
+            let payload_str = String::from_utf8_lossy(&out);
+            if let Some(idx) = payload_str.find(r#""tenant":""#) {
+                let rem = &payload_str[idx + 10..];
+                if let Some(end_idx) = rem.find('"') {
+                    tenant = rem[..end_idx].to_string();
+                }
             }
         }
-        "dev-secret".to_string()
-    });
 
-    loop {
-        let mut request = match ws_url.clone().into_client_request() {
+        let current_ws_url = format!("{}?tenant={}", ws_url, tenant);
+
+        let mut request = match current_ws_url.clone().into_client_request() {
             Ok(req) => req,
             Err(e) => {
                 tracing::error!("Invalid WebSocket URL: {}", e);
@@ -200,7 +243,11 @@ async fn ws_staged_loop(root: std::path::PathBuf) {
             format!("Bearer {}", token).parse().unwrap(),
         );
 
-        tracing::info!("Connecting to WebSocket: {}", ws_url);
+        tracing::info!(
+            "Connecting to WebSocket: {} with token length {}",
+            current_ws_url,
+            token.len()
+        );
 
         let ws_stream = match connect_async(request).await {
             Ok((stream, _)) => stream,

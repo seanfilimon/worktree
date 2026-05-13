@@ -73,11 +73,12 @@ fn print_staged(clear: bool) -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or("No message");
 
                     let timestamp = snap
-                        .get("timestamp")
+                        .get("created_at")
+                        .or_else(|| snap.get("timestamp"))
                         .and_then(|v| v.as_str())
                         .or_else(|| {
                             snap.get("snapshot")
-                                .and_then(|s| s.get("timestamp"))
+                                .and_then(|s| s.get("created_at").or_else(|| s.get("timestamp")))
                                 .and_then(|v| v.as_str())
                         })
                         .unwrap_or("unknown time");

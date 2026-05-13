@@ -261,9 +261,6 @@ func (r stagedUploadRequest) validate() error {
 	if r.Branch == "" {
 		return errors.New("branch is required")
 	}
-	if len(r.Objects) == 0 {
-		return errors.New("at least one object is required")
-	}
 	for _, obj := range r.Objects {
 		if !staged.IsValidRelativePath(obj.Path) {
 			return errors.New("object path must be a relative path without parent traversal")
