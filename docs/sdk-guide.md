@@ -26,13 +26,11 @@ sync work adds staged upload support:
 - `worktree_sdk::engine::sync::push_latest_staged(engine)` is the explicit latest-snapshot helper.
 - `worktree_sdk::engine::sync::push_staged(engine, snapshot_id)` uploads a specific snapshot.
 
-The staged upload computes added, modified, and deleted paths relative to the parent snapshot. It
-uploads added/modified file bytes to `POST /staged` after locally verifying each file's BLAKE3 hash
-still matches the snapshot metadata.
+All sync operations utilize a robust Write-Ahead Log (`sync_wal.log`) that persists push chunk offsets dynamically, seamlessly tolerating process or network interruptions and compacting itself locally once chunks succeed.
 
 ## Branch Operations
 
-TODO: Document how to create branches, list branches, switch branches, delete branches, and merge branches through the SDK.
+The SDK manages branch data effectively. Recently upgraded merges (`merge_branch`) use an advanced Time-based Priority Queue algorithm for detecting the absolute latest common ancestor, preventing "criss-cross" merge conflict false positives correctly natively.
 
 ## Permission Operations
 

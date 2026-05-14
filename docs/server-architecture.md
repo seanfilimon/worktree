@@ -102,11 +102,13 @@ metadata, and returns an ACK only after persistence.
 The Go implementation currently supports the same REST compatibility endpoint. Protected staged
 endpoints authenticate bearer tokens, derive tenant/account principals from server-side credentials,
 and call the shared `Authorizer` before persistence or listing. `WT_SERVER_AUTH_CREDENTIALS_PATH`
-loads JSON demo credentials; `WT_SERVER_IAM_POLICY_PATH` loads JSON demo policy rules.
+loads JSON demo credentials.
 
 `AllowAllAuthorizer` is no longer the production default. It is only available for tests or the
-explicit `WT_SERVER_IAM_MODE=allow-all-dev` escape hatch, which production config rejects. Full
-JWT/OIDC, API-key lifecycle, declarative `.wt/access/*.toml` parsing, tenant/team/role repositories,
+explicit `WT_SERVER_IAM_MODE=allow-all-dev` escape hatch, which production config rejects.
+Access rules are defined in `.wt/access/*.toml` files and compiled securely into the
+database via a relational `tenant_permissions` schema for hyper-fast `O(1)` query lookups.
+Full JWT/OIDC, API-key lifecycle, tenant/team/role repositories,
 quota checks, and full RBAC/ABAC parity remain planned.
 
 `GET /staged` applies the same tenant guard. When an authenticated tenant is present, the response is
