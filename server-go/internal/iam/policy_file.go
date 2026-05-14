@@ -3,18 +3,13 @@ package iam
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 )
 
 type PolicyFile struct {
 	Rules []PolicyRule `json:"rules"`
 }
 
-func LoadPolicyFile(path string) ([]PolicyRule, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read policy file: %w", err)
-	}
+func ParsePolicies(data []byte) ([]PolicyRule, error) {
 	var file PolicyFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("parse policy file: %w", err)

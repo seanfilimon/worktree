@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/ramizik/worktree/server-go/internal/iam"
 	"github.com/ramizik/worktree/server-go/internal/storage"
 )
+
+type PolicyUpdater interface {
+	UpdateTenantRules(tenant string, rules []iam.PolicyRule)
+}
 
 // Service orchestrates canonical push/pull operations over a Store and an
 // ObjectStore. It is transport-agnostic: HTTP handlers (and a future gRPC
@@ -15,10 +21,11 @@ import (
 type Service struct {
 	store   Store
 	objects storage.ObjectStore
+	updater PolicyUpdater
 }
 
-func NewService(store Store, objects storage.ObjectStore) *Service {
-	return &Service{store: store, objects: objects}
+func NewService(store Store, objects storage.ObjectStore, updater PolicyUpdater) *Service {
+	return &Service{store: store, objects: objects, updater: updater}
 }
 
 // PushInput is the validated payload of POST /api/push.
@@ -72,6 +79,29 @@ func (s *Service) GetObject(ctx context.Context, hash string) ([]byte, error) {
 	return s.objects.Get(ctx, hash)
 }
 
+func (s *Service) processPolicies(ctx context.Context, tenant string, objects []ObjectRef) ([]iam.PolicyRule, error) {
+	var allRules []iam.PolicyRule
+
+	for _, obj := range objects {
+		if strings.HasPrefix(obj.Path, ".wt/access/") && strings.HasSuffix(obj.Path, ".json") {
+			data, err := s.GetObject(ctx, obj.Hash)
+			if err != nil {
+				return nil, fmt.Errorf("read policy object %s: %w", obj.Path, err)
+			}
+			rules, err := iam.ParsePolicies(data)
+			if err != nil {
+				return nil, fmt.Errorf("parse policy %s: %w", obj.Path, err)
+			}
+			// Security: force tenant ID
+			for i := range rules {
+				rules[i].Tenant = tenant
+			}
+			allRules = append(allRules, rules...)
+		}
+	}
+	return allRules, nil
+}
+
 // Push promotes a snapshot chain onto the canonical branch tip via CAS.
 //
 // Order of operations (single logical txn from the client's point of view):
@@ -91,6 +121,24 @@ func (s *Service) Push(ctx context.Context, in PushInput) (PushResult, error) {
 	}
 	if len(missing) > 0 {
 		return PushResult{Status: "missing_objects", MissingObjects: missing}, nil
+	}
+
+	// Validate and compile policies from the new tip before committing.
+	var newTipSnap *Snapshot
+	for i := range in.SnapshotChain {
+		if in.SnapshotChain[i].SnapshotID == in.NewTip {
+			newTipSnap = &in.SnapshotChain[i]
+			break
+		}
+	}
+
+	var newRules []iam.PolicyRule
+	if newTipSnap != nil && s.updater != nil {
+		rules, err := s.processPolicies(ctx, in.Tenant, newTipSnap.Objects)
+		if err != nil {
+			return PushResult{Status: "invalid_policy"}, fmt.Errorf("invalid policy: %w", err)
+		}
+		newRules = rules
 	}
 
 	now := time.Now().UTC()
@@ -122,6 +170,11 @@ func (s *Service) Push(ctx context.Context, in PushInput) (PushResult, error) {
 			return PushResult{Status: "conflict", ActualTip: actual.TipSnapshotID}, nil
 		}
 		return PushResult{}, fmt.Errorf("advance tip: %w", err)
+	}
+
+	// If successful and we have a policy updater, update the rules in memory.
+	if newTipSnap != nil && s.updater != nil {
+		s.updater.UpdateTenantRules(in.Tenant, newRules)
 	}
 
 	return PushResult{

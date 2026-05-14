@@ -3,6 +3,7 @@ package iam
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/ramizik/worktree/server-go/internal/auth"
 )
@@ -60,34 +61,52 @@ type PolicyRule struct {
 }
 
 type PolicyAuthorizer struct {
-	rules []PolicyRule
+	mu          sync.RWMutex
+	tenantRules map[string][]PolicyRule
 }
 
-func NewPolicyAuthorizer(rules []PolicyRule) *PolicyAuthorizer {
-	copied := append([]PolicyRule(nil), rules...)
-	return &PolicyAuthorizer{rules: copied}
+func NewPolicyAuthorizer(rules map[string][]PolicyRule) *PolicyAuthorizer {
+	copied := make(map[string][]PolicyRule, len(rules))
+	for k, v := range rules {
+		copied[k] = append([]PolicyRule(nil), v...)
+	}
+	return &PolicyAuthorizer{tenantRules: copied}
 }
 
 func NewDefaultPolicyAuthorizer() *PolicyAuthorizer {
-	return NewPolicyAuthorizer([]PolicyRule{
-		{
-			Effect:    EffectAllow,
-			Actions:   []string{"staged:create", "staged:list"},
-			Resources: []string{"tenant:${tenant}/*"},
-			Conditions: map[string]string{
-				"scope": "staged:*",
+	return NewPolicyAuthorizer(map[string][]PolicyRule{
+		// Note: using "" (empty string) for global/default rules if needed,
+		// but typically we'd inject this via system initialization.
+		"": {
+			{
+				Effect:    EffectAllow,
+				Actions:   []string{"staged:create", "staged:list"},
+				Resources: []string{"tenant:${tenant}/*"},
+				Conditions: map[string]string{
+					"scope": "staged:*",
+				},
 			},
-		},
-		{
-			Effect: EffectAllow,
-			Actions: []string{
-				"branch:push", "branch:pull",
-				"object:check", "object:read", "object:write",
-				"ref:list",
+			{
+				Effect: EffectAllow,
+				Actions: []string{
+					"branch:push", "branch:pull",
+					"object:check", "object:read", "object:write",
+					"ref:list",
+				},
+				Resources: []string{"tenant:${tenant}/*", "tenant:${tenant}"},
 			},
-			Resources: []string{"tenant:${tenant}/*", "tenant:${tenant}"},
 		},
 	})
+}
+
+func (a *PolicyAuthorizer) UpdateTenantRules(tenant string, rules []PolicyRule) {
+	copied := append([]PolicyRule(nil), rules...)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.tenantRules == nil {
+		a.tenantRules = make(map[string][]PolicyRule)
+	}
+	a.tenantRules[tenant] = copied
 }
 
 func (a *PolicyAuthorizer) Authorize(ctx context.Context, principal auth.Principal, action string, resource string) (Decision, error) {
@@ -98,8 +117,15 @@ func (a *PolicyAuthorizer) Authorize(ctx context.Context, principal auth.Princip
 		return Deny, nil
 	}
 
+	a.mu.RLock()
+	globalRules := a.tenantRules[""]
+	tenantRules := a.tenantRules[principal.Tenant]
+	a.mu.RUnlock()
+
 	matchedAllow := false
-	for _, rule := range a.rules {
+
+	// Check global rules first
+	for _, rule := range globalRules {
 		if !ruleMatchesPrincipal(rule, principal) {
 			continue
 		}
@@ -119,6 +145,29 @@ func (a *PolicyAuthorizer) Authorize(ctx context.Context, principal auth.Princip
 			matchedAllow = true
 		}
 	}
+
+	// Then check tenant-specific rules
+	for _, rule := range tenantRules {
+		if !ruleMatchesPrincipal(rule, principal) {
+			continue
+		}
+		if !matchesAny(rule.Actions, action) {
+			continue
+		}
+		if !resourceMatchesAny(rule.Resources, principal, resource) {
+			continue
+		}
+		if !conditionsMatch(rule.Conditions, principal, action) {
+			continue
+		}
+		if rule.Effect == EffectDeny {
+			return Deny, nil
+		}
+		if rule.Effect == EffectAllow {
+			matchedAllow = true
+		}
+	}
+
 	if matchedAllow {
 		return Allow, nil
 	}

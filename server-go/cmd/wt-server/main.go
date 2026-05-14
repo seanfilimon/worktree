@@ -95,7 +95,11 @@ func main() {
 
 	var canService *httpapi.CanonicalService
 	if canonicalStore != nil {
-		coreService := canonical.NewService(canonicalStore, objectStore)
+		var updater canonical.PolicyUpdater
+		if polAuth, ok := authorizer.(*iam.PolicyAuthorizer); ok {
+			updater = polAuth
+		}
+		coreService := canonical.NewService(canonicalStore, objectStore, updater)
 		canService = httpapi.NewCanonicalService(coreService, auditRecorder, authorizer)
 	}
 
@@ -190,11 +194,16 @@ func buildAuthorizer(cfg config.Config) (iam.Authorizer, error) {
 		return iam.AllowAllAuthorizer{}, nil
 	}
 	if cfg.IAMPolicyPath != "" {
-		rules, err := iam.LoadPolicyFile(cfg.IAMPolicyPath)
+		data, err := os.ReadFile(cfg.IAMPolicyPath)
 		if err != nil {
 			return nil, err
 		}
-		return iam.NewPolicyAuthorizer(rules), nil
+		rules, err := iam.ParsePolicies(data)
+		if err != nil {
+			return nil, err
+		}
+		// Put them all under the default/global tenant for now
+		return iam.NewPolicyAuthorizer(map[string][]iam.PolicyRule{"": rules}), nil
 	}
 	return iam.NewDefaultPolicyAuthorizer(), nil
 }
