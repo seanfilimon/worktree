@@ -31,13 +31,13 @@ func TestDBAuthorizer(t *testing.T) {
 
 	// Ensure the table exists
 	_, err = pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS tenant_policies (
+		CREATE TABLE IF NOT EXISTS tenant_permissions (
 			id SERIAL PRIMARY KEY,
 			tenant TEXT NOT NULL,
 			effect TEXT NOT NULL,
 			account TEXT NOT NULL DEFAULT '',
-			actions TEXT[] NOT NULL,
-			resources TEXT[] NOT NULL,
+			action TEXT NOT NULL,
+			resource_pattern TEXT NOT NULL,
 			conditions JSONB
 		)
 	`)
@@ -45,7 +45,7 @@ func TestDBAuthorizer(t *testing.T) {
 		t.Fatalf("failed to create table: %v", err)
 	}
 	// Clean up table to ensure isolation
-	_, _ = pool.Exec(ctx, "DELETE FROM tenant_policies")
+	_, _ = pool.Exec(ctx, "DELETE FROM tenant_permissions")
 
 	authorizer := iam.NewDBAuthorizer(pool)
 
@@ -62,7 +62,7 @@ func TestDBAuthorizer(t *testing.T) {
 	}
 
 	p := auth.Principal{Tenant: "acme", Account: "alice", Authenticated: true}
-	
+
 	decision, err := authorizer.Authorize(ctx, p, "staged:create", "acme/wt/main/snap-1")
 	if err != nil {
 		t.Fatalf("Authorize: %v", err)

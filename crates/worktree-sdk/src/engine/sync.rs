@@ -116,6 +116,42 @@ fn append_wal(engine: &super::WorktreeEngine, entry: &SyncWalEntry) -> Result<()
 
     let json = serde_json::to_string(entry).unwrap_or_default();
     writeln!(file, "{}", json)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn clean_wal(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<()> {
+    let wal_path = engine.wt_dir().join("cache").join("sync_wal.log");
+    if !wal_path.exists() {
+        return Ok(());
+    }
+
+    let mut temp_path = wal_path.clone();
+    temp_path.set_extension("tmp");
+
+    let mut retained = Vec::new();
+    if let Ok(file) = std::fs::File::open(&wal_path) {
+        let reader = BufReader::new(file);
+        for line in reader.lines().flatten() {
+            if let Ok(entry) = serde_json::from_str::<SyncWalEntry>(&line) {
+                if entry.snapshot_id != snapshot_id {
+                    retained.push(line);
+                }
+            }
+        }
+    }
+
+    if retained.is_empty() {
+        let _ = std::fs::remove_file(&wal_path);
+    } else {
+        let mut temp_file = std::fs::File::create(&temp_path)?;
+        for line in retained {
+            writeln!(temp_file, "{}", line)?;
+        }
+        temp_file.sync_all()?;
+        std::fs::rename(temp_path, wal_path)?;
+    }
+
     Ok(())
 }
 
@@ -304,6 +340,8 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
             timestamp: chrono::Utc::now().to_rfc3339(),
         },
     );
+
+    let _ = clean_wal(engine, snapshot_id);
 
     let branch_name = tree.current_branch.clone();
     let tree_name = tree.name.clone();
