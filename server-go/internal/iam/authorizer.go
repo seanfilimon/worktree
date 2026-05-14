@@ -52,12 +52,12 @@ const (
 )
 
 type PolicyRule struct {
-	Effect     Effect            `json:"effect"`
-	Tenant     string            `json:"tenant,omitempty"`
-	Account    string            `json:"account,omitempty"`
-	Actions    []string          `json:"actions"`
-	Resources  []string          `json:"resources"`
-	Conditions map[string]string `json:"conditions,omitempty"`
+	Effect     Effect            `json:"effect" toml:"effect"`
+	Tenant     string            `json:"tenant,omitempty" toml:"tenant,omitempty"`
+	Account    string            `json:"account,omitempty" toml:"account,omitempty"`
+	Actions    []string          `json:"actions" toml:"actions"`
+	Resources  []string          `json:"resources" toml:"resources"`
+	Conditions map[string]string `json:"conditions,omitempty" toml:"conditions,omitempty"`
 }
 
 type PolicyAuthorizer struct {
@@ -99,7 +99,7 @@ func NewDefaultPolicyAuthorizer() *PolicyAuthorizer {
 	})
 }
 
-func (a *PolicyAuthorizer) UpdateTenantRules(tenant string, rules []PolicyRule) {
+func (a *PolicyAuthorizer) UpdateTenantRules(ctx context.Context, tenant string, rules []PolicyRule) error {
 	copied := append([]PolicyRule(nil), rules...)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -107,6 +107,7 @@ func (a *PolicyAuthorizer) UpdateTenantRules(tenant string, rules []PolicyRule) 
 		a.tenantRules = make(map[string][]PolicyRule)
 	}
 	a.tenantRules[tenant] = copied
+	return nil
 }
 
 func (a *PolicyAuthorizer) Authorize(ctx context.Context, principal auth.Principal, action string, resource string) (Decision, error) {

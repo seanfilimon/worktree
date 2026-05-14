@@ -62,7 +62,13 @@ func TestPolicyAuthorizer_DenyOverridesAllow(t *testing.T) {
 }
 
 func TestParsePolicies(t *testing.T) {
-	data := []byte(`{"rules":[{"effect":"allow","tenant":"acme","actions":["staged:list"],"resources":["tenant:acme/*"]}]}`)
+	data := []byte(`
+[[rules]]
+effect = "allow"
+tenant = "acme"
+actions = ["staged:list"]
+resources = ["tenant:acme/*"]
+`)
 	rules, err := iam.ParsePolicies(data)
 	if err != nil {
 		t.Fatalf("ParsePolicies: %v", err)
@@ -83,7 +89,7 @@ func TestPolicyAuthorizer_UpdateTenantRules(t *testing.T) {
 	}
 
 	// Update rules
-	a.UpdateTenantRules("acme", []iam.PolicyRule{
+	a.UpdateTenantRules(context.Background(), "acme", []iam.PolicyRule{
 		{Effect: iam.EffectAllow, Tenant: "acme", Actions: []string{"staged:list"}, Resources: []string{"tenant:acme/*"}},
 	})
 

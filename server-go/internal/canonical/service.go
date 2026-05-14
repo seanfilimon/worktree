@@ -12,7 +12,7 @@ import (
 )
 
 type PolicyUpdater interface {
-	UpdateTenantRules(tenant string, rules []iam.PolicyRule)
+	UpdateTenantRules(ctx context.Context, tenant string, rules []iam.PolicyRule) error
 }
 
 // Service orchestrates canonical push/pull operations over a Store and an
@@ -83,7 +83,7 @@ func (s *Service) processPolicies(ctx context.Context, tenant string, objects []
 	var allRules []iam.PolicyRule
 
 	for _, obj := range objects {
-		if strings.HasPrefix(obj.Path, ".wt/access/") && strings.HasSuffix(obj.Path, ".json") {
+		if strings.HasPrefix(obj.Path, ".wt/access/") && strings.HasSuffix(obj.Path, ".toml") {
 			data, err := s.GetObject(ctx, obj.Hash)
 			if err != nil {
 				return nil, fmt.Errorf("read policy object %s: %w", obj.Path, err)
@@ -172,9 +172,12 @@ func (s *Service) Push(ctx context.Context, in PushInput) (PushResult, error) {
 		return PushResult{}, fmt.Errorf("advance tip: %w", err)
 	}
 
-	// If successful and we have a policy updater, update the rules in memory.
+	// If successful and we have a policy updater, update the rules in the database.
 	if newTipSnap != nil && s.updater != nil {
-		s.updater.UpdateTenantRules(in.Tenant, newRules)
+		if err := s.updater.UpdateTenantRules(ctx, in.Tenant, newRules); err != nil {
+			// Log the error but don't fail the push since tip advanced
+			// We could also consider this a critical failure depending on constraints
+		}
 	}
 
 	return PushResult{

@@ -58,8 +58,10 @@ func main() {
 	var stagedStore staged.Store
 	var canonicalStore canonical.Store
 
+	var pool *pgxpool.Pool
 	if cfg.DatabaseURL != "" {
-		pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+		var err error
+		pool, err = pgxpool.New(context.Background(), cfg.DatabaseURL)
 		if err != nil {
 			slog.Error("failed to connect to postgres pool", "error", err)
 			os.Exit(1)
@@ -87,18 +89,32 @@ func main() {
 	}
 	jwtAuth := auth.NewJWTAuthenticator(jwtSecret)
 
-	authorizer, err := buildAuthorizer(cfg)
-	if err != nil {
-		slog.Error("failed to configure IAM", "error", err)
-		os.Exit(1)
+	var authorizer iam.Authorizer
+	var updater canonical.PolicyUpdater
+
+	if cfg.IAMMode == "allow-all-dev" {
+		authorizer = iam.AllowAllAuthorizer{}
+	} else if pool != nil {
+		dbAuth := iam.NewDBAuthorizer(pool)
+		authorizer = dbAuth
+		updater = dbAuth
+		slog.Info("using db authorizer")
+	} else {
+		// Fallback for file store or missing pool
+		var err error
+		authorizer, err = buildAuthorizer(cfg)
+		if err != nil {
+			slog.Error("failed to configure IAM", "error", err)
+			os.Exit(1)
+		}
+		if polAuth, ok := authorizer.(*iam.PolicyAuthorizer); ok {
+			updater = polAuth
+		}
+		slog.Info("using fallback file/memory authorizer")
 	}
 
 	var canService *httpapi.CanonicalService
 	if canonicalStore != nil {
-		var updater canonical.PolicyUpdater
-		if polAuth, ok := authorizer.(*iam.PolicyAuthorizer); ok {
-			updater = polAuth
-		}
 		coreService := canonical.NewService(canonicalStore, objectStore, updater)
 		canService = httpapi.NewCanonicalService(coreService, auditRecorder, authorizer)
 	}
