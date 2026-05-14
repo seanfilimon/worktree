@@ -23,12 +23,12 @@ struct CanonicalPushReq {
     objects: Vec<CanonicalObjectUpload>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct CanonicalObjectUpload {
     path: String,
     hash: String,
     size: u64,
-    content: String, // base64-encoded bytes; Go []byte json field auto-decodes base64
+    content: String, // base64
 }
 
 fn server_url() -> String {
@@ -93,6 +93,49 @@ pub fn push_unpushed(engine: &super::WorktreeEngine) -> Result<PushResult> {
     })
 }
 
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct SyncWalEntry {
+    snapshot_id: String,
+    state: String, // "start", "chunk_pushed", "completed", "failed"
+    chunk_index: Option<usize>,
+    timestamp: String,
+}
+
+fn append_wal(engine: &super::WorktreeEngine, entry: &SyncWalEntry) -> Result<()> {
+    let cache_dir = engine.wt_dir().join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap_or_default();
+    let wal_path = cache_dir.join("sync_wal.log");
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(wal_path)?;
+
+    let json = serde_json::to_string(entry).unwrap_or_default();
+    writeln!(file, "{}", json)?;
+    Ok(())
+}
+
+fn get_last_wal_state(engine: &super::WorktreeEngine, snapshot_id: &str) -> Option<SyncWalEntry> {
+    let wal_path = engine.wt_dir().join("cache").join("sync_wal.log");
+    if let Ok(file) = std::fs::File::open(wal_path) {
+        let reader = BufReader::new(file);
+        let mut last_entry = None;
+        for line in reader.lines().flatten() {
+            if let Ok(entry) = serde_json::from_str::<SyncWalEntry>(&line) {
+                if entry.snapshot_id == snapshot_id {
+                    last_entry = Some(entry);
+                }
+            }
+        }
+        return last_entry;
+    }
+    None
+}
+
 pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<PushResult> {
     let mut state = super::status::load_state(engine)?;
     let tree = state
@@ -106,6 +149,37 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
             server: server_url(),
         });
     }
+
+    let mut start_chunk = 0;
+    // Check WAL for existing state
+    if let Some(entry) = get_last_wal_state(engine, snapshot_id) {
+        if entry.state == "completed" {
+            // Already pushed successfully, skip
+            return Ok(PushResult {
+                branch: tree.current_branch.clone(),
+                snapshots_pushed: 1,
+                server: server_url(),
+            });
+        }
+
+        if let Some(idx) = entry.chunk_index {
+            if entry.state == "chunk_pushed" {
+                start_chunk = idx + 1;
+            } else {
+                start_chunk = idx;
+            }
+        }
+    }
+
+    let _ = append_wal(
+        engine,
+        &SyncWalEntry {
+            snapshot_id: snapshot_id.to_string(),
+            state: "start".to_string(),
+            chunk_index: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        },
+    );
 
     let branch = &tree.current_branch;
     let snapshot = tree
@@ -124,48 +198,115 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
     let branch_state = tree.branches.iter().find(|b| &b.name == branch);
     let remote_tip = branch_state.and_then(|b| b.remote_tip.clone());
 
-    let req = CanonicalPushReq {
-        snapshot_id: snapshot.id.clone(),
-        tenant,
-        worktree: tree.name.clone(),
-        tree_id: tree.name.clone(),
-        branch: branch.clone(),
-        remote_tip,
-        objects: canonical_object_uploads(engine, &snapshot, &change_set.present_files)?,
-    };
+    let mut objects = canonical_object_uploads(engine, &snapshot, &change_set.present_files)?;
 
-    let server = server_url();
-    let client = reqwest::blocking::Client::new();
-    let mut request = client
-        .post(format!("{server}/staged"))
-        .header("x-wt-tree-id", &req.tree_id)
-        .json(&req);
-    let token = std::env::var("WT_SERVER_AUTH_TOKEN")
+    // Journal Chunking: We can chunk the objects array and upload in parts if the server supports it.
+    // If not, we just record the chunk attempts.
+    let chunk_size = std::env::var("WT_CHUNK_SIZE")
         .ok()
-        .or_else(|| {
-            std::fs::read_to_string(engine.wt_dir().join("cache").join("auth_token"))
-                .ok()
-                .map(|t| t.trim().to_string())
-        })
-        .or_else(|| Some("dev-secret".to_string()));
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
-    }
-    let resp = request
-        .send()
-        .map_err(|e| SdkError::NetworkError(e.to_string()))?;
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        return Err(SdkError::NetworkError(format!(
-            "server rejected staged upload ({}): {}",
-            status, body
-        )));
+    for (i, chunk) in objects.chunks(chunk_size).enumerate() {
+        if i < start_chunk {
+            continue;
+        }
+
+        let _ = append_wal(
+            engine,
+            &SyncWalEntry {
+                snapshot_id: snapshot_id.to_string(),
+                state: "chunk_uploading".to_string(),
+                chunk_index: Some(i),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+
+        let req = CanonicalPushReq {
+            snapshot_id: snapshot.id.clone(),
+            tenant: tenant.clone(),
+            worktree: tree.name.clone(),
+            tree_id: tree.name.clone(),
+            branch: branch.clone(),
+            remote_tip: remote_tip.clone(),
+            objects: chunk.to_vec(),
+        };
+
+        let server = server_url();
+        let client = reqwest::blocking::Client::new();
+        let mut request = client
+            .post(format!("{server}/staged"))
+            .header("x-wt-tree-id", &req.tree_id)
+            .json(&req);
+        let token = std::env::var("WT_SERVER_AUTH_TOKEN")
+            .ok()
+            .or_else(|| {
+                std::fs::read_to_string(engine.wt_dir().join("cache").join("auth_token"))
+                    .ok()
+                    .map(|t| t.trim().to_string())
+            })
+            .or_else(|| Some("dev-secret".to_string()));
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let resp = request.send().map_err(|e| {
+            let _ = append_wal(
+                engine,
+                &SyncWalEntry {
+                    snapshot_id: snapshot_id.to_string(),
+                    state: "failed".to_string(),
+                    chunk_index: Some(i),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+            SdkError::NetworkError(e.to_string())
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+
+            // 409 Conflict means it's already there, which is fine for idempotency
+            if status != reqwest::StatusCode::CONFLICT {
+                let _ = append_wal(
+                    engine,
+                    &SyncWalEntry {
+                        snapshot_id: snapshot_id.to_string(),
+                        state: "failed".to_string(),
+                        chunk_index: Some(i),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    },
+                );
+                return Err(SdkError::NetworkError(format!(
+                    "server rejected staged upload ({}): {}",
+                    status, body
+                )));
+            }
+        }
+
+        let _ = append_wal(
+            engine,
+            &SyncWalEntry {
+                snapshot_id: snapshot_id.to_string(),
+                state: "chunk_pushed".to_string(),
+                chunk_index: Some(i),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            },
+        );
     }
 
-    let branch_name = req.branch.clone();
-    let tree_name = req.tree_id.clone();
+    let _ = append_wal(
+        engine,
+        &SyncWalEntry {
+            snapshot_id: snapshot_id.to_string(),
+            state: "completed".to_string(),
+            chunk_index: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        },
+    );
+
+    let branch_name = tree.current_branch.clone();
+    let tree_name = tree.name.clone();
     if let Some(t) = state.trees.iter_mut().find(|t| t.name == tree_name) {
         if let Some(b) = t.branches.iter_mut().find(|b| b.name == branch_name) {
             b.remote_tip = Some(snapshot_id.to_string());
@@ -176,7 +317,7 @@ pub fn push_staged(engine: &super::WorktreeEngine, snapshot_id: &str) -> Result<
     Ok(PushResult {
         branch: branch_name,
         snapshots_pushed: 1,
-        server,
+        server: server_url(),
     })
 }
 

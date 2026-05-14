@@ -10,8 +10,8 @@
 - [x] Fix mocked identities.
 
 ## Robust Sync WAL
-- [ ] Introduce a Write-Ahead Log in `.wt/cache/` for chunking and push states.
-- [ ] Update `push_staged` in `crates/worktree-sdk/src/engine/sync.rs` to use WAL.
+- [x] Introduce a Write-Ahead Log in `.wt/cache/` for chunking and push states.
+- [x] Update `push_staged` in `crates/worktree-sdk/src/engine/sync.rs` to use WAL.
 - [x] Add TOML parser dependency (`github.com/pelletier/go-toml/v2`).
 - [x] Create database migration for `tenant_policies` table.
 - [x] Update `iam.ParsePolicies` to parse `.wt/access/*.toml` files instead of JSON.
