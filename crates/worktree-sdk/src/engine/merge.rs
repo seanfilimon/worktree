@@ -74,22 +74,49 @@ pub fn merge_branch(engine: &super::WorktreeEngine, source_branch: &str) -> Resu
         }
     }
 
+    struct QueueItem<'a> {
+        snapshot: &'a SnapshotState,
+    }
+
+    impl<'a> PartialEq for QueueItem<'a> {
+        fn eq(&self, other: &Self) -> bool {
+            self.snapshot.id == other.snapshot.id
+        }
+    }
+
+    impl<'a> Eq for QueueItem<'a> {}
+
+    impl<'a> PartialOrd for QueueItem<'a> {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl<'a> Ord for QueueItem<'a> {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.snapshot.timestamp.cmp(&other.snapshot.timestamp)
+        }
+    }
+
     let mut base_files: Vec<FileEntry> = Vec::new();
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(target_snap.id.clone());
+    let mut pq = std::collections::BinaryHeap::new();
+    if let Some(snap) = snapshots_by_id.get(&target_snap.id) {
+        pq.push(QueueItem { snapshot: snap });
+    }
     let mut visited_target = std::collections::HashSet::new();
 
-    while let Some(id) = queue.pop_front() {
+    while let Some(item) = pq.pop() {
+        let id = &item.snapshot.id;
         if visited_target.insert(id.clone()) {
-            if source_ancestors.contains(&id) {
-                if let Some(snap) = snapshots_by_id.get(&id) {
-                    base_files = snap.files.clone();
-                }
+            if source_ancestors.contains(id) {
+                base_files = item.snapshot.files.clone();
                 break;
             }
-            if let Some(snap) = snapshots_by_id.get(&id) {
-                for p in &snap.parents {
-                    queue.push_back(p.clone());
+            for p in &item.snapshot.parents {
+                if let Some(parent_snap) = snapshots_by_id.get(p) {
+                    pq.push(QueueItem {
+                        snapshot: parent_snap,
+                    });
                 }
             }
         }
