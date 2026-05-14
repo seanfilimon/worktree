@@ -137,16 +137,15 @@ impl<'repo> GitToWorktreeConverter<'repo> {
         Ok(())
     }
 
-    /// Convert a `git2::Blob` into a Worktree `Blob`.
+    /// Convert a `git2::Blob` into a Worktree `Blob` metadata object.
     ///
-    /// The blob content is copied and a BLAKE3 content hash is computed.
+    /// A BLAKE3 content hash is computed. The caller is responsible for reading the content.
     pub fn convert_blob(&self, blob: &git2::Blob) -> Result<Blob> {
         let content = blob.content();
         let hash = hash_bytes(content);
         Ok(Blob {
             hash,
             size: content.len() as u64,
-            content: content.to_vec(),
         })
     }
 

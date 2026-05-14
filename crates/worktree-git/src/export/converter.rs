@@ -98,15 +98,24 @@ impl WorktreeToGitConverter {
 
         let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
 
-        // Map AccountId to signature.
-        let author_str = snapshot.author.to_string();
-        let email = format!("{}@worktree.local", author_str);
-
         let timestamp = snapshot.timestamp.timestamp();
         let time = git2::Time::new(timestamp, 0); // 0 offset = UTC
-        let signature = git2::Signature::new(&author_str, &email, &time).map_err(|e| {
-            GitCompatError::ExportError(format!("Failed to create signature: {}", e))
-        })?;
+
+        let signature = self
+            .repo
+            .signature()
+            .and_then(|sig| {
+                git2::Signature::new(
+                    sig.name().unwrap_or("unknown"),
+                    sig.email().unwrap_or("unknown@worktree.local"),
+                    &time,
+                )
+            })
+            .unwrap_or_else(|_| {
+                let author_str = snapshot.author.to_string();
+                let email = format!("{}@worktree.local", author_str);
+                git2::Signature::new(&author_str, &email, &time).unwrap()
+            });
 
         let oid = self.repo.commit(
             None, // Do not update any reference automatically
@@ -250,8 +259,15 @@ impl WorktreeToGitConverter {
     /// repository's object database.
     ///
     /// Returns the `git2::Oid` of the newly written blob.
-    pub fn convert_blob(&mut self, blob: &Blob) -> Result<git2::Oid> {
-        let oid = self.repo.blob(&blob.content)?;
+    pub fn convert_blob<R: std::io::Read>(
+        &mut self,
+        blob: &Blob,
+        mut reader: R,
+    ) -> Result<git2::Oid> {
+        let mut stream = self.repo.blob_writer(None)?;
+        std::io::copy(&mut reader, &mut stream)
+            .map_err(|e| GitCompatError::ExportError(format!("Failed to stream blob: {}", e)))?;
+        let oid = stream.commit()?;
         self.content_map.insert(blob.hash, oid);
         Ok(oid)
     }

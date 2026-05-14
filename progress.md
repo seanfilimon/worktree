@@ -5,9 +5,9 @@
 - [x] Factor in `SnapshotState.timestamp` to find the most recent common ancestor (LCA) in time.
 
 ## Git Bridge Object Streaming
-- [ ] Refactor the `Blob` protocol to utilize data streams instead of `Vec<u8>`.
-- [ ] Switch git2 integration to use `git2::Repository::blob_stream()` in `convert_blob`.
-- [ ] Fix mocked identities.
+- [x] Refactor the `Blob` protocol to utilize data streams instead of `Vec<u8>`.
+- [x] Switch git2 integration to use `git2::Repository::blob_writer()` in `convert_blob` (streaming approach).
+- [x] Fix mocked identities.
 
 ## Robust Sync WAL
 - [ ] Introduce a Write-Ahead Log in `.wt/cache/` for chunking and push states.
