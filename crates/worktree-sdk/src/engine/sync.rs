@@ -67,24 +67,7 @@ pub fn push_unpushed(engine: &super::WorktreeEngine) -> Result<PushResult> {
     let branch_state = tree.branches.iter().find(|b| &b.name == branch);
     let remote_tip = branch_state.and_then(|b| b.remote_tip.clone());
 
-    let snaps = tree.snapshots_on_branch(branch);
-
-    let mut to_push = Vec::new();
-    if let Some(rtip) = remote_tip {
-        let mut found = false;
-        for snap in &snaps {
-            if found {
-                to_push.push(snap.id.clone());
-            } else if snap.id == rtip {
-                found = true;
-            }
-        }
-        if !found {
-            to_push = snaps.into_iter().map(|s| s.id.clone()).collect();
-        }
-    } else {
-        to_push = snaps.into_iter().map(|s| s.id.clone()).collect();
-    }
+    let to_push = find_unpushed_snapshots(&tree, branch, remote_tip.as_deref());
 
     if engine.wt_dir().join("cache").join("sync_paused").exists() {
         return Ok(PushResult {
@@ -258,6 +241,114 @@ pub fn pull(engine: &super::WorktreeEngine) -> Result<PullResult> {
         new_snapshots: server_changes,
         up_to_date: server_changes == 0,
     })
+}
+
+fn find_unpushed_snapshots(
+    tree: &super::status::TreeState,
+    branch: &str,
+    remote_tip: Option<&str>,
+) -> Vec<String> {
+    let snaps = tree.snapshots_on_branch(branch);
+    let mut to_push = Vec::new();
+
+    let mut snap_map = std::collections::HashMap::new();
+    for snap in &tree.snapshots {
+        snap_map.insert(&snap.id, snap);
+    }
+
+    let mut known_set = std::collections::HashSet::new();
+    if let Some(rtip) = remote_tip {
+        let mut queue = vec![rtip];
+        while let Some(current_id) = queue.pop() {
+            if known_set.contains(current_id) {
+                continue;
+            }
+            known_set.insert(current_id);
+            if let Some(snap) = snap_map.get(&current_id.to_string()) {
+                for parent_id in &snap.parents {
+                    queue.push(parent_id);
+                }
+            }
+        }
+    }
+
+    let local_tip = snaps.last();
+    if let Some(tip) = local_tip {
+        let mut unpushed_set = std::collections::HashSet::new();
+        let mut queue = vec![tip.id.as_str()];
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(current_id) = queue.pop() {
+            if visited.contains(current_id) {
+                continue;
+            }
+            visited.insert(current_id);
+
+            if known_set.contains(current_id) {
+                continue;
+            }
+
+            unpushed_set.insert(current_id.to_string());
+
+            if let Some(snap) = snap_map.get(&current_id.to_string()) {
+                for parent_id in &snap.parents {
+                    queue.push(parent_id);
+                }
+            }
+        }
+
+        let mut in_degree: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut children_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        for id in &unpushed_set {
+            in_degree.insert(id.clone(), 0);
+            children_map.insert(id.clone(), Vec::new());
+        }
+
+        for id in &unpushed_set {
+            if let Some(snap) = snap_map.get(id) {
+                let mut parent_count = 0;
+                for parent_id in &snap.parents {
+                    if unpushed_set.contains(parent_id) {
+                        parent_count += 1;
+                        children_map
+                            .entry(parent_id.clone())
+                            .or_default()
+                            .push(id.clone());
+                    }
+                }
+                in_degree.insert(id.clone(), parent_count);
+            }
+        }
+
+        let mut process_queue: std::collections::VecDeque<String> =
+            std::collections::VecDeque::new();
+        for snap in &tree.snapshots {
+            if let Some(&deg) = in_degree.get(&snap.id) {
+                if deg == 0 {
+                    process_queue.push_back(snap.id.clone());
+                }
+            }
+        }
+
+        while let Some(id) = process_queue.pop_front() {
+            to_push.push(id.clone());
+            if let Some(children) = children_map.get(&id) {
+                for child_id in children {
+                    if let Some(deg) = in_degree.get_mut(child_id) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            process_queue.push_back(child_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    to_push
 }
 
 #[derive(Debug)]
@@ -560,5 +651,68 @@ mod tests {
         assert!(changes.present_files.contains("a.rs"));
         assert!(changes.present_files.contains("new.rs"));
         assert!(!changes.present_files.contains("gone.rs"));
+    }
+
+    #[test]
+    fn find_unpushed_snapshots_linear() {
+        use crate::engine::status::{BranchState, TreeState};
+        let tree = TreeState {
+            name: "test".into(),
+            path: "".into(),
+            branches: vec![BranchState {
+                name: "main".into(),
+                tip: Some("snap-3".into()),
+                remote_tip: Some("snap-1".into()),
+                created_at: "".into(),
+            }],
+            current_branch: "main".into(),
+            tags: vec![],
+            snapshots: vec![
+                snap("snap-1", vec![], vec![]),
+                snap("snap-2", vec!["snap-1".into()], vec![]),
+                snap("snap-3", vec!["snap-2".into()], vec![]),
+            ],
+        };
+        let to_push = super::find_unpushed_snapshots(&tree, "main", Some("snap-1"));
+        assert_eq!(to_push, vec!["snap-2".to_string(), "snap-3".to_string()]);
+    }
+
+    #[test]
+    fn find_unpushed_snapshots_merged_branch() {
+        use crate::engine::status::{BranchState, TreeState};
+        let mut snap_x = snap("snap-X", vec!["snap-A".into()], vec![]);
+        snap_x.branch_name = "feature".into();
+        let mut snap_y = snap("snap-Y", vec!["snap-X".into()], vec![]);
+        snap_y.branch_name = "feature".into();
+
+        let tree = TreeState {
+            name: "test".into(),
+            path: "".into(),
+            branches: vec![BranchState {
+                name: "main".into(),
+                tip: Some("snap-C".into()),
+                remote_tip: Some("snap-B".into()),
+                created_at: "".into(),
+            }],
+            current_branch: "main".into(),
+            tags: vec![],
+            snapshots: vec![
+                snap("snap-A", vec![], vec![]),
+                snap("snap-B", vec!["snap-A".into()], vec![]),
+                snap_x,
+                snap_y,
+                snap("snap-C", vec!["snap-B".into(), "snap-Y".into()], vec![]),
+            ],
+        };
+
+        let to_push = super::find_unpushed_snapshots(&tree, "main", Some("snap-B"));
+        assert_eq!(
+            to_push,
+            vec![
+                "snap-X".to_string(),
+                "snap-Y".to_string(),
+                "snap-C".to_string(),
+            ]
+        );
     }
 }
