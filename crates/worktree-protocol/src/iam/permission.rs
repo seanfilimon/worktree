@@ -15,62 +15,90 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Permission {
     // ── Tree permissions ────────────────────────────────────────────
-    /// Read tree contents, history, and manifests.
+    #[serde(rename = "tree:read")]
     TreeRead,
-    /// Modify files within a tree.
+    #[serde(rename = "tree:write")]
     TreeWrite,
-    /// Create new trees.
+    #[serde(rename = "tree:create")]
     TreeCreate,
-    /// Delete trees.
+    #[serde(rename = "tree:delete")]
     TreeDelete,
-    /// Full administrative control over a tree (implies all tree-level ops).
+    #[serde(rename = "tree:admin")]
     TreeAdmin,
 
     // ── Branch permissions ──────────────────────────────────────────
-    /// View branches and their metadata.
+    #[serde(rename = "branch:read")]
     BranchRead,
-    /// Create new branches.
+    #[serde(rename = "branch:create")]
     BranchCreate,
-    /// Delete branches.
+    #[serde(rename = "branch:delete")]
     BranchDelete,
-    /// Merge branches.
+    #[serde(rename = "branch:merge")]
     BranchMerge,
-    /// Configure branch protection rules.
+    #[serde(rename = "branch:protect")]
     BranchProtect,
 
     // ── Snapshot permissions ────────────────────────────────────────
-    /// Create snapshots (commits).
+    #[serde(rename = "snapshot:create")]
     SnapshotCreate,
-    /// View snapshot history.
+    #[serde(rename = "snapshot:read")]
     SnapshotRead,
+    #[serde(rename = "snapshot:revert")]
+    SnapshotRevert,
+    #[serde(rename = "snapshot:sign")]
+    SnapshotSign,
 
     // ── Sync permissions ────────────────────────────────────────────
-    /// Push to remotes.
+    #[serde(rename = "sync:push")]
     SyncPush,
-    /// Pull from remotes.
+    #[serde(rename = "sync:pull")]
     SyncPull,
+    #[serde(rename = "sync:force_push")]
+    SyncForcePush,
 
     // ── Staged visibility permissions ───────────────────────────────
-    /// Upload a staged snapshot to the server.
+    #[serde(rename = "staged:create")]
     StagedCreate,
-    /// List staged snapshots visible to the requester.
+    #[serde(rename = "staged:list")]
     StagedList,
 
     // ── Management permissions ──────────────────────────────────────
-    /// Create, update, or deactivate accounts within the tenant.
+    #[serde(rename = "manage:roles")]
+    ManageRoles,
+    #[serde(rename = "manage:teams")]
+    ManageTeams,
+    #[serde(rename = "manage:policies")]
+    ManagePolicies,
+    #[serde(rename = "account:manage")]
     AccountManage,
-    /// Create, update, or delete teams.
-    TeamManage,
-    /// Create, update, or delete roles.
-    RoleManage,
-    /// Create, update, or delete policies.
-    PolicyManage,
 
     // ── Administrative permissions ──────────────────────────────────
-    /// Full admin over the tenant (implies everything within that tenant).
-    TenantAdmin,
-    /// Superadmin — implies everything everywhere.
+    #[serde(rename = "admin:tenant")]
+    AdminTenant,
+    #[serde(rename = "admin:audit_read")]
+    AdminAuditRead,
+    #[serde(rename = "admin:bypass_protection")]
+    AdminBypassProtection,
+    #[serde(rename = "global:admin")]
     GlobalAdmin,
+
+    // ── Tags & Releases permissions ──────────────────────────────────
+    #[serde(rename = "tag:create")]
+    TagCreate,
+    #[serde(rename = "tag:delete")]
+    TagDelete,
+    #[serde(rename = "release:create")]
+    ReleaseCreate,
+    #[serde(rename = "release:delete")]
+    ReleaseDelete,
+
+    // ── Merge Requests permissions ──────────────────────────────────
+    #[serde(rename = "mr:create")]
+    MrCreate,
+    #[serde(rename = "mr:review")]
+    MrReview,
+    #[serde(rename = "mr:merge")]
+    MrMerge,
 }
 
 /// Complete list of all permission variants, in declaration order.
@@ -87,16 +115,28 @@ static ALL_PERMISSIONS: &[Permission] = &[
     Permission::BranchProtect,
     Permission::SnapshotCreate,
     Permission::SnapshotRead,
+    Permission::SnapshotRevert,
+    Permission::SnapshotSign,
     Permission::SyncPush,
     Permission::SyncPull,
+    Permission::SyncForcePush,
     Permission::StagedCreate,
     Permission::StagedList,
+    Permission::ManageRoles,
+    Permission::ManageTeams,
+    Permission::ManagePolicies,
     Permission::AccountManage,
-    Permission::TeamManage,
-    Permission::RoleManage,
-    Permission::PolicyManage,
-    Permission::TenantAdmin,
+    Permission::AdminTenant,
+    Permission::AdminAuditRead,
+    Permission::AdminBypassProtection,
     Permission::GlobalAdmin,
+    Permission::TagCreate,
+    Permission::TagDelete,
+    Permission::ReleaseCreate,
+    Permission::ReleaseDelete,
+    Permission::MrCreate,
+    Permission::MrReview,
+    Permission::MrMerge,
 ];
 
 impl Permission {
@@ -120,16 +160,28 @@ impl Permission {
             Permission::BranchProtect => "branch:protect",
             Permission::SnapshotCreate => "snapshot:create",
             Permission::SnapshotRead => "snapshot:read",
+            Permission::SnapshotRevert => "snapshot:revert",
+            Permission::SnapshotSign => "snapshot:sign",
             Permission::SyncPush => "sync:push",
             Permission::SyncPull => "sync:pull",
+            Permission::SyncForcePush => "sync:force_push",
             Permission::StagedCreate => "staged:create",
             Permission::StagedList => "staged:list",
+            Permission::ManageRoles => "manage:roles",
+            Permission::ManageTeams => "manage:teams",
+            Permission::ManagePolicies => "manage:policies",
             Permission::AccountManage => "account:manage",
-            Permission::TeamManage => "team:manage",
-            Permission::RoleManage => "role:manage",
-            Permission::PolicyManage => "policy:manage",
-            Permission::TenantAdmin => "tenant:admin",
+            Permission::AdminTenant => "admin:tenant",
+            Permission::AdminAuditRead => "admin:audit_read",
+            Permission::AdminBypassProtection => "admin:bypass_protection",
             Permission::GlobalAdmin => "global:admin",
+            Permission::TagCreate => "tag:create",
+            Permission::TagDelete => "tag:delete",
+            Permission::ReleaseCreate => "release:create",
+            Permission::ReleaseDelete => "release:delete",
+            Permission::MrCreate => "mr:create",
+            Permission::MrReview => "mr:review",
+            Permission::MrMerge => "mr:merge",
         }
     }
 
@@ -158,11 +210,12 @@ impl Permission {
     /// Returns only administrative / management permissions.
     pub fn admin_permissions() -> Vec<Permission> {
         vec![
-            Permission::AccountManage,
-            Permission::TeamManage,
-            Permission::RoleManage,
-            Permission::PolicyManage,
-            Permission::TenantAdmin,
+            Permission::ManageRoles,
+            Permission::ManageTeams,
+            Permission::ManagePolicies,
+            Permission::AdminTenant,
+            Permission::AdminAuditRead,
+            Permission::AdminBypassProtection,
             Permission::GlobalAdmin,
         ]
     }
@@ -181,7 +234,7 @@ mod tests {
 
     #[test]
     fn all_returns_every_variant() {
-        assert_eq!(Permission::all().len(), 22);
+        assert_eq!(Permission::all().len(), 34);
     }
 
     #[test]
@@ -224,13 +277,14 @@ mod tests {
     #[test]
     fn admin_permissions_list() {
         let admins = Permission::admin_permissions();
-        assert!(admins.contains(&Permission::TenantAdmin));
+        assert!(admins.contains(&Permission::ManageRoles));
+        assert!(admins.contains(&Permission::ManageTeams));
+        assert!(admins.contains(&Permission::ManagePolicies));
+        assert!(admins.contains(&Permission::AdminTenant));
+        assert!(admins.contains(&Permission::AdminAuditRead));
+        assert!(admins.contains(&Permission::AdminBypassProtection));
         assert!(admins.contains(&Permission::GlobalAdmin));
-        assert!(admins.contains(&Permission::AccountManage));
-        assert!(admins.contains(&Permission::TeamManage));
-        assert!(admins.contains(&Permission::RoleManage));
-        assert!(admins.contains(&Permission::PolicyManage));
-        assert_eq!(admins.len(), 6);
+        assert_eq!(admins.len(), 7);
     }
 
     #[test]

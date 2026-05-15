@@ -154,7 +154,7 @@ mod tests {
 
         enforcer.grant(user, Permission::TreeRead, Scope::Global);
 
-        assert!(!enforcer.check(&user, &Permission::TenantAdmin, &Scope::Global));
+        assert!(!enforcer.check(&user, &Permission::AdminTenant, &Scope::Global));
     }
 
     #[test]

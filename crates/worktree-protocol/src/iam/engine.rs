@@ -144,52 +144,46 @@ impl AccessEngine {
             ));
         }
 
-        // Step 2: Collect all applicable roles.
-        // Find all teams this account is a member of.
-        let account_teams: Vec<&Team> = teams
-            .iter()
-            .filter(|t| t.has_member(&request.account_id))
-            .collect();
+        // Step 2: Collect all applicable teams and roles without intermediate Vector Allocations
+        let mut account_team_ids = HashSet::new();
+        let mut role_ids = HashSet::new();
 
-        // Collect all role IDs from those teams.
-        let mut role_ids: HashSet<_> = HashSet::new();
-        for team in &account_teams {
-            for role_id in &team.roles {
-                role_ids.insert(*role_id);
-            }
-        }
-
-        // Step 3: Collect all permissions from those roles, considering scope.
-        let mut rbac_allowed = false;
-        let applicable_roles: Vec<&Role> =
-            roles.iter().filter(|r| role_ids.contains(&r.id)).collect();
-
-        // Check if any role grants the requested permission.
-        // RBAC roles are scoped to the tenant level — if the role belongs to the same
-        // tenant as the request scope, it applies.
-        for role in &applicable_roles {
-            if role.has_permission(&request.permission) {
-                // Check that the role's tenant scope covers the request scope.
-                let role_scope = Scope::Tenant(role.tenant_id);
-                if role_scope.covers(&request.scope) {
-                    rbac_allowed = true;
-                    break;
+        for team in teams {
+            if team.has_member(&request.account_id) {
+                account_team_ids.insert(team.id);
+                for role_id in &team.roles {
+                    role_ids.insert(*role_id);
                 }
             }
         }
 
-        // Step 4: If GlobalAdmin is in the RBAC set, allow everything.
-        for role in &applicable_roles {
-            if role.has_permission(&Permission::GlobalAdmin) {
-                rbac_allowed = true;
-                break;
-            }
+        // Step 3 & 4: Evaluate RBAC permissions in a single pass
+        let mut resolved_role_count = 0;
+
+        let rbac_allowed = roles
+            .iter()
+            .filter(|r| role_ids.contains(&r.id))
+            .inspect(|_| resolved_role_count += 1) // Track number of succesfully resolved roles
+            .any(|role| {
+                // GlobalAdmin overrides all scope checks
+                if role.has_permission(&Permission::GlobalAdmin) {
+                    return true;
+                }
+                // Specific permission check: requires the role's tenant scope to cover the request's scope
+                role.has_permission(&request.permission)
+                    && Scope::Tenant(role.tenant_id).covers(&request.scope)
+            });
+
+        // Strict security invariant (fail-closed):
+        // If a role ID was in a team, but the role itself is missing from the system,
+        // the state is corrupted and access must be denied.
+        if resolved_role_count != role_ids.len() {
+            return AccessDecision::deny(
+                "system inconsistency: one or more assigned roles could not be found in the registry",
+            );
         }
 
         // Step 5: Evaluate ABAC policies.
-        // Collect all team IDs the account belongs to.
-        let account_team_ids: HashSet<_> = account_teams.iter().map(|t| t.id).collect();
-
         // Filter and sort policies by priority (higher priority first).
         let mut matching_policies: Vec<&Policy> = policies
             .iter()
@@ -198,34 +192,50 @@ impl AccessEngine {
             .filter(|p| {
                 self.policy_subject_matches(p, &request.account_id, &account_team_ids, &role_ids)
             })
-            .filter(|p| p.permissions.contains(&request.permission))
-            .filter(|p| p.evaluate_conditions(&request.attributes))
             .collect();
 
-        // Sort by priority descending (higher priority evaluated first).
-        matching_policies.sort_by_key(|policy| std::cmp::Reverse(policy.priority));
+        matching_policies.sort_by(|a, b| b.priority.cmp(&a.priority));
 
-        // Step 6: If ANY matching Deny policy exists → Deny (deny always wins).
-        let mut has_abac_allow = false;
-        for policy in &matching_policies {
-            if policy.is_deny() {
-                return AccessDecision::deny(format!(
-                    "denied by policy '{}' (priority {})",
-                    policy.name, policy.priority
-                ));
-            }
-            if policy.is_allow() {
-                has_abac_allow = true;
+        // Evaluate conditions to find policies that apply.
+        let mut applicable_policies = Vec::new();
+        for policy in matching_policies {
+            if policy.conditions.is_empty() {
+                applicable_policies.push(policy);
+            } else {
+                let all_conditions_met = policy
+                    .conditions
+                    .iter()
+                    .all(|c| c.evaluate(&request.attributes));
+
+                if all_conditions_met {
+                    applicable_policies.push(policy);
+                }
             }
         }
 
-        // Step 7: If RBAC allowed OR any matching Allow policy exists → Allow.
-        if rbac_allowed || has_abac_allow {
+        // Step 6: Check for any Deny policies (Deny overrides everything).
+        for policy in &applicable_policies {
+            if policy.effect == crate::iam::policy::PolicyEffect::Deny {
+                return AccessDecision::deny(format!(
+                    "explicitly denied by policy '{}'",
+                    policy.name
+                ));
+            }
+        }
+
+        // Step 7: Check if RBAC or any Allow policy grants access.
+        if rbac_allowed {
             return AccessDecision::Allow;
         }
 
-        // Step 8: Otherwise → Deny.
-        AccessDecision::deny("no matching role or policy grants the requested permission")
+        for policy in applicable_policies {
+            if policy.effect == crate::iam::policy::PolicyEffect::Allow {
+                return AccessDecision::Allow;
+            }
+        }
+
+        // Step 8: Default deny.
+        AccessDecision::deny("no matching policy or role grants access")
     }
 
     /// Check if a policy's scope covers the request scope.

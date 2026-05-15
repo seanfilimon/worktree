@@ -102,7 +102,7 @@ impl Role {
 
     /// **Admin** — tree, branch, account, and team management.
     ///
-    /// Admins can manage organizational resources but do not have `TenantAdmin`
+    /// Admins can manage organizational resources but do not have `AdminTenant`
     /// or `GlobalAdmin`.
     pub fn admin(tenant_id: TenantId) -> Self {
         let perms = vec![
@@ -129,9 +129,9 @@ impl Role {
             Permission::StagedList,
             // Management
             Permission::AccountManage,
-            Permission::TeamManage,
-            Permission::RoleManage,
-            Permission::PolicyManage,
+            Permission::ManageTeams,
+            Permission::ManageRoles,
+            Permission::ManagePolicies,
         ];
         Self {
             id: RoleId::new(),
@@ -282,7 +282,7 @@ mod tests {
     fn owner_includes_global_admin() {
         let role = Role::owner(tenant());
         assert!(role.has_permission(&Permission::GlobalAdmin));
-        assert!(role.has_permission(&Permission::TenantAdmin));
+        assert!(role.has_permission(&Permission::AdminTenant));
     }
 
     // ------------------------------------------------------------------
@@ -294,15 +294,15 @@ mod tests {
         let role = Role::admin(tenant());
         assert!(role.is_builtin());
         assert!(role.has_permission(&Permission::AccountManage));
-        assert!(role.has_permission(&Permission::TeamManage));
-        assert!(role.has_permission(&Permission::RoleManage));
-        assert!(role.has_permission(&Permission::PolicyManage));
+        assert!(role.has_permission(&Permission::ManageTeams));
+        assert!(role.has_permission(&Permission::ManageRoles));
+        assert!(role.has_permission(&Permission::ManagePolicies));
     }
 
     #[test]
     fn admin_does_not_have_global_or_tenant_admin() {
         let role = Role::admin(tenant());
-        assert!(!role.has_permission(&Permission::TenantAdmin));
+        assert!(!role.has_permission(&Permission::AdminTenant));
         assert!(!role.has_permission(&Permission::GlobalAdmin));
     }
 
@@ -345,10 +345,10 @@ mod tests {
     fn maintainer_does_not_have_admin_permissions() {
         let role = Role::maintainer(tenant());
         assert!(!role.has_permission(&Permission::AccountManage));
-        assert!(!role.has_permission(&Permission::TeamManage));
-        assert!(!role.has_permission(&Permission::RoleManage));
-        assert!(!role.has_permission(&Permission::PolicyManage));
-        assert!(!role.has_permission(&Permission::TenantAdmin));
+        assert!(!role.has_permission(&Permission::ManageTeams));
+        assert!(!role.has_permission(&Permission::ManageRoles));
+        assert!(!role.has_permission(&Permission::ManagePolicies));
+        assert!(!role.has_permission(&Permission::AdminTenant));
         assert!(!role.has_permission(&Permission::GlobalAdmin));
         assert!(!role.has_permission(&Permission::TreeCreate));
         assert!(!role.has_permission(&Permission::TreeDelete));
