@@ -1,9 +1,16 @@
 //! Sync protocol message types for communication between BGProcess and Server.
+//!
+//! **Status**: deprecation glidepath. These are the hand-coded domain types
+//! used by callers today. The canonical wire types are codegen'd at
+//! [`crate::proto::sync`] from `crates/worktree-protocol/proto/sync.proto`
+//! (WT-PROTO-1). Conversion impls live at [`crate::proto::conversions`]
+//! (WT-PROTO-2). Once all callers (WT-BG-4/5/6, WT-SRV-4) migrate to wire
+//! types directly, this module is removed.
 
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
-use crate::core::id::{SnapshotId, BranchId, TreeId, TenantId, AccountId};
 use crate::core::hash::ContentHash;
+use crate::core::id::{AccountId, BranchId, SnapshotId, TenantId, TreeId};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 // ============================================================
 // Sync Operations
@@ -99,11 +106,19 @@ pub enum PushRejection {
 
 impl PushResponse {
     pub fn accepted(new_tip: SnapshotId) -> Self {
-        Self { accepted: true, rejection_reason: None, new_tip: Some(new_tip) }
+        Self {
+            accepted: true,
+            rejection_reason: None,
+            new_tip: Some(new_tip),
+        }
     }
 
     pub fn rejected(reason: PushRejection) -> Self {
-        Self { accepted: false, rejection_reason: Some(reason), new_tip: None }
+        Self {
+            accepted: false,
+            rejection_reason: Some(reason),
+            new_tip: None,
+        }
     }
 }
 
@@ -141,7 +156,11 @@ impl PullResponse {
         }
     }
 
-    pub fn with_updates(new_tip: SnapshotId, chain: Vec<SnapshotId>, objects: Vec<ContentHash>) -> Self {
+    pub fn with_updates(
+        new_tip: SnapshotId,
+        chain: Vec<SnapshotId>,
+        objects: Vec<ContentHash>,
+    ) -> Self {
         Self {
             has_updates: true,
             new_tip: Some(new_tip),
@@ -240,7 +259,9 @@ impl Default for SyncState {
 }
 
 impl SyncState {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Returns true if local and remote tips differ (local may be behind OR ahead).
     /// Cannot determine direction without snapshot DAG traversal.

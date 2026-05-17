@@ -27,6 +27,10 @@ pub mod config;
 // Feature modules
 pub mod feature;
 
+// Codegen'd protobuf types (tonic-build from proto/sync.proto).
+// Coexists with feature::sync_protocol during the WT-PROTO migration.
+pub mod proto;
+
 // Re-exports for convenience
 pub use feature::diff;
 pub use feature::merge;

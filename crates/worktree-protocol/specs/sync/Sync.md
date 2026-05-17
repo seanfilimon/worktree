@@ -4,6 +4,32 @@
 
 The sync protocol governs communication between the bgprocess (local) and the W0rkTree server (remote). It handles staged snapshot uploads, branch pushes, branch pulls, access config sync, tag sync, and large file chunk transfers. Transport: gRPC over QUIC (with HTTP/2 fallback).
 
+## Wire Format
+
+The bg ↔ server sync layer uses **protobuf over gRPC**. The canonical schema lives at `crates/worktree-protocol/proto/sync.proto` and is the single source of truth — Rust types are generated via `tonic-build` in [`build.rs`](../../build.rs), Go types are generated via `protoc-gen-go` + `protoc-gen-go-grpc` orchestrated by [`buf`](https://buf.build) (see `proto/buf.gen.yaml`).
+
+### Schema
+
+- **Package**: `worktree.sync.v1`
+- **Service**: `SyncService` with 5 RPCs:
+  - `Stage(StageUploadRequest) → StageUploadResponse` — upload a staged snapshot for team visibility
+  - `Push(PushRequest) → PushResponse` — push a branch tip with conflict detection
+  - `Pull(PullRequest) → PullResponse` — pull updates (delta sync)
+  - `Negotiate(NegotiateRequest) → ObjectTransferPlan` — have/want delta negotiation
+  - `SyncAccessConfig(AccessConfigSyncRequest) → AccessConfigSyncResponse` — sync roles / policies / branch protection / etc.
+
+Full schema (~15 message types + the `PushRejection` `oneof`) lives in `crates/worktree-protocol/proto/sync.proto`. Schema-design conventions (field numbering, optional fields, enum patterns, ID-type wrapping, timestamp choice, versioning) are codified in `crates/worktree-protocol/proto/CONVENTIONS.md`.
+
+### Versioning
+
+Package is `worktree.sync.v1`. Additive changes (new fields with new tags, new enum values, new RPCs) stay in `v1`. Breaking changes (field renames, type changes, removed fields, renumbered enum values) trigger a v2 in a sibling file `sync_v2.proto`. `buf breaking` enforces this automatically in CI.
+
+### Domain types vs wire types
+
+`crates/worktree-protocol/` exposes **both** hand-coded Rust domain types (`feature/sync_protocol.rs`) and codegen'd proto types (`pub mod proto`). The domain types are the in-memory representation used by most call sites today; the proto types are the wire representation used at gRPC boundaries. A future ticket (`WT-PROTO-2`) adds `From`/`Into` conversion impls and deprecates the hand-coded types once all callers migrate.
+
+The legacy custom wire framing in `feature/wire/{encode,decode,format}.rs` (13-byte header + bincode payload) is superseded by gRPC framing and slated for removal once `WT-BG-4/5/6` commit to the gRPC transport.
+
 ## Key Concepts
 
 - **Staged sync** (automatic): bgprocess syncs local snapshots to server as "staged" for team visibility. Automatic, runs on configured interval.

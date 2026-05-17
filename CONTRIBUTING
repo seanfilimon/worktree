@@ -135,7 +135,13 @@ If you are unsure where to start, **start with `worktree-protocol`**. It is the 
 | **Cargo** | latest stable | Rust package manager |
 | **Node.js** | ≥ 18.0.0 | Web frontend, docs |
 | **npm** | ≥ 9.0.0 | Node package manager |
+| **Go** | ≥ 1.22 | `services/server-go/` (remote server, slated to replace `crates/worktree-server`) |
+| **golangci-lint** | latest | Go linting (used by `scripts/ci.sh`) |
+| **buf** | ≥ 1.69 | Protobuf workflow (lint + Go codegen). Install: `go install github.com/bufbuild/buf/cmd/buf@latest` |
+| **protoc-gen-go** + **protoc-gen-go-grpc** | latest | Go protobuf plugins. Install: `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` and `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest` |
 | **Git** | any | Cloning this repo (ironic, we know) |
+
+The wire-protocol schema (`crates/worktree-protocol/proto/sync.proto`) is the canonical source of truth between Rust and Go. Rust types codegen at build time via `tonic-build` (no contributor action needed); Go types are checked in at `services/server-go/internal/proto/syncpb/` and regenerated via `buf generate` (run from `crates/worktree-protocol/proto/`). Conventions live in `crates/worktree-protocol/proto/CONVENTIONS.md`.
 
 ### Clone and Setup
 
