@@ -2,7 +2,7 @@
 name = "worktree-server"
 version = "0.1.0"
 edition = "2021"
-description = "Worktree server — background daemon for version control"
+description = "W0rkTree remote multi-tenant server (transitional Rust shell — slated for replacement by services/server-go/)"
 
 [[bin]]
 name = "worktree-server"
@@ -17,6 +17,5 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 thiserror = "1"
-notify = "7"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }

@@ -11,19 +11,16 @@ pub enum ServerError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// File-system watcher error.
-    #[error("watcher error: {0}")]
-    Watcher(String),
-
     /// Storage backend error.
     #[error("storage error: {0}")]
     Storage(String),
 
-    /// Engine / rule-evaluation error.
-    #[error("engine error: {0}")]
-    Engine(String),
-
     /// Authentication / authorization error.
+    ///
+    /// Forward-declared for the IAM enforcement layer per Server.md §7.
+    /// Currently has no callers (auth/enforcer.rs is mostly stub); kept as
+    /// scaffolding because the server-side auth domain stays in this crate
+    /// even after the WT-EXTRACT-* trilogy.
     #[error("auth error: {0}")]
     Auth(String),
 
