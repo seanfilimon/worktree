@@ -1,13 +1,12 @@
 use super::SyncAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: SyncAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         SyncAction::Push => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let result = worktree_sdk::engine::sync::push(&engine)?;
+            let result = client.sync_push()?;
             format::print_success(&format!(
                 "Pushed to '{}' on branch '{}'",
                 result.server, result.branch
@@ -15,8 +14,7 @@ pub async fn execute(action: SyncAction) -> Result<(), Box<dyn std::error::Error
             format::print_kv("Snapshots", &result.snapshots_pushed.to_string());
         }
         SyncAction::Pull => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let result = worktree_sdk::engine::sync::pull(&engine)?;
+            let result = client.sync_pull()?;
             if result.up_to_date {
                 format::print_success(&format!("Already up to date on branch '{}'", result.branch));
             } else {
@@ -27,9 +25,8 @@ pub async fn execute(action: SyncAction) -> Result<(), Box<dyn std::error::Error
             }
         }
         SyncAction::Pause => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let sync_state_file = engine.wt_dir().join("cache").join("sync_paused");
-            std::fs::create_dir_all(engine.wt_dir().join("cache"))?;
+            let sync_state_file = client.wt_dir().join("cache").join("sync_paused");
+            std::fs::create_dir_all(client.wt_dir().join("cache"))?;
             std::fs::write(&sync_state_file, "paused")?;
             format::print_success("Sync paused.");
             format::print_info(
@@ -37,8 +34,7 @@ pub async fn execute(action: SyncAction) -> Result<(), Box<dyn std::error::Error
             );
         }
         SyncAction::Resume => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let sync_state_file = engine.wt_dir().join("cache").join("sync_paused");
+            let sync_state_file = client.wt_dir().join("cache").join("sync_paused");
             if sync_state_file.exists() {
                 std::fs::remove_file(&sync_state_file)?;
                 format::print_success("Sync resumed.");

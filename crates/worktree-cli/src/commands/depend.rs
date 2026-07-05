@@ -1,26 +1,24 @@
 use super::DependAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         DependAction::Add {
             tree,
             target,
             blocking,
         } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let state = client.state()?;
 
             // Validate source tree exists
-            if state.find_tree(&tree).is_none() {
+            let Some(tree_state) = state.find_tree(&tree) else {
                 return Err(format!("Source tree '{}' not found", tree).into());
-            }
+            };
 
             // Write dependency to tree's config
-            let tree_state = state.find_tree(&tree).unwrap();
-            let wt_tree_dir = engine.root().join(&tree_state.path).join(".wt-tree");
+            let wt_tree_dir = client.root().join(&tree_state.path).join(".wt-tree");
             if !wt_tree_dir.exists() {
                 std::fs::create_dir_all(&wt_tree_dir)?;
             }
@@ -51,11 +49,10 @@ pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Err
             format::print_kv("Blocking", blocking_str);
         }
         DependAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
             format::print_header("Dependencies");
             println!();
 
-            let deps = worktree_sdk::engine::dependency::list_dependencies(&engine)?;
+            let deps = client.dependency_list()?;
             if deps.is_empty() {
                 format::print_info("No dependencies configured.");
                 format::print_info("Use `wt depend add <tree> <target>` to add a dependency.");
@@ -68,12 +65,12 @@ pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Err
             }
 
             // Also show any .wt-tree config dependencies
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let state = client.state()?;
             for tree in &state.trees {
                 if tree.name == "root" {
                     continue;
                 }
-                let config_path = engine
+                let config_path = client
                     .root()
                     .join(&tree.path)
                     .join(".wt-tree")
@@ -97,15 +94,14 @@ pub async fn execute(action: DependAction) -> Result<(), Box<dyn std::error::Err
             }
         }
         DependAction::Todo => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
             format::print_header("TODO Items");
             println!();
 
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let state = client.state()?;
             let mut todo_count = 0;
 
             for tree in &state.trees {
-                let config_path = engine
+                let config_path = client
                     .root()
                     .join(&tree.path)
                     .join(".wt-tree")

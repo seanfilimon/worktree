@@ -2,11 +2,15 @@
 resolver = "2"
 members = [
     "crates/worktree-protocol",
+    "crates/worktree-store",
+    "crates/worktree-ipc",
+    "crates/worktree-engine",
     "crates/worktree-server",
     "crates/worktree-bg",
     "crates/worktree-git",
     "crates/worktree-cli",
     "crates/worktree-sdk",
+    "crates/worktree-e2e",
 ]
 
 [workspace.package]
@@ -19,6 +23,9 @@ license = "LicenseRef-W0rkTree-Public-License-1.0"
 [workspace.dependencies]
 # Internal crates
 worktree-protocol = { path = "crates/worktree-protocol" }
+worktree-store = { path = "crates/worktree-store" }
+worktree-ipc = { path = "crates/worktree-ipc" }
+worktree-engine = { path = "crates/worktree-engine" }
 worktree-git = { path = "crates/worktree-git" }
 worktree-sdk = { path = "crates/worktree-sdk" }
 
@@ -53,6 +60,9 @@ clap = { version = "4", features = ["derive"] }
 colored = "2"
 walkdir = "2"
 notify = "7"
+dirs = "5"
+tempfile = "3"
+escargot = "0.5"
 
 # Git interop
 git2 = "0.19"

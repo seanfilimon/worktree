@@ -1,12 +1,11 @@
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(
     tree: Option<String>,
     message: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
+    let client = Client::open_current()?;
     let tree_display = tree.as_deref().unwrap_or("(current)");
 
     format::print_info(&format!(
@@ -14,8 +13,7 @@ pub async fn execute(
         tree_display, message
     ));
 
-    let snapshot =
-        worktree_sdk::engine::snapshot::create_snapshot(&engine, tree.as_deref(), &message)?;
+    let snapshot = client.snapshot_create(tree.as_deref(), &message)?;
 
     format::print_success(&format!(
         "Snapshot created: {}",

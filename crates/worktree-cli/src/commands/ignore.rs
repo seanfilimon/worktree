@@ -1,13 +1,12 @@
 use super::IgnoreAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: IgnoreAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         IgnoreAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let patterns = worktree_sdk::engine::ignore::list_ignored(&engine)?;
+            let patterns = client.ignore_list()?;
             format::print_header("Ignore Patterns");
             if patterns.is_empty() {
                 format::print_info("No ignore patterns configured.");
@@ -20,8 +19,7 @@ pub async fn execute(action: IgnoreAction) -> Result<(), Box<dyn std::error::Err
             }
         }
         IgnoreAction::Add { pattern } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let ignore_path = engine.wt_dir().join("ignore");
+            let ignore_path = client.wt_dir().join("ignore");
             let mut content = std::fs::read_to_string(&ignore_path).unwrap_or_default();
             if !content.ends_with('\n') && !content.is_empty() {
                 content.push('\n');

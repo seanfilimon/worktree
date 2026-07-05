@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{EngineError, Result};
 use std::fs;
 use std::path::Path;
 
@@ -76,9 +76,9 @@ build/
     fs::write(wt_dir.join("ignore"), ignore)?;
 
     // Initialize state
-    let state = crate::engine::status::WorktreeState::new(name);
+    let state = crate::persist::WorktreeState::new(name);
     let state_json = serde_json::to_string_pretty(&state)
-        .map_err(|e| crate::error::SdkError::Serialization(e.to_string()))?;
+        .map_err(|e| EngineError::Serialization(e.to_string()))?;
     fs::write(wt_dir.join("state.json"), state_json)?;
 
     Ok(())

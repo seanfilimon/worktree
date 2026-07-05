@@ -1,12 +1,13 @@
-use super::status::{load_state, save_state, BranchState, TreeState};
-use crate::error::{Result, SdkError};
+use crate::engine::WorktreeEngine;
+use crate::error::{EngineError, Result};
+use crate::persist::{load_state, save_state, BranchState, TreeState};
 use chrono::Utc;
 use std::fs;
 
-pub fn add_tree(engine: &super::WorktreeEngine, path: &str) -> Result<TreeState> {
+pub fn add_tree(engine: &WorktreeEngine, path: &str) -> Result<TreeState> {
     // Validate path doesn't traverse upward
     if path.contains("..") || path.starts_with('/') || path.starts_with('\\') {
-        return Err(SdkError::InvalidConfig(
+        return Err(EngineError::InvalidConfig(
             "tree path must not contain '..' or start with '/' or '\\\\'".into(),
         ));
     }
@@ -20,7 +21,7 @@ pub fn add_tree(engine: &super::WorktreeEngine, path: &str) -> Result<TreeState>
         .to_string();
 
     if state.find_tree(&name).is_some() {
-        return Err(SdkError::InvalidConfig(format!(
+        return Err(EngineError::InvalidConfig(format!(
             "tree '{}' already exists",
             name
         )));
@@ -62,23 +63,23 @@ branch_strategy = "feature-branch"
     Ok(tree)
 }
 
-pub fn list_trees(engine: &super::WorktreeEngine) -> Result<Vec<TreeState>> {
+pub fn list_trees(engine: &WorktreeEngine) -> Result<Vec<TreeState>> {
     let state = load_state(engine)?;
     Ok(state.trees.clone())
 }
 
-pub fn remove_tree(engine: &super::WorktreeEngine, name: &str) -> Result<()> {
+pub fn remove_tree(engine: &WorktreeEngine, name: &str) -> Result<()> {
     let mut state = load_state(engine)?;
 
     if name == "root" {
-        return Err(SdkError::InvalidConfig(
+        return Err(EngineError::InvalidConfig(
             "cannot remove the root tree".into(),
         ));
     }
 
     let tree = state
         .find_tree(name)
-        .ok_or(SdkError::TreeNotFound(name.to_string()))?;
+        .ok_or(EngineError::TreeNotFound(name.to_string()))?;
 
     // Remove .wt-tree directory
     let wt_tree_dir = engine.root().join(&tree.path).join(".wt-tree");

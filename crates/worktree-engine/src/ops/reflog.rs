@@ -1,12 +1,12 @@
-use crate::error::Result;
+use crate::engine::WorktreeEngine;
+use crate::error::{EngineError, Result};
+use crate::persist::load_state;
 
-pub fn show_reflog(engine: &super::WorktreeEngine, count: usize) -> Result<Vec<String>> {
-    let state = super::status::load_state(engine)?;
+pub fn show_reflog(engine: &WorktreeEngine, count: usize) -> Result<Vec<String>> {
+    let state = load_state(engine)?;
     let tree = state
         .current_tree()
-        .ok_or(crate::error::SdkError::TreeNotFound(
-            "no current tree".into(),
-        ))?;
+        .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
     let branch = &tree.current_branch;
 
     let mut entries = Vec::new();

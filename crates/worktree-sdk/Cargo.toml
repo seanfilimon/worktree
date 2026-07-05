@@ -3,20 +3,11 @@ name = "worktree-sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SDK for the Worktree version control system"
+description = "W0rkTree client SDK — daemon-first client facade with embedded-engine fallback"
 
 [lints]
 workspace = true
 
 [dependencies]
-worktree-protocol.workspace = true
-tokio.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-toml.workspace = true
+worktree-engine.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
-chrono.workspace = true
-uuid.workspace = true
-blake3.workspace = true
-walkdir.workspace = true

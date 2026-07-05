@@ -1,14 +1,14 @@
 use crate::output::format;
 use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(
     output: String,
     archive_format: String,
     tree: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
-    let state = worktree_sdk::engine::status::load_state(&engine)?;
+    let client = Client::open_current()?;
+    let state = client.state()?;
 
     let tree_name = tree
         .as_deref()
@@ -46,9 +46,9 @@ pub async fn execute(
     } else {
         // No snapshot — collect from working directory
         let tree_path = if tree_name == "root" {
-            engine.root().to_path_buf()
+            client.root().to_path_buf()
         } else {
-            engine.root().join(&tree_state.path)
+            client.root().join(&tree_state.path)
         };
 
         let mut count = 0u32;

@@ -1,0 +1,16 @@
+[package]
+name = "worktree-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "W0rkTree CLI↔daemon IPC — length-prefixed JSON over Unix domain sockets / Windows named pipes (BgProcess.md §14)"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+blake3.workspace = true

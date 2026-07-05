@@ -1,0 +1,17 @@
+[package]
+name = "worktree-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "W0rkTree end-to-end tests — drives the real wt / worktree-bg / worktree-server binaries against temp dirs"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+escargot.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true

@@ -1,5 +1,7 @@
-use super::status::{load_state, save_state, FileEntry, SnapshotState};
-use crate::error::{Result, SdkError};
+use crate::engine::WorktreeEngine;
+use crate::error::{EngineError, Result};
+use crate::identity;
+use crate::persist::{load_state, save_state, FileEntry, SnapshotState};
 use chrono::Utc;
 use std::collections::HashMap;
 
@@ -9,20 +11,20 @@ pub struct MergeResult {
     pub conflicts: Vec<String>,
 }
 
-pub fn merge_branch(engine: &super::WorktreeEngine, source_branch: &str) -> Result<MergeResult> {
+pub fn merge_branch(engine: &WorktreeEngine, source_branch: &str) -> Result<MergeResult> {
     let mut state = load_state(engine)?;
     let tree_name = state
         .current_tree
         .clone()
-        .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
+        .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
 
     let tree = state
         .find_tree_mut(&tree_name)
-        .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
+        .ok_or(EngineError::TreeNotFound(tree_name.clone()))?;
 
     let target_branch = tree.current_branch.clone();
     if source_branch == target_branch {
-        return Err(SdkError::MergeConflict(
+        return Err(EngineError::MergeConflict(
             "cannot merge a branch into itself".into(),
         ));
     }
@@ -43,7 +45,7 @@ pub fn merge_branch(engine: &super::WorktreeEngine, source_branch: &str) -> Resu
         .unwrap_or_default();
 
     if source_files.is_empty() {
-        return Err(SdkError::BranchNotFound(format!(
+        return Err(EngineError::BranchNotFound(format!(
             "no snapshots on branch '{}'",
             source_branch
         )));
@@ -69,7 +71,7 @@ pub fn merge_branch(engine: &super::WorktreeEngine, source_branch: &str) -> Resu
     }
 
     if !conflicts.is_empty() {
-        return Err(SdkError::MergeConflict(format!(
+        return Err(EngineError::MergeConflict(format!(
             "conflicts in {} file(s): {}",
             conflicts.len(),
             conflicts.join(", ")
@@ -88,10 +90,7 @@ pub fn merge_branch(engine: &super::WorktreeEngine, source_branch: &str) -> Resu
     let snapshot = SnapshotState {
         id: snapshot_id.clone(),
         message: format!("Merge branch '{}' into '{}'", source_branch, target_branch),
-        author: std::env::var("WT_AUTHOR")
-            .or_else(|_| std::env::var("USER"))
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "unknown".to_string()),
+        author: identity::author(),
         timestamp: Utc::now().to_rfc3339(),
         parents,
         tree_name: tree_name.clone(),

@@ -1,22 +1,24 @@
 use super::ServerAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
+// PID-file bookkeeping is a placeholder: WT-PHASE-3 replaces it with real
+// daemon control over IPC (spawn `worktree-bg`, `daemon.info`,
+// `daemon.shutdown`).
 pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         ServerAction::Start => {
             format::print_info("Starting worktree background process...");
 
             // Verify we're in a worktree
-            match WorktreeEngine::open(Path::new(".")) {
-                Ok(engine) => {
-                    let state = worktree_sdk::engine::status::load_state(&engine)?;
+            match Client::open_current() {
+                Ok(client) => {
+                    let state = client.state()?;
                     format::print_kv("Worktree", &state.name);
                     format::print_kv("Trees", &state.trees.len().to_string());
 
                     // Check for existing pid file
-                    let pid_file = engine.wt_dir().join("cache").join("bgprocess.pid");
+                    let pid_file = client.wt_dir().join("cache").join("bgprocess.pid");
                     if pid_file.exists() {
                         let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
                         format::print_warning(&format!(
@@ -27,7 +29,7 @@ pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Err
                     }
 
                     // Write PID file to indicate intent
-                    std::fs::create_dir_all(engine.wt_dir().join("cache"))?;
+                    std::fs::create_dir_all(client.wt_dir().join("cache"))?;
                     std::fs::write(&pid_file, std::process::id().to_string())?;
 
                     format::print_success("Background process started.");
@@ -43,9 +45,9 @@ pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Err
         ServerAction::Stop => {
             format::print_info("Stopping worktree background process...");
 
-            match WorktreeEngine::open(Path::new(".")) {
-                Ok(engine) => {
-                    let pid_file = engine.wt_dir().join("cache").join("bgprocess.pid");
+            match Client::open_current() {
+                Ok(client) => {
+                    let pid_file = client.wt_dir().join("cache").join("bgprocess.pid");
                     if pid_file.exists() {
                         let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
                         std::fs::remove_file(&pid_file)?;
@@ -63,13 +65,13 @@ pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Err
             }
         }
         ServerAction::Status => {
-            match WorktreeEngine::open(Path::new(".")) {
-                Ok(engine) => {
-                    let state = worktree_sdk::engine::status::load_state(&engine)?;
+            match Client::open_current() {
+                Ok(client) => {
+                    let state = client.state()?;
                     format::print_header("Background Process Status");
                     format::print_kv("Worktree", &state.name);
 
-                    let pid_file = engine.wt_dir().join("cache").join("bgprocess.pid");
+                    let pid_file = client.wt_dir().join("cache").join("bgprocess.pid");
                     if pid_file.exists() {
                         let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
                         format::print_kv("Status", "running");
@@ -79,7 +81,7 @@ pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Err
                     }
 
                     // Show config summary
-                    let config_content = worktree_sdk::engine::config::read_config(&engine)?;
+                    let config_content = client.config_read()?;
                     if config_content.contains("auto = true") {
                         format::print_kv("Auto-sync", "enabled");
                     } else {

@@ -1,7 +1,5 @@
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::engine::diff::{DiffEntry, DiffStatus};
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::{Client, DiffEntry, DiffStatus};
 
 pub async fn execute(
     from: Option<String>,
@@ -9,27 +7,27 @@ pub async fn execute(
     name_only: bool,
     stat: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
+    let client = Client::open_current()?;
 
     let entries: Vec<DiffEntry> = match (from.as_deref(), to.as_deref()) {
         (None, None) | (Some("working"), None) => {
             // Diff working tree against last snapshot
-            worktree_sdk::engine::diff::diff_working_tree(&engine)?
+            client.diff_working_tree()?
         }
         (Some(from_id), Some(to_id)) => {
             // Diff two snapshots
-            worktree_sdk::engine::diff::diff_snapshots(&engine, from_id, to_id)?
+            client.diff_snapshots(from_id, to_id)?
         }
         (Some(from_id), None) => {
             // Diff snapshot against working tree (treat as working tree diff for now)
             if from_id == "working" {
-                worktree_sdk::engine::diff::diff_working_tree(&engine)?
+                client.diff_working_tree()?
             } else {
                 format::print_info(&format!(
                     "Showing changes since snapshot {}...",
                     &from_id[..from_id.len().min(8)]
                 ));
-                worktree_sdk::engine::diff::diff_working_tree(&engine)?
+                client.diff_working_tree()?
             }
         }
         (None, Some(to_id)) => {
@@ -37,7 +35,7 @@ pub async fn execute(
                 "Showing changes up to snapshot {}...",
                 &to_id[..to_id.len().min(8)]
             ));
-            worktree_sdk::engine::diff::diff_working_tree(&engine)?
+            client.diff_working_tree()?
         }
     };
 

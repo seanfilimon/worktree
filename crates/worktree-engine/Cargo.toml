@@ -1,0 +1,24 @@
+[package]
+name = "worktree-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "W0rkTree local VCS engine — the only code that mutates a working directory and its .wt/ state"
+
+[lints]
+workspace = true
+
+[dependencies]
+worktree-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+blake3.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,16 +1,15 @@
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(branch: String, strategy: String) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
+    let client = Client::open_current()?;
 
     format::print_header(&format!(
         "Merging branch '{}' (strategy: {})",
         branch, strategy
     ));
 
-    match worktree_sdk::engine::merge::merge_branch(&engine, &branch) {
+    match client.merge(&branch) {
         Ok(result) => {
             format::print_success(&format!("Merged branch '{}' into current branch", branch));
             format::print_kv(

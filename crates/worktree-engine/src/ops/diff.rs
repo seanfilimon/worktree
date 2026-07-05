@@ -1,5 +1,6 @@
-use super::status::{load_state, FileEntry};
-use crate::error::{Result, SdkError};
+use crate::engine::WorktreeEngine;
+use crate::error::{EngineError, Result};
+use crate::persist::{load_state, FileEntry};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -20,8 +21,8 @@ pub enum DiffStatus {
     Renamed(String),
 }
 
-pub fn diff_working_tree(engine: &super::WorktreeEngine) -> Result<Vec<DiffEntry>> {
-    let status = super::status::compute_status(engine)?;
+pub fn diff_working_tree(engine: &WorktreeEngine) -> Result<Vec<DiffEntry>> {
+    let status = crate::ops::status::compute_status(engine)?;
     let mut entries = Vec::new();
 
     for path in &status.added {
@@ -61,7 +62,7 @@ pub fn diff_working_tree(engine: &super::WorktreeEngine) -> Result<Vec<DiffEntry
 }
 
 pub fn diff_snapshots(
-    engine: &super::WorktreeEngine,
+    engine: &WorktreeEngine,
     from_id: &str,
     to_id: &str,
 ) -> Result<Vec<DiffEntry>> {
@@ -69,22 +70,22 @@ pub fn diff_snapshots(
     let tree_name = state
         .current_tree
         .as_deref()
-        .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
+        .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
 
     let tree = state
         .find_tree(tree_name)
-        .ok_or(SdkError::TreeNotFound(tree_name.to_string()))?;
+        .ok_or(EngineError::TreeNotFound(tree_name.to_string()))?;
 
     let from_snap = tree
         .snapshots
         .iter()
         .find(|s| s.id == from_id)
-        .ok_or(SdkError::SnapshotNotFound(from_id.to_string()))?;
+        .ok_or(EngineError::SnapshotNotFound(from_id.to_string()))?;
     let to_snap = tree
         .snapshots
         .iter()
         .find(|s| s.id == to_id)
-        .ok_or(SdkError::SnapshotNotFound(to_id.to_string()))?;
+        .ok_or(EngineError::SnapshotNotFound(to_id.to_string()))?;
 
     let from_map: HashMap<&str, &FileEntry> = from_snap
         .files

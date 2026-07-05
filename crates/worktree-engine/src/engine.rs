@@ -1,23 +1,10 @@
-pub mod branch;
-pub mod config;
-pub mod dependency;
-pub mod diff;
-pub mod ignore;
-pub mod init;
-pub mod log;
-pub mod merge;
-pub mod reflog;
-pub mod snapshot;
-pub mod status;
-pub mod sync;
-pub mod tag;
-pub mod tree;
-
-use crate::error::{Result, SdkError};
+use crate::error::{EngineError, Result};
 use std::path::{Path, PathBuf};
 
-/// The core engine that performs all worktree operations locally.
-/// Operates on `.wt/` and `.wt-tree/` directories.
+/// Handle to a worktree on disk.
+///
+/// Knows where the worktree root and its `.wt/` directory live; all
+/// operations in [`crate::ops`] take an engine reference to locate state.
 pub struct WorktreeEngine {
     /// Root directory of the worktree
     root: PathBuf,
@@ -36,7 +23,7 @@ impl WorktreeEngine {
                 return Ok(Self { root: current });
             }
             if !current.pop() {
-                return Err(SdkError::NotAWorktree);
+                return Err(EngineError::NotAWorktree);
             }
         }
     }
@@ -49,9 +36,9 @@ impl WorktreeEngine {
             path.to_path_buf()
         };
         if path.join(".wt").exists() {
-            return Err(SdkError::AlreadyInitialized);
+            return Err(EngineError::AlreadyInitialized);
         }
-        init::initialize(&path)?;
+        crate::ops::init::initialize(&path)?;
         Ok(Self { root: path })
     }
 

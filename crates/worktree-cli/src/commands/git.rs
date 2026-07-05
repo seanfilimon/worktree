@@ -1,7 +1,7 @@
 use super::{GitAction, GitRemoteAction};
 use crate::output::format;
 use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -9,15 +9,15 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info(&format!("Importing from Git repository: {}", source));
 
             // If we're already in a worktree, add as a tree; otherwise init
-            let engine = match WorktreeEngine::open(Path::new(".")) {
-                Ok(e) => e,
+            let client = match Client::open_current() {
+                Ok(c) => c,
                 Err(_) => {
                     format::print_info("No worktree found. Initializing...");
-                    WorktreeEngine::init(Path::new("."))?
+                    Client::init(Path::new("."))?
                 }
             };
 
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let state = client.state()?;
             format::print_kv("Worktree", &state.name);
             format::print_info("Analyzing source repository...");
             format::print_info("Converting Git commits to W0rkTree snapshots...");
@@ -31,8 +31,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             ));
         }
         GitAction::Export { tree, output, mode } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
 
             // Validate tree
             if state.find_tree(&tree).is_none() {
@@ -74,8 +74,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             }
 
             std::fs::create_dir_all(target)?;
-            let engine = WorktreeEngine::init(target)?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::init(target)?;
+            let state = client.state()?;
 
             format::print_kv("Worktree", &state.name);
             format::print_info("Fetching objects...");
@@ -87,8 +87,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             execute_remote(action).await?;
         }
         GitAction::Push { remote, branch } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
             format::print_kv("Worktree", &state.name);
             format::print_info(&format!(
                 "Pushing to Git remote '{}' branch '{}'...",
@@ -100,8 +100,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info(&format!("Target: '{}/{}'.", remote, branch));
         }
         GitAction::Pull { remote, branch } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
             format::print_kv("Worktree", &state.name);
             format::print_info(&format!(
                 "Pulling from Git remote '{}' branch '{}'...",
@@ -118,8 +118,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             remote,
             branch,
         } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
 
             if state.find_tree(&tree).is_none() {
                 return Err(format!("Tree '{}' not found", tree).into());
@@ -131,7 +131,7 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             ));
 
             // Write mirror config
-            let mirrors_dir = engine.wt_dir().join("cache").join("mirrors");
+            let mirrors_dir = client.wt_dir().join("cache").join("mirrors");
             std::fs::create_dir_all(&mirrors_dir)?;
             let mirror_config = format!(
                 "tree = \"{}\"\nremote = \"{}\"\nbranch = \"{}\"\nactive = true\n",
@@ -150,22 +150,20 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
 }
 
 async fn execute_remote(action: GitRemoteAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         GitRemoteAction::Add { name, url } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-
             // Store remote in .wt/cache/remotes/
-            let remotes_dir = engine.wt_dir().join("cache").join("remotes");
+            let remotes_dir = client.wt_dir().join("cache").join("remotes");
             std::fs::create_dir_all(&remotes_dir)?;
             std::fs::write(remotes_dir.join(format!("{}.url", name)), &url)?;
 
             format::print_success(&format!("Remote '{}' added -> {}", name, url));
         }
         GitRemoteAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
             format::print_header("Git Remotes");
 
-            let remotes_dir = engine.wt_dir().join("cache").join("remotes");
+            let remotes_dir = client.wt_dir().join("cache").join("remotes");
             if remotes_dir.exists() {
                 let mut found = false;
                 for entry in std::fs::read_dir(&remotes_dir)? {
@@ -191,8 +189,7 @@ async fn execute_remote(action: GitRemoteAction) -> Result<(), Box<dyn std::erro
             }
         }
         GitRemoteAction::Remove { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let remote_file = engine
+            let remote_file = client
                 .wt_dir()
                 .join("cache")
                 .join("remotes")

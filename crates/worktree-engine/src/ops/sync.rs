@@ -1,13 +1,18 @@
-use crate::error::Result;
+//! Local bookkeeping for sync operations.
+//!
+//! Real server sync belongs to the daemon (`worktree-bg`); these functions
+//! only report local branch state. They gain server awareness in WT-PHASE-5
+//! when the daemon's sync client lands.
 
-pub fn push(engine: &super::WorktreeEngine) -> Result<PushResult> {
-    // For now, local-only operation — log intent
-    let state = super::status::load_state(engine)?;
+use crate::engine::WorktreeEngine;
+use crate::error::{EngineError, Result};
+use crate::persist::load_state;
+
+pub fn push(engine: &WorktreeEngine) -> Result<PushResult> {
+    let state = load_state(engine)?;
     let tree = state
         .current_tree()
-        .ok_or(crate::error::SdkError::TreeNotFound(
-            "no current tree".into(),
-        ))?;
+        .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
     let branch = &tree.current_branch;
     let snapshot_count = tree.snapshots_on_branch(branch).len();
 
@@ -18,13 +23,11 @@ pub fn push(engine: &super::WorktreeEngine) -> Result<PushResult> {
     })
 }
 
-pub fn pull(engine: &super::WorktreeEngine) -> Result<PullResult> {
-    let state = super::status::load_state(engine)?;
+pub fn pull(engine: &WorktreeEngine) -> Result<PullResult> {
+    let state = load_state(engine)?;
     let tree = state
         .current_tree()
-        .ok_or(crate::error::SdkError::TreeNotFound(
-            "no current tree".into(),
-        ))?;
+        .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
 
     Ok(PullResult {
         branch: tree.current_branch.clone(),

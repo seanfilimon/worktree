@@ -1,21 +1,19 @@
 use super::ConfigAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: ConfigAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         ConfigAction::Show => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let config_content = worktree_sdk::engine::config::read_config(&engine)?;
+            let config_content = client.config_read()?;
             format::print_header("Worktree Configuration");
             println!();
             println!("{}", config_content);
             Ok(())
         }
         ConfigAction::Get { key } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let config_content = worktree_sdk::engine::config::read_config(&engine)?;
+            let config_content = client.config_read()?;
 
             // Parse the TOML and look up the key (supports dotted keys like "sync.auto")
             let table: toml::Table = config_content.parse().map_err(|e: toml::de::Error| {
@@ -34,8 +32,7 @@ pub async fn execute(action: ConfigAction) -> Result<(), Box<dyn std::error::Err
             Ok(())
         }
         ConfigAction::Set { key, value } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let config_content = worktree_sdk::engine::config::read_config(&engine)?;
+            let config_content = client.config_read()?;
 
             let mut table: toml::Table = config_content.parse().map_err(|e: toml::de::Error| {
                 Box::<dyn std::error::Error>::from(format!("Failed to parse config: {}", e))
@@ -47,7 +44,7 @@ pub async fn execute(action: ConfigAction) -> Result<(), Box<dyn std::error::Err
                 Box::<dyn std::error::Error>::from(format!("Failed to serialize config: {}", e))
             })?;
 
-            let config_path = engine.wt_dir().join("config.toml");
+            let config_path = client.wt_dir().join("config.toml");
             std::fs::write(&config_path, new_content)?;
 
             format::print_success(&format!("Set '{}' = '{}'", key, value));
