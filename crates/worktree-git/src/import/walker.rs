@@ -56,15 +56,12 @@ impl CommitWalker {
         revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
 
         let reference = inner.find_branch(branch_name, git2::BranchType::Local)?;
-        let target = reference
-            .get()
-            .target()
-            .ok_or_else(|| {
-                crate::error::GitCompatError::ImportError(format!(
-                    "branch '{}' does not point to a valid commit",
-                    branch_name
-                ))
-            })?;
+        let target = reference.get().target().ok_or_else(|| {
+            crate::error::GitCompatError::ImportError(format!(
+                "branch '{}' does not point to a valid commit",
+                branch_name
+            ))
+        })?;
 
         revwalk.push(target)?;
 

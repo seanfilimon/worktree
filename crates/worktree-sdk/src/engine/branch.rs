@@ -1,6 +1,6 @@
+use super::status::{load_state, save_state, BranchState};
+use crate::error::{Result, SdkError};
 use chrono::Utc;
-use crate::error::{SdkError, Result};
-use super::status::{BranchState, TreeState, load_state, save_state};
 
 pub fn create_branch(
     engine: &super::WorktreeEngine,
@@ -13,11 +13,15 @@ pub fn create_branch(
         .or_else(|| state.current_tree.clone())
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree_mut(&tree_name)
+    let tree = state
+        .find_tree_mut(&tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
 
     if tree.find_branch(name).is_some() {
-        return Err(SdkError::InvalidConfig(format!("branch '{}' already exists", name)));
+        return Err(SdkError::InvalidConfig(format!(
+            "branch '{}' already exists",
+            name
+        )));
     }
 
     let tip = tree.current_branch().and_then(|b| b.tip.clone());
@@ -42,7 +46,8 @@ pub fn list_branches(
         .or_else(|| state.current_tree.clone())
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree(&tree_name)
+    let tree = state
+        .find_tree(&tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
 
     Ok((tree.branches.clone(), tree.current_branch.clone()))
@@ -59,7 +64,8 @@ pub fn switch_branch(
         .or_else(|| state.current_tree.clone())
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree_mut(&tree_name)
+    let tree = state
+        .find_tree_mut(&tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
 
     if tree.find_branch(name).is_none() {
@@ -82,15 +88,20 @@ pub fn delete_branch(
         .or_else(|| state.current_tree.clone())
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree_mut(&tree_name)
+    let tree = state
+        .find_tree_mut(&tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.clone()))?;
 
     if name == tree.current_branch {
-        return Err(SdkError::InvalidConfig("cannot delete the current branch".into()));
+        return Err(SdkError::InvalidConfig(
+            "cannot delete the current branch".into(),
+        ));
     }
 
     if name == "main" {
-        return Err(SdkError::BranchProtection("cannot delete the main branch".into()));
+        return Err(SdkError::BranchProtection(
+            "cannot delete the main branch".into(),
+        ));
     }
 
     let before = tree.branches.len();

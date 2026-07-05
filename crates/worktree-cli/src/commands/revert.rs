@@ -6,9 +6,7 @@ pub async fn execute(snapshot_id: String) -> Result<(), Box<dyn std::error::Erro
     let engine = WorktreeEngine::open(Path::new("."))?;
     let state = worktree_sdk::engine::status::load_state(&engine)?;
 
-    let tree = state
-        .current_tree()
-        .ok_or("no current tree")?;
+    let tree = state.current_tree().ok_or("no current tree")?;
 
     let short_id: String = snapshot_id.chars().take(8).collect();
 

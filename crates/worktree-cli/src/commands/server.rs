@@ -49,7 +49,10 @@ pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Err
                     if pid_file.exists() {
                         let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
                         std::fs::remove_file(&pid_file)?;
-                        format::print_success(&format!("Background process stopped (was PID: {})", pid.trim()));
+                        format::print_success(&format!(
+                            "Background process stopped (was PID: {})",
+                            pid.trim()
+                        ));
                     } else {
                         format::print_info("No background process is currently running.");
                     }
@@ -84,9 +87,8 @@ pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Err
                     }
 
                     format::print_kv("Trees", &state.trees.len().to_string());
-                    let total_snapshots: usize = state.trees.iter()
-                        .map(|t| t.snapshots.len())
-                        .sum();
+                    let total_snapshots: usize =
+                        state.trees.iter().map(|t| t.snapshots.len()).sum();
                     format::print_kv("Total snapshots", &total_snapshots.to_string());
                 }
                 Err(e) => {

@@ -7,14 +7,13 @@ pub async fn execute(action: TagAction) -> Result<(), Box<dyn std::error::Error>
     match action {
         TagAction::Create { name, message } => {
             let engine = WorktreeEngine::open(Path::new("."))?;
-            let tag = worktree_sdk::engine::tag::create_tag(
-                &engine,
-                &name,
-                message.as_deref(),
-                None,
-            )?;
+            let tag =
+                worktree_sdk::engine::tag::create_tag(&engine, &name, message.as_deref(), None)?;
             format::print_success(&format!("Tag '{}' created", tag.name));
-            format::print_kv("Target", &tag.target_snapshot[..8.min(tag.target_snapshot.len())]);
+            format::print_kv(
+                "Target",
+                &tag.target_snapshot[..8.min(tag.target_snapshot.len())],
+            );
             if let Some(msg) = &tag.message {
                 format::print_kv("Message", msg);
             }

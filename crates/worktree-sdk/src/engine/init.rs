@@ -1,6 +1,6 @@
-use std::path::Path;
-use std::fs;
 use crate::error::Result;
+use std::fs;
+use std::path::Path;
 
 /// Initialize a new worktree at the given path.
 /// Creates .wt/ directory structure and default configuration.
@@ -20,13 +20,14 @@ pub fn initialize(root: &Path) -> Result<()> {
     fs::create_dir_all(wt_dir.join("conflicts"))?;
 
     // Derive project name from directory
-    let name = root.file_name()
+    let name = root
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("worktree");
 
     // Write default config.toml
     let config = format!(
-r#"[worktree]
+        r#"[worktree]
 name = "{}"
 visibility = "private"
 
@@ -48,7 +49,9 @@ lazy_loading = true
 retention_days = 90
 max_entries = 10000
 sync_to_server = true
-"#, name);
+"#,
+        name
+    );
 
     fs::write(wt_dir.join("config.toml"), config)?;
 

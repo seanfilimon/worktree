@@ -1,8 +1,8 @@
+use crate::error::{Result, SdkError};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use chrono::Utc;
-use crate::error::{SdkError, Result};
 
 /// Persisted state of the worktree
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,7 +100,9 @@ impl WorktreeState {
     }
 
     pub fn current_tree(&self) -> Option<&TreeState> {
-        self.current_tree.as_ref().and_then(|name| self.find_tree(name))
+        self.current_tree
+            .as_ref()
+            .and_then(|name| self.find_tree(name))
     }
 
     pub fn current_tree_mut(&mut self) -> Option<&mut TreeState> {
@@ -123,7 +125,8 @@ impl TreeState {
     }
 
     pub fn snapshots_on_branch(&self, branch_name: &str) -> Vec<&SnapshotState> {
-        self.snapshots.iter()
+        self.snapshots
+            .iter()
             .filter(|s| s.branch_name == branch_name)
             .collect()
     }
@@ -158,16 +161,15 @@ pub fn load_state(engine: &super::WorktreeEngine) -> Result<WorktreeState> {
         return Err(SdkError::NotAWorktree);
     }
     let content = std::fs::read_to_string(&state_file)?;
-    serde_json::from_str(&content)
-        .map_err(|e| SdkError::Serialization(e.to_string()))
+    serde_json::from_str(&content).map_err(|e| SdkError::Serialization(e.to_string()))
 }
 
 /// Save state to disk (atomic write via temp file + rename)
 pub fn save_state(engine: &super::WorktreeEngine, state: &WorktreeState) -> Result<()> {
     let state_file = engine.state_file();
     let tmp_file = state_file.with_extension("json.tmp");
-    let content = serde_json::to_string_pretty(state)
-        .map_err(|e| SdkError::Serialization(e.to_string()))?;
+    let content =
+        serde_json::to_string_pretty(state).map_err(|e| SdkError::Serialization(e.to_string()))?;
     std::fs::write(&tmp_file, &content)?;
     std::fs::rename(&tmp_file, &state_file)?;
     Ok(())
@@ -176,7 +178,9 @@ pub fn save_state(engine: &super::WorktreeEngine, state: &WorktreeState) -> Resu
 /// Compute the current working tree status
 pub fn compute_status(engine: &super::WorktreeEngine) -> Result<WorkingStatus> {
     let state = load_state(engine)?;
-    let tree = state.current_tree().ok_or(SdkError::TreeNotFound("no current tree".into()))?;
+    let tree = state
+        .current_tree()
+        .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
     let branch = &tree.current_branch;
 
     // Get files from last snapshot
@@ -196,7 +200,8 @@ pub fn compute_status(engine: &super::WorktreeEngine) -> Result<WorkingStatus> {
     let root = engine.root();
     if let Ok(walker) = walkdir_files(root) {
         for file_path in walker {
-            let rel_path = file_path.strip_prefix(root)
+            let rel_path = file_path
+                .strip_prefix(root)
                 .unwrap_or(&file_path)
                 .to_string_lossy()
                 .replace('\\', "/");

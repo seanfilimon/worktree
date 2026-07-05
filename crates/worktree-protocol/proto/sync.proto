@@ -1,8 +1,7 @@
 syntax = "proto3";
 
 // W0rkTree sync protocol — wire format for communication between
-// the local bgprocess (worktree-bg) and the remote server (worktree-server,
-// future Go impl at services/server-go/).
+// the local bgprocess (worktree-bg) and the remote server (worktree-server).
 //
 // Mirrors the hand-coded Rust types in
 //   crates/worktree-protocol/src/feature/sync_protocol.rs
@@ -16,8 +15,6 @@ syntax = "proto3";
 //     map to proto `enum` with _UNSPECIFIED = 0.
 
 package worktree.sync.v1;
-
-option go_package = "github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb";
 
 import "google/protobuf/timestamp.proto";
 

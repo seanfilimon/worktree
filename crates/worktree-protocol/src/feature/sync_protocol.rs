@@ -233,7 +233,7 @@ pub struct AccessConfigSyncResponse {
 // ============================================================
 
 /// Tracks the sync state between client and server
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SyncState {
     pub last_sync: Option<DateTime<Utc>>,
     pub local_tip: Option<SnapshotId>,
@@ -242,20 +242,6 @@ pub struct SyncState {
     pub pending_objects: u32,
     pub is_syncing: bool,
     pub offline: bool,
-}
-
-impl Default for SyncState {
-    fn default() -> Self {
-        Self {
-            last_sync: None,
-            local_tip: None,
-            remote_tip: None,
-            pending_staged: 0,
-            pending_objects: 0,
-            is_syncing: false,
-            offline: false,
-        }
-    }
 }
 
 impl SyncState {
@@ -350,7 +336,7 @@ mod tests {
         assert!(state.is_out_of_sync());
         assert!(state.needs_sync());
 
-        state.local_tip = state.remote_tip.clone();
+        state.local_tip = state.remote_tip;
         state.pending_staged = 2;
         assert!(state.is_ahead());
     }

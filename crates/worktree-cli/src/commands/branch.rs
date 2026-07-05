@@ -20,7 +20,9 @@ pub async fn execute(action: BranchAction) -> Result<(), Box<dyn std::error::Err
             format::print_header("Branches");
             for b in &branches {
                 let marker = if b.name == current { "* " } else { "  " };
-                let tip_display = b.tip.as_ref()
+                let tip_display = b
+                    .tip
+                    .as_ref()
                     .map(|t| t[..8.min(t.len())].to_string())
                     .unwrap_or_else(|| "(no snapshots)".to_string());
                 if b.name == current {

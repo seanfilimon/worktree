@@ -1,8 +1,8 @@
 //! Audit logging for tracking all operations and access decisions.
 
-use serde::{Deserialize, Serialize};
+use crate::core::id::{AccountId, BranchId, TenantId, TreeId};
 use chrono::{DateTime, Utc};
-use crate::core::id::{AccountId, TenantId, TreeId, BranchId};
+use serde::{Deserialize, Serialize};
 
 /// Type of audit event
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,35 +113,58 @@ pub struct AuditLog {
 }
 
 impl AuditLog {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn record(&mut self, entry: AuditEntry) {
         self.entries.push(entry);
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 
-    pub fn entries(&self) -> &[AuditEntry] { &self.entries }
+    pub fn entries(&self) -> &[AuditEntry] {
+        &self.entries
+    }
 
     pub fn filter_by_type(&self, event_type: &AuditEventType) -> Vec<&AuditEntry> {
-        self.entries.iter().filter(|e| e.event_type == *event_type).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.event_type == *event_type)
+            .collect()
     }
 
     pub fn filter_by_actor(&self, actor: &AccountId) -> Vec<&AuditEntry> {
-        self.entries.iter().filter(|e| e.actor.as_ref() == Some(actor)).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.actor.as_ref() == Some(actor))
+            .collect()
     }
 
     pub fn filter_by_tenant(&self, tenant_id: &TenantId) -> Vec<&AuditEntry> {
-        self.entries.iter().filter(|e| e.tenant_id.as_ref() == Some(tenant_id)).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.tenant_id.as_ref() == Some(tenant_id))
+            .collect()
     }
 
     pub fn denied_events(&self) -> Vec<&AuditEntry> {
-        self.entries.iter().filter(|e| e.outcome == AuditOutcome::Denied).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.outcome == AuditOutcome::Denied)
+            .collect()
     }
 
     pub fn since(&self, since: DateTime<Utc>) -> Vec<&AuditEntry> {
-        self.entries.iter().filter(|e| e.timestamp >= since).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.timestamp >= since)
+            .collect()
     }
 }
 
@@ -155,12 +178,22 @@ mod tests {
         let actor = AccountId::new();
 
         log.record(
-            AuditEntry::new(AuditEventType::AccessDecision, AuditOutcome::Success, "read", "tree/backend")
-                .with_actor(actor)
+            AuditEntry::new(
+                AuditEventType::AccessDecision,
+                AuditOutcome::Success,
+                "read",
+                "tree/backend",
+            )
+            .with_actor(actor),
         );
         log.record(
-            AuditEntry::new(AuditEventType::AccessDecision, AuditOutcome::Denied, "write", "tree/backend")
-                .with_actor(actor)
+            AuditEntry::new(
+                AuditEventType::AccessDecision,
+                AuditOutcome::Denied,
+                "write",
+                "tree/backend",
+            )
+            .with_actor(actor),
         );
 
         assert_eq!(log.len(), 2);

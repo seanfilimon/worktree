@@ -27,8 +27,4 @@ pub enum ServerError {
     /// API layer error.
     #[error("api error: {0}")]
     Api(String),
-
-    /// Git interoperability error.
-    #[error("git error: {0}")]
-    Git(String),
 }

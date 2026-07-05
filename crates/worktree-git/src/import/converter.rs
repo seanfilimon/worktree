@@ -1,7 +1,7 @@
+use worktree_protocol::core::id::TreeId;
 use worktree_protocol::object::blob::Blob;
 use worktree_protocol::object::manifest::Manifest;
 use worktree_protocol::object::snapshot::Snapshot;
-use worktree_protocol::core::id::TreeId;
 
 use crate::error::Result;
 use crate::import::repo::GitRepo;

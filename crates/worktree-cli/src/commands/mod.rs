@@ -1,23 +1,23 @@
-pub mod init;
-pub mod status;
-pub mod snapshot;
+pub mod archive;
 pub mod branch;
-pub mod merge;
-pub mod log;
-pub mod sync;
-pub mod tree;
-pub mod permission;
-pub mod git;
-pub mod server;
-pub mod diff;
-pub mod tag;
 pub mod config;
+pub mod depend;
+pub mod diff;
+pub mod git;
+pub mod ignore;
+pub mod init;
+pub mod log;
+pub mod merge;
+pub mod permission;
 pub mod reflog;
 pub mod revert;
-pub mod archive;
-pub mod depend;
+pub mod server;
+pub mod snapshot;
 pub mod staged;
-pub mod ignore;
+pub mod status;
+pub mod sync;
+pub mod tag;
+pub mod tree;
 
 use clap::Subcommand;
 
@@ -152,19 +152,13 @@ pub enum Commands {
 #[derive(Subcommand, Clone, Debug)]
 pub enum BranchAction {
     /// Create a new branch
-    Create {
-        name: String,
-    },
+    Create { name: String },
     /// List all branches
     List,
     /// Switch to a branch
-    Switch {
-        name: String,
-    },
+    Switch { name: String },
     /// Delete a branch
-    Delete {
-        name: String,
-    },
+    Delete { name: String },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -182,19 +176,13 @@ pub enum SyncAction {
 #[derive(Subcommand, Clone, Debug)]
 pub enum TreeAction {
     /// Add a new tree
-    Add {
-        path: String,
-    },
+    Add { path: String },
     /// List all trees
     List,
     /// Remove a tree
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Show tree status
-    Status {
-        name: Option<String>,
-    },
+    Status { name: Option<String> },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -209,9 +197,7 @@ pub enum TagAction {
     /// List all tags
     List,
     /// Delete a tag
-    Delete {
-        name: String,
-    },
+    Delete { name: String },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -219,14 +205,9 @@ pub enum ConfigAction {
     /// Show current configuration
     Show,
     /// Get a specific config value
-    Get {
-        key: String,
-    },
+    Get { key: String },
     /// Set a config value
-    Set {
-        key: String,
-        value: String,
-    },
+    Set { key: String, value: String },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -260,9 +241,7 @@ pub enum IgnoreAction {
     /// List active ignore patterns
     List,
     /// Add an ignore pattern
-    Add {
-        pattern: String,
-    },
+    Add { pattern: String },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -278,9 +257,7 @@ pub enum PermissionAction {
         allow: String,
     },
     /// Get permissions for a tree
-    Get {
-        tree: String,
-    },
+    Get { tree: String },
     /// List all permissions
     List,
 }
@@ -288,9 +265,7 @@ pub enum PermissionAction {
 #[derive(Subcommand, Clone, Debug)]
 pub enum GitAction {
     /// Import from a git repository
-    Import {
-        source: String,
-    },
+    Import { source: String },
     /// Export to a git repository
     Export {
         tree: String,
@@ -311,15 +286,9 @@ pub enum GitAction {
         action: GitRemoteAction,
     },
     /// Push to a git remote
-    Push {
-        remote: String,
-        branch: String,
-    },
+    Push { remote: String, branch: String },
     /// Pull from a git remote
-    Pull {
-        remote: String,
-        branch: String,
-    },
+    Pull { remote: String, branch: String },
     /// Mirror a tree to a git remote
     Mirror {
         tree: String,
@@ -333,16 +302,11 @@ pub enum GitAction {
 #[derive(Subcommand, Clone, Debug)]
 pub enum GitRemoteAction {
     /// Add a git remote
-    Add {
-        name: String,
-        url: String,
-    },
+    Add { name: String, url: String },
     /// List git remotes
     List,
     /// Remove a git remote
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -365,12 +329,21 @@ pub async fn execute(cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Merge { branch, strategy } => merge::execute(branch, strategy).await,
         Commands::Sync { action } => sync::execute(action).await,
         Commands::Tree { action } => tree::execute(action).await,
-        Commands::Diff { from, to, name_only, stat } => diff::execute(from, to, name_only, stat).await,
+        Commands::Diff {
+            from,
+            to,
+            name_only,
+            stat,
+        } => diff::execute(from, to, name_only, stat).await,
         Commands::Tag { action } => tag::execute(action).await,
         Commands::Config { action } => config::execute(action).await,
         Commands::Reflog { count } => reflog::execute(count).await,
         Commands::Revert { snapshot } => revert::execute(snapshot).await,
-        Commands::Archive { output, format, tree } => archive::execute(output, format, tree).await,
+        Commands::Archive {
+            output,
+            format,
+            tree,
+        } => archive::execute(output, format, tree).await,
         Commands::Depend { action } => depend::execute(action).await,
         Commands::Staged { action } => staged::execute(action).await,
         Commands::Ignore { action } => ignore::execute(action).await,

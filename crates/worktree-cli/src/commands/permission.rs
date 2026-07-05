@@ -109,8 +109,10 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
                         if matches_tree {
                             found = true;
                             println!();
-                            format::print_list_item(&format!("{} ({}) — {} → {}",
-                                name, effect, subjects, permissions));
+                            format::print_list_item(&format!(
+                                "{} ({}) — {} → {}",
+                                name, effect, subjects, permissions
+                            ));
                         }
                         i = block_end;
                     } else {
@@ -139,7 +141,9 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
                     println!("{}", content);
                 }
             } else {
-                format::print_info("No permissions configured yet. Use `wt permission set` to add permissions.");
+                format::print_info(
+                    "No permissions configured yet. Use `wt permission set` to add permissions.",
+                );
             }
 
             // Also show roles if they exist

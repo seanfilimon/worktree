@@ -1,5 +1,5 @@
+use crate::error::Result;
 use std::fs;
-use crate::error::{SdkError, Result};
 
 /// Read the root worktree config
 pub fn read_config(engine: &super::WorktreeEngine) -> Result<String> {

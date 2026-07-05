@@ -1,7 +1,7 @@
 use crate::output::format;
 use std::path::Path;
+use worktree_sdk::engine::diff::{DiffEntry, DiffStatus};
 use worktree_sdk::WorktreeEngine;
-use worktree_sdk::engine::diff::{DiffStatus, DiffEntry};
 
 pub async fn execute(
     from: Option<String>,
@@ -25,12 +25,18 @@ pub async fn execute(
             if from_id == "working" {
                 worktree_sdk::engine::diff::diff_working_tree(&engine)?
             } else {
-                format::print_info(&format!("Showing changes since snapshot {}...", &from_id[..from_id.len().min(8)]));
+                format::print_info(&format!(
+                    "Showing changes since snapshot {}...",
+                    &from_id[..from_id.len().min(8)]
+                ));
                 worktree_sdk::engine::diff::diff_working_tree(&engine)?
             }
         }
         (None, Some(to_id)) => {
-            format::print_info(&format!("Showing changes up to snapshot {}...", &to_id[..to_id.len().min(8)]));
+            format::print_info(&format!(
+                "Showing changes up to snapshot {}...",
+                &to_id[..to_id.len().min(8)]
+            ));
             worktree_sdk::engine::diff::diff_working_tree(&engine)?
         }
     };

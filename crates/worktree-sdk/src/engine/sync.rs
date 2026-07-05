@@ -3,8 +3,11 @@ use crate::error::Result;
 pub fn push(engine: &super::WorktreeEngine) -> Result<PushResult> {
     // For now, local-only operation — log intent
     let state = super::status::load_state(engine)?;
-    let tree = state.current_tree()
-        .ok_or(crate::error::SdkError::TreeNotFound("no current tree".into()))?;
+    let tree = state
+        .current_tree()
+        .ok_or(crate::error::SdkError::TreeNotFound(
+            "no current tree".into(),
+        ))?;
     let branch = &tree.current_branch;
     let snapshot_count = tree.snapshots_on_branch(branch).len();
 
@@ -17,8 +20,11 @@ pub fn push(engine: &super::WorktreeEngine) -> Result<PushResult> {
 
 pub fn pull(engine: &super::WorktreeEngine) -> Result<PullResult> {
     let state = super::status::load_state(engine)?;
-    let tree = state.current_tree()
-        .ok_or(crate::error::SdkError::TreeNotFound("no current tree".into()))?;
+    let tree = state
+        .current_tree()
+        .ok_or(crate::error::SdkError::TreeNotFound(
+            "no current tree".into(),
+        ))?;
 
     Ok(PullResult {
         branch: tree.current_branch.clone(),

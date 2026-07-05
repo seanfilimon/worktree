@@ -31,9 +31,7 @@ pub struct PermissionGrant {
 impl PermissionEnforcer {
     /// Create a new `PermissionEnforcer` with no grants loaded.
     pub fn new() -> Self {
-        Self {
-            grants: Vec::new(),
-        }
+        Self { grants: Vec::new() }
     }
 
     /// Add a permission grant to the enforcer.
@@ -42,12 +40,7 @@ impl PermissionEnforcer {
     }
 
     /// Add a permission grant for a specific user, permission, and scope.
-    pub fn grant(
-        &mut self,
-        user_id: AccountId,
-        permission: Permission,
-        scope: Scope,
-    ) {
+    pub fn grant(&mut self, user_id: AccountId, permission: Permission, scope: Scope) {
         self.grants.push(PermissionGrant {
             user_id,
             permission,
@@ -70,16 +63,9 @@ impl PermissionEnforcer {
     /// # Returns
     ///
     /// `true` if the user is authorized, `false` otherwise.
-    pub fn check(
-        &self,
-        user: &AccountId,
-        permission: &Permission,
-        scope: &Scope,
-    ) -> bool {
+    pub fn check(&self, user: &AccountId, permission: &Permission, scope: &Scope) -> bool {
         self.grants.iter().any(|grant| {
-            grant.user_id == *user
-                && grant.permission == *permission
-                && grant.scope.covers(scope)
+            grant.user_id == *user && grant.permission == *permission && grant.scope.covers(scope)
         })
     }
 
@@ -107,7 +93,7 @@ impl Default for PermissionEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worktree_protocol::core::id::TreeId;
+    use worktree_protocol::core::id::{TenantId, TreeId};
 
     #[test]
     fn check_returns_false_with_no_grants() {
@@ -130,6 +116,7 @@ mod tests {
     fn global_grant_covers_tree_scope() {
         let mut enforcer = PermissionEnforcer::new();
         let user = AccountId::new();
+        let tenant_id = TenantId::new();
         let tree_id = TreeId::new();
 
         enforcer.grant(user, Permission::TreeWrite, Scope::Global);
@@ -137,7 +124,7 @@ mod tests {
         assert!(enforcer.check(
             &user,
             &Permission::TreeWrite,
-            &Scope::Tree(tree_id),
+            &Scope::Tree(tenant_id, tree_id),
         ));
     }
 
@@ -145,15 +132,16 @@ mod tests {
     fn tree_grant_does_not_cover_different_tree() {
         let mut enforcer = PermissionEnforcer::new();
         let user = AccountId::new();
+        let tenant_id = TenantId::new();
         let tree_a = TreeId::new();
         let tree_b = TreeId::new();
 
-        enforcer.grant(user, Permission::TreeRead, Scope::Tree(tree_a));
+        enforcer.grant(user, Permission::TreeRead, Scope::Tree(tenant_id, tree_a));
 
         assert!(!enforcer.check(
             &user,
             &Permission::TreeRead,
-            &Scope::Tree(tree_b),
+            &Scope::Tree(tenant_id, tree_b),
         ));
     }
 

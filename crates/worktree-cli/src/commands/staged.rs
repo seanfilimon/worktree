@@ -41,7 +41,9 @@ pub async fn execute(action: Option<StagedAction>) -> Result<(), Box<dyn std::er
 
             if !found_others {
                 format::print_info("No staged snapshots from other team members.");
-                format::print_info("As your team creates snapshots, their activity will appear here.");
+                format::print_info(
+                    "As your team creates snapshots, their activity will appear here.",
+                );
             }
         }
         StagedAction::Clear => {

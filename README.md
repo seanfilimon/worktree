@@ -126,7 +126,7 @@ W0rkTree operates as a **two-runtime system**. Neither runtime is optional.
 
 ## Project Structure
 
-W0rkTree is a polyglot monorepo managed with **Cargo workspaces** (Rust, under `crates/`), a **Go module** (remote server, under `services/server-go/`), and **Turborepo + npm** (TypeScript/web, under `apps/web/`).
+W0rkTree is a monorepo managed with **Cargo workspaces** (Rust, under `crates/`) and **Turborepo + npm** (TypeScript/web, under `apps/web/`).
 
 ```
 worktree/
@@ -145,10 +145,11 @@ worktree/
 │   │   └── specs/                       # Authoritative specification documents (14 specs)
 │   │
 │   ├── worktree-sdk/                    # Local engine — snapshots, branches, diffs, merges
-│   ├── worktree-server/                 # Background daemon — watcher, auto-snapshot, sync, gRPC
+│   ├── worktree-bg/                     # Background daemon — watcher, auto-snapshot, sync
+│   ├── worktree-server/                 # Remote multi-tenant server — canonical history, IAM
 │   ├── worktree-cli/                    # CLI binary (`wt`) — 20 subcommands, colored output
 │   ├── worktree-git/                    # Git compatibility — import, export, SHA-1↔BLAKE3 bridge
-│   └── worktree-admin/                  # Admin panel — Yew WASM SPA + Axum HTTP API
+│   └── worktree-admin/                  # Admin panel — Yew WASM SPA
 │
 ├── apps/                                # ── TypeScript Workspace ──
 │   └── web/                             # Marketing & docs site (Next.js 16, Fumadocs, shadcn)
@@ -160,12 +161,6 @@ worktree/
 │   ├── git-compatibility.md
 │   ├── sdk-guide.md
 │   └── admin-panel.md
-│
-├── tests/                               # Cross-crate test suites
-│   ├── protocol_tests/
-│   ├── server_tests/
-│   ├── git_compat_tests/
-│   └── e2e_tests/
 │
 ├── scripts/                             # Build & install scripts
 │   ├── ci.sh                            # CI pipeline (fmt → clippy → test → build)

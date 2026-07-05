@@ -1,25 +1,26 @@
 [package]
 name = "worktree-bg"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "W0rkTree local background daemon (bgprocess) — runs on each developer machine"
 
 [[bin]]
 name = "worktree-bg"
 path = "src/main.rs"
 
-# Dependencies are pre-declared in anticipation of WT-EXTRACT-2.
-# Until modules are populated, `cargo check` will warn about unused deps.
-# That's expected — these are placeholders matching the current worktree-server crate.
+[lints]
+workspace = true
+
 [dependencies]
-worktree-protocol = { path = "../worktree-protocol" }
-worktree-git = { path = "../worktree-git" }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-thiserror = "1"
-notify = "7"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
+worktree-protocol.workspace = true
+worktree-git.workspace = true
+tokio.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+notify.workspace = true
+uuid.workspace = true
+chrono.workspace = true

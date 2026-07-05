@@ -1,5 +1,5 @@
-use crate::error::{SdkError, Result};
 use super::status::{load_state, FileEntry};
+use crate::error::{Result, SdkError};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -66,23 +66,33 @@ pub fn diff_snapshots(
     to_id: &str,
 ) -> Result<Vec<DiffEntry>> {
     let state = load_state(engine)?;
-    let tree_name = state.current_tree.as_deref()
+    let tree_name = state
+        .current_tree
+        .as_deref()
         .ok_or(SdkError::TreeNotFound("no current tree".into()))?;
 
-    let tree = state.find_tree(tree_name)
+    let tree = state
+        .find_tree(tree_name)
         .ok_or(SdkError::TreeNotFound(tree_name.to_string()))?;
 
-    let from_snap = tree.snapshots.iter().find(|s| s.id == from_id)
+    let from_snap = tree
+        .snapshots
+        .iter()
+        .find(|s| s.id == from_id)
         .ok_or(SdkError::SnapshotNotFound(from_id.to_string()))?;
-    let to_snap = tree.snapshots.iter().find(|s| s.id == to_id)
+    let to_snap = tree
+        .snapshots
+        .iter()
+        .find(|s| s.id == to_id)
         .ok_or(SdkError::SnapshotNotFound(to_id.to_string()))?;
 
-    let from_map: HashMap<&str, &FileEntry> = from_snap.files.iter()
+    let from_map: HashMap<&str, &FileEntry> = from_snap
+        .files
+        .iter()
         .map(|f| (f.path.as_str(), f))
         .collect();
-    let to_map: HashMap<&str, &FileEntry> = to_snap.files.iter()
-        .map(|f| (f.path.as_str(), f))
-        .collect();
+    let to_map: HashMap<&str, &FileEntry> =
+        to_snap.files.iter().map(|f| (f.path.as_str(), f)).collect();
 
     let mut entries = Vec::new();
 

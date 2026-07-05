@@ -318,12 +318,7 @@ mod tests {
     fn test_session_ids_linked() {
         let account_id = AccountId::new();
         let tenant_id = TenantId::new();
-        let session = Session::new(
-            account_id,
-            tenant_id,
-            "tok".to_string(),
-            Duration::hours(1),
-        );
+        let session = Session::new(account_id, tenant_id, "tok".to_string(), Duration::hours(1));
         assert_eq!(session.account_id, account_id);
         assert_eq!(session.tenant_id, tenant_id);
     }

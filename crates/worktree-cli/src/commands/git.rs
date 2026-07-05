@@ -25,7 +25,10 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info("Converting Git tags to W0rkTree tags...");
             format::print_warning("Git import is not yet fully implemented.");
             format::print_info("Note: Full git import requires the worktree-git crate.");
-            format::print_info(&format!("Worktree initialized at '{}' — ready for manual import.", state.name));
+            format::print_info(&format!(
+                "Worktree initialized at '{}' — ready for manual import.",
+                state.name
+            ));
         }
         GitAction::Export { tree, output, mode } => {
             let engine = WorktreeEngine::open(Path::new("."))?;
@@ -47,7 +50,10 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info("Converting W0rkTree tags to Git tags...");
             format::print_warning("Git export is not yet fully implemented.");
             format::print_info("Note: Full git export requires the worktree-git crate.");
-            format::print_info(&format!("Tree '{}' prepared for export to '{}'.", tree, output));
+            format::print_info(&format!(
+                "Tree '{}' prepared for export to '{}'.",
+                tree, output
+            ));
         }
         GitAction::Clone { url, name } => {
             let repo_name = name
@@ -166,7 +172,8 @@ async fn execute_remote(action: GitRemoteAction) -> Result<(), Box<dyn std::erro
                     let entry = entry?;
                     let path = entry.path();
                     if path.extension().map(|e| e == "url").unwrap_or(false) {
-                        let name = path.file_stem()
+                        let name = path
+                            .file_stem()
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown");
                         let url = std::fs::read_to_string(&path)?;
@@ -178,12 +185,18 @@ async fn execute_remote(action: GitRemoteAction) -> Result<(), Box<dyn std::erro
                     format::print_info("No remotes configured.");
                 }
             } else {
-                format::print_info("No remotes configured. Use `wt git remote add <name> <url>` to add one.");
+                format::print_info(
+                    "No remotes configured. Use `wt git remote add <name> <url>` to add one.",
+                );
             }
         }
         GitRemoteAction::Remove { name } => {
             let engine = WorktreeEngine::open(Path::new("."))?;
-            let remote_file = engine.wt_dir().join("cache").join("remotes").join(format!("{}.url", name));
+            let remote_file = engine
+                .wt_dir()
+                .join("cache")
+                .join("remotes")
+                .join(format!("{}.url", name));
 
             if remote_file.exists() {
                 std::fs::remove_file(&remote_file)?;
