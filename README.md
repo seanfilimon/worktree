@@ -387,7 +387,46 @@ Grant levels: `read-only` (view only), `modify` (edit, no export), `redistribute
 
 ## Getting Started
 
-### Prerequisites
+### Installation
+
+One command builds and installs the binaries to a user-level bin directory
+(no admin rights needed). Requires [Rust](https://rustup.rs).
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/seanfilimon/worktree.git; cd worktree
+.\scripts\install.ps1                  # installs wt, worktree-bg, worktree-server
+.\scripts\install.ps1 -Component cli   # just the CLI + daemon
+.\scripts\install.ps1 -Uninstall       # remove everything again
+```
+
+**Linux / macOS:**
+
+```bash
+git clone https://github.com/seanfilimon/worktree.git && cd worktree
+./scripts/install.sh                   # installs wt, worktree-bg, worktree-server
+./scripts/install.sh --component cli   # just the CLI + daemon
+./scripts/install.sh --uninstall       # remove everything again
+```
+
+Prefer plain cargo? This works too (binaries land in `~/.cargo/bin`):
+
+```bash
+cargo install --path crates/worktree-cli     # wt
+cargo install --path crates/worktree-bg      # worktree-bg (daemon)
+cargo install --path crates/worktree-server  # worktree-server
+```
+
+Then:
+
+```bash
+wt init             # initialize a worktree in the current directory
+wt server start     # start the background daemon (auto-snapshots)
+wt --help
+```
+
+### Prerequisites (development)
 
 | Tool | Version | Purpose |
 |---|---|---|
