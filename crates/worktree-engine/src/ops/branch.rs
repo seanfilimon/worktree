@@ -1,21 +1,20 @@
 use crate::engine::WorktreeEngine;
 use crate::error::{EngineError, Result};
-use crate::persist::{load_state, save_state, BranchState};
-use chrono::Utc;
+use crate::persist::{self, load_state, BranchState};
 
 pub fn create_branch(
     engine: &WorktreeEngine,
     name: &str,
     tree_name: Option<&str>,
 ) -> Result<BranchState> {
-    let mut state = load_state(engine)?;
+    let state = load_state(engine)?;
     let tree_name = tree_name
         .map(|s| s.to_string())
         .or_else(|| state.current_tree.clone())
         .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
 
     let tree = state
-        .find_tree_mut(&tree_name)
+        .find_tree(&tree_name)
         .ok_or(EngineError::TreeNotFound(tree_name.clone()))?;
 
     if tree.find_branch(name).is_some() {
@@ -26,15 +25,7 @@ pub fn create_branch(
     }
 
     let tip = tree.current_branch().and_then(|b| b.tip.clone());
-    let branch = BranchState {
-        name: name.to_string(),
-        tip,
-        created_at: Utc::now().to_rfc3339(),
-    };
-
-    tree.branches.push(branch.clone());
-    save_state(engine, &state)?;
-    Ok(branch)
+    persist::create_branch(engine, &tree_name, name, tip)
 }
 
 pub fn list_branches(
@@ -55,34 +46,32 @@ pub fn list_branches(
 }
 
 pub fn switch_branch(engine: &WorktreeEngine, name: &str, tree_name: Option<&str>) -> Result<()> {
-    let mut state = load_state(engine)?;
+    let state = load_state(engine)?;
     let tree_name = tree_name
         .map(|s| s.to_string())
         .or_else(|| state.current_tree.clone())
         .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
 
     let tree = state
-        .find_tree_mut(&tree_name)
+        .find_tree(&tree_name)
         .ok_or(EngineError::TreeNotFound(tree_name.clone()))?;
 
     if tree.find_branch(name).is_none() {
         return Err(EngineError::BranchNotFound(name.to_string()));
     }
 
-    tree.current_branch = name.to_string();
-    save_state(engine, &state)?;
-    Ok(())
+    persist::set_current_branch(engine, &tree_name, name)
 }
 
 pub fn delete_branch(engine: &WorktreeEngine, name: &str, tree_name: Option<&str>) -> Result<()> {
-    let mut state = load_state(engine)?;
+    let state = load_state(engine)?;
     let tree_name = tree_name
         .map(|s| s.to_string())
         .or_else(|| state.current_tree.clone())
         .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
 
     let tree = state
-        .find_tree_mut(&tree_name)
+        .find_tree(&tree_name)
         .ok_or(EngineError::TreeNotFound(tree_name.clone()))?;
 
     if name == tree.current_branch {
@@ -97,12 +86,9 @@ pub fn delete_branch(engine: &WorktreeEngine, name: &str, tree_name: Option<&str
         ));
     }
 
-    let before = tree.branches.len();
-    tree.branches.retain(|b| b.name != name);
-    if tree.branches.len() == before {
+    if tree.find_branch(name).is_none() {
         return Err(EngineError::BranchNotFound(name.to_string()));
     }
 
-    save_state(engine, &state)?;
-    Ok(())
+    persist::delete_branch(engine, &tree_name, name)
 }

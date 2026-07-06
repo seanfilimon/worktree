@@ -3,6 +3,7 @@ pub mod branch;
 pub mod config;
 pub mod depend;
 pub mod diff;
+pub mod doctor;
 pub mod git;
 pub mod ignore;
 pub mod init;
@@ -147,6 +148,8 @@ pub enum Commands {
         #[command(subcommand)]
         action: ServerAction,
     },
+    /// Check store health: object counts and integrity verification
+    Doctor,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -350,5 +353,6 @@ pub async fn execute(cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Permission { action } => permission::execute(action).await,
         Commands::Git { action } => git::execute(action).await,
         Commands::Server { action } => server::execute(action).await,
+        Commands::Doctor => doctor::execute().await,
     }
 }

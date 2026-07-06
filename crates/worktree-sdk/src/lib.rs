@@ -21,5 +21,5 @@ pub use worktree_engine::ops::merge::MergeResult;
 pub use worktree_engine::ops::status::WorkingStatus;
 pub use worktree_engine::ops::sync::{PullResult, PushResult};
 pub use worktree_engine::persist::{
-    BranchState, FileEntry, SnapshotState, TagState, TreeState, WorktreeState,
+    BranchState, DoctorReport, FileEntry, SnapshotState, TagState, TreeState, WorktreeState,
 };

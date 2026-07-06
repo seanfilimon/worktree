@@ -176,6 +176,11 @@ impl Client {
         Ok(ops::dependency::list_dependencies(self.engine())?)
     }
 
+    /// Store health: object counts + integrity verification.
+    pub fn doctor(&self) -> Result<worktree_engine::persist::DoctorReport> {
+        Ok(ops::doctor::run(self.engine())?)
+    }
+
     // --- Sync ----------------------------------------------------------------
 
     pub fn sync_push(&self) -> Result<PushResult> {

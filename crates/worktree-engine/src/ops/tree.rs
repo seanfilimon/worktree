@@ -1,7 +1,6 @@
 use crate::engine::WorktreeEngine;
 use crate::error::{EngineError, Result};
-use crate::persist::{load_state, save_state, BranchState, TreeState};
-use chrono::Utc;
+use crate::persist::{self, load_state, TreeState};
 use std::fs;
 
 pub fn add_tree(engine: &WorktreeEngine, path: &str) -> Result<TreeState> {
@@ -12,7 +11,7 @@ pub fn add_tree(engine: &WorktreeEngine, path: &str) -> Result<TreeState> {
         ));
     }
 
-    let mut state = load_state(engine)?;
+    let state = load_state(engine)?;
     let name = path
         .replace('\\', "/")
         .split('/')
@@ -44,23 +43,7 @@ branch_strategy = "feature-branch"
     );
     fs::write(wt_tree_dir.join("config.toml"), config)?;
 
-    let now = Utc::now().to_rfc3339();
-    let tree = TreeState {
-        name: name.to_string(),
-        path: path.to_string(),
-        branches: vec![BranchState {
-            name: "main".to_string(),
-            tip: None,
-            created_at: now,
-        }],
-        current_branch: "main".to_string(),
-        snapshots: Vec::new(),
-        tags: Vec::new(),
-    };
-
-    state.trees.push(tree.clone());
-    save_state(engine, &state)?;
-    Ok(tree)
+    persist::add_tree(engine, &name, path)
 }
 
 pub fn list_trees(engine: &WorktreeEngine) -> Result<Vec<TreeState>> {
@@ -69,7 +52,7 @@ pub fn list_trees(engine: &WorktreeEngine) -> Result<Vec<TreeState>> {
 }
 
 pub fn remove_tree(engine: &WorktreeEngine, name: &str) -> Result<()> {
-    let mut state = load_state(engine)?;
+    let state = load_state(engine)?;
 
     if name == "root" {
         return Err(EngineError::InvalidConfig(
@@ -87,13 +70,5 @@ pub fn remove_tree(engine: &WorktreeEngine, name: &str) -> Result<()> {
         fs::remove_dir_all(&wt_tree_dir)?;
     }
 
-    if let Some(current) = &state.current_tree {
-        if current == name {
-            state.current_tree = Some("root".to_string());
-        }
-    }
-
-    state.trees.retain(|t| t.name != name);
-    save_state(engine, &state)?;
-    Ok(())
+    persist::remove_tree(engine, name)
 }

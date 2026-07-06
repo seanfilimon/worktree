@@ -42,6 +42,14 @@ impl WorktreeEngine {
         Ok(Self { root: path })
     }
 
+    /// Wrap a path as an engine without checking for `.wt/` — used during
+    /// init, before the directory structure exists.
+    pub(crate) fn open_unchecked(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+        }
+    }
+
     /// Root path of this worktree
     pub fn root(&self) -> &Path {
         &self.root
@@ -52,22 +60,13 @@ impl WorktreeEngine {
         self.root.join(".wt")
     }
 
-    /// Path to the state file
+    /// Path to the legacy JSON state file (pre-CAS worktrees; migrated on
+    /// first read).
     pub fn state_file(&self) -> PathBuf {
         self.wt_dir().join("state.json")
     }
 
-    /// Path to the objects directory
-    pub fn objects_dir(&self) -> PathBuf {
-        self.wt_dir().join("objects")
-    }
-
-    /// Path to the refs directory
-    pub fn refs_dir(&self) -> PathBuf {
-        self.wt_dir().join("refs")
-    }
-
-    /// Path to the reflog directory
+    /// Path to the reflog directory (DotWt.md: reflog lives in `.wt/`).
     pub fn reflog_dir(&self) -> PathBuf {
         self.wt_dir().join("reflog")
     }

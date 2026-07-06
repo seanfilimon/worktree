@@ -45,6 +45,10 @@ tonic = "0.12"
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
 
+# Storage
+zstd = "0.13"
+fs4 = "0.12"
+
 # Core primitives
 blake3 = "1"
 uuid = { version = "1", features = ["v4", "serde"] }

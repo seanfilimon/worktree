@@ -7,6 +7,7 @@ pub mod branch;
 pub mod config;
 pub mod dependency;
 pub mod diff;
+pub mod doctor;
 pub mod ignore;
 pub mod init;
 pub mod log;

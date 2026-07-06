@@ -19,13 +19,28 @@ pub fn wt_bin() -> &'static Path {
     })
 }
 
+/// Process-wide storage base for all e2e runs.
+///
+/// Lives **outside** every test worktree (stores must never be inside the
+/// working directory, or the engine would scan them) and outside the real
+/// platform data dir. Stores are isolated per worktree hash underneath it.
+pub fn storage_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("storage tempdir");
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir); // keep alive for the whole test process
+        path
+    })
+}
+
 /// Run `wt` with the given args in `cwd`, isolated from the host
-/// environment (storage and IPC endpoints point into the temp dir).
+/// environment (storage and IPC endpoints point into temp dirs).
 pub fn wt(cwd: &Path, args: &[&str]) -> Output {
     Command::new(wt_bin())
         .args(args)
         .current_dir(cwd)
-        .env("WT_STORAGE_DIR", cwd.join(".wt-e2e-storage"))
+        .env("WT_STORAGE_DIR", storage_dir())
         .env("WT_AUTHOR", "e2e-tester")
         .output()
         .expect("failed to run wt")

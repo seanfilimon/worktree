@@ -1,13 +1,21 @@
-//! State persistence.
+//! State persistence — content-addressable, backed by `worktree-store`.
 //!
-//! The state model and its load/save functions live behind this module so
-//! that [`crate::ops`] never touches serialization directly. WT-PHASE-2
-//! replaces the JSON-document backend with the content-addressable store
-//! from `worktree-store`; only this module changes when that happens.
+//! [`crate::ops`] never serializes anything directly: reads go through
+//! [`load_state`], writes through the targeted functions ([`commit_snapshot`],
+//! [`create_branch`], …) which store objects, move refs, and append reflog
+//! entries atomically under the store's writer lock.
+//!
+//! Legacy `.wt/state.json` worktrees are migrated automatically on first
+//! read (see [`migrate`]).
 
-mod state_json;
+mod cas;
+pub mod migrate;
 
-pub use state_json::{load_state, save_state};
+pub use cas::{
+    add_tree, append_reflog, commit_snapshot, create_branch, create_tag, delete_branch, delete_tag,
+    doctor, init_store, load_state, read_reflog, remove_tree, set_current_branch, set_current_tree,
+    DoctorReport, NewSnapshot,
+};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};

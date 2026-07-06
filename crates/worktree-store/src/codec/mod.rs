@@ -1,4 +1,4 @@
-//! Object frame codec (lands in WT-PHASE-2).
+//! Object frame codec.
 //!
 //! On-disk object frame per Storage.md:
 //!
@@ -7,3 +7,7 @@
 //! ```
 //!
 //! Every read verifies the trailing hash before returning bytes.
+
+mod frame;
+
+pub use frame::{decode, encode};

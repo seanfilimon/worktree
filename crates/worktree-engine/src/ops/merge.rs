@@ -1,8 +1,6 @@
 use crate::engine::WorktreeEngine;
 use crate::error::{EngineError, Result};
-use crate::identity;
-use crate::persist::{load_state, save_state, FileEntry, SnapshotState};
-use chrono::Utc;
+use crate::persist::{commit_snapshot, load_state, FileEntry, NewSnapshot, SnapshotState};
 use std::collections::HashMap;
 
 pub struct MergeResult {
@@ -12,14 +10,14 @@ pub struct MergeResult {
 }
 
 pub fn merge_branch(engine: &WorktreeEngine, source_branch: &str) -> Result<MergeResult> {
-    let mut state = load_state(engine)?;
+    let state = load_state(engine)?;
     let tree_name = state
         .current_tree
         .clone()
         .ok_or(EngineError::TreeNotFound("no current tree".into()))?;
 
     let tree = state
-        .find_tree_mut(&tree_name)
+        .find_tree(&tree_name)
         .ok_or(EngineError::TreeNotFound(tree_name.clone()))?;
 
     let target_branch = tree.current_branch.clone();
@@ -83,28 +81,21 @@ pub fn merge_branch(engine: &WorktreeEngine, source_branch: &str) -> Result<Merg
 
     let source_tip = tree.find_branch(source_branch).and_then(|b| b.tip.clone());
     let target_tip = tree.find_branch(&target_branch).and_then(|b| b.tip.clone());
-
     let parents: Vec<String> = [target_tip, source_tip].into_iter().flatten().collect();
-    let snapshot_id = uuid::Uuid::new_v4().to_string();
 
-    let snapshot = SnapshotState {
-        id: snapshot_id.clone(),
-        message: format!("Merge branch '{}' into '{}'", source_branch, target_branch),
-        author: identity::author(),
-        timestamp: Utc::now().to_rfc3339(),
-        parents,
-        tree_name: tree_name.clone(),
-        branch_name: target_branch.clone(),
-        files,
-        auto_generated: false,
-    };
-
-    if let Some(branch) = tree.find_branch_mut(&target_branch) {
-        branch.tip = Some(snapshot_id);
-    }
-
-    tree.snapshots.push(snapshot.clone());
-    save_state(engine, &state)?;
+    let message = format!("Merge branch '{}' into '{}'", source_branch, target_branch);
+    let snapshot = commit_snapshot(
+        engine,
+        NewSnapshot {
+            tree_name: &tree_name,
+            branch_name: &target_branch,
+            message: &message,
+            parents,
+            files,
+            auto_generated: false,
+            operation: "merge",
+        },
+    )?;
 
     Ok(MergeResult {
         snapshot,

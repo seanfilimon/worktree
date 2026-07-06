@@ -1,23 +1,25 @@
-use crate::error::{EngineError, Result};
+use crate::engine::WorktreeEngine;
+use crate::error::Result;
 use std::fs;
 use std::path::Path;
 
 /// Initialize a new worktree at the given path.
-/// Creates .wt/ directory structure and default configuration.
+///
+/// Creates the `.wt/` configuration directory per DotWt.md and the
+/// content-addressable store (platform data directory) with a `root` tree
+/// on `main`. Objects and refs never live inside `.wt/` — only
+/// configuration, identity, hooks, reflog, and conflict metadata do.
 pub fn initialize(root: &Path) -> Result<()> {
     let wt_dir = root.join(".wt");
 
-    // Create directory structure
+    // Directory structure (DotWt.md §Initialisation).
     fs::create_dir_all(&wt_dir)?;
-    fs::create_dir_all(wt_dir.join("objects"))?;
-    fs::create_dir_all(wt_dir.join("refs").join("branches"))?;
-    fs::create_dir_all(wt_dir.join("refs").join("tags"))?;
-    fs::create_dir_all(wt_dir.join("reflog"))?;
-    fs::create_dir_all(wt_dir.join("identity"))?;
+    fs::create_dir_all(wt_dir.join("identity").join("keys"))?;
     fs::create_dir_all(wt_dir.join("access"))?;
     fs::create_dir_all(wt_dir.join("hooks"))?;
-    fs::create_dir_all(wt_dir.join("cache"))?;
+    fs::create_dir_all(wt_dir.join("reflog"))?;
     fs::create_dir_all(wt_dir.join("conflicts"))?;
+    fs::create_dir_all(wt_dir.join("cache"))?;
 
     // Derive project name from directory
     let name = root
@@ -52,7 +54,6 @@ sync_to_server = true
 "#,
         name
     );
-
     fs::write(wt_dir.join("config.toml"), config)?;
 
     // Write default ignore
@@ -75,11 +76,35 @@ build/
 "#;
     fs::write(wt_dir.join("ignore"), ignore)?;
 
-    // Initialize state
-    let state = crate::persist::WorktreeState::new(name);
-    let state_json = serde_json::to_string_pretty(&state)
-        .map_err(|e| EngineError::Serialization(e.to_string()))?;
-    fs::write(wt_dir.join("state.json"), state_json)?;
+    // Default access control files (DeclarativeAccess.md). Roles mirror the
+    // protocol's built-ins; policies start empty — the root ceiling is
+    // "owner only" until policies grant more.
+    let roles = r#"# W0rkTree role definitions (.wt/access/roles.toml)
+# Built-in roles (reader, contributor, maintainer, admin) are always
+# available; define custom roles here.
+
+# [roles.release-manager]
+# description = "Can create tags and releases"
+# permissions = ["snapshot:read", "tag:create", "release:create"]
+"#;
+    fs::write(wt_dir.join("access").join("roles.toml"), roles)?;
+
+    let policies = r#"# W0rkTree access policies (.wt/access/policies.toml)
+# Declarative, Terraform-style. The server enforces these on every sync;
+# local tooling reads them for display only.
+
+# [[policy]]
+# name = "example"
+# effect = "allow"
+# subjects = ["team:frontend"]
+# scope = "tree:frontend"
+# permissions = ["snapshot:create", "branch:push"]
+"#;
+    fs::write(wt_dir.join("access").join("policies.toml"), policies)?;
+
+    // Initialize the content-addressable store (root tree, main branch).
+    let engine = WorktreeEngine::open_unchecked(root);
+    crate::persist::init_store(&engine, name)?;
 
     Ok(())
 }
