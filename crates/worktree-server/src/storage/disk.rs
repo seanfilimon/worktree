@@ -102,10 +102,7 @@ mod tests {
             parent_dir.file_name().unwrap().to_str().unwrap(),
             expected_prefix
         );
-        assert_eq!(
-            path.file_name().unwrap().to_str().unwrap(),
-            expected_rest
-        );
+        assert_eq!(path.file_name().unwrap().to_str().unwrap(), expected_rest);
     }
 
     #[test]

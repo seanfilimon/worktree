@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use crate::core::id::{AccountId, BranchId, SnapshotId, TreeId};
 use chrono::{DateTime, Utc};
-use crate::core::id::{SnapshotId, BranchId, TreeId, AccountId};
+use serde::{Deserialize, Serialize};
 
 /// The type of operation that created this reflog entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,24 +53,96 @@ impl ReflogEntry {
         }
     }
 
-    pub fn snapshot(tree_id: TreeId, branch_id: BranchId, old: SnapshotId, new: SnapshotId, actor: AccountId, message: &str) -> Self {
-        Self::new(ReflogAction::Snapshot, tree_id, branch_id, Some(old), Some(new), actor, message)
+    pub fn snapshot(
+        tree_id: TreeId,
+        branch_id: BranchId,
+        old: SnapshotId,
+        new: SnapshotId,
+        actor: AccountId,
+        message: &str,
+    ) -> Self {
+        Self::new(
+            ReflogAction::Snapshot,
+            tree_id,
+            branch_id,
+            Some(old),
+            Some(new),
+            actor,
+            message,
+        )
     }
 
-    pub fn merge(tree_id: TreeId, branch_id: BranchId, old: SnapshotId, new: SnapshotId, actor: AccountId, source_branch: &str) -> Self {
-        Self::new(ReflogAction::Merge, tree_id, branch_id, Some(old), Some(new), actor, &format!("merge from {}", source_branch))
+    pub fn merge(
+        tree_id: TreeId,
+        branch_id: BranchId,
+        old: SnapshotId,
+        new: SnapshotId,
+        actor: AccountId,
+        source_branch: &str,
+    ) -> Self {
+        Self::new(
+            ReflogAction::Merge,
+            tree_id,
+            branch_id,
+            Some(old),
+            Some(new),
+            actor,
+            &format!("merge from {}", source_branch),
+        )
     }
 
-    pub fn branch_create(tree_id: TreeId, branch_id: BranchId, snapshot: SnapshotId, actor: AccountId, name: &str) -> Self {
-        Self::new(ReflogAction::BranchCreate, tree_id, branch_id, None, Some(snapshot), actor, &format!("branch created: {}", name))
+    pub fn branch_create(
+        tree_id: TreeId,
+        branch_id: BranchId,
+        snapshot: SnapshotId,
+        actor: AccountId,
+        name: &str,
+    ) -> Self {
+        Self::new(
+            ReflogAction::BranchCreate,
+            tree_id,
+            branch_id,
+            None,
+            Some(snapshot),
+            actor,
+            &format!("branch created: {}", name),
+        )
     }
 
-    pub fn branch_switch(tree_id: TreeId, branch_id: BranchId, actor: AccountId, name: &str) -> Self {
-        Self::new(ReflogAction::BranchSwitch, tree_id, branch_id, None, None, actor, &format!("switched to {}", name))
+    pub fn branch_switch(
+        tree_id: TreeId,
+        branch_id: BranchId,
+        actor: AccountId,
+        name: &str,
+    ) -> Self {
+        Self::new(
+            ReflogAction::BranchSwitch,
+            tree_id,
+            branch_id,
+            None,
+            None,
+            actor,
+            &format!("switched to {}", name),
+        )
     }
 
-    pub fn revert(tree_id: TreeId, branch_id: BranchId, old: SnapshotId, new: SnapshotId, actor: AccountId, reverted_id: &str) -> Self {
-        Self::new(ReflogAction::Revert, tree_id, branch_id, Some(old), Some(new), actor, &format!("reverted snapshot {}", reverted_id))
+    pub fn revert(
+        tree_id: TreeId,
+        branch_id: BranchId,
+        old: SnapshotId,
+        new: SnapshotId,
+        actor: AccountId,
+        reverted_id: &str,
+    ) -> Self {
+        Self::new(
+            ReflogAction::Revert,
+            tree_id,
+            branch_id,
+            Some(old),
+            Some(new),
+            actor,
+            &format!("reverted snapshot {}", reverted_id),
+        )
     }
 }
 
@@ -82,7 +154,9 @@ pub struct Reflog {
 
 impl Reflog {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, entry: ReflogEntry) {

@@ -1,0 +1,20 @@
+[package]
+name = "worktree-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "W0rkTree content-addressable storage — objects, refs, reflog, chunks (shared by the local engine and the server)"
+
+[lints]
+workspace = true
+
+[dependencies]
+worktree-protocol.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+dirs.workspace = true
+zstd.workspace = true
+fs4.workspace = true
+tempfile.workspace = true

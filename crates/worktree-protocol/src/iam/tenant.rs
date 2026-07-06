@@ -91,11 +91,7 @@ impl Tenant {
     }
 
     /// Create a new tenant with a specific plan.
-    pub fn with_plan(
-        name: impl Into<String>,
-        slug: impl Into<String>,
-        plan: TenantPlan,
-    ) -> Self {
+    pub fn with_plan(name: impl Into<String>, slug: impl Into<String>, plan: TenantPlan) -> Self {
         let mut tenant = Self::new(name, slug);
         tenant.plan = plan;
         tenant
@@ -157,11 +153,7 @@ impl Tenant {
     }
 
     /// Set an arbitrary attribute on this tenant for ABAC evaluation.
-    pub fn set_attribute(
-        &mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) {
+    pub fn set_attribute(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.attributes.insert(key.into(), value.into());
     }
 
@@ -301,8 +293,7 @@ mod tests {
         tenant.set_attribute("industry", "tech");
 
         let json = serde_json::to_string(&tenant).expect("serialize failed");
-        let deserialized: Tenant =
-            serde_json::from_str(&json).expect("deserialize failed");
+        let deserialized: Tenant = serde_json::from_str(&json).expect("deserialize failed");
 
         assert_eq!(deserialized.id, tenant.id);
         assert_eq!(deserialized.name, "Serde Co");

@@ -1,21 +1,19 @@
 use super::ConfigAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: ConfigAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         ConfigAction::Show => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let config_content = worktree_sdk::engine::config::read_config(&engine)?;
+            let config_content = client.config_read()?;
             format::print_header("Worktree Configuration");
             println!();
             println!("{}", config_content);
             Ok(())
         }
         ConfigAction::Get { key } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let config_content = worktree_sdk::engine::config::read_config(&engine)?;
+            let config_content = client.config_read()?;
 
             // Parse the TOML and look up the key (supports dotted keys like "sync.auto")
             let table: toml::Table = config_content.parse().map_err(|e: toml::de::Error| {
@@ -34,8 +32,7 @@ pub async fn execute(action: ConfigAction) -> Result<(), Box<dyn std::error::Err
             Ok(())
         }
         ConfigAction::Set { key, value } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let config_content = worktree_sdk::engine::config::read_config(&engine)?;
+            let config_content = client.config_read()?;
 
             let mut table: toml::Table = config_content.parse().map_err(|e: toml::de::Error| {
                 Box::<dyn std::error::Error>::from(format!("Failed to parse config: {}", e))
@@ -47,7 +44,7 @@ pub async fn execute(action: ConfigAction) -> Result<(), Box<dyn std::error::Err
                 Box::<dyn std::error::Error>::from(format!("Failed to serialize config: {}", e))
             })?;
 
-            let config_path = engine.wt_dir().join("config.toml");
+            let config_path = client.wt_dir().join("config.toml");
             std::fs::write(&config_path, new_content)?;
 
             format::print_success(&format!("Set '{}' = '{}'", key, value));
@@ -56,7 +53,7 @@ pub async fn execute(action: ConfigAction) -> Result<(), Box<dyn std::error::Err
     }
 }
 
-fn resolve_toml_key<'a>(table: &'a toml::Table, key: &str) -> Option<toml::Value> {
+fn resolve_toml_key(table: &toml::Table, key: &str) -> Option<toml::Value> {
     let parts: Vec<&str> = key.split('.').collect();
     let mut current: &toml::Value = &toml::Value::Table(table.clone());
 
@@ -72,7 +69,11 @@ fn resolve_toml_key<'a>(table: &'a toml::Table, key: &str) -> Option<toml::Value
     Some(current.clone())
 }
 
-fn set_toml_key(table: &mut toml::Table, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn set_toml_key(
+    table: &mut toml::Table,
+    key: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parts: Vec<&str> = key.split('.').collect();
     if parts.is_empty() {
         return Err("empty key".into());
@@ -94,13 +95,11 @@ fn set_toml_key(table: &mut toml::Table, key: &str, value: &str) -> Result<(), B
     // Try to preserve the type of the existing value
     let parsed_value = if let Some(existing) = current.get(last_key) {
         match existing {
-            toml::Value::Boolean(_) => {
-                match value.to_lowercase().as_str() {
-                    "true" | "1" | "yes" => toml::Value::Boolean(true),
-                    "false" | "0" | "no" => toml::Value::Boolean(false),
-                    _ => toml::Value::String(value.to_string()),
-                }
-            }
+            toml::Value::Boolean(_) => match value.to_lowercase().as_str() {
+                "true" | "1" | "yes" => toml::Value::Boolean(true),
+                "false" | "0" | "no" => toml::Value::Boolean(false),
+                _ => toml::Value::String(value.to_string()),
+            },
             toml::Value::Integer(_) => {
                 if let Ok(i) = value.parse::<i64>() {
                     toml::Value::Integer(i)

@@ -169,9 +169,7 @@ impl Patch {
                 }
 
                 if entries.contains_key(&delta.path) {
-                    return Err(PatchApplyError::RenameDestinationExists(
-                        delta.path.clone(),
-                    ));
+                    return Err(PatchApplyError::RenameDestinationExists(delta.path.clone()));
                 }
 
                 let new_hash = delta.new_hash.unwrap_or(source.hash);
@@ -858,7 +856,7 @@ mod tests {
     fn test_apply_preserves_executable_flag_on_rename() {
         let hash = hash_bytes(b"executable script");
         let manifest = make_manifest(vec![
-            ManifestEntry::file("run.sh", hash, 17).with_executable(true),
+            ManifestEntry::file("run.sh", hash, 17).with_executable(true)
         ]);
 
         let patch = Patch::new(vec![Delta::rename("run.sh", "execute.sh", hash, 17)]);
@@ -872,7 +870,7 @@ mod tests {
     fn test_apply_preserves_executable_flag_on_copy() {
         let hash = hash_bytes(b"executable copy");
         let manifest = make_manifest(vec![
-            ManifestEntry::file("run.sh", hash, 15).with_executable(true),
+            ManifestEntry::file("run.sh", hash, 15).with_executable(true)
         ]);
 
         let patch = Patch::new(vec![Delta::copy("run.sh", "run_copy.sh", hash, 15)]);
@@ -897,7 +895,10 @@ mod tests {
         assert_eq!(err.to_string(), "rename source not found: src.txt");
 
         let err = PatchApplyError::RenameDestinationExists(PathBuf::from("dst.txt"));
-        assert_eq!(err.to_string(), "rename destination already exists: dst.txt");
+        assert_eq!(
+            err.to_string(),
+            "rename destination already exists: dst.txt"
+        );
 
         let err = PatchApplyError::CopySourceNotFound(PathBuf::from("orig.txt"));
         assert_eq!(err.to_string(), "copy source not found: orig.txt");

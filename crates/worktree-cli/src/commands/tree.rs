@@ -1,19 +1,17 @@
 use super::TreeAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: TreeAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         TreeAction::Add { path } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let tree = worktree_sdk::engine::tree::add_tree(&engine, &path)?;
+            let tree = client.tree_add(&path)?;
             format::print_success(&format!("Tree '{}' added at '{}'", tree.name, tree.path));
             Ok(())
         }
         TreeAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let trees = worktree_sdk::engine::tree::list_trees(&engine)?;
+            let trees = client.tree_list()?;
             format::print_header("Trees");
             if trees.is_empty() {
                 format::print_info("No trees configured.");
@@ -30,14 +28,12 @@ pub async fn execute(action: TreeAction) -> Result<(), Box<dyn std::error::Error
             Ok(())
         }
         TreeAction::Remove { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            worktree_sdk::engine::tree::remove_tree(&engine, &name)?;
+            client.tree_remove(&name)?;
             format::print_success(&format!("Tree '{}' removed", name));
             Ok(())
         }
         TreeAction::Status { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let trees = worktree_sdk::engine::tree::list_trees(&engine)?;
+            let trees = client.tree_list()?;
             let target_name = name.as_deref();
 
             let filtered: Vec<_> = if let Some(n) = target_name {
@@ -65,10 +61,16 @@ pub async fn execute(action: TreeAction) -> Result<(), Box<dyn std::error::Error
                         println!();
                         format::print_info("Branches:");
                         for branch in &tree.branches {
-                            let tip_display = branch.tip.as_deref()
+                            let tip_display = branch
+                                .tip
+                                .as_deref()
                                 .map(|t| &t[..t.len().min(8)])
                                 .unwrap_or("(no snapshots)");
-                            let marker = if branch.name == tree.current_branch { "* " } else { "  " };
+                            let marker = if branch.name == tree.current_branch {
+                                "* "
+                            } else {
+                                "  "
+                            };
                             println!("  {}{} -> {}", marker, branch.name, tip_display);
                         }
                     }

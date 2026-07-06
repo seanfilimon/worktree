@@ -1,20 +1,22 @@
 use crate::output::format;
 use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(
     output: String,
     archive_format: String,
     tree: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
-    let state = worktree_sdk::engine::status::load_state(&engine)?;
+    let client = Client::open_current()?;
+    let state = client.state()?;
 
-    let tree_name = tree.as_deref()
+    let tree_name = tree
+        .as_deref()
         .or(state.current_tree.as_deref())
         .ok_or("no tree specified")?;
 
-    let tree_state = state.find_tree(tree_name)
+    let tree_state = state
+        .find_tree(tree_name)
         .ok_or_else(|| format!("tree '{}' not found", tree_name))?;
 
     // Validate format
@@ -22,7 +24,11 @@ pub async fn execute(
         "tar.gz" | "targz" | "tgz" => "tar.gz",
         "zip" => "zip",
         other => {
-            return Err(format!("Unsupported archive format: '{}'. Use 'tar.gz' or 'zip'.", other).into());
+            return Err(format!(
+                "Unsupported archive format: '{}'. Use 'tar.gz' or 'zip'.",
+                other
+            )
+            .into());
         }
     };
 
@@ -40,9 +46,9 @@ pub async fn execute(
     } else {
         // No snapshot — collect from working directory
         let tree_path = if tree_name == "root" {
-            engine.root().to_path_buf()
+            client.root().to_path_buf()
         } else {
-            engine.root().join(&tree_state.path)
+            client.root().join(&tree_state.path)
         };
 
         let mut count = 0u32;
@@ -52,7 +58,10 @@ pub async fn execute(
                 .filter_map(|e| e.ok())
             {
                 if entry.file_type().is_file() {
-                    let rel = entry.path().strip_prefix(&tree_path).unwrap_or(entry.path());
+                    let rel = entry
+                        .path()
+                        .strip_prefix(&tree_path)
+                        .unwrap_or(entry.path());
                     let rel_str = rel.to_string_lossy();
                     if !rel_str.starts_with(".wt") && !rel_str.starts_with(".git") {
                         count += 1;
@@ -75,7 +84,7 @@ pub async fn execute(
     // For now, create a manifest file listing all contents
     let manifest_content = if let Some(snap) = tree_state.snapshots_on_branch(branch_name).last() {
         let mut lines = Vec::new();
-        lines.push(format!("# W0rkTree Archive Manifest"));
+        lines.push("# W0rkTree Archive Manifest".to_string());
         lines.push(format!("# Tree: {}", tree_name));
         lines.push(format!("# Branch: {}", branch_name));
         lines.push(format!("# Snapshot: {}", snap.id));
@@ -86,10 +95,13 @@ pub async fn execute(
         }
         lines.join("\n")
     } else {
-        format!("# W0rkTree Archive Manifest\n# Tree: {}\n# No snapshots\n", tree_name)
+        format!(
+            "# W0rkTree Archive Manifest\n# Tree: {}\n# No snapshots\n",
+            tree_name
+        )
     };
 
-    std::fs::write(&output_path, manifest_content)?;
+    std::fs::write(output_path, manifest_content)?;
 
     format::print_success(&format!("Archive created: {}", output));
     format::print_kv("Format", ext);

@@ -1,20 +1,16 @@
 //! Archive/export functionality for worktree snapshots.
 
+use crate::core::id::{SnapshotId, TreeId};
 use serde::{Deserialize, Serialize};
-use crate::core::id::{TreeId, SnapshotId};
 
 /// Archive format
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ArchiveFormat {
+    #[default]
     TarGz,
     Zip,
-}
-
-impl Default for ArchiveFormat {
-    fn default() -> Self {
-        ArchiveFormat::TarGz
-    }
 }
 
 /// Options for creating an archive
@@ -76,10 +72,9 @@ impl ArchiveOptions {
 
     /// Check if a path should be included in the archive
     pub fn should_include(&self, path: &str) -> bool {
-        if !self.include_paths.is_empty() {
-            if !self.include_paths.iter().any(|p| path.starts_with(p)) {
-                return false;
-            }
+        if !self.include_paths.is_empty() && !self.include_paths.iter().any(|p| path.starts_with(p))
+        {
+            return false;
         }
         if self.exclude_paths.iter().any(|p| path.starts_with(p)) {
             return false;

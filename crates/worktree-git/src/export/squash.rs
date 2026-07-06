@@ -2,20 +2,15 @@ use serde::{Deserialize, Serialize};
 use worktree_protocol::object::snapshot::Snapshot;
 
 /// Controls which snapshots are eligible for squashing during export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SquashMode {
     /// No squashing — every snapshot becomes a Git commit.
+    #[default]
     None,
     /// Only squash auto-generated snapshots into their nearest manual snapshot.
     AutoOnly,
     /// Squash all consecutive snapshots into a single Git commit.
     All,
-}
-
-impl Default for SquashMode {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Options that govern how snapshot squashing is performed.

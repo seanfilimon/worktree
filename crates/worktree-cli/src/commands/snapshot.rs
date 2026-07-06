@@ -1,12 +1,11 @@
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
 use crate::output::format;
+use worktree_sdk::Client;
 
 pub async fn execute(
     tree: Option<String>,
     message: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
+    let client = Client::open_current()?;
     let tree_display = tree.as_deref().unwrap_or("(current)");
 
     format::print_info(&format!(
@@ -14,11 +13,7 @@ pub async fn execute(
         tree_display, message
     ));
 
-    let snapshot = worktree_sdk::engine::snapshot::create_snapshot(
-        &engine,
-        tree.as_deref(),
-        &message,
-    )?;
+    let snapshot = client.snapshot_create(tree.as_deref(), &message)?;
 
     format::print_success(&format!(
         "Snapshot created: {}",
@@ -33,7 +28,9 @@ pub async fn execute(
     format::print_kv("Files", &snapshot.files.len().to_string());
 
     if !snapshot.parents.is_empty() {
-        let parents: Vec<String> = snapshot.parents.iter()
+        let parents: Vec<String> = snapshot
+            .parents
+            .iter()
             .map(|p| p.chars().take(8).collect::<String>())
             .collect();
         format::print_kv("Parents", &parents.join(", "));

@@ -1140,12 +1140,7 @@ mod tests {
         ));
 
         // BranchRead allowed
-        let result = acl.check(
-            &[user],
-            &[team_a, team_b],
-            &[role],
-            &Permission::BranchRead,
-        );
+        let result = acl.check(&[user], &[team_a, team_b], &[role], &Permission::BranchRead);
         assert_eq!(result, PolicyEffect::Allow);
 
         // BranchCreate allowed

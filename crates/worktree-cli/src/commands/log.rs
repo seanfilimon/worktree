@@ -1,10 +1,9 @@
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(count: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
-    let snapshots = worktree_sdk::engine::log::show_log(&engine, count)?;
+    let client = Client::open_current()?;
+    let snapshots = client.log(count)?;
 
     format::print_header("Snapshot Log");
 

@@ -1,18 +1,16 @@
 [package]
 name = "worktree-sdk"
-version = "0.1.0"
-edition = "2021"
-description = "SDK for the Worktree version control system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "W0rkTree client SDK — daemon-first client facade with embedded-engine fallback"
+
+[lints]
+workspace = true
 
 [dependencies]
-worktree-protocol = { path = "../worktree-protocol" }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-thiserror = "1"
-tracing = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
-blake3 = "1"
-walkdir = "2"
+worktree-engine.workspace = true
+worktree-ipc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

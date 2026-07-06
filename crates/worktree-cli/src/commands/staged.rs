@@ -1,15 +1,14 @@
 use super::StagedAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: Option<StagedAction>) -> Result<(), Box<dyn std::error::Error>> {
     let action = action.unwrap_or(StagedAction::List);
+    let client = Client::open_current()?;
 
     match action {
         StagedAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let state = client.state()?;
 
             format::print_header("Staged Snapshots (Team Activity)");
             println!();
@@ -41,13 +40,14 @@ pub async fn execute(action: Option<StagedAction>) -> Result<(), Box<dyn std::er
 
             if !found_others {
                 format::print_info("No staged snapshots from other team members.");
-                format::print_info("As your team creates snapshots, their activity will appear here.");
+                format::print_info(
+                    "As your team creates snapshots, their activity will appear here.",
+                );
             }
         }
         StagedAction::Clear => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let staged_dir = engine.wt_dir().join("cache").join("staged");
-            let staged_state = engine.wt_dir().join("cache").join("staged_index.json");
+            let staged_dir = client.wt_dir().join("cache").join("staged");
+            let staged_state = client.wt_dir().join("cache").join("staged_index.json");
 
             let mut cleared = false;
             if staged_dir.exists() {

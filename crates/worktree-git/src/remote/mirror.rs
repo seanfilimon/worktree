@@ -16,7 +16,11 @@ pub struct MirrorConfig {
 
 impl MirrorConfig {
     /// Create a new `MirrorConfig`.
-    pub fn new(remote_url: impl Into<String>, branch: impl Into<String>, interval_secs: u64) -> Self {
+    pub fn new(
+        remote_url: impl Into<String>,
+        branch: impl Into<String>,
+        interval_secs: u64,
+    ) -> Self {
         Self {
             remote_url: remote_url.into(),
             branch: branch.into(),

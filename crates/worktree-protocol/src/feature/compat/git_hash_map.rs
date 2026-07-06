@@ -23,8 +23,74 @@ use crate::core::hash::ContentHash;
 ///
 /// This is the raw binary representation of Git's SHA-1 object identifier.
 /// It can be converted to/from the standard 40-character lowercase hex string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Serializes as a 40-character hex string in human-readable formats (JSON —
+/// which also makes it usable as a map key) and as raw bytes in binary
+/// formats (bincode), mirroring [`ContentHash`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GitHash([u8; 20]);
+
+impl Serialize for GitHash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_hex())
+        } else {
+            serializer.serialize_bytes(&self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GitHash {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let s = String::deserialize(deserializer)?;
+            GitHash::from_str(&s).map_err(serde::de::Error::custom)
+        } else {
+            struct BytesVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for BytesVisitor {
+                type Value = GitHash;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("20 bytes")
+                }
+
+                fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    if v.len() != 20 {
+                        return Err(E::invalid_length(v.len(), &"20 bytes"));
+                    }
+                    let mut bytes = [0u8; 20];
+                    bytes.copy_from_slice(v);
+                    Ok(GitHash(bytes))
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: serde::de::SeqAccess<'de>,
+                {
+                    let mut bytes = [0u8; 20];
+                    for (i, byte) in bytes.iter_mut().enumerate() {
+                        *byte = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(i, &"20 bytes"))?;
+                    }
+                    Ok(GitHash(bytes))
+                }
+            }
+
+            deserializer.deserialize_bytes(BytesVisitor)
+        }
+    }
+}
 
 impl GitHash {
     /// The zero hash (all bytes zero).
@@ -107,8 +173,8 @@ impl FromStr for GitHash {
         let mut bytes = [0u8; 20];
         for i in 0..20 {
             let hex_byte = &s[i * 2..i * 2 + 2];
-            bytes[i] = u8::from_str_radix(hex_byte, 16)
-                .map_err(|_| GitHashParseError::InvalidHex)?;
+            bytes[i] =
+                u8::from_str_radix(hex_byte, 16).map_err(|_| GitHashParseError::InvalidHex)?;
         }
         Ok(GitHash(bytes))
     }
@@ -415,7 +481,7 @@ mod tests {
         let h = sample_git_hash();
         let copy = h;
         assert_eq!(h, copy);
-        let clone = h.clone();
+        let clone = h;
         assert_eq!(h, clone);
     }
 
@@ -765,8 +831,7 @@ mod tests {
         index.insert(sample_mapping_2());
 
         let json = serde_json::to_string(&index).expect("serialize");
-        let deserialized: InMemoryHashIndex =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: InMemoryHashIndex = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_blake3(&sample_mapping().blake3));
@@ -779,8 +844,7 @@ mod tests {
         index.insert(sample_mapping());
 
         let encoded = bincode::serialize(&index).expect("serialize");
-        let decoded: InMemoryHashIndex =
-            bincode::deserialize(&encoded).expect("deserialize");
+        let decoded: InMemoryHashIndex = bincode::deserialize(&encoded).expect("deserialize");
 
         assert_eq!(decoded.len(), 1);
         let m = sample_mapping();

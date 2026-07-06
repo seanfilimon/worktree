@@ -1,14 +1,11 @@
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(snapshot_id: String) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
-    let state = worktree_sdk::engine::status::load_state(&engine)?;
+    let client = Client::open_current()?;
+    let state = client.state()?;
 
-    let tree = state
-        .current_tree()
-        .ok_or("no current tree")?;
+    let tree = state.current_tree().ok_or("no current tree")?;
 
     let short_id: String = snapshot_id.chars().take(8).collect();
 
@@ -29,11 +26,7 @@ pub async fn execute(snapshot_id: String) -> Result<(), Box<dyn std::error::Erro
 
     // Create a new revert snapshot on top of the current branch
     let revert_message = format!("Revert \"{}\" ({})", message, full_short);
-    let revert_snapshot = worktree_sdk::engine::snapshot::create_snapshot(
-        &engine,
-        state.current_tree.as_deref(),
-        &revert_message,
-    );
+    let revert_snapshot = client.snapshot_create(state.current_tree.as_deref(), &revert_message);
 
     match revert_snapshot {
         Ok(snap) => {

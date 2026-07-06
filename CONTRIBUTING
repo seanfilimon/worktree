@@ -135,13 +135,10 @@ If you are unsure where to start, **start with `worktree-protocol`**. It is the 
 | **Cargo** | latest stable | Rust package manager |
 | **Node.js** | ≥ 18.0.0 | Web frontend, docs |
 | **npm** | ≥ 9.0.0 | Node package manager |
-| **Go** | ≥ 1.22 | `services/server-go/` (remote server, slated to replace `crates/worktree-server`) |
-| **golangci-lint** | latest | Go linting (used by `scripts/ci.sh`) |
-| **buf** | ≥ 1.69 | Protobuf workflow (lint + Go codegen). Install: `go install github.com/bufbuild/buf/cmd/buf@latest` |
-| **protoc-gen-go** + **protoc-gen-go-grpc** | latest | Go protobuf plugins. Install: `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` and `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest` |
+| **buf** | ≥ 1.69 | Protobuf schema linting (optional locally; CI runs it) |
 | **Git** | any | Cloning this repo (ironic, we know) |
 
-The wire-protocol schema (`crates/worktree-protocol/proto/sync.proto`) is the canonical source of truth between Rust and Go. Rust types codegen at build time via `tonic-build` (no contributor action needed); Go types are checked in at `services/server-go/internal/proto/syncpb/` and regenerated via `buf generate` (run from `crates/worktree-protocol/proto/`). Conventions live in `crates/worktree-protocol/proto/CONVENTIONS.md`.
+The wire-protocol schema (`crates/worktree-protocol/proto/sync.proto`) is the canonical source of truth. Rust types codegen at build time via `tonic-build` with a vendored `protoc` (no contributor action needed — no system protobuf install required). Conventions live in `crates/worktree-protocol/proto/CONVENTIONS.md`.
 
 ### Clone and Setup
 
@@ -344,9 +341,9 @@ We follow **Conventional Commits** with scope:
 
 ### Scopes
 
-Use the crate or area name: `protocol`, `server`, `server-go`, `bg`, `cli`, `git`, `sdk`, `admin`, `web`, `docs`, `ci`, `specs`.
+Use the crate or area name: `protocol`, `server`, `store`, `ipc`, `engine`, `e2e`, `bg`, `cli`, `git`, `sdk`, `admin`, `web`, `docs`, `ci`, `specs`.
 
-`bg` was introduced in PR #4 for the `worktree-bg` crate, and `server-go` was introduced in PR #6 for the `services/server-go/` Go module. Both scopes are de-facto accepted via merged PRs.
+`bg` was introduced in PR #4 for the `worktree-bg` crate. `server-go` existed briefly for the retired `services/server-go/` Go module (removed when the server direction settled on Rust); it remains valid only in historical commits.
 
 ### Examples
 

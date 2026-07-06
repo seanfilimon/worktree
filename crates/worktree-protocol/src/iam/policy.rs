@@ -129,7 +129,11 @@ pub struct AttributeCondition {
 
 impl AttributeCondition {
     /// Create a new condition.
-    pub fn new(key: impl Into<String>, operator: ConditionOperator, value: impl Into<String>) -> Self {
+    pub fn new(
+        key: impl Into<String>,
+        operator: ConditionOperator,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             key: key.into(),
             operator,
@@ -468,7 +472,11 @@ mod tests {
 
     #[test]
     fn condition_in_operator() {
-        let cond = AttributeCondition::new("region", ConditionOperator::In, "us-east-1, eu-west-1, ap-south-1");
+        let cond = AttributeCondition::new(
+            "region",
+            ConditionOperator::In,
+            "us-east-1, eu-west-1, ap-south-1",
+        );
         let mut attrs = HashMap::new();
         attrs.insert("region".to_string(), "eu-west-1".to_string());
         assert!(cond.evaluate(&attrs));
@@ -695,7 +703,8 @@ mod tests {
         let perms: HashSet<Permission> = [Permission::TreeRead, Permission::BranchRead]
             .into_iter()
             .collect();
-        let mut policy = Policy::new_allow(tenant_id, "test-policy", Scope::Tenant(tenant_id), perms);
+        let mut policy =
+            Policy::new_allow(tenant_id, "test-policy", Scope::Tenant(tenant_id), perms);
         policy.add_subject(PolicySubject::AllAuthenticated);
         policy.add_condition(AttributeCondition::new(
             "env",

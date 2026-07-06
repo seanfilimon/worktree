@@ -1,20 +1,17 @@
 use super::TagAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: TagAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         TagAction::Create { name, message } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let tag = worktree_sdk::engine::tag::create_tag(
-                &engine,
-                &name,
-                message.as_deref(),
-                None,
-            )?;
+            let tag = client.tag_create(&name, message.as_deref())?;
             format::print_success(&format!("Tag '{}' created", tag.name));
-            format::print_kv("Target", &tag.target_snapshot[..8.min(tag.target_snapshot.len())]);
+            format::print_kv(
+                "Target",
+                &tag.target_snapshot[..8.min(tag.target_snapshot.len())],
+            );
             if let Some(msg) = &tag.message {
                 format::print_kv("Message", msg);
             }
@@ -24,8 +21,7 @@ pub async fn execute(action: TagAction) -> Result<(), Box<dyn std::error::Error>
             format::print_kv("Created", &tag.created_at);
         }
         TagAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let tags = worktree_sdk::engine::tag::list_tags(&engine, None)?;
+            let tags = client.tag_list()?;
             format::print_header("Tags");
             if tags.is_empty() {
                 format::print_info("No tags yet. Create one with `wt tag create <name>`");
@@ -47,8 +43,7 @@ pub async fn execute(action: TagAction) -> Result<(), Box<dyn std::error::Error>
             }
         }
         TagAction::Delete { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            worktree_sdk::engine::tag::delete_tag(&engine, &name, None)?;
+            client.tag_delete(&name)?;
             format::print_success(&format!("Tag '{}' deleted", name));
         }
     }

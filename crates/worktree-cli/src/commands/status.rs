@@ -1,10 +1,9 @@
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(team: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
-    let status = worktree_sdk::engine::status::compute_status(&engine)?;
+    let client = Client::open_current()?;
+    let status = client.status()?;
 
     format::print_header("Worktree Status");
     format::print_kv("Tree", &status.tree_name);

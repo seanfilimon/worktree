@@ -1,9 +1,9 @@
 use super::PermissionAction;
 use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         PermissionAction::Set {
             tree,
@@ -11,7 +11,6 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
             user,
             allow,
         } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
             let target = if let Some(t) = &tenant {
                 format!("tenant '{}'", t)
             } else if let Some(u) = &user {
@@ -26,13 +25,13 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
             ));
 
             // Validate the tree exists
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let state = client.state()?;
             if state.find_tree(&tree).is_none() {
                 return Err(format!("Tree '{}' not found", tree).into());
             }
 
             // Write permission to access/policies.toml
-            let access_dir = engine.wt_dir().join("access");
+            let access_dir = client.wt_dir().join("access");
             std::fs::create_dir_all(&access_dir)?;
             let policies_path = access_dir.join("policies.toml");
 
@@ -67,10 +66,9 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
             format::print_success("Permission set successfully.");
         }
         PermissionAction::Get { tree } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
             format::print_header(&format!("Permissions for tree '{}'", tree));
 
-            let policies_path = engine.wt_dir().join("access").join("policies.toml");
+            let policies_path = client.wt_dir().join("access").join("policies.toml");
             if policies_path.exists() {
                 let content = std::fs::read_to_string(&policies_path)?;
                 let lines: Vec<&str> = content.lines().collect();
@@ -109,8 +107,10 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
                         if matches_tree {
                             found = true;
                             println!();
-                            format::print_list_item(&format!("{} ({}) — {} → {}",
-                                name, effect, subjects, permissions));
+                            format::print_list_item(&format!(
+                                "{} ({}) — {} → {}",
+                                name, effect, subjects, permissions
+                            ));
                         }
                         i = block_end;
                     } else {
@@ -126,10 +126,9 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
             }
         }
         PermissionAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
             format::print_header("All Permissions");
 
-            let policies_path = engine.wt_dir().join("access").join("policies.toml");
+            let policies_path = client.wt_dir().join("access").join("policies.toml");
             if policies_path.exists() {
                 let content = std::fs::read_to_string(&policies_path)?;
                 if content.trim().is_empty() || !content.contains("[[policy]]") {
@@ -139,11 +138,13 @@ pub async fn execute(action: PermissionAction) -> Result<(), Box<dyn std::error:
                     println!("{}", content);
                 }
             } else {
-                format::print_info("No permissions configured yet. Use `wt permission set` to add permissions.");
+                format::print_info(
+                    "No permissions configured yet. Use `wt permission set` to add permissions.",
+                );
             }
 
             // Also show roles if they exist
-            let roles_path = engine.wt_dir().join("access").join("roles.toml");
+            let roles_path = client.wt_dir().join("access").join("roles.toml");
             if roles_path.exists() {
                 let content = std::fs::read_to_string(&roles_path)?;
                 if !content.trim().is_empty() {

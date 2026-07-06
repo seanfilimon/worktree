@@ -1,2 +1,2 @@
-pub mod gitignore;
 pub mod gitattributes;
+pub mod gitignore;

@@ -1,7 +1,7 @@
 use super::{GitAction, GitRemoteAction};
 use crate::output::format;
 use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+use worktree_sdk::Client;
 
 pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -9,15 +9,15 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info(&format!("Importing from Git repository: {}", source));
 
             // If we're already in a worktree, add as a tree; otherwise init
-            let engine = match WorktreeEngine::open(Path::new(".")) {
-                Ok(e) => e,
+            let client = match Client::open_current() {
+                Ok(c) => c,
                 Err(_) => {
                     format::print_info("No worktree found. Initializing...");
-                    WorktreeEngine::init(Path::new("."))?
+                    Client::init(Path::new("."))?
                 }
             };
 
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let state = client.state()?;
             format::print_kv("Worktree", &state.name);
             format::print_info("Analyzing source repository...");
             format::print_info("Converting Git commits to W0rkTree snapshots...");
@@ -25,11 +25,14 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info("Converting Git tags to W0rkTree tags...");
             format::print_warning("Git import is not yet fully implemented.");
             format::print_info("Note: Full git import requires the worktree-git crate.");
-            format::print_info(&format!("Worktree initialized at '{}' — ready for manual import.", state.name));
+            format::print_info(&format!(
+                "Worktree initialized at '{}' — ready for manual import.",
+                state.name
+            ));
         }
         GitAction::Export { tree, output, mode } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
 
             // Validate tree
             if state.find_tree(&tree).is_none() {
@@ -47,7 +50,10 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info("Converting W0rkTree tags to Git tags...");
             format::print_warning("Git export is not yet fully implemented.");
             format::print_info("Note: Full git export requires the worktree-git crate.");
-            format::print_info(&format!("Tree '{}' prepared for export to '{}'.", tree, output));
+            format::print_info(&format!(
+                "Tree '{}' prepared for export to '{}'.",
+                tree, output
+            ));
         }
         GitAction::Clone { url, name } => {
             let repo_name = name
@@ -68,8 +74,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             }
 
             std::fs::create_dir_all(target)?;
-            let engine = WorktreeEngine::init(target)?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::init(target)?;
+            let state = client.state()?;
 
             format::print_kv("Worktree", &state.name);
             format::print_info("Fetching objects...");
@@ -81,8 +87,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             execute_remote(action).await?;
         }
         GitAction::Push { remote, branch } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
             format::print_kv("Worktree", &state.name);
             format::print_info(&format!(
                 "Pushing to Git remote '{}' branch '{}'...",
@@ -94,8 +100,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             format::print_info(&format!("Target: '{}/{}'.", remote, branch));
         }
         GitAction::Pull { remote, branch } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
             format::print_kv("Worktree", &state.name);
             format::print_info(&format!(
                 "Pulling from Git remote '{}' branch '{}'...",
@@ -112,8 +118,8 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             remote,
             branch,
         } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+            let client = Client::open_current()?;
+            let state = client.state()?;
 
             if state.find_tree(&tree).is_none() {
                 return Err(format!("Tree '{}' not found", tree).into());
@@ -125,7 +131,7 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
             ));
 
             // Write mirror config
-            let mirrors_dir = engine.wt_dir().join("cache").join("mirrors");
+            let mirrors_dir = client.wt_dir().join("cache").join("mirrors");
             std::fs::create_dir_all(&mirrors_dir)?;
             let mirror_config = format!(
                 "tree = \"{}\"\nremote = \"{}\"\nbranch = \"{}\"\nactive = true\n",
@@ -144,29 +150,28 @@ pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>
 }
 
 async fn execute_remote(action: GitRemoteAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         GitRemoteAction::Add { name, url } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-
             // Store remote in .wt/cache/remotes/
-            let remotes_dir = engine.wt_dir().join("cache").join("remotes");
+            let remotes_dir = client.wt_dir().join("cache").join("remotes");
             std::fs::create_dir_all(&remotes_dir)?;
             std::fs::write(remotes_dir.join(format!("{}.url", name)), &url)?;
 
             format::print_success(&format!("Remote '{}' added -> {}", name, url));
         }
         GitRemoteAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
             format::print_header("Git Remotes");
 
-            let remotes_dir = engine.wt_dir().join("cache").join("remotes");
+            let remotes_dir = client.wt_dir().join("cache").join("remotes");
             if remotes_dir.exists() {
                 let mut found = false;
                 for entry in std::fs::read_dir(&remotes_dir)? {
                     let entry = entry?;
                     let path = entry.path();
                     if path.extension().map(|e| e == "url").unwrap_or(false) {
-                        let name = path.file_stem()
+                        let name = path
+                            .file_stem()
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown");
                         let url = std::fs::read_to_string(&path)?;
@@ -178,12 +183,17 @@ async fn execute_remote(action: GitRemoteAction) -> Result<(), Box<dyn std::erro
                     format::print_info("No remotes configured.");
                 }
             } else {
-                format::print_info("No remotes configured. Use `wt git remote add <name> <url>` to add one.");
+                format::print_info(
+                    "No remotes configured. Use `wt git remote add <name> <url>` to add one.",
+                );
             }
         }
         GitRemoteAction::Remove { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let remote_file = engine.wt_dir().join("cache").join("remotes").join(format!("{}.url", name));
+            let remote_file = client
+                .wt_dir()
+                .join("cache")
+                .join("remotes")
+                .join(format!("{}.url", name));
 
             if remote_file.exists() {
                 std::fs::remove_file(&remote_file)?;

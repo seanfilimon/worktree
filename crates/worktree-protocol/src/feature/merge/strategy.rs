@@ -20,11 +20,12 @@ use crate::object::delta::Delta;
 ///
 /// Different strategies produce different results when the same path has been
 /// modified on both sides of the merge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum MergeStrategy {
     /// Standard three-way merge. Applies changes from both sides relative to
     /// the common ancestor. Conflicts are reported when both sides modify the
     /// same path in incompatible ways.
+    #[default]
     ThreeWay,
 
     /// "Ours" strategy — when there is a conflict, always keep the version
@@ -74,12 +75,6 @@ impl MergeStrategy {
             MergeStrategy::FastForward => "fast-forward",
             MergeStrategy::Union => "union",
         }
-    }
-}
-
-impl Default for MergeStrategy {
-    fn default() -> Self {
-        MergeStrategy::ThreeWay
     }
 }
 
@@ -223,10 +218,7 @@ impl MergeResult {
     }
 
     /// Create a fast-forward merge result.
-    pub fn fast_forward(
-        ours_snapshot: SnapshotId,
-        theirs_snapshot: SnapshotId,
-    ) -> Self {
+    pub fn fast_forward(ours_snapshot: SnapshotId, theirs_snapshot: SnapshotId) -> Self {
         Self {
             strategy: MergeStrategy::FastForward,
             outcome: MergeOutcome::FastForwarded,
@@ -420,13 +412,8 @@ mod tests {
         let hash = hash_bytes(b"merged manifest");
         let deltas = vec![Delta::add("new.txt", hash_bytes(b"new"), 3)];
 
-        let result = MergeResult::clean(
-            MergeStrategy::ThreeWay,
-            ours,
-            theirs,
-            deltas.clone(),
-            hash,
-        );
+        let result =
+            MergeResult::clean(MergeStrategy::ThreeWay, ours, theirs, deltas.clone(), hash);
 
         assert!(result.is_clean());
         assert_eq!(result.merged_manifest_hash, Some(hash));
@@ -489,8 +476,8 @@ mod tests {
         let theirs = SnapshotId::new();
         let base = SnapshotId::new();
 
-        let result = MergeResult::new(MergeStrategy::ThreeWay, ours, theirs)
-            .with_base_snapshot(base);
+        let result =
+            MergeResult::new(MergeStrategy::ThreeWay, ours, theirs).with_base_snapshot(base);
 
         assert_eq!(result.base_snapshot, Some(base));
     }

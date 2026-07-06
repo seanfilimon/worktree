@@ -126,7 +126,7 @@ W0rkTree operates as a **two-runtime system**. Neither runtime is optional.
 
 ## Project Structure
 
-W0rkTree is a polyglot monorepo managed with **Cargo workspaces** (Rust, under `crates/`), a **Go module** (remote server, under `services/server-go/`), and **Turborepo + npm** (TypeScript/web, under `apps/web/`).
+W0rkTree is a monorepo managed with **Cargo workspaces** (Rust, under `crates/`) and **Turborepo + npm** (TypeScript/web, under `apps/web/`).
 
 ```
 worktree/
@@ -145,10 +145,11 @@ worktree/
 │   │   └── specs/                       # Authoritative specification documents (14 specs)
 │   │
 │   ├── worktree-sdk/                    # Local engine — snapshots, branches, diffs, merges
-│   ├── worktree-server/                 # Background daemon — watcher, auto-snapshot, sync, gRPC
+│   ├── worktree-bg/                     # Background daemon — watcher, auto-snapshot, sync
+│   ├── worktree-server/                 # Remote multi-tenant server — canonical history, IAM
 │   ├── worktree-cli/                    # CLI binary (`wt`) — 20 subcommands, colored output
 │   ├── worktree-git/                    # Git compatibility — import, export, SHA-1↔BLAKE3 bridge
-│   └── worktree-admin/                  # Admin panel — Yew WASM SPA + Axum HTTP API
+│   └── worktree-admin/                  # Admin panel — Yew WASM SPA
 │
 ├── apps/                                # ── TypeScript Workspace ──
 │   └── web/                             # Marketing & docs site (Next.js 16, Fumadocs, shadcn)
@@ -160,12 +161,6 @@ worktree/
 │   ├── git-compatibility.md
 │   ├── sdk-guide.md
 │   └── admin-panel.md
-│
-├── tests/                               # Cross-crate test suites
-│   ├── protocol_tests/
-│   ├── server_tests/
-│   ├── git_compat_tests/
-│   └── e2e_tests/
 │
 ├── scripts/                             # Build & install scripts
 │   ├── ci.sh                            # CI pipeline (fmt → clippy → test → build)
@@ -392,7 +387,63 @@ Grant levels: `read-only` (view only), `modify` (edit, no export), `redistribute
 
 ## Getting Started
 
-### Prerequisites
+### Installation
+
+**Prebuilt binaries (no Rust required)** — downloads the latest
+[GitHub Release](https://github.com/seanfilimon/worktree/releases),
+verifies its SHA-256, and installs to a user-level bin directory:
+
+```powershell
+# Windows (PowerShell)
+.\scripts\install.ps1 -FromRelease
+```
+
+```bash
+# Linux / macOS
+./scripts/install.sh --from-release
+```
+
+Pin a version with `-ReleaseTag v0.1.0-alpha.1` / `--from-release v0.1.0-alpha.1`.
+
+**Build from source** — one command builds and installs the binaries to a
+user-level bin directory (no admin rights needed). Requires
+[Rust](https://rustup.rs).
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/seanfilimon/worktree.git; cd worktree
+.\scripts\install.ps1                  # installs wt, worktree-bg, worktree-server
+.\scripts\install.ps1 -Component cli   # just the CLI + daemon
+.\scripts\install.ps1 -Uninstall       # remove everything again
+```
+
+**Linux / macOS:**
+
+```bash
+git clone https://github.com/seanfilimon/worktree.git && cd worktree
+./scripts/install.sh                   # installs wt, worktree-bg, worktree-server
+./scripts/install.sh --component cli   # just the CLI + daemon
+./scripts/install.sh --uninstall       # remove everything again
+```
+
+Prefer plain cargo? This works too (binaries land in `~/.cargo/bin`):
+
+```bash
+cargo install --path crates/worktree-cli     # wt
+cargo install --path crates/worktree-bg      # worktree-bg (daemon)
+cargo install --path crates/worktree-server  # worktree-server
+```
+
+Then:
+
+```bash
+wt init             # initialize a worktree in the current directory
+wt server start     # start the background daemon (auto-snapshots)
+wt --help
+```
+
+### Prerequisites (development)
 
 | Tool | Version | Purpose |
 |---|---|---|
