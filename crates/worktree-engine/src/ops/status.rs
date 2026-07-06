@@ -59,7 +59,7 @@ pub fn compute_status(engine: &WorktreeEngine) -> Result<WorkingStatus> {
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkingStatus {
     pub tree_name: String,
     pub branch_name: String,

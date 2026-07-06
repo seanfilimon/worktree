@@ -5,14 +5,15 @@
 //!
 //! Dispatch strategy (BgProcess.md §14): prefer the running `worktree-bg`
 //! daemon over IPC; fall back to an embedded [`worktree_engine`] when no
-//! daemon is available (degraded mode). WT-PHASE-1 ships the embedded path;
-//! the IPC path lands with the daemon in WT-PHASE-3.
+//! daemon is available (degraded mode). Commands without an IPC form yet
+//! always use the embedded engine — safe either way, since every engine
+//! mutation takes the store's writer lock.
 
 mod client;
 mod error;
 mod remote;
 
-pub use client::Client;
+pub use client::{Client, DaemonInfo};
 pub use error::{Result, SdkError};
 
 // Result/data types returned by `Client` methods.

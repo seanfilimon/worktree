@@ -36,14 +36,14 @@ pub fn pull(engine: &WorktreeEngine) -> Result<PullResult> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PushResult {
     pub branch: String,
     pub snapshots_pushed: usize,
     pub server: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PullResult {
     pub branch: String,
     pub new_snapshots: usize,

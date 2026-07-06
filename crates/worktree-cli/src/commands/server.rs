@@ -1,103 +1,110 @@
 use super::ServerAction;
 use crate::output::format;
+use std::path::PathBuf;
 use worktree_sdk::Client;
 
-// PID-file bookkeeping is a placeholder: WT-PHASE-3 replaces it with real
-// daemon control over IPC (spawn `worktree-bg`, `daemon.info`,
-// `daemon.shutdown`).
 pub async fn execute(action: ServerAction) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::open_current()?;
     match action {
         ServerAction::Start => {
-            format::print_info("Starting worktree background process...");
-
-            // Verify we're in a worktree
-            match Client::open_current() {
-                Ok(client) => {
-                    let state = client.state()?;
-                    format::print_kv("Worktree", &state.name);
-                    format::print_kv("Trees", &state.trees.len().to_string());
-
-                    // Check for existing pid file
-                    let pid_file = client.wt_dir().join("cache").join("bgprocess.pid");
-                    if pid_file.exists() {
-                        let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
-                        format::print_warning(&format!(
-                            "Background process may already be running (PID: {})",
-                            pid.trim()
-                        ));
-                        return Ok(());
-                    }
-
-                    // Write PID file to indicate intent
-                    std::fs::create_dir_all(client.wt_dir().join("cache"))?;
-                    std::fs::write(&pid_file, std::process::id().to_string())?;
-
-                    format::print_success("Background process started.");
-                    format::print_kv("PID", &std::process::id().to_string());
-                    format::print_info("Auto-snapshot and sync are now active.");
-                    format::print_info("Run `wt server stop` to stop the background process.");
-                }
-                Err(e) => {
-                    format::print_error(&format!("Cannot start: {}", e));
-                }
+            if client.is_daemon_backed() {
+                format::print_info("Daemon is already running.");
+                return Ok(());
             }
+            format::print_info("Starting worktree background daemon...");
+
+            // No pipes to the launcher: the detached daemon outlives it and a
+            // pipe handle inherited down the spawn chain would keep our read
+            // side open forever (observed hang on Windows). The launcher logs
+            // to `.wt/cache/bgprocess.log`; readiness is polled over IPC.
+            let daemon = daemon_binary()?;
+            let status = std::process::Command::new(&daemon)
+                .arg("start")
+                .arg("--worktree")
+                .arg(client.root())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()?;
+
+            let log_hint = client.wt_dir().join("cache").join("bgprocess.log");
+            if !status.success() {
+                return Err(format!("failed to start daemon (see {})", log_hint.display()).into());
+            }
+
+            // Confirm the daemon answers before declaring success.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let info = loop {
+                match Client::open(client.root()).and_then(|c| c.daemon_info()) {
+                    Ok(info) => break info,
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "daemon did not become ready: {e} (see {})",
+                            log_hint.display()
+                        )
+                        .into())
+                    }
+                }
+            };
+
+            format::print_success(&format!("Daemon started (pid {}).", info.pid));
+            format::print_info("Auto-snapshot is active; `wt` commands now go through the daemon.");
         }
         ServerAction::Stop => {
-            format::print_info("Stopping worktree background process...");
-
-            match Client::open_current() {
-                Ok(client) => {
-                    let pid_file = client.wt_dir().join("cache").join("bgprocess.pid");
-                    if pid_file.exists() {
-                        let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
-                        std::fs::remove_file(&pid_file)?;
-                        format::print_success(&format!(
-                            "Background process stopped (was PID: {})",
-                            pid.trim()
-                        ));
-                    } else {
-                        format::print_info("No background process is currently running.");
-                    }
-                }
-                Err(e) => {
-                    format::print_error(&format!("Cannot stop: {}", e));
-                }
+            if client.daemon_stop()? {
+                format::print_success("Daemon stopping.");
+            } else {
+                format::print_info("No daemon is running for this worktree.");
             }
         }
-        ServerAction::Status => {
-            match Client::open_current() {
-                Ok(client) => {
-                    let state = client.state()?;
-                    format::print_header("Background Process Status");
-                    format::print_kv("Worktree", &state.name);
-
-                    let pid_file = client.wt_dir().join("cache").join("bgprocess.pid");
-                    if pid_file.exists() {
-                        let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
-                        format::print_kv("Status", "running");
-                        format::print_kv("PID", pid.trim());
+        ServerAction::Status => match client.daemon_info() {
+            Ok(info) => {
+                format::print_header("Background Daemon");
+                format::print_kv("Status", "running");
+                format::print_kv("PID", &info.pid.to_string());
+                format::print_kv("Version", &info.version);
+                format::print_kv("Worktree", &info.root);
+                format::print_kv("Uptime", &format!("{}s", info.uptime_secs));
+                format::print_kv("Auto-snapshots", &info.snapshots_created.to_string());
+                format::print_kv(
+                    "Watcher",
+                    if info.watcher_active {
+                        "active"
                     } else {
-                        format::print_kv("Status", "stopped");
-                    }
+                        "inactive"
+                    },
+                );
+            }
+            Err(worktree_sdk::SdkError::DaemonUnavailable) => {
+                format::print_header("Background Daemon");
+                format::print_kv("Status", "stopped");
+                format::print_info("Start it with `wt server start`.");
+            }
+            Err(e) => return Err(e.into()),
+        },
+    }
+    Ok(())
+}
 
-                    // Show config summary
-                    let config_content = client.config_read()?;
-                    if config_content.contains("auto = true") {
-                        format::print_kv("Auto-sync", "enabled");
-                    } else {
-                        format::print_kv("Auto-sync", "disabled");
-                    }
-
-                    format::print_kv("Trees", &state.trees.len().to_string());
-                    let total_snapshots: usize =
-                        state.trees.iter().map(|t| t.snapshots.len()).sum();
-                    format::print_kv("Total snapshots", &total_snapshots.to_string());
-                }
-                Err(e) => {
-                    format::print_error(&format!("Not in a worktree: {}", e));
-                }
+/// Locate the `worktree-bg` binary: next to the `wt` executable first, then
+/// on PATH.
+fn daemon_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let name = if cfg!(windows) {
+        "worktree-bg.exe"
+    } else {
+        "worktree-bg"
+    };
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(dir) = current.parent() {
+            let sibling = dir.join(name);
+            if sibling.is_file() {
+                return Ok(sibling);
             }
         }
     }
-    Ok(())
+    // Fall back to PATH resolution by the OS.
+    Ok(PathBuf::from(name))
 }

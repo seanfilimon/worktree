@@ -1,5 +1,22 @@
 use crate::error::{EngineError, Result};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+/// Lexically normalize a path: drop `.` segments and resolve `..` against
+/// the built-up prefix. Keeps roots stable (no `\dir\.` suffixes) so path
+/// prefix-stripping and worktree hashing behave consistently.
+fn normalize(path: PathBuf) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 
 /// Handle to a worktree on disk.
 ///
@@ -18,6 +35,7 @@ impl WorktreeEngine {
         if current.is_relative() {
             current = std::env::current_dir()?.join(current);
         }
+        current = normalize(current);
         loop {
             if current.join(".wt").is_dir() {
                 return Ok(Self { root: current });
@@ -30,11 +48,11 @@ impl WorktreeEngine {
 
     /// Create a new worktree at the given path.
     pub fn init(path: &Path) -> Result<Self> {
-        let path = if path.is_relative() {
+        let path = normalize(if path.is_relative() {
             std::env::current_dir()?.join(path)
         } else {
             path.to_path_buf()
-        };
+        });
         if path.join(".wt").exists() {
             return Err(EngineError::AlreadyInitialized);
         }

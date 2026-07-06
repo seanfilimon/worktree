@@ -9,14 +9,12 @@
 //!   `{id, status, data}` with a typed [`message::Command`] enum mirroring
 //!   the spec's dispatch table.
 //!
-//! WT-PHASE-1 ships message types, framing, and endpoint naming; the async
-//! transports (server for `worktree-bg`, client for `worktree-sdk`) land in
-//! WT-PHASE-3.
-
 pub mod endpoint;
 pub mod error;
 pub mod frame;
 pub mod message;
+pub mod transport;
 
 pub use error::{IpcError, Result};
 pub use message::{Command, Request, Response, ResponseStatus};
+pub use transport::{IpcClient, IpcListener};

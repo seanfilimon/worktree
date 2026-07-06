@@ -1,5 +1,10 @@
 //! Shared helpers for e2e tests: build workspace binaries once, run them
 //! with isolated environments.
+//!
+//! Each integration-test binary compiles this module independently, so any
+//! helper unused by one binary would trip `-D warnings` — hence the
+//! file-level allow.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -14,6 +19,20 @@ pub fn wt_bin() -> &'static Path {
             .bin("wt")
             .run()
             .expect("failed to build wt binary")
+            .path()
+            .to_path_buf()
+    })
+}
+
+/// Build (once) and return the path to the `worktree-bg` daemon binary.
+pub fn bg_bin() -> &'static Path {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        escargot::CargoBuild::new()
+            .package("worktree-bg")
+            .bin("worktree-bg")
+            .run()
+            .expect("failed to build worktree-bg binary")
             .path()
             .to_path_buf()
     })

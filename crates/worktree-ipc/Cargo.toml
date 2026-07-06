@@ -14,3 +14,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 blake3.workspace = true
+interprocess.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt"] }

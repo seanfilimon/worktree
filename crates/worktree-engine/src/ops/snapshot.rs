@@ -27,6 +27,8 @@ fn create_snapshot_inner(
     message: &str,
     auto_generated: bool,
 ) -> Result<SnapshotState> {
+    use crate::hooks::{self, Hook};
+
     let state = load_state(engine)?;
     let tree_name = tree_name
         .map(|s| s.to_string())
@@ -69,7 +71,15 @@ fn create_snapshot_inner(
         }
     }
 
-    commit_snapshot(
+    // Gating pre-snapshot hook (DotWt.md).
+    let hook_env = [
+        ("WT_TREE", tree_name.as_str()),
+        ("WT_BRANCH", branch_name.as_str()),
+        ("WT_MESSAGE", message),
+    ];
+    hooks::run(engine, Hook::PreSnapshot, &hook_env)?;
+
+    let snapshot = commit_snapshot(
         engine,
         NewSnapshot {
             tree_name: &tree_name,
@@ -80,7 +90,18 @@ fn create_snapshot_inner(
             auto_generated,
             operation: "snapshot",
         },
-    )
+    )?;
+
+    // Informational post-snapshot hook — failures logged, never fatal.
+    let post_env = [
+        ("WT_TREE", tree_name.as_str()),
+        ("WT_BRANCH", branch_name.as_str()),
+        ("WT_MESSAGE", message),
+        ("WT_SNAPSHOT_ID", snapshot.id.as_str()),
+    ];
+    let _ = hooks::run(engine, Hook::PostSnapshot, &post_env);
+
+    Ok(snapshot)
 }
 
 /// List snapshots for a tree/branch

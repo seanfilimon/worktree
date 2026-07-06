@@ -1,9 +1,10 @@
 use crate::engine::WorktreeEngine;
 use crate::error::{EngineError, Result};
 use crate::persist::{load_state, FileEntry};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffEntry {
     pub path: String,
     pub status: DiffStatus,
@@ -13,7 +14,8 @@ pub struct DiffEntry {
     pub new_size: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiffStatus {
     Added,
     Modified,

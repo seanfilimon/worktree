@@ -9,6 +9,10 @@ pub enum SdkError {
     /// The daemon was required for this operation but is not running.
     #[error("worktree daemon is not running (start it with `wt server start`)")]
     DaemonUnavailable,
+
+    /// The daemon reported an error for this operation.
+    #[error("{0}")]
+    Daemon(String),
 }
 
 pub type Result<T> = std::result::Result<T, SdkError>;

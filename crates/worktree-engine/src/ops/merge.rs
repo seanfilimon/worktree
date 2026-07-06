@@ -1,8 +1,10 @@
 use crate::engine::WorktreeEngine;
 use crate::error::{EngineError, Result};
 use crate::persist::{commit_snapshot, load_state, FileEntry, NewSnapshot, SnapshotState};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeResult {
     pub snapshot: SnapshotState,
     pub files_merged: usize,
@@ -69,12 +71,25 @@ pub fn merge_branch(engine: &WorktreeEngine, source_branch: &str) -> Result<Merg
     }
 
     if !conflicts.is_empty() {
+        // Machine-readable conflict metadata (BgProcess.md §12.2) so tools
+        // and UIs can present resolution options.
+        write_conflict_metadata(
+            engine,
+            &conflicts,
+            source_branch,
+            &target_branch,
+            &source_files,
+            &target_files,
+        )?;
         return Err(EngineError::MergeConflict(format!(
-            "conflicts in {} file(s): {}",
+            "conflicts in {} file(s): {} (details in .wt/conflicts/)",
             conflicts.len(),
             conflicts.join(", ")
         )));
     }
+
+    // A clean merge clears any stale conflict metadata.
+    clear_conflict_metadata(engine)?;
 
     let files: Vec<FileEntry> = merged_files.into_values().collect();
     let files_merged = files.len();
@@ -102,4 +117,55 @@ pub fn merge_branch(engine: &WorktreeEngine, source_branch: &str) -> Result<Merg
         files_merged,
         conflicts: Vec::new(),
     })
+}
+
+/// Write one `.conflict.json` per conflicted path under `.wt/conflicts/`.
+fn write_conflict_metadata(
+    engine: &WorktreeEngine,
+    conflicts: &[String],
+    source_branch: &str,
+    target_branch: &str,
+    source_files: &[FileEntry],
+    target_files: &[FileEntry],
+) -> Result<()> {
+    let dir = engine.wt_dir().join("conflicts");
+    std::fs::create_dir_all(&dir)?;
+
+    for path in conflicts {
+        let current = target_files.iter().find(|f| &f.path == path);
+        let incoming = source_files.iter().find(|f| &f.path == path);
+        let metadata = serde_json::json!({
+            "file": path,
+            "current_branch": target_branch,
+            "incoming_branch": source_branch,
+            "current_hash": current.map(|f| f.hash.clone()),
+            "incoming_hash": incoming.map(|f| f.hash.clone()),
+            "kind": "content",
+            "detected_at": chrono::Utc::now().to_rfc3339(),
+        });
+        let slug = path.replace(['/', '\\'], "-");
+        std::fs::write(
+            dir.join(format!("{slug}.conflict.json")),
+            serde_json::to_string_pretty(&metadata)
+                .map_err(|e| EngineError::Serialization(e.to_string()))?,
+        )?;
+    }
+    Ok(())
+}
+
+/// Remove all conflict metadata (called after a clean merge).
+fn clear_conflict_metadata(engine: &WorktreeEngine) -> Result<()> {
+    let dir = engine.wt_dir().join("conflicts");
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(&dir)?.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with(".conflict.json"))
+            {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    Ok(())
 }

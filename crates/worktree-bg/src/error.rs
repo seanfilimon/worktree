@@ -25,6 +25,9 @@ pub enum BgError {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("ipc error: {0}")]
+    Ipc(#[from] worktree_ipc::IpcError),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

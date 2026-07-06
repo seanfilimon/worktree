@@ -59,6 +59,16 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
+# IPC
+interprocess = { version = "2", features = ["tokio"] }
+
+# Windows process control (daemon spawn without handle inheritance)
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
 # CLI / filesystem
 clap = { version = "4", features = ["derive"] }
 colored = "2"
