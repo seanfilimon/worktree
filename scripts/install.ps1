@@ -3,8 +3,13 @@
   W0rkTree installer for Windows.
 
 .DESCRIPTION
-  Builds the requested components from source (release profile) and installs
-  them to a user-level bin directory, adding it to the user PATH.
+  Installs W0rkTree binaries to a user-level bin directory and adds it to
+  the user PATH. Two modes:
+
+    build (default)  — compile from source with cargo (requires Rust)
+    -FromRelease     — download prebuilt binaries from GitHub Releases
+                       (SHA-256 verified; -ReleaseTag pins a version,
+                       otherwise the latest release is used)
 
   Components:
     cli     -> wt.exe + worktree-bg.exe   (the CLI and its background daemon)
@@ -12,9 +17,11 @@
     all     -> everything (default)
 
 .EXAMPLE
-  .\scripts\install.ps1                 # install everything
-  .\scripts\install.ps1 -Component cli  # just the CLI + daemon
-  .\scripts\install.ps1 -Uninstall      # remove binaries and PATH entry
+  .\scripts\install.ps1                        # build + install everything
+  .\scripts\install.ps1 -FromRelease           # prebuilt binaries, no Rust needed
+  .\scripts\install.ps1 -FromRelease -ReleaseTag v0.1.0-alpha.1
+  .\scripts\install.ps1 -Component cli         # just the CLI + daemon
+  .\scripts\install.ps1 -Uninstall             # remove binaries and PATH entry
 #>
 [CmdletBinding()]
 param(
@@ -23,6 +30,12 @@ param(
 
     # Where binaries are installed.
     [string]$InstallDir = "$env:LOCALAPPDATA\Programs\W0rkTree\bin",
+
+    # Download prebuilt binaries from GitHub Releases instead of building.
+    [switch]$FromRelease,
+
+    # Release tag to download (default: latest release).
+    [string]$ReleaseTag = "",
 
     # Skip modifying the user PATH.
     [switch]$NoPath,
@@ -33,6 +46,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$repo = "seanfilimon/worktree"
+$releaseTarget = "x86_64-pc-windows-msvc"
 
 function Write-Step($message) { Write-Host ">> $message" -ForegroundColor Cyan }
 
@@ -65,33 +80,69 @@ if ($Uninstall) {
 
 Write-Host "W0rkTree Installer" -ForegroundColor Cyan
 Write-Host "==================" -ForegroundColor Cyan
-
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Host "cargo not found. Install Rust first: https://rustup.rs" -ForegroundColor Red
-    exit 1
-}
-
-$packages = @()
-if ($Component -eq "all" -or $Component -eq "cli") { $packages += @("-p", "worktree-cli", "-p", "worktree-bg") }
-if ($Component -eq "all" -or $Component -eq "server") { $packages += @("-p", "worktree-server") }
-
-Write-Step "Building release binaries ($Component)..."
-Push-Location $repoRoot
-try {
-    cargo build --release @packages
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-}
-finally {
-    Pop-Location
-}
-
-Write-Step "Installing to $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-foreach ($bin in $binaries) {
-    $source = Join-Path $repoRoot "target\release\$bin"
-    if (-not (Test-Path $source)) { throw "expected binary missing: $source" }
-    Copy-Item -Force $source (Join-Path $InstallDir $bin)
-    Write-Host "   installed $bin"
+
+if ($FromRelease) {
+    $asset = "w0rktree-$releaseTarget.zip"
+    if ($ReleaseTag) {
+        $url = "https://github.com/$repo/releases/download/$ReleaseTag/$asset"
+    } else {
+        $url = "https://github.com/$repo/releases/latest/download/$asset"
+    }
+
+    $tmp = Join-Path $env:TEMP "w0rktree-install-$(Get-Random)"
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    try {
+        Write-Step "Downloading $url"
+        Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmp $asset)
+        Invoke-WebRequest -Uri "$url.sha256" -OutFile (Join-Path $tmp "$asset.sha256")
+
+        Write-Step "Verifying checksum"
+        $expected = ((Get-Content (Join-Path $tmp "$asset.sha256") -Raw) -split "\s+")[0].ToLower()
+        $actual = (Get-FileHash (Join-Path $tmp $asset) -Algorithm SHA256).Hash.ToLower()
+        if ($expected -ne $actual) {
+            throw "checksum mismatch for ${asset}: expected $expected, got $actual"
+        }
+
+        Write-Step "Installing to $InstallDir"
+        Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath $tmp -Force
+        foreach ($bin in $binaries) {
+            $source = Join-Path $tmp $bin
+            if (-not (Test-Path $source)) { throw "release archive is missing $bin" }
+            Copy-Item -Force $source (Join-Path $InstallDir $bin)
+            Write-Host "   installed $bin"
+        }
+    }
+    finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+} else {
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        Write-Host "cargo not found. Install Rust (https://rustup.rs) or use -FromRelease." -ForegroundColor Red
+        exit 1
+    }
+
+    $packages = @()
+    if ($Component -eq "all" -or $Component -eq "cli") { $packages += @("-p", "worktree-cli", "-p", "worktree-bg") }
+    if ($Component -eq "all" -or $Component -eq "server") { $packages += @("-p", "worktree-server") }
+
+    Write-Step "Building release binaries ($Component)..."
+    Push-Location $repoRoot
+    try {
+        cargo build --release @packages
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    }
+    finally {
+        Pop-Location
+    }
+
+    Write-Step "Installing to $InstallDir"
+    foreach ($bin in $binaries) {
+        $source = Join-Path $repoRoot "target\release\$bin"
+        if (-not (Test-Path $source)) { throw "expected binary missing: $source" }
+        Copy-Item -Force $source (Join-Path $InstallDir $bin)
+        Write-Host "   installed $bin"
+    }
 }
 
 if (-not $NoPath) {

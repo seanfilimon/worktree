@@ -389,8 +389,25 @@ Grant levels: `read-only` (view only), `modify` (edit, no export), `redistribute
 
 ### Installation
 
-One command builds and installs the binaries to a user-level bin directory
-(no admin rights needed). Requires [Rust](https://rustup.rs).
+**Prebuilt binaries (no Rust required)** — downloads the latest
+[GitHub Release](https://github.com/seanfilimon/worktree/releases),
+verifies its SHA-256, and installs to a user-level bin directory:
+
+```powershell
+# Windows (PowerShell)
+.\scripts\install.ps1 -FromRelease
+```
+
+```bash
+# Linux / macOS
+./scripts/install.sh --from-release
+```
+
+Pin a version with `-ReleaseTag v0.1.0-alpha.1` / `--from-release v0.1.0-alpha.1`.
+
+**Build from source** — one command builds and installs the binaries to a
+user-level bin directory (no admin rights needed). Requires
+[Rust](https://rustup.rs).
 
 **Windows (PowerShell):**
 
