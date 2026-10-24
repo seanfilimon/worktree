@@ -193,8 +193,8 @@ GET  /api/v1/trees/{tenant}/{tree}/merge-requests?state= -> [mr]
 POST /api/v1/trees/{tenant}/{tree}/merge-requests {title,description,source_branch,target_branch} -> 201 mr
 GET  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}   -> mr
 POST /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/approve|merge|close -> mr
-GET  /api/v1/audit?tenant=&action=&limit=               -> [audit event]  (tenant admin or server admin)
-GET  /api/v1/events?tenant=&tree=                       -> text/event-stream; each event `event: <type>\ndata: <json domain.Event>\n\n`; heartbeat comment every 15s
+GET  /api/v1/audit?tenant=&action=&limit=               -> [audit event]  (tenant admin; unscoped: server admins see all, others the tenants they administer)
+GET  /api/v1/events?tenant=&tree=                       -> text/event-stream (unscoped: server admins get all events, others their member tenants); each event `event: <type>\ndata: <json domain.Event>\n\n`; heartbeat comment every 15s
 GET  /api/v1/admin/stats                                -> domain.ServerStats (server admin)
 GET  /api/v1/admin/accounts                             -> [account] (server admin)
 PATCH /api/v1/admin/accounts/{username} {is_admin?,disabled?} -> account
