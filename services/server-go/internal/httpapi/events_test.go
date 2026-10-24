@@ -82,7 +82,6 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func TestEventsAuthorization(t *testing.T) {
 	runCases(t, []endpointCase{
-		{name: "firehose non-admin", method: "GET", path: "/api/v1/events", as: "alice", status: 403, code: "forbidden"},
 		{name: "firehose anonymous", method: "GET", path: "/api/v1/events", status: 401, code: "unauthenticated"},
 		{name: "tree without tenant", method: "GET", path: "/api/v1/events?tree=web", as: "alice", status: 400, code: "bad_request"},
 		{name: "private tree anonymous", method: "GET", path: "/api/v1/events?tenant=acme&tree=web", status: 401, code: "unauthenticated"},
@@ -196,5 +195,27 @@ func TestWriteSSE(t *testing.T) {
 	}
 	if strings.Contains(out, "payload") {
 		t.Fatalf("unencodable payload not dropped: %q", out)
+	}
+}
+
+// Without tenant/tree a non-admin receives only the events of the tenants
+// they belong to.
+func TestEventsUnscopedMember(t *testing.T) {
+	f := newFixture(t)
+	srv := httptest.NewServer(f.h)
+	t.Cleanup(srv.Close)
+
+	s := openSSE(t, srv, "", "bob")
+	if s.resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", s.resp.StatusCode)
+	}
+	s.next(t, 2*time.Second, func(l string) bool { return l == ": connected" })
+	waitFor(t, "subscription", func() bool { return f.bus.subscribers() == 1 })
+
+	f.bus.Publish(domain.Event{Type: domain.EventTreeCreated, TenantID: "tenant-dave", At: t0})
+	f.bus.Publish(domain.Event{Type: domain.EventBranchPushed, TenantID: f.acme.ID, At: t0})
+	ev := s.next(t, 2*time.Second, func(l string) bool { return strings.HasPrefix(l, "event: ") })
+	if ev != "event: branch.pushed" {
+		t.Fatalf("event line = %q (another tenant's event leaked)", ev)
 	}
 }

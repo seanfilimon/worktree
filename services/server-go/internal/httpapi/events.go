@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,13 +22,16 @@ var heartbeatInterval = 15 * time.Second
 // text/event-stream of domain events.
 //
 // Authorization: with tree, tree:read on it; with only tenant, tenant:read;
-// with neither, server:admin (the firehose). types is an optional
-// comma-separated list of event types.
+// with neither, server admins get every event (the firehose) and other
+// signed-in accounts get the events of the tenants they are members of.
+// types is an optional comma-separated list of event types.
 func (a *api) handleEvents(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	q := r.URL.Query()
 	p := principal(r)
 	var f domain.EventFilter
+	// allow further restricts the subscription; nil admits every event.
+	var allow func(domain.Event) bool
 	switch tenantRef, treeName := q.Get("tenant"), q.Get("tree"); {
 	case treeName != "" && tenantRef == "":
 		return badRequestf("tree requires tenant")
@@ -57,7 +61,19 @@ func (a *api) handleEvents(w http.ResponseWriter, r *http.Request) error {
 		}
 		f.TenantID = t.ID
 	default:
-		if err := a.d.Authz.Authorize(ctx, p, domain.ActServerAdmin, "", nil); err != nil {
+		if _, err := requireLogin(r); err != nil {
+			return err
+		}
+		err := a.d.Authz.Authorize(ctx, p, domain.ActServerAdmin, "", nil)
+		switch {
+		case err == nil:
+		case errors.Is(err, domain.ErrForbidden):
+			members, err := a.memberTenantIDs(ctx, p)
+			if err != nil {
+				return err
+			}
+			allow = func(e domain.Event) bool { return members[e.TenantID] }
+		default:
 			return err
 		}
 	}
@@ -109,6 +125,9 @@ func (a *api) handleEvents(w http.ResponseWriter, r *http.Request) error {
 			if !ok {
 				return nil // bus closed the subscription
 			}
+			if allow != nil && !allow(e) {
+				continue
+			}
 			if err := writeSSE(w, e); err != nil {
 				return nil
 			}
@@ -117,6 +136,20 @@ func (a *api) handleEvents(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 	}
+}
+
+// memberTenantIDs is the set of tenants p belongs to (including the
+// personal tenant).
+func (a *api) memberTenantIDs(ctx context.Context, p *domain.Principal) (map[string]bool, error) {
+	ms, err := a.d.Store.ListAccountMemberships(ctx, p.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{p.TenantID: true}
+	for _, m := range ms {
+		ids[m.TenantID] = true
+	}
+	return ids, nil
 }
 
 // writeSSE writes one event frame: "event: <type>\ndata: <json>\n\n".

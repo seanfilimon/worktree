@@ -22,8 +22,9 @@ type objectStatter interface {
 }
 
 // handleAudit answers GET /api/v1/audit?tenant=&action=&limit=&since=.
-// With a tenant the caller needs tenant:admin on it; without one the caller
-// must be a server admin.
+// With a tenant the caller needs tenant:admin on it. Without one, server
+// admins see every tenant's events and other accounts see the merged events
+// of the tenants they administer (empty if none).
 func (a *api) handleAudit(w http.ResponseWriter, r *http.Request) error {
 	p, err := requireLogin(r)
 	if err != nil {
@@ -32,6 +33,12 @@ func (a *api) handleAudit(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	q := r.URL.Query()
 	var f domain.AuditFilter
+	// For callers who are not server admins, scoped lists the tenants they
+	// administer, whose events are merged.
+	var (
+		scoped   []string
+		isScoped bool
+	)
 	if ref := q.Get("tenant"); ref != "" {
 		t, err := a.tenantByRef(ctx, ref)
 		if err != nil {
@@ -42,7 +49,13 @@ func (a *api) handleAudit(w http.ResponseWriter, r *http.Request) error {
 		}
 		f.TenantID = t.ID
 	} else if err := a.d.Authz.Authorize(ctx, p, domain.ActServerAdmin, "", nil); err != nil {
-		return err
+		if !errors.Is(err, domain.ErrForbidden) {
+			return err
+		}
+		if scoped, err = a.adminTenantIDs(ctx, p); err != nil {
+			return err
+		}
+		isScoped = true
 	}
 	f.Action = q.Get("action")
 	if f.Limit, err = queryInt(r, "limit", defaultAuditLimit, maxAuditLimit); err != nil {
@@ -57,12 +70,48 @@ func (a *api) handleAudit(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, http.StatusOK, []domain.AuditEvent{})
 		return nil
 	}
-	events, err := a.d.Audit.Query(ctx, f)
-	if err != nil {
-		return err
+	if !isScoped {
+		events, err := a.d.Audit.Query(ctx, f)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, nonNil(events))
+		return nil
 	}
-	writeJSON(w, http.StatusOK, nonNil(events))
+	merged := []domain.AuditEvent{}
+	for _, id := range scoped {
+		tf := f
+		tf.TenantID = id
+		events, err := a.d.Audit.Query(ctx, tf)
+		if err != nil {
+			return err
+		}
+		merged = append(merged, events...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].At.After(merged[j].At) })
+	if len(merged) > f.Limit {
+		merged = merged[:f.Limit]
+	}
+	writeJSON(w, http.StatusOK, merged)
 	return nil
+}
+
+// adminTenantIDs lists the tenants on which p holds tenant:admin.
+func (a *api) adminTenantIDs(ctx context.Context, p *domain.Principal) ([]string, error) {
+	ms, err := a.d.Store.ListAccountMemberships(ctx, p.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, m := range ms {
+		switch err := a.d.Authz.Authorize(ctx, p, domain.ActTenantAdmin, m.TenantID, nil); {
+		case err == nil:
+			ids = append(ids, m.TenantID)
+		case !errors.Is(err, domain.ErrForbidden):
+			return nil, err
+		}
+	}
+	return ids, nil
 }
 
 // computeStats gathers ServerStats from the store and object store.

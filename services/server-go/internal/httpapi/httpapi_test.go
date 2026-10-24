@@ -925,7 +925,9 @@ func TestAuditAndAdminEndpoints(t *testing.T) {
 		{name: "audit limit", setup: seedAudit, method: "GET", path: "/api/v1/audit?limit=1", as: "admin", status: 200, check: auditIDs("a3")},
 		{name: "audit server-wide", setup: seedAudit, method: "GET", path: "/api/v1/audit", as: "admin", status: 200, check: auditIDs("a3", "a2", "a1")},
 		{name: "audit developer", method: "GET", path: "/api/v1/audit?tenant=acme", as: "bob", status: 403, code: "forbidden"},
-		{name: "audit server-wide non-admin", method: "GET", path: "/api/v1/audit", as: "alice", status: 403, code: "forbidden"},
+		// Without a tenant, non-admins see the tenants they administer.
+		{name: "audit unscoped tenant admin", setup: seedAudit, method: "GET", path: "/api/v1/audit", as: "alice", status: 200, check: auditIDs("a3", "a1")},
+		{name: "audit unscoped developer", setup: seedAudit, method: "GET", path: "/api/v1/audit", as: "bob", status: 200, check: auditIDs()},
 		{name: "audit anonymous", method: "GET", path: "/api/v1/audit", status: 401, code: "unauthenticated"},
 		{name: "audit bad since", method: "GET", path: "/api/v1/audit?since=yesterday", as: "admin", status: 400, code: "bad_request"},
 		{name: "stats", method: "GET", path: "/api/v1/admin/stats", as: "admin", status: 200,
