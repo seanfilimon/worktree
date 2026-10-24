@@ -1,0 +1,171 @@
+---
+title: Merge and Diff
+description: Three-way merge semantics, merge base selection, conflict kinds and markers, persisted merge state, fast-forwards, and the diff algorithm and output format.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Merging and diffing are implemented as pure functions (no I/O) in `worktree_sdk::merge` and `worktree_sdk::diff`. `Repository::merge` and `Repository::diff_*` combine them with the object store and working directory. This page describes the semantics that [`wt merge`](/docs/cli/branches#wt-merge) and [`wt diff`](/docs/cli/snapshots#wt-diff) expose.
+
+## Merge overview
+
+`Repository::merge(tree, source, opts)` merges `source` (a branch or any revision, e.g. `origin/main`) into the tree's current branch:
+
+1. **Precondition.** The working tree must be clean; otherwise the merge fails with `DirtyWorkingTree`. A merge cannot start while another one is in progress (`MergeInProgress`).
+2. **Merge base.** The best common ancestor of the current tip and the source tip is computed (see below).
+3. **Shortcut outcomes.**
+   - If the source is already contained in the current branch: `MergeOutcome::UpToDate`, nothing changes.
+   - If the current tip is an ancestor of the source and `no_fast_forward` is not set: `MergeOutcome::FastForward{to}`. The branch ref moves to the source tip and the working directory is checked out. No snapshot is created.
+4. **Three-way merge.** Otherwise (or with `--no-ff`), the manifests of base, ours (current tip), and theirs (source tip) are merged path by path, and text files changed on both sides are merged line by line.
+5. **Result.** If everything merged cleanly, a new snapshot with two parents (current tip, source tip) is created: `MergeOutcome::Merged{snapshot}`. Otherwise the partial result is written to the working directory and `MergeOutcome::Conflicts{conflicts}` is returned (`wt merge` exits with code `3`).
+
+`MergeOptions` has `message` (merge snapshot message), `no_fast_forward`, and `author` (overrides the configured author).
+
+## Merge base
+
+`merge::merge_base(a, b, parents)` picks the best common ancestor in the snapshot DAG:
+
+- Candidates are snapshots reachable from both `a` and `b`.
+- A candidate that is an ancestor of another common ancestor is discarded, leaving the "best" common ancestors.
+- Ties are broken by the smallest breadth-first distance from `a`, then by id, so the result is deterministic.
+- `None` if the two histories are unrelated (the merge state then records a null `base`).
+
+## Path-level merge
+
+`merge::merge_manifests(base, ours, theirs)` returns one `PathResolution` per path present in any input (except paths absent from both ours and theirs), sorted by path:
+
+| Situation | Resolution |
+|---|---|
+| Unchanged on both sides, or changed identically | `KeepOurs` |
+| Changed or added only on their side | `TakeTheirs` |
+| Changed only on our side | `KeepOurs` |
+| Deleted on one side, unchanged on the other | `Delete` |
+| Text modified on both sides | `MergeContent{base, ours, theirs}`: run the line merge on the blobs |
+| Added on both sides with identical content | `KeepOurs` |
+| Added on both sides with different content | `MergeContent` with `base: None` (two-way merge); reported as `add_add` if it conflicts |
+| Modified on one side, deleted on the other | `Conflict{kind: ModifyDelete}` |
+| Binary file changed on both sides | `Conflict{kind: Binary}`: our version is kept in the working tree |
+
+## Line-level merge
+
+`merge::merge_text(base, ours, theirs, labels)` is a line-based three-way merge with **diff3 semantics**:
+
+- Non-overlapping changes from both sides are combined.
+- Identical changes made on both sides are taken once.
+- Overlapping, different changes produce a conflict region.
+
+It returns `TextMergeResult::Clean(text)` or `TextMergeResult::Conflicted{merged, conflicts}`. Each `ConflictRegion` records `start_line` (the 1-based line of `<<<<<<<` in the merged output) and the `ours`, `base`, and `theirs` lines.
+
+### Conflict markers
+
+Conflicted files contain diff3-style markers. `MergeLabels` defaults to `ours` / `base` / `theirs`; `Repository::merge` labels the sides with the branch names:
+
+```text
+<<<<<<< main
+let timeout = 30;
+||||||| base
+let timeout = 10;
+=======
+let timeout = 60;
+>>>>>>> feature/login
+```
+
+| Marker | Starts |
+|---|---|
+| `<<<<<<< <ours>` | Our side (the current branch). |
+| `\|\|\|\|\|\|\| <base>` | The common ancestor's version. |
+| `=======` | Their side (the source). |
+| `>>>>>>> <theirs>` | End of the conflict region. |
+
+### Conflict kinds
+
+| `ConflictKind` | JSON | Cause |
+|---|---|---|
+| `Content` | `content` | Both sides changed overlapping lines; markers written to the file. |
+| `ModifyDelete` | `modify_delete` | One side modified the file, the other deleted it. |
+| `AddAdd` | `add_add` | Both sides added the path with different content. |
+| `Binary` | `binary` | A binary file changed on both sides; ours is kept. |
+
+## Merge state
+
+While a conflicted merge awaits resolution, the repository persists:
+
+- `.wt/trees/<tree>/MERGE_STATE.json`, a `MergeState`:
+
+  | Field | Meaning |
+  |---|---|
+  | `source_branch` | Branch or revision being merged. |
+  | `source_tip` | Snapshot id of the source. |
+  | `target_tip` | Current branch tip before the merge (may be null for an empty branch). |
+  | `base` | Merge base (null if unrelated). |
+  | `conflicts` | List of `{path, kind}`. |
+  | `message` | Message for the eventual merge snapshot. |
+
+- `.wt/conflicts/<tree>.json`, the machine-readable conflict list (`path` and `kind` per entry) for editors and scripts.
+
+`Repository::merge_state` returns it, and `wt status` reports the merge in progress. While it exists, the daemon does not auto-snapshot the worktree and commands that would conflict with the merge fail with `MergeInProgress`.
+
+Resolving a merge:
+
+| Action | API | CLI |
+|---|---|---|
+| Finish after removing all markers: creates the two-parent merge snapshot. Fails with `MergeConflict` while markers remain. | `continue_merge(tree, message)` | `wt merge --continue [-m MSG]` |
+| Snapshot normally: completes the merge with two parents once all markers are gone. | `snapshot(tree, opts)` | `wt snapshot -m MSG` |
+| Give up: restores the pre-merge head into the working tree and clears the merge state. | `abort_merge(tree)` | `wt merge --abort` |
+
+<Callout type="info">
+  `wt pull` uses the same machinery: when `origin/<branch>` cannot be fast-forwarded, it runs `Repository::merge` and may leave a conflicted merge to resolve.
+</Callout>
+
+## Diff
+
+### Algorithm
+
+- `diff::diff_lines(old, new, context)` computes a line diff (Myers or histogram) and groups it into `Hunk`s with `context` lines of surrounding context. A missing trailing newline is handled.
+- Each `Hunk` has `old_start`, `old_len`, `new_start`, `new_len` and `lines` (`DiffLine::Context`, `Added`, or `Removed`). Line numbers are 1-based; a zero-length side has `start` = the line before the hunk (0 at the start of the file), as in GNU diff.
+- `diff::diff_stat(old, new)` counts added and removed lines (`DiffStat{added, removed}`).
+- `diff::is_binary(data)` treats content as binary if it has a NUL byte in the first 8 KiB or is not valid UTF-8. Binary files are reported as changed without a patch.
+
+### Unified diff output
+
+`diff::unified_diff(old_path, new_path, old, new, context)` produces standard unified diff text, or an empty string if the inputs are equal:
+
+```text
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -1,4 +1,4 @@
+ pub struct Config {
+-    timeout: u32,
++    timeout_secs: u32,
+     retries: u32,
+ }
+```
+
+Added files use `--- /dev/null` and deleted files `+++ /dev/null`.
+
+### Repository diffs
+
+| API | CLI | Compares |
+|---|---|---|
+| `diff_working(tree, None, opts)` | `wt diff` | Working directory vs. `HEAD` |
+| `diff_working(tree, Some(rev), opts)` | `wt diff REV` | Working directory vs. `REV` |
+| `diff_revs(tree, from, to, opts)` | `wt diff REV REV2` | `REV` vs. `REV2` |
+
+`DiffOptions`:
+
+| Field | Default | CLI | Meaning |
+|---|---|---|---|
+| `context` | `3` | | Lines of context in patches. |
+| `name_only` | `false` | `--name-only` | Skip patch generation. |
+| `paths` | empty (all) | `PATH...` | Restrict to these paths (prefix match, `/`-separated, relative to the tree root). |
+
+Each result is a `FileDiff`:
+
+| Field | Meaning |
+|---|---|
+| `path` | `/`-separated path relative to the tree root. |
+| `kind` | `added`, `modified`, or `deleted`. |
+| `old_hash`, `new_hash` | Blob hashes on each side (absent for added / deleted). |
+| `binary` | Whether the content is binary. |
+| `patch` | Unified diff text; `None` when `name_only` or binary. |
+| `added`, `removed` | Line counts (used by `wt diff --stat`). |

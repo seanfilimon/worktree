@@ -1,0 +1,117 @@
+---
+title: Access Control
+description: Accounts, personal and organization tenants, membership roles, tree visibility, authorization actions, and tokens.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Every request to the server, over gRPC or REST, is made either anonymously or as an authenticated account. The server decides what the caller may do from three things: the caller's **membership role** in the tenant that owns the resource, the tree's **visibility**, and whether the caller is a **server admin**.
+
+## Accounts
+
+An account has a unique `username`, an `email`, an optional `display_name`, and two flags: `is_admin` (server admin) and `disabled`. Passwords are hashed with **argon2id**; the hash is never returned by the API.
+
+Accounts are created by:
+
+- self-service registration: `wt register` or `POST /api/v1/auth/register`, when registration is enabled (the default);
+- the server itself at startup for the admin account, when `--admin-password` / `WT_ADMIN_PASSWORD` is set (see [Configuration](/docs/server/configuration)).
+
+### Disabled accounts
+
+A server admin can set `disabled: true` with `PATCH /api/v1/admin/accounts/{username}`. A disabled account cannot authenticate: logins and requests with its tokens fail with `401 unauthenticated`. Setting `disabled: false` restores access. Accounts are not deleted.
+
+### Registration toggle
+
+Run the server with `--allow-registration=false` (or `WT_ALLOW_REGISTRATION=false`) to reject `POST /api/v1/auth/register` with `403 forbidden`.
+
+<Callout type="info">
+  v0.2.0 has no admin endpoint that creates accounts for other people. On a server with registration disabled, new users can be onboarded by enabling registration temporarily, or by running with a different `--admin-user` and `--admin-password` to create an additional admin account.
+</Callout>
+
+## Tenants
+
+A tenant is the owner of trees. There are two kinds:
+
+| Kind | Created by | Slug |
+|---|---|---|
+| `user` (personal) | Automatically on registration; the new account is its `owner`. | Equal to the username. |
+| `org` | `POST /api/v1/tenants` with `slug` and `name`; the caller becomes `owner`. | Chosen at creation: lowercase `[a-z0-9-]`, unique. |
+
+Remotes name the tenant explicitly, for example `wt remote add origin http://localhost:7420 --tenant acme`, and clones use `TENANT/TREE`, for example `wt clone http://localhost:7420 acme/payments`. See the [multi-tenancy guide](/guides/multi-tenancy).
+
+Each tenant also has a `plan` (`free`, `pro`, or `enterprise`). It is informational in v0.2.0; plan quotas and rate limiting are on the Roadmap.
+
+## Memberships and roles
+
+An account's access to a tenant comes from a membership with one of five roles, ordered from most to least privileged:
+
+| Role | Intended for |
+|---|---|
+| `owner` | Full control of the tenant, including its members and settings. |
+| `admin` | Administers trees (protections, licenses, settings, deletion) and the tenant's members. |
+| `maintainer` | Writes to trees and runs the branch lifecycle, including approving and merging merge requests. |
+| `developer` | Contributes: push, stage, tag, create branches, open merge requests. |
+| `viewer` | Read-only access to the tenant's trees, branches, snapshots, and staged work. |
+
+Members are managed with `GET`, `PUT`, and `DELETE` on `/api/v1/tenants/{tenant}/members/{username}` (requires `tenant:admin`) or in the admin panel. See the [REST API](/docs/server/rest-api#tenants-and-members).
+
+## Authorization actions
+
+Every operation is checked as one action against a tenant and, where relevant, a tree.
+
+| Action | Covers | Minimum role (typical) |
+|---|---|---|
+| `tree:read` | Read branches, snapshots, files, tags, staged snapshots, protections, licenses, merge requests; pull and clone. | `viewer`, or per [visibility](#tree-visibility) |
+| `tree:write` | Push, stage, tag. | `developer` |
+| `branch:create` | Create a branch on the server by pushing it. | `developer` |
+| `mr:create` | Open a merge request. | `developer` |
+| `mr:approve` | Approve a merge request. | `maintainer` |
+| `mr:merge` | Merge a merge request. | `maintainer` |
+| `branch:delete` | Delete a server branch (subject to `no_delete`). | `maintainer` |
+| `tree:create` | Create a tree in the tenant, by REST or by a first push. | `admin` |
+| `tree:admin` | Branch protections, license rules, tree settings, tree deletion. | `admin` |
+| `tenant:read` | See the tenant and its member list. | `viewer` |
+| `tenant:admin` | Manage members and tenant settings. | `admin` |
+| `server:admin` | `/api/v1/admin/*`, server-wide audit queries. | Server admin only |
+
+The minimum roles follow the built-in role definitions in `worktree-protocol` (`iam::role`): each role includes the permissions of the roles below it. On your personal tenant you are `owner`, so you can create and administer your own trees.
+
+Policy checks run after authorization: a push that passes `tree:write` can still be rejected by [branch protection](/docs/server/branch-protection) or [license rules](/docs/server/licensing).
+
+## Tree visibility
+
+| Visibility | Who can read (`tree:read`) |
+|---|---|
+| `private` | Members of the owning tenant only. |
+| `internal` | Any authenticated account on the server. |
+| `public` | Anyone, including anonymous requests. |
+
+Visibility only widens **read** access. Writing always requires a membership with a sufficient role. Anonymous gRPC calls are allowed only for `Ping` and reads of public trees. Change visibility with `PATCH /api/v1/trees/{tenant}/{tree}` (`tree:admin`).
+
+## Server admins
+
+An account with `is_admin: true` is a server admin. Server admins pass every authorization check and can use the admin endpoints: server statistics, the account list, and `PATCH /api/v1/admin/accounts/{username}` to grant or revoke `is_admin` and to disable accounts. The account named by `--admin-user` (default `admin`) is made a server admin at startup when `--admin-password` is set.
+
+## Tokens
+
+All authentication uses bearer tokens, sent as `authorization: Bearer <token>` in gRPC metadata or `Authorization: Bearer <token>` on REST.
+
+| Token | Obtained from | Lifetime |
+|---|---|---|
+| Session token | `wt login`, `POST /api/v1/auth/login`, or `POST /api/v1/auth/register` | 30 days |
+| Personal API token | `POST /api/v1/auth/tokens` with a `name` and optional `ttl_hours`, or the admin panel's Settings page | `ttl_hours`, or no expiry when omitted |
+
+- The server stores only the hex SHA-256 hash of each token, never the raw value, so a token is shown once at creation.
+- `last_used_at` records when an API token was last used.
+- `POST /api/v1/auth/logout` revokes the token that made the request; `DELETE /api/v1/auth/tokens/{id}` revokes a specific API token. `wt logout` removes the local credential.
+- `wt login` stores its token in `$WT_HOME/credentials.toml` (default `~/.wt`). The daemon uses the same credential to auto-stage. See [`wt login`](/docs/cli/remote#wt-login).
+
+Use an API token with a TTL for CI and scripts instead of a session token.
+
+## Not in v0.2.0
+
+<Callout type="warn" title="Roadmap">
+  Declarative TOML access policies (RBAC/ABAC rules synced from the repository) are not enforced in v0.2.0; the server stores access-config documents sent by clients but authorization uses only the role and visibility model above. OAuth/SSO sign-in is also on the Roadmap.
+</Callout>
+
+See also the [security overview](/docs/security).

@@ -1,35 +1,84 @@
 ---
 title: Guides
-description: Tutorials, walkthroughs, and reference guides for getting started with W0rkTree.
+description: Task-oriented walkthroughs for using, collaborating with, and self-hosting W0rkTree v0.2.0.
 ---
 
 import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Callout } from 'fumadocs-ui/components/callout';
 
-Explore guides and tutorials to help you get up and running with W0rkTree, migrate existing projects, and manage your deployment.
+These guides walk through real tasks end to end. They cover W0rkTree **v0.2.0** ("v2 rebuild"): the `wt` CLI, the `worktree-bg` background daemon, the Go server, and the admin panel. For exact command and API references, see the [Docs](/docs).
+
+<Callout type="info" title="Pre-1.0">
+  W0rkTree is pre-1.0 and is built from source. See [Installation](/docs/installation) before you start.
+</Callout>
+
+## Getting Started
 
 <Cards>
-  <Card title="🚀 Quick Start" href="/guides/quick-start">
-    Get up and running with W0rkTree in under 5 minutes. Install, initialize, and make your first commit.
+  <Card title="Quick Start" href="/guides/quick-start">
+    Build `wt`, create a worktree, take snapshots, and push to a local server.
   </Card>
-  <Card title="👀 Staged Visibility" href="/guides/staged-visibility">
-    Understand how W0rkTree keeps your work-in-progress private and secure until you are ready to share it.
+  <Card title="Architecture" href="/guides/architecture">
+    How the CLI, SDK, daemon, server, and admin panel fit together.
   </Card>
-  <Card title="🏢 Multi-Tenancy & IAM" href="/guides/multi-tenancy">
-    Manage isolated environments for your teams using W0rkTree's multi-tenant architecture.
+  <Card title="Config Model" href="/guides/config-model">
+    `.wt/config.toml`, `$WT_HOME`, and how settings are resolved.
   </Card>
-  <Card title="🔐 Declarative Access Control" href="/guides/declarative-access">
-    Manage repository and tree permissions through version-controlled roles and policies.
+  <Card title="Migration" href="/guides/migration">
+    Move an existing Git repository into W0rkTree.
   </Card>
-  <Card title="🏗️ Architecture" href="/guides/architecture">
-    Understand the high-level architecture and design principles behind W0rkTree.
+</Cards>
+
+## Everyday Workflows
+
+<Cards>
+  <Card title="Merge Strategies" href="/guides/merge-strategies">
+    Fast-forward and three-way merges, conflicts, `--continue` and `--abort`.
   </Card>
-  <Card title="🔄 Migration" href="/guides/migration">
-    Step-by-step instructions for migrating existing Git repositories to W0rkTree without losing history.
+  <Card title="Reflog and Recovery" href="/guides/reflog-and-recovery">
+    Undo mistakes with the reflog, `wt revert`, and archived branches.
   </Card>
-  <Card title="📦 Versioning" href="/guides/versioning">
-    Learn about W0rkTree's version scheme, release channels, and compatibility guarantees.
+  <Card title="Tags and Releases" href="/guides/tags-and-releases">
+    Mark releases with tags and produce archives.
   </Card>
-  <Card title="🛠️ Admin Panel" href="/guides/admin">
-    Web-based management interface for monitoring and controlling W0rkTree server instances.
+  <Card title="Ignore Patterns" href="/guides/ignore-patterns">
+    Built-in ignores, `.wtignore`, and `.wt/ignore`.
+  </Card>
+  <Card title="Nested Trees" href="/guides/nested-trees">
+    Split one worktree into several independently versioned trees.
+  </Card>
+  <Card title="Git Interop" href="/guides/git-interop">
+    Import from and export to Git repositories.
+  </Card>
+</Cards>
+
+## Collaboration
+
+<Cards>
+  <Card title="Staged Visibility" href="/guides/staged-visibility">
+    Share work-in-progress with your team without touching branch history.
+  </Card>
+  <Card title="Auto-Tracking Setup" href="/guides/auto-tracking-setup">
+    Run the background daemon for automatic snapshots and auto-staging.
+  </Card>
+  <Card title="Multi-Tenancy" href="/guides/multi-tenancy">
+    Personal and organization tenants, roles, visibility, and API tokens.
+  </Card>
+  <Card title="Branch Protection" href="/guides/branch-protection">
+    Protect important branches and merge through merge requests.
+  </Card>
+  <Card title="License Compliance" href="/guides/license-compliance">
+    Per-path SPDX rules that control what other tenants may do.
+  </Card>
+</Cards>
+
+## Running a Server
+
+<Cards>
+  <Card title="Self-Hosting" href="/guides/self-hosting">
+    Build, configure, secure, back up, and upgrade your own server.
+  </Card>
+  <Card title="Admin Panel" href="/guides/admin-panel">
+    Build and serve the web admin panel, and tour every page.
   </Card>
 </Cards>

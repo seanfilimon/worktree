@@ -1,60 +1,95 @@
 ---
-title: Storage Engine
-description: Content-addressable storage, object packing, and compression in the W0rkTree server.
+title: Storage
+description: Layout of the server data directory, immutability guarantees, and how to back up and restore it.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-## Overview
+All server state lives in one data directory, set with `--data` / `WT_DATA` (default `./wt-data`). There is no external database.
 
-The storage engine uses a **content-addressable object store** optimized for multi-tree operations. All data is securely partitioned using **per-tenant namespacing**.
+## Layout
 
-## Per-Tenant Namespacing
-
-To guarantee strict isolation, every object stored in the W0rkTree Server is prefixed with its owning Tenant ID. This physical partitioning ensures that a query from one tenant can never accidentally access objects from another tenant, even if they share the same underlying storage bucket or disk.
-
-- Local paths: `/var/lib/worktree/objects/<tenant_id>/<hash>`
-- Cloud paths (S3): `s3://worktree-bucket/<tenant_id>/objects/<hash>`
-
-## Content-Addressable Storage
-
-W0rkTree diverges from Git by using **chunk-level deduplication** rather than blob-level deduplication. Large files are split into chunks using a rolling hash algorithm. This means that appending a single line to a 10GB file only results in storing a few kilobytes of new data, rather than duplicating the entire 10GB file.
-
-All chunks and objects are addressed by their **BLAKE3 hash**, providing cryptographically secure verification of data integrity upon read.
-
-## Comparison with Git
-
-| Aspect | Git | W0rkTree |
-|---|---|---|
-| Object scope | Global (one DAG) | Per-tree (isolated DAGs with cross-references) |
-| Deduplication | Blob-level | Chunk-level with rolling hash |
-| Indexing | Pack files | LSM-tree backed index with bloom filters |
-| Locking | File-level locks | Lock-free concurrent reads, per-tree write locks |
-| Compression | zlib per object | zstd with dictionary training per repository |
-
-## Object Types
-
-The store manages four core object types:
-
-- **Blob** — raw file content, addressed by BLAKE3 hash
-- **Tree** — directory listing mapping names to blob/tree references
-- **Snapshot** — immutable point-in-time capture of a tree state
-- **Commit** — metadata wrapper around a snapshot with parent references
-
-## Garbage Collection Policies
-
-Unreachable objects and expired staged snapshots are cleaned up by the garbage collector. GC policies can be configured per-tenant:
-
-- **Staged Retention:** How long in-flight changes are kept before being discarded (default: 14 days).
-- **Orphan Object Retention:** How long unreachable objects are kept before physical deletion (default: 30 days).
-
-Manual GC runs can be triggered by server administrators:
-
-```bash
-wt admin gc --tenant "tenant_abc123" --dry-run
-wt admin gc --tenant "tenant_abc123" --aggressive
+```text
+wt-data/
+  meta.db                 bbolt database: all metadata
+  objects/
+    af/
+      1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+    4f/
+      ...
 ```
 
-<Callout type="info">
-GC runs automatically in the background based on the tenant's configured policies. Manual runs are only needed for immediately reclaiming space after large repository deletions.
+### `meta.db`
+
+An embedded [bbolt](https://github.com/etcd-io/bbolt) key-value database holding every record except file content: tenants, accounts (with argon2id password hashes), memberships, API token hashes, trees, branches and their tips, snapshots, tags, staged snapshots, branch protections, license rules, merge requests, the audit log, and access-config documents synced from clients. bbolt allows one process to open the file at a time, so only one server can use a data directory.
+
+### `objects/`
+
+A content-addressed store of blobs (raw file bytes) and manifests (encoded file lists). Each object's name is the 64-character lowercase hex BLAKE3-256 hash of its exact bytes, split into a two-character fan-out directory and the remaining 62 characters: `objects/<2-hex>/<62-hex>`. The fan-out keeps each directory to at most 256 subdirectories.
+
+Objects are shared and deduplicated by content across all trees and tenants. Which tenant may see which object is decided by the metadata (snapshots reference manifests, manifests reference blobs), not by the file layout. See the [object model](/docs/protocol/object-model).
+
+## Integrity and immutability
+
+- **Verified writes.** The server hashes every uploaded object and rejects it if the bytes do not match the claimed hash.
+- **Idempotent writes.** Writing an object that already exists is a no-op. Objects are written to a temporary file and renamed into place, so a crash never leaves a partially written object under its final name.
+- **Immutable snapshots.** Once stored, a snapshot never changes. Storing the same snapshot id again with identical content is a no-op; different content is rejected as a conflict.
+- **Append-only history.** Branch tips only move forward to descendants (no force push). Tips are updated with a compare-and-swap, so concurrent pushes cannot overwrite each other.
+- **Append-only audit log.**
+
+Deleting a tree removes its metadata. Objects are not garbage-collected in v0.2.0.
+
+<Callout type="info" title="Windows">
+  On Windows, renaming a temporary file over an object that already exists can fail with "Access is denied", for example when two uploads of the same object race. Because objects are content-addressed, an existing target already has the correct bytes, so the server treats this case as success.
 </Callout>
+
+## Backup
+
+The simplest consistent backup is to stop the server, copy the whole data directory, and start it again.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+sudo systemctl stop worktree-server
+tar -czf /backups/wt-data-$(date +%F).tar.gz -C /var/lib/worktree data
+sudo systemctl start worktree-server
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+Stop-Service worktree-server
+Compress-Archive -Path D:\worktree\data -DestinationPath "D:\backups\wt-data-$(Get-Date -Format yyyy-MM-dd).zip"
+Start-Service worktree-server
+```
+
+</Tab>
+</Tabs>
+
+To keep the downtime short, use the fact that objects are immutable:
+
+1. While the server runs, copy `objects/` to the backup location (for example with `rsync -a`). Objects never change once written, so this copy is safe.
+2. Stop the server.
+3. Copy `meta.db`, and run the `objects/` copy again to pick up objects written since step 1.
+4. Start the server.
+
+Do not copy `meta.db` while the server is running: a copy taken during a write can be inconsistent. A filesystem-level atomic snapshot (LVM, ZFS, Btrfs, or a VSS snapshot on Windows) of the whole data directory is also consistent. Always back up `meta.db` and `objects/` together; a `meta.db` that references objects missing from `objects/` cannot serve those snapshots.
+
+## Restore
+
+1. Stop the server.
+2. Replace the data directory with the backup (both `meta.db` and `objects/`).
+3. Start the server with `--data` pointing at it.
+
+Clients whose local history is ahead of the restored server can push again: their snapshots descend from the restored tips. Clients that had pulled snapshots newer than the backup still have them locally and can push them back.
+
+## Moving the data directory
+
+Stop the server, move the directory, and start the server with the new `--data` path. Paths inside the directory are relative, so no other changes are needed.
+
+## Not in v0.2.0
+
+Encryption at rest and chunked (content-defined) storage of large files are on the Roadmap. Use full-disk or volume encryption if you need data encrypted at rest today.

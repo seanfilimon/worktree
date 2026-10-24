@@ -1,0 +1,166 @@
+---
+title: Daemon IPC
+description: The protocol between wt and the worktree-bg background daemon — newline-delimited JSON over loopback TCP, bg.json discovery, and every request and response type in worktree_sdk::ipc.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+The CLI controls the background daemon `worktree-bg` through a small JSON protocol defined in `worktree_sdk::ipc` (`crates/worktree-sdk/src/ipc.rs`). [`wt daemon`](/docs/cli/daemon#wt-daemon) subcommands are thin wrappers around it, and any tool can use it to inspect or drive the daemon.
+
+## Transport
+
+- **Newline-delimited JSON over TCP** on `127.0.0.1` only.
+- **One request line, one response line per connection.** The client connects, writes one JSON object followed by `\n`, reads one JSON line back, and closes.
+- The port is chosen by the daemon and published in `bg.json`.
+
+## Discovery: `bg.json`
+
+On startup the daemon writes `$WT_HOME/bg.json` (default `~/.wt/bg.json`, `%USERPROFILE%\.wt\bg.json` on Windows) and removes it on clean shutdown:
+
+```json
+{"pid": 4242, "port": 51873, "version": "0.2.0"}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `pid` | `u32` | Daemon process id. |
+| `port` | `u16` | Loopback TCP port to connect to. |
+| `version` | string | Daemon version. |
+
+```rust
+pub struct DaemonInfo { pub pid: u32, pub port: u16, pub version: String }
+
+pub fn daemon_info_path() -> PathBuf                  // $WT_HOME/bg.json
+pub fn read_daemon_info() -> Result<Option<DaemonInfo>> // does not check liveness
+pub async fn send(req: &IpcRequest) -> Result<IpcResponse>
+```
+
+`send` reads `bg.json`, connects, and exchanges one request and response. It returns `SdkError::DaemonNotRunning` if `bg.json` is missing or the connection is refused (a stale file left by a crash).
+
+## Requests
+
+`IpcRequest` is tagged by a `cmd` field (snake_case):
+
+| Variant | JSON | Effect |
+|---|---|---|
+| `Status` | `{"cmd":"status"}` | Return a `DaemonStatus`. |
+| `Watch { path }` | `{"cmd":"watch","path":"/home/ada/src/my-project"}` | Start watching a worktree root. Persisted to `bg.toml`. |
+| `Unwatch { path }` | `{"cmd":"unwatch","path":"/home/ada/src/my-project"}` | Stop watching a worktree root. Persisted to `bg.toml`. |
+| `Pause { path }` | `{"cmd":"pause","path":null}` | Pause auto-snapshots for one worktree, or all when `path` is null. |
+| `Resume { path }` | `{"cmd":"resume","path":"/home/ada/src/my-project"}` | Resume auto-snapshots for one worktree, or all when `path` is null. |
+| `SnapshotNow { path }` | `{"cmd":"snapshot_now","path":"/home/ada/src/my-project"}` | Take an auto-snapshot now of all trees of the worktree. |
+| `Shutdown` | `{"cmd":"shutdown"}` | Stop the daemon. |
+
+Paths are worktree roots as JSON strings. On Windows they are ordinary Windows paths with escaped backslashes, for example `"C:\\Users\\ada\\src\\my-project"`.
+
+## Responses
+
+`IpcResponse` is tagged by a `result` field (snake_case):
+
+| Variant | JSON |
+|---|---|
+| `Status(DaemonStatus)` | `{"result":"status", ...DaemonStatus fields}` |
+| `Ok { message }` | `{"result":"ok","message":"..."}` |
+| `Error { message }` | `{"result":"error","message":"..."}` |
+
+### `DaemonStatus`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `pid` | `u32` | Daemon process id. |
+| `version` | string | Daemon version. |
+| `started_at` | timestamp | When the daemon started (RFC 3339, UTC). |
+| `watched` | `WatchedWorktree[]` | One entry per watched worktree. |
+
+### `WatchedWorktree`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `root` | path | Worktree root. |
+| `paused` | bool | Whether auto-snapshots are paused. |
+| `pending_changes` | integer | Changed files waiting for the next auto-snapshot. |
+| `snapshots_created` | integer | Auto-snapshots taken since the daemon started. |
+| `last_snapshot` | string or null | Id of the last auto-snapshot. |
+| `last_snapshot_at` | timestamp or null | When it was taken. |
+| `last_stage_at` | timestamp or null | When work was last uploaded as a staged snapshot. |
+| `last_error` | string or null | Most recent error, for example a secret-scan finding or a failed stage. |
+
+Example status response (illustrative values):
+
+```json
+{
+  "result": "status",
+  "pid": 4242,
+  "version": "0.2.0",
+  "started_at": "2026-01-15T09:00:00Z",
+  "watched": [
+    {
+      "root": "/home/ada/src/my-project",
+      "paused": false,
+      "pending_changes": 3,
+      "snapshots_created": 12,
+      "last_snapshot": "9b1f3c2e-...",
+      "last_snapshot_at": "2026-01-15T10:41:07Z",
+      "last_stage_at": "2026-01-15T10:41:08Z",
+      "last_error": null
+    }
+  ]
+}
+```
+
+## Talking to the daemon by hand
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+PORT=$(jq -r .port "${WT_HOME:-$HOME/.wt}/bg.json")
+echo '{"cmd":"status"}' | nc 127.0.0.1 "$PORT"
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$wtHome = if ($env:WT_HOME) { $env:WT_HOME } else { Join-Path $env:USERPROFILE '.wt' }
+$info = Get-Content (Join-Path $wtHome 'bg.json') | ConvertFrom-Json
+$client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $info.port)
+$stream = $client.GetStream()
+$writer = [System.IO.StreamWriter]::new($stream); $writer.AutoFlush = $true
+$writer.WriteLine('{"cmd":"status"}')
+[System.IO.StreamReader]::new($stream).ReadLine()
+$client.Close()
+```
+
+</Tab>
+</Tabs>
+
+From Rust:
+
+```rust
+use worktree_sdk::ipc::{self, IpcRequest, IpcResponse};
+
+#[tokio::main]
+async fn main() -> worktree_sdk::Result<()> {
+    match ipc::send(&IpcRequest::Status).await? {
+        IpcResponse::Status(status) => {
+            for w in status.watched {
+                println!("{} paused={} pending={}", w.root.display(), w.paused, w.pending_changes);
+            }
+        }
+        IpcResponse::Ok { message } => println!("{message}"),
+        IpcResponse::Error { message } => eprintln!("daemon error: {message}"),
+    }
+    Ok(())
+}
+```
+
+<Callout type="info" title="Security">
+  The daemon listens on loopback only. IPC messages carry no credentials and the port is not authenticated: the daemon reads the server token from `$WT_HOME/credentials.toml` itself when auto-staging. On a shared multi-user machine, any local process can connect to the port, so prefer single-user hosts for the daemon.
+</Callout>
+
+## Related
+
+- [`wt daemon`](/docs/cli/daemon): starting, stopping, watching, and pausing.
+- [Auto-tracking setup](/guides/auto-tracking-setup): configuring auto-snapshots and auto-staging.

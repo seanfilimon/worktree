@@ -1,0 +1,305 @@
+---
+title: Remote
+description: Configure servers, authenticate, and synchronize trees with push, fetch, pull, clone and stage.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+A **remote** is a named W0rkTree server plus a tenant on it. The server listens on one port (default `7420`) for both gRPC (HTTP/2 cleartext, h2c) and REST, so a remote URL is just a base URL such as `http://localhost:7420`. Each tree in the worktree maps to a server tree `<tenant>/<tree>`; the server-side name defaults to the local tree name.
+
+<Callout type="info" title="TLS">
+The server does not terminate TLS itself. For remote access, put it behind a reverse proxy that terminates TLS and speaks HTTP/2 (h2c) to the backend for gRPC, and use the proxy's `https://` URL as the remote URL. See [Deployment](/docs/server/deployment).
+</Callout>
+
+## Credentials
+
+```text
+wt login [SERVER] [-u USER] [--password-stdin] | logout [SERVER] | whoami [SERVER]
+wt register [SERVER] -u USER -e EMAIL [--password-stdin]
+```
+
+`wt login` and `wt register` save a token per server URL (normalized, no trailing slash) in `$WT_HOME/credentials.toml` (default `~/.wt/credentials.toml`). Every remote command sends it as `authorization: Bearer <token>`. Anonymous access works only for reads of public trees.
+
+Passwords are never accepted as a flag. They are read, in order of preference, from:
+
+1. stdin, when `--password-stdin` is given;
+2. the `WT_PASSWORD` environment variable;
+3. an interactive prompt.
+
+<Callout type="warn">
+`credentials.toml` contains bearer tokens. Keep `$WT_HOME` private and never commit it. Session tokens from login expire (default 30 days); log in again when a command reports you are not logged in.
+</Callout>
+
+## `wt remote`
+
+```text
+wt remote list | add NAME URL --tenant T | remove NAME
+```
+
+| Subcommand | Description |
+|---|---|
+| `list` | List configured remotes with URL and tenant. |
+| `add NAME URL --tenant T` | Add remote `NAME` at server `URL` for tenant `T`. Writes `[remote.NAME]` to `.wt/config.toml`. |
+| `remove NAME` | Remove remote `NAME` from the configuration. |
+
+| Flag | Description |
+|---|---|
+| `--tenant T` | Tenant slug on the server. Required for `add`. For personal tenants the slug is your username. |
+
+```bash
+wt remote add origin http://localhost:7420 --tenant ada
+wt remote add company https://wt.example.com --tenant acme
+wt remote list
+wt remote remove company
+```
+
+**Notes**
+
+- Remote commands default to the remote named `origin`.
+- Tenants are created through the [REST API](/docs/server/rest-api) or the [admin panel](/guides/admin-panel); see [Multi-tenancy](/guides/multi-tenancy).
+
+## `wt register`
+
+```text
+wt register [SERVER] -u USER -e EMAIL [--password-stdin]
+```
+
+Create an account on a server and save the returned token. A personal tenant whose slug is `USER` is created with the account.
+
+| Argument / flag | Description |
+|---|---|
+| `SERVER` | Server URL. Default: the URL of the worktree's `origin` remote. |
+| `-u USER` | Username. Required. |
+| `-e EMAIL` | Email address. Required. |
+| `--password-stdin` | Read the password from stdin. |
+
+<Tabs items={['bash', 'PowerShell']}>
+  <Tab value="bash">
+```bash
+wt register http://localhost:7420 -u ada -e ada@example.com
+printf '%s' "$ADA_PASSWORD" | wt register http://localhost:7420 -u ada -e ada@example.com --password-stdin
+WT_PASSWORD="$ADA_PASSWORD" wt register http://localhost:7420 -u ada -e ada@example.com
+```
+  </Tab>
+  <Tab value="PowerShell">
+```powershell
+wt register http://localhost:7420 -u ada -e ada@example.com
+$env:ADA_PASSWORD | wt register http://localhost:7420 -u ada -e ada@example.com --password-stdin
+$env:WT_PASSWORD = $env:ADA_PASSWORD; wt register http://localhost:7420 -u ada -e ada@example.com
+```
+  </Tab>
+</Tabs>
+
+**Notes**
+
+- Fails if the server was started with registration disabled (`--allow-registration=false`); an administrator must then create the account. See [Server configuration](/docs/server/configuration).
+
+## `wt login`
+
+```text
+wt login [SERVER] [-u USER] [--password-stdin]
+```
+
+Log in to a server and save the session token in `$WT_HOME/credentials.toml`.
+
+| Argument / flag | Description |
+|---|---|
+| `SERVER` | Server URL. Default: the URL of the worktree's `origin` remote. |
+| `-u USER` | Username. Prompted for when omitted. |
+| `--password-stdin` | Read the password from stdin. |
+
+<Tabs items={['bash', 'PowerShell']}>
+  <Tab value="bash">
+```bash
+wt login http://localhost:7420 -u ada
+printf '%s' "$ADA_PASSWORD" | wt login http://localhost:7420 -u ada --password-stdin
+WT_PASSWORD="$ADA_PASSWORD" wt login http://localhost:7420 -u ada
+```
+  </Tab>
+  <Tab value="PowerShell">
+```powershell
+wt login http://localhost:7420 -u ada
+Get-Content .\password.txt | wt login http://localhost:7420 -u ada --password-stdin
+$env:WT_PASSWORD = $env:ADA_PASSWORD; wt login http://localhost:7420 -u ada
+```
+  </Tab>
+</Tabs>
+
+**Notes**
+
+- Logging in again to the same server replaces the saved credential.
+- For long-lived automation, create a personal API token through `POST /api/v1/auth/tokens` (optional `ttl_hours`); see the [REST API](/docs/server/rest-api).
+
+## `wt logout`
+
+```text
+wt logout [SERVER]
+```
+
+Remove the saved credential for a server from `$WT_HOME/credentials.toml`.
+
+| Argument | Description |
+|---|---|
+| `SERVER` | Server URL. Default: the URL of the worktree's `origin` remote. |
+
+```bash
+wt logout
+wt logout https://wt.example.com
+```
+
+## `wt whoami`
+
+```text
+wt whoami [SERVER]
+```
+
+Ping the server with the saved credential and print the server version, the logged-in username and tenant (or that you are anonymous).
+
+| Argument | Description |
+|---|---|
+| `SERVER` | Server URL. Default: the URL of the worktree's `origin` remote. |
+
+```bash
+wt whoami
+wt whoami http://localhost:7420 --json
+```
+
+## `wt push`
+
+```text
+wt push [--remote R] [--branch B]
+```
+
+Upload a branch of the selected tree to the server.
+
+| Flag | Description |
+|---|---|
+| `--remote R` | Remote to push to. Default: `origin`. |
+| `--branch B` | Branch to push. Default: the current branch. |
+
+What happens:
+
+1. The server tree `<tenant>/<tree>` is resolved, and **created if it does not exist**.
+2. The client learns the server's tip for the branch and works out which snapshots and objects (manifests, blobs) the server is missing.
+3. Missing objects are uploaded, then the push is sent with the old tip it expects and the new tip.
+4. On success `refs/remotes/<remote>/<branch>` is updated, your staged snapshot for that branch is cleared, and local tags the server does not have are pushed too.
+
+```bash
+wt push
+wt push --branch feature/login
+wt --tree frontend push --remote company
+```
+
+### Push rejections
+
+The server enforces history and policy. A rejected push changes nothing on the server and `wt push` exits with code `1`.
+
+| Rejection | Cause | What to do |
+|---|---|---|
+| Conflict detected (non-fast-forward) | The server tip moved since your last pull; your branch does not descend from it. | `wt pull`, resolve any conflicts, then `wt push` again. There is no force push. |
+| Branch protection | A [protection rule](/docs/server/branch-protection) on the branch forbids direct pushes by you. | Push to another branch and open a merge request (REST API or admin panel). |
+| Review required | The protection rule requires approvals the push does not have. | Merge through an approved merge request. |
+| License violation | A changed file's license is not allowed by the tree's [license rules](/docs/server/licensing). | Remove or relicense the file, or ask a tree admin to adjust the rule. |
+| Access denied | You lack `tree:write` on the tree. | Ask a tenant admin for a developer role or higher. See [Access control](/docs/server/access-control). |
+
+```bash
+# Typical non-fast-forward recovery
+wt push          # rejected: server tip moved
+wt pull          # fetch + merge origin/<branch>
+wt push
+```
+
+<Callout type="info">
+Server snapshots are immutable and every accepted push must descend from the current server tip. History on the server can only grow.
+</Callout>
+
+## `wt fetch`
+
+```text
+wt fetch [--remote R]
+```
+
+Download new snapshots, objects and tags for **all** remote branches of the selected tree and update `refs/remotes/<remote>/*`. Local branches and working files are never touched.
+
+| Flag | Description |
+|---|---|
+| `--remote R` | Remote to fetch from. Default: `origin`. |
+
+```bash
+wt fetch
+wt log origin/main -n 5
+wt diff main origin/main --stat
+```
+
+## `wt pull`
+
+```text
+wt pull [--remote R] [--branch B]
+```
+
+Fetch, then integrate `<remote>/<branch>` into the local branch: a fast-forward plus checkout when possible, otherwise a merge exactly like [`wt merge`](/docs/cli/branches#wt-merge).
+
+| Flag | Description |
+|---|---|
+| `--remote R` | Remote to pull from. Default: `origin`. |
+| `--branch B` | Branch to integrate. Default: the current branch. |
+
+```bash
+wt pull
+wt pull --branch main
+```
+
+**Notes**
+
+- Exits with code `3` when the merge stops with conflicts; resolve them and run `wt merge --continue` (or `wt merge --abort`).
+- The working tree must be clean when a merge is needed.
+
+## `wt clone`
+
+```text
+wt clone URL TENANT/TREE [DEST]
+```
+
+Create a new worktree from a server tree.
+
+| Argument | Description |
+|---|---|
+| `URL` | Server URL, e.g. `http://localhost:7420`. |
+| `TENANT/TREE` | Tenant slug and tree name on the server. |
+| `DEST` | Destination directory; must not exist or must be empty. Default: a directory named after `TREE`. |
+
+Clone initializes the worktree, sets `[remote.origin]` to `URL` and `TENANT`, links the root tree to the server tree's id and name, fetches everything, creates a local branch for every remote branch, and checks out the default branch.
+
+```bash
+wt clone http://localhost:7420 ada/my-project
+wt clone https://wt.example.com acme/backend ./backend
+```
+
+**Notes**
+
+- Private and internal trees require `wt login` to the server first; public trees can be cloned anonymously.
+- The full history is cloned. A shallow clone flag is on the [roadmap](/roadmap).
+
+## `wt stage`
+
+```text
+wt stage [--remote R]
+```
+
+Upload the current working state of the selected tree as a **staged snapshot**: team-visible work in progress that is not part of branch history. The upload includes the changed paths and counts of added, modified and deleted files relative to head.
+
+| Flag | Description |
+|---|---|
+| `--remote R` | Remote to upload to. Default: `origin`. |
+
+```bash
+wt stage
+wt status --team     # see everyone's staged work for this tree
+```
+
+**Notes**
+
+- The server keeps at most one staged snapshot per tree, account and branch; a newer stage replaces the older one, and a successful `wt push` of that branch clears it.
+- Requires `tree:write` on the server tree.
+- The daemon stages automatically after each auto-snapshot when `sync.auto_stage = true` (default) and a remote and credential exist. See [`wt daemon`](/docs/cli/daemon#wt-daemon) and [Staged visibility](/guides/staged-visibility).

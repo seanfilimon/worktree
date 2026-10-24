@@ -1,0 +1,216 @@
+---
+title: Installation
+description: Build the wt CLI, the worktree-bg daemon, the Go server, and the admin panel from source, then verify the install and run the test suites.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+W0rkTree v0.2.0 is built from source. The repository contains everything: the Rust workspace (`wt`, `worktree-bg`, the SDK, the protocol crate, the Git bridge), the Go server in `services/server-go`, and the admin panel in `apps/admin`.
+
+<Callout type="warn" title="Roadmap">
+  Prebuilt binaries and package-manager installs (Homebrew, winget, crates.io, npm, install scripts) are not available in v0.2.0. Build from source as described below.
+</Callout>
+
+## Prerequisites
+
+| Toolchain | Version | Needed for |
+|---|---|---|
+| Rust | stable (edition 2021) | `wt`, `worktree-bg`, and all Rust crates. `protoc` is vendored by the build, so you do not need to install Protocol Buffers. |
+| Go | 1.25 or newer | `worktree-server`. Pure Go, no cgo: no C compiler required. |
+| Node.js | 22 or newer | Only for building the admin panel (`apps/admin`). |
+
+Install Rust with [rustup](https://rustup.rs) and Go from [go.dev](https://go.dev/dl/). Check the versions:
+
+```bash
+rustc --version
+cargo --version
+go version
+node --version   # only if you build the admin panel
+```
+
+## Build and install
+
+<Steps>
+<Step>
+
+### Clone the repository
+
+```bash
+git clone https://github.com/seanfilimon/worktree.git
+cd worktree
+```
+
+All following commands run from the repository root unless they `cd` elsewhere.
+
+</Step>
+<Step>
+
+### Build the Rust workspace
+
+```bash
+cargo build --workspace --release
+```
+
+This builds every crate in the workspace. Release binaries land in `target/release/` (`wt` and `worktree-bg`, with `.exe` on Windows).
+
+</Step>
+<Step>
+
+### Install `wt` and `worktree-bg`
+
+```bash
+cargo install --path crates/worktree-cli
+cargo install --path crates/worktree-bg
+```
+
+Both binaries go into Cargo's bin directory (`~/.cargo/bin`, or `%USERPROFILE%\.cargo\bin` on Windows), which rustup adds to your `PATH`. Install `worktree-bg` next to `wt`: [`wt daemon start`](/docs/cli/daemon#wt-daemon) launches it for you, so you rarely run it directly.
+
+</Step>
+<Step>
+
+### Build the server
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+cd services/server-go
+go build -o worktree-server .
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+cd services\server-go
+go build -o worktree-server.exe .
+```
+
+</Tab>
+</Tabs>
+
+The result is a single self-contained binary. See [Server installation](/docs/server/installation) for first-run options and [Configuration](/docs/server/configuration) for every flag.
+
+</Step>
+<Step>
+
+### Build the admin panel (optional)
+
+```bash
+cd apps/admin
+npm install
+npm run build
+```
+
+The build writes static files to `apps/admin/dist`. Serve them from the server with `--admin-dir apps/admin/dist`; the panel is then available at `/admin/` on the server port. See [Admin panel](/guides/admin-panel).
+
+</Step>
+</Steps>
+
+## Verify the install
+
+Check that the CLI is on your `PATH`:
+
+```bash
+wt --help
+```
+
+Start a local server with an admin account and check its health endpoint:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+cd services/server-go
+./worktree-server --admin-password 'change-me-now' --admin-dir ../../apps/admin/dist
+# in another terminal
+curl http://localhost:7420/healthz
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+cd services\server-go
+.\worktree-server.exe --admin-password 'change-me-now' --admin-dir ..\..\apps\admin\dist
+# in another terminal
+curl.exe http://localhost:7420/healthz
+```
+
+</Tab>
+</Tabs>
+
+`/healthz` returns JSON of the form `{"status":"ok","version":"...","uptime_seconds":N}`. Omit `--admin-dir` if you did not build the admin panel. Data is written to `./wt-data` by default.
+
+Then try a worktree end to end:
+
+```bash
+wt init demo && cd demo
+echo "hello" > README.md
+wt snapshot -m "First snapshot"
+wt log --oneline
+wt daemon start
+wt daemon status
+```
+
+Continue with the [Quick start](/guides/quick-start) to push to the server.
+
+## Windows notes
+
+Windows is a first-class platform; W0rkTree is developed on it.
+
+- **Shell.** All commands work in PowerShell. Where shell syntax differs (environment variables, paths, quoting), the docs show a PowerShell variant. Use `curl.exe` rather than the `curl` alias of older Windows PowerShell versions.
+- **PATH.** `cargo install` places `wt.exe` and `worktree-bg.exe` in `%USERPROFILE%\.cargo\bin`. If `wt` is not found, add that directory to your user `PATH` and open a new terminal.
+- **Per-user state.** `$WT_HOME` defaults to `%USERPROFILE%\.wt` and holds `credentials.toml`, `bg.json`, `bg.toml`, and `bg.log`. Override it with an environment variable:
+
+```powershell
+$env:WT_HOME = "$env:USERPROFILE\.wt-test"
+wt daemon status
+```
+
+- **Passwords in scripts.** Use `--password-stdin` or `$env:WT_PASSWORD` rather than typing passwords into prompts in automation. See [`wt login`](/docs/cli/remote#wt-login).
+
+## Run the test suites
+
+From the repository root:
+
+```bash
+cargo build --workspace && cargo test --workspace
+cd services/server-go && go build ./... && go vet ./... && go test ./...
+cd apps/admin && npm run build && npm test
+cd apps/web && npm run build
+bash scripts/e2e.sh        # starts the Go server and drives wt end to end
+```
+
+Run each `cd` line from the repository root. On Windows, run `scripts/e2e.sh` from Git Bash (or another POSIX shell).
+
+<Callout type="info" title="Isolate per-user state in tests">
+  Tests and the end-to-end script must not touch your real credentials. Point `WT_HOME` at a temporary directory before running anything that logs in or starts the daemon.
+</Callout>
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+export WT_HOME="$(mktemp -d)"
+cargo test --workspace
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$env:WT_HOME = Join-Path $env:TEMP "wt-home-test"
+cargo test --workspace
+```
+
+</Tab>
+</Tabs>
+
+## Next steps
+
+- [Quick start](/guides/quick-start): create a worktree and push it.
+- [CLI reference](/docs/cli): every command and flag.
+- [Server deployment](/docs/server/deployment): reverse proxy, TLS, and running as a service.

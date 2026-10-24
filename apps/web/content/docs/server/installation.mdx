@@ -1,84 +1,178 @@
 ---
-title: Installation
-description: Install and configure the W0rkTree server daemon.
+title: Server Installation
+description: Build worktree-server from source, run it for the first time, and serve the admin panel.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
-import { Steps } from 'fumadocs-ui/components/steps';
 
-## System Requirements
+<Callout type="info" title="Build from source only">
+  W0rkTree v0.2.0 is pre-1.0. There are no prebuilt server binaries, packages, or official container images yet; you build the server from the repository. Prebuilt binaries and package-manager installs are on the Roadmap.
+</Callout>
 
-| Requirement | Minimum | Recommended |
-|---|---|---|
-| **OS** | Linux, macOS, Windows | Linux (Ubuntu 22.04+) |
-| **CPU** | 2 cores | 4+ cores |
-| **RAM** | 512 MB | 2+ GB |
-| **Disk** | 1 GB | SSD with 10+ GB |
-| **Rust** | 1.75+ (building from source only) | Latest stable |
+## Requirements
 
-## Install
+| Requirement | Notes |
+|---|---|
+| Go 1.25 or newer | The server is pure Go (no cgo), so no C toolchain is needed. |
+| Node.js 22 or newer | Only if you want to build and serve the admin panel. |
+| A writable data directory | Defaults to `./wt-data` relative to the working directory. |
 
-<Tabs items={['macOS', 'Linux', 'Windows', 'From Source']}>
-<Tab value="macOS">
+## Build
+
+<Steps>
+<Step>
+
+### Get the source
+
+Clone the W0rkTree repository and change into the server module:
+
 ```bash
-brew tap worktree-dev/tap
-brew install worktree-server
+cd services/server-go
 ```
+
+</Step>
+<Step>
+
+### Compile the binary
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+go build -o worktree-server .
+```
+
 </Tab>
-<Tab value="Linux">
-```bash
-curl -fsSL https://get.worktree.dev/server | sh
-```
+<Tab value="PowerShell">
 
-For Debian/Ubuntu:
-```bash
-wget https://releases.worktree.dev/latest/worktree-server_amd64.deb
-sudo dpkg -i worktree-server_amd64.deb
-```
-</Tab>
-<Tab value="Windows">
 ```powershell
-winget install worktree-server
+go build -o worktree-server.exe .
 ```
-</Tab>
-<Tab value="From Source">
-```bash
-git clone https://github.com/worktree-dev/worktree.git
-cd worktree
-cargo build --release -p worktree-server
-```
+
 </Tab>
 </Tabs>
 
-## Verify Installation
+Because the build is pure Go you can cross-compile, for example `GOOS=linux GOARCH=amd64 go build -o worktree-server .` (PowerShell: `$env:GOOS = 'linux'; $env:GOARCH = 'amd64'; go build -o worktree-server .`).
+
+</Step>
+<Step>
+
+### Run it for the first time
+
+Start the server with an admin password so the server admin account exists from the first boot:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt server --version
+./worktree-server --admin-password 'change-me-now'
 ```
 
-## Start the Server
+</Tab>
+<Tab value="PowerShell">
 
-<Steps>
-### Start the daemon
+```powershell
+.\worktree-server.exe --admin-password 'change-me-now'
+```
+
+</Tab>
+</Tabs>
+
+With no other flags the server listens on `:7420`, stores data in `./wt-data` (creating `meta.db` and `objects/`), allows self-service registration, and creates (or promotes) the account `admin` as server admin.
+
+<Callout type="warn">
+  Passing a password on the command line exposes it in shell history and process listings. Outside local testing, set `WT_ADMIN_PASSWORD` in the environment instead. See [Configuration](/docs/server/configuration).
+</Callout>
+
+</Step>
+<Step>
+
+### Verify
 
 ```bash
-wt server start --port 7433 --detach
+curl http://localhost:7420/healthz
 ```
 
-### Verify it's running
+```json
+{"status":"ok","version":"0.2.0","uptime_seconds":12}
+```
+
+On Windows PowerShell, `curl` is an alias for `Invoke-WebRequest`; use `curl.exe` or `Invoke-RestMethod`:
+
+```powershell
+Invoke-RestMethod http://localhost:7420/healthz
+```
+
+</Step>
+<Step>
+
+### Connect a client
+
+Log in with `wt` and point a worktree at the server:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt server status
+echo 'change-me-now' | wt login http://localhost:7420 -u admin --password-stdin
+wt remote add origin http://localhost:7420 --tenant admin
+wt push
 ```
 
-### Run diagnostics
+</Tab>
+<Tab value="PowerShell">
 
-```bash
-wt doctor
+```powershell
+'change-me-now' | wt login http://localhost:7420 -u admin --password-stdin
+wt remote add origin http://localhost:7420 --tenant admin
+wt push
 ```
+
+</Tab>
+</Tabs>
+
+The tenant `admin` is the admin account's personal tenant (its slug equals the username). See [`wt login`](/docs/cli/remote#wt-login) and [`wt remote`](/docs/cli/remote#wt-remote).
+
+</Step>
 </Steps>
 
-<Callout type="info">
-See the [Configuration](/docs/server/configuration) page for detailed server tuning options.
-</Callout>
+## Serving the admin panel
+
+The admin panel (`apps/admin`, React + Vite) is a static build that the server serves at `/admin/`.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+cd apps/admin
+npm install
+npm run build
+cd ../../services/server-go
+./worktree-server --admin-dir ../../apps/admin/dist --admin-password 'change-me-now'
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+cd apps/admin
+npm install
+npm run build
+cd ..\..\services\server-go
+.\worktree-server.exe --admin-dir ..\..\apps\admin\dist --admin-password 'change-me-now'
+```
+
+</Tab>
+</Tabs>
+
+Open `http://localhost:7420/admin/` and sign in with the admin account. Paths under `/admin/` that do not match a file fall back to `index.html`, so client-side routes work on reload. If `--admin-dir` is not set, the server does not serve the panel.
+
+For panel development, run `npm run dev` in `apps/admin` instead: the Vite dev server on `http://localhost:5173` proxies `/api` and `/healthz` to `http://localhost:7420`, and the server allows that origin for CORS. See the [admin panel guide](/guides/admin-panel).
+
+## Next steps
+
+- [Configuration](/docs/server/configuration) lists every flag and environment variable.
+- [Deployment](/docs/server/deployment) covers TLS, service units, and backups.
+- [Access control](/docs/server/access-control) explains tenants, roles, and tokens.

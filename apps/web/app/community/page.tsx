@@ -10,6 +10,7 @@ import {
 } from "react-icons/io5";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { CONTRIBUTING_URL, DISCORD_URL, REPO_URL } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Community - W0rkTree",
@@ -66,7 +67,7 @@ export default function CommunityPage() {
               ))}
             </div>
             <Link
-              href="https://discord.gg/worktree"
+              href={DISCORD_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 rounded-md bg-[#5865F2] px-4 py-2 text-sm font-medium text-white hover:bg-[#5865F2]/90 transition-colors"
@@ -94,7 +95,7 @@ export default function CommunityPage() {
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <Link
-                href="https://github.com/worktree/worktree"
+                href={REPO_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -102,16 +103,13 @@ export default function CommunityPage() {
                 <IoLogoGithub className="h-4 w-4" />
                 View Repository
               </Link>
-              <Badge variant="outline" className="text-sm">
-                ⭐ 2.4k stars
-              </Badge>
             </div>
             <div className="rounded-lg border p-4 text-sm">
               <p className="font-medium mb-1">Contribution Guidelines</p>
               <p className="text-muted-foreground">
                 Before opening a pull request, please read our{" "}
                 <Link
-                  href="https://github.com/worktree/worktree/blob/main/CONTRIBUTING.md"
+                  href={CONTRIBUTING_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="underline underline-offset-4 hover:text-foreground transition-colors"

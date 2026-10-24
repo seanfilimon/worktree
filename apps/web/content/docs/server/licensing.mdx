@@ -1,0 +1,68 @@
+---
+title: License Rules
+description: Assign SPDX licenses to paths in a tree and control what principals outside the owning tenant may do with them.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+License rules attach an SPDX license identifier and a **grant** to a set of paths in a tree. The grant decides what principals that do not belong to the tree's owning tenant may do with those paths. The server enforces rules on push (for the paths a push changes) and on reads.
+
+Rules are managed with the [REST API](/docs/server/rest-api#licenses) or the admin panel and require `tree:admin`. There are no `wt` subcommands for them in v0.2.0.
+
+## Rule fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `tree_id` | string | Set by the server. |
+| `path_glob` | string | `/`-separated glob selecting paths. `**` matches across directory levels, `*` matches within one path segment. Rules are keyed by this value. |
+| `spdx` | string | SPDX license identifier or expression, for example `MIT`, `Apache-2.0`, `GPL-3.0-only`, or `LicenseRef-Proprietary`. |
+| `grant` | string | `read-only`, `modify`, or `redistribute`. |
+
+### Grants
+
+| Grant | Read | Modify (push changes) | Redistribute |
+|---|---|---|---|
+| `read-only` | yes | no | no |
+| `modify` | yes | yes | no |
+| `redistribute` | yes | yes | yes |
+
+Grants restrict principals outside the owning tenant. Members of the owning tenant are governed only by their role.
+
+### Glob examples
+
+| `path_glob` | Selects |
+|---|---|
+| `vendor/**` | Everything under `vendor/`. |
+| `src/crypto/**` | Everything under `src/crypto/`. |
+| `**/*.proto` | Every `.proto` file at any depth. |
+| `LICENSE` | Only the top-level `LICENSE` file. |
+
+## Creating and removing rules
+
+```bash
+curl -s -X PUT http://localhost:7420/api/v1/trees/acme/payments/licenses \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"path_glob":"vendor/crypto/**","spdx":"Apache-2.0","grant":"read-only"}'
+
+curl -s http://localhost:7420/api/v1/trees/acme/payments/licenses \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -s -X DELETE "http://localhost:7420/api/v1/trees/acme/payments/licenses?path_glob=vendor%2Fcrypto%2F**" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Putting a rule with an existing `path_glob` replaces it.
+
+## Enforcement on push
+
+During a push the server computes the paths the push changes and passes them to the license checker (`CheckPush`) after authorization and branch protection. For a principal outside the owning tenant, a changed path that matches a rule whose grant does not allow modification rejects the whole push with a `license_violation` rejection that names the offending path and its license. Nothing is written; `wt push` reports the path and license and exits with an error.
+
+Paths that match no rule are not restricted by licensing.
+
+## Enforcement on read
+
+Reads and exports of file content (for example `GET /api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}`) are checked with `CheckRead`. When a rule does not permit the caller to read or export a path, the request is rejected as a `license_violation`, which the REST API returns as `403 forbidden`.
+
+<Callout type="info">
+  License rules are server-side policy for collaboration across tenants. They do not inspect file contents or detect license headers, and they are not a substitute for legal review. See the [license compliance guide](/guides/license-compliance).
+</Callout>

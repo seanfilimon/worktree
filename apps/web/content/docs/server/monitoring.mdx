@@ -1,57 +1,95 @@
 ---
 title: Monitoring
-description: Monitor the W0rkTree server with metrics, health checks, and logging.
+description: Health checks, Prometheus metrics, logs, admin statistics, and the audit log of worktree-server.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-## Health Endpoint
+## Health check
 
-The server exposes a health check endpoint:
+`GET /healthz` needs no authentication and has no `/api/v1` prefix.
 
 ```bash
-curl http://localhost:7433/health
+curl -s http://localhost:7420/healthz
 ```
 
 ```json
+{"status":"ok","version":"0.2.0","uptime_seconds":86400}
+```
+
+| Field | Meaning |
+|---|---|
+| `status` | `ok` when the server is serving requests. |
+| `version` | Server version string. |
+| `uptime_seconds` | Seconds since the process started. |
+
+Use it for load balancer health checks, container liveness probes, and uptime monitors. For a gRPC-level check, `wt` clients call the `Ping` RPC, which is allowed anonymously.
+
+## Prometheus metrics
+
+`GET /metrics` returns server metrics in the Prometheus text exposition format, without authentication, for scraping by Prometheus or any compatible collector.
+
+```yaml
+scrape_configs:
+  - job_name: worktree
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['wt.internal.example.com:7420']
+```
+
+<Callout type="info">
+  Metric names are not a stable contract in v0.2.0. Inspect `/metrics` on your build before writing alerts or dashboards. Because `/metrics` is unauthenticated, do not expose it publicly; restrict it at your reverse proxy (see [Deployment](/docs/server/deployment)).
+</Callout>
+
+## Logs
+
+The server writes structured log messages (Go `log/slog`) to the console. Set the verbosity with `--log-level` (`debug`, `info`, `warn`, `error`). Under systemd, read them with `journalctl -u worktree-server`. Recording an audit event never fails the request that caused it; if an audit event cannot be persisted, the error is logged instead.
+
+## Admin statistics
+
+Server admins can read aggregate counts from `GET /api/v1/admin/stats`, which the admin panel's dashboard displays:
+
+```json
 {
-  "status": "healthy",
-  "uptime": "4h 22m",
-  "version": "0.1.0-alpha"
+  "tenants": 4,
+  "accounts": 12,
+  "trees": 9,
+  "branches": 31,
+  "snapshots": 2048,
+  "staged": 5,
+  "objects": 18734,
+  "storage_bytes": 734003200
 }
 ```
 
-## Metrics
+`objects` and `storage_bytes` describe the object store (`objects/`); `meta.db` is not included in `storage_bytes`.
 
-Prometheus-compatible metrics are available at `/metrics`:
+For live activity, subscribe to the [event stream](/docs/server/events).
 
-- `wt_server_connections_active` — current active connections
-- `wt_server_requests_total` — total requests processed
-- `wt_server_request_duration_seconds` — request latency histogram
-- `wt_storage_objects_total` — total objects in store
-- `wt_storage_bytes_used` — disk space used
+## Audit log
 
-## Logging
-
-Configure log level via environment variable or config:
+Security-relevant actions are appended to an append-only audit log stored in `meta.db`. Query it with `GET /api/v1/audit` (tenant admins for their tenant, server admins for everything) or on the admin panel's Audit log page.
 
 ```bash
-WT_LOG=debug wt server start
+curl -s "http://localhost:7420/api/v1/audit?tenant=acme&action=branch.push&limit=20" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Log levels: `trace`, `debug`, `info`, `warn`, `error`
+Each entry has `id`, `tenant_id`, `actor_id`, `actor` (a username, `anonymous`, or `system`), `action`, `resource_type`, `resource_id`, optional `details` and `remote_addr`, and `at`. Results are newest first, and `limit` defaults to 100. See the [REST API](/docs/server/rest-api#audit) for the full shape.
 
-## Audit Logging
+Actions use `resource.verb` names. Examples:
 
-In addition to standard application logging, the W0rkTree Server maintains structured audit logs for security, compliance, and multi-tenant administration. Every significant action—authentication attempts, IAM policy updates, tenant lifecycles, and access denials—is recorded immutably.
+| Action | Recorded when |
+|---|---|
+| `auth.login` | An account logs in. |
+| `tree.create` | A tree is created. |
+| `branch.push` | A push moves a branch tip. |
 
-Configure audit logging in your `server.toml`:
+Filter with `action=` using the exact name. Other actions follow the same naming pattern for registration, tokens, membership changes, protections, license rules, merge requests, and admin changes.
 
-```toml
-[audit]
-enabled = true
-log_dir = "/var/log/worktree/audit"
-retention_days = 90
-```
+## What to alert on
 
-Audit logs are written in JSON Lines (`.jsonl`) format, allowing them to be easily ingested into external SIEM tools (e.g., Splunk, Datadog, ELK). Each event includes the exact timestamp, the principal's identity, the target resource, the evaluated IAM policies, and the operation's outcome.
+- `/healthz` failing or timing out.
+- Free disk space on the volume holding the data directory. `objects/` only grows in v0.2.0.
+- Unexpected `auth.login` activity or unfamiliar `actor` values in the audit log.
+- Backup jobs that did not complete (see [Storage](/docs/server/storage#backup)).

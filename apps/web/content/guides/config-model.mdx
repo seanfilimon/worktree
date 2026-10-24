@@ -1,96 +1,207 @@
 ---
-title: "Configuration Model"
-description: "Learn how to configure W0rkTree using the global .wt/ directory and tree-specific .wt-tree/ overrides."
+title: Config Model
+description: Where W0rkTree keeps configuration and state, every key in .wt/config.toml with its default, nested-tree markers, and the per-user $WT_HOME directory.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-W0rkTree's configuration system is designed to balance centralized repository management with decentralized, team-level autonomy. It achieves this through a two-tiered configuration model: the global `.wt/` directory and the tree-specific `.wt-tree/` directory.
+W0rkTree has exactly three places that hold configuration or state you might look at:
 
-By keeping configuration in version-controlled, human-readable files, your settings, ignore patterns, and access rules evolve alongside your code.
+| Location | Scope | Written by | Contents |
+|---|---|---|---|
+| `.wt/config.toml` | One worktree | `wt init`, `wt config set`, `wt remote add/remove`, `wt clone` | Worktree identity, author, auto-snapshot and sync settings, remotes. |
+| `<dir>/.wt-tree/config.toml` | One nested tree | `wt tree add` | Marks `<dir>` as a nested tree. |
+| `$WT_HOME` (default `~/.wt`) | One user, all worktrees | `wt login`, `wt register`, `wt logout`, `wt daemon` | Saved tokens and daemon state. |
 
-## The Global `.wt/` Directory
+There is no global or system-wide `wt` config file in v0.2.0, and no layering between files: every setting in `.wt/config.toml` applies to that worktree only.
 
-When you run `wt init`, W0rkTree creates a `.wt/` directory at the root of your repository. This directory serves as the control center for the entire workspace.
+## `.wt/config.toml`
 
-It contains global settings that apply to all trees unless explicitly overridden:
+The file is TOML with five sections. Only `[worktree]` is required; every other section and key falls back to its default when absent.
 
-- **`.wt/config.toml`**: Global repository settings, worker defaults, and Git interop mappings.
-- **`.wt/ignore`**: Global ignore patterns (e.g., `node_modules/`, `target/`, `.env`).
-- **`.wt/access/`**: Global roles (`roles.toml`) and repository-wide access policies (`policies.toml`).
+### `[worktree]`
 
-### Example `.wt/config.toml`
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | directory name | Name of the worktree and its root tree. Set with `wt init --name`. |
+| `id` | string | generated UUID | Stable worktree id. Do not change it. |
+| `created_at` | string | time of `wt init` | Creation timestamp. |
+| `default_branch` | string | `main` | Default branch. Set with `wt init --branch`. The default branch cannot be archived. |
+
+### `[user]`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | empty | Author name for new snapshots. |
+| `email` | string | empty | Author email for new snapshots. |
+
+The snapshot author is resolved in this order: `user.name <user.email>` when configured, else the username you are logged in as on the default remote, else the operating-system user.
+
+### `[auto_snapshot]`
+
+Read by the background daemon for this worktree.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Take automatic snapshots while the daemon watches this worktree. |
+| `inactivity_secs` | integer | `30` | Snapshot after this many seconds without file events. |
+| `max_changed_files` | integer | `50` | Snapshot immediately once this many files have changed. |
+
+### `[sync]`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `auto_stage` | bool | `true` | Upload the daemon's auto-snapshots as staged (team-visible) snapshots. |
+| `remote` | string | `origin` | Remote the daemon stages to. |
+
+Auto-staging happens only when the remote named by `sync.remote` exists and you have a saved credential for its server.
+
+### `[remote.<name>]`
+
+One table per remote. `wt remote add NAME URL --tenant T` creates it; `wt clone` writes `[remote.origin]`.
+
+| Key | Type | Description |
+|---|---|---|
+| `url` | string | Server base URL, for example `http://localhost:7420`. gRPC and REST share it. |
+| `tenant` | string | Tenant slug on that server. For a personal tenant this is the username. |
+
+Remote commands (`wt push`, `wt fetch`, `wt pull`, `wt stage`) use `origin` unless you pass `--remote R`. Each tree in the worktree maps to the server tree `<tenant>/<tree remote name>`; the remote name defaults to the local tree name.
+
+### A complete example
 
 ```toml
-[repository]
-name = "acme-corp-monorepo"
+[worktree]
+name = "payments"
+id = "8d1f6a3c-..."
+created_at = "..."
 default_branch = "main"
 
-[tracking]
+[user]
+name = "Alice Example"
+email = "alice@example.com"
+
+[auto_snapshot]
 enabled = true
-debounce_ms = 500
-idle_timeout_ms = 2000
+inactivity_secs = 60
+max_changed_files = 50
 
-[tracking.validation]
-max_file_size = "100MB"
-forbidden_patterns = ["\\.env$", "secret"]
+[sync]
+auto_stage = true
+remote = "origin"
 
-[git.ref-map]
-prefix = "refs/heads/"
+[remote.origin]
+url = "https://wt.example.com"
+tenant = "acme"
+
+[remote.local]
+url = "http://localhost:7420"
+tenant = "alice"
 ```
 
-## The Tree-Specific `.wt-tree/` Directory
+## Using `wt config`
 
-In a large organization, different teams have different needs. The frontend team might want different ignore patterns than the backend team, or the infrastructure team might need stricter auto-snapshot validation rules.
+`wt config` reads and writes `.wt/config.toml` with dotted keys. `set` validates the key and the value type; unknown keys and wrong types are rejected and the file is left unchanged.
 
-W0rkTree solves this with the `.wt-tree/` directory. You can create a `.wt-tree/` directory at the root of any nested tree to define settings that apply exclusively to that tree.
-
-- **`.wt-tree/config.toml`**: Overrides for worker tracking, validation, or licensing.
-- **`.wt-tree/ignore`**: Tree-specific ignore patterns.
-- **`.wt-tree/access/`**: Fine-grained access policies and tenant grants for this specific tree.
-
-### Example `.wt-tree/config.toml`
-
-```toml
-# Inside frontend/.wt-tree/config.toml
-
-[license]
-spdx = "MIT"
-copyright = "Copyright (c) 2025 Acme Corp"
-
-[tracking.validation]
-# Override the global 100MB limit with a stricter 10MB limit for the frontend
-max_file_size = "10MB"
+```bash
+wt config list
+wt config get worktree.default_branch
+wt config set user.name "Alice Example"
+wt config set user.email alice@example.com
+wt config set auto_snapshot.enabled false
+wt config set auto_snapshot.inactivity_secs 120
+wt config set sync.remote local
+wt config set remote.origin.url https://wt.example.com
 ```
 
-## The Ceiling Model and Inheritance
+Use `wt remote add` to create a remote and `wt remote remove` to delete one; `wt config set remote.<name>.url` changes an existing entry. `--json` gives machine-readable output:
 
-When resolving configuration, W0rkTree uses a **ceiling model** with a strict inheritance path.
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
-If you are working inside the `frontend` tree and the background worker needs to know the `max_file_size` limit:
-1. It first checks `frontend/.wt-tree/config.toml`.
-2. If the setting exists, it uses it.
-3. If the setting does not exist, it falls back to the global `.wt/config.toml`.
-4. The `.wt/` directory acts as the "ceiling". W0rkTree stops looking there and will never scan outside your repository or into your user's home directory.
+```bash
+wt config list --json
+wt -C ~/src/payments config get remote.origin.tenant
+```
 
-This guarantees that a W0rkTree repository is fully self-contained and behaves identically on every developer's machine, regardless of their local environment variables or dotfiles.
+</Tab>
+<Tab value="PowerShell">
 
-<Callout type="info">
-Unlike Git, which merges configuration from `/etc/gitconfig`, `~/.gitconfig`, and `.git/config`, W0rkTree configuration is strictly bound to the repository. This eliminates the "it works on my machine" problem caused by stray global configurations.
+```powershell
+wt config list --json | ConvertFrom-Json
+wt -C $HOME\src\payments config get remote.origin.tenant
+```
+
+</Tab>
+</Tabs>
+
+The full key table is in the [`wt config` reference](/docs/cli/repository#wt-config).
+
+## Other files under `.wt/`
+
+`.wt/config.toml` is the only file meant for editing. Everything else under `.wt/` is state managed by `wt`:
+
+| Path | Purpose |
+|---|---|
+| `.wt/ignore` | Extra ignore patterns, one per line (written by `wt ignore add`). See [Ignore patterns](/guides/ignore-patterns). |
+| `.wt/trees/<tree>/tree.toml` | Tree metadata: name, id, path, default branch, server-side name. |
+| `.wt/trees/<tree>/HEAD`, `refs/...` | Current branch, branch tips, remote-tracking tips, tags. |
+| `.wt/trees/<tree>/reflog.jsonl` | Append-only action log (`wt reflog`). |
+| `.wt/git-map.json` | Snapshot id to Git commit mapping, after `wt git export`. |
+
+See [Local layout](/docs/protocol/local-layout) for the complete list. `.wt/` itself is never snapshotted, so nothing in it is shared through the server; to share ignore rules with your team use a `.wtignore` file in the working directory instead.
+
+## Nested trees: `.wt-tree/config.toml`
+
+`wt tree add NAME PATH` registers a nested tree and writes `PATH/.wt-tree/config.toml`. The `.wt-tree/` directory is the marker that tells `wt` the directory is a tree root; the tree's metadata (branches, `HEAD`, server-side name) lives in `.wt/trees/NAME/` at the worktree root.
+
+- Do not create or edit `.wt-tree/` by hand; use `wt tree add` and `wt tree remove`.
+- `.wt-tree/` is a built-in ignore and is never snapshotted.
+- Nested trees share the worktree's `.wt/config.toml`: the same author, auto-snapshot settings and remotes apply to every tree. Each tree has its own branches, tags and reflog, and is pushed to its own server tree.
+
+See [Nested trees](/guides/nested-trees).
+
+## `$WT_HOME`
+
+Per-user state lives in `$WT_HOME`, which defaults to `~/.wt` (`%USERPROFILE%\.wt` on Windows).
+
+| File | Written by | Contents |
+|---|---|---|
+| `credentials.toml` | `wt login`, `wt register`; removed per server by `wt logout` | One bearer token per server URL. Session tokens from login expire (default 30 days). |
+| `bg.toml` | `wt daemon watch` / `unwatch` | `watched = ["path", ...]`, the worktree roots the daemon watches. |
+| `bg.json` | the daemon on start | `pid`, `port` and `version` of the running daemon; removed on clean shutdown. |
+| `bg.log` | the daemon | Daemon log. |
+
+<Callout type="warn">
+`credentials.toml` contains bearer tokens. Keep `$WT_HOME` private, never commit it, and never put it inside a worktree.
 </Callout>
 
-## Merging Ignore Patterns
+Point `WT_HOME` somewhere else to isolate a session, for example in CI or tests:
 
-Ignore patterns are handled slightly differently than standard configuration values. Instead of `.wt-tree/ignore` overriding `.wt/ignore`, the rules are **merged**.
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
-When the background worker evaluates whether to create a staged snapshot for a file in the `frontend` tree, it ignores the file if it matches *either* the global `.wt/ignore` rules *or* the tree-specific `.wt-tree/ignore` rules.
+```bash
+export WT_HOME="$(mktemp -d)"
+printf '%s' "$CI_WT_PASSWORD" | wt login https://wt.example.com -u ci-bot --password-stdin
+```
 
-This allows repository administrators to globally ban files like `.DS_Store` or `.env`, while giving teams the freedom to ignore their own build artifacts.
+</Tab>
+<Tab value="PowerShell">
 
-## Access Control Distribution
+```powershell
+$env:WT_HOME = Join-Path $env:TEMP "wt-ci-$PID"
+$env:CI_WT_PASSWORD | wt login https://wt.example.com -u ci-bot --password-stdin
+```
 
-The configuration model also underpins W0rkTree's declarative access system. 
+</Tab>
+</Tabs>
 
-Because `.wt-tree/access/policies.toml` lives inside the tree it protects, any changes to a team's permissions are scoped to that team's history. Modifying a tree's access policy requires committing a staged snapshot and pushing it to the server. If the tree has branch protection enabled, the permission change will automatically require a peer review from the tree's owners.
+## Environment variables
 
-This ensures that access control is distributed, versioned, and deeply integrated into the development workflow.
+| Variable | Used by | Effect |
+|---|---|---|
+| `WT_HOME` | `wt`, `worktree-bg` | Per-user state directory (default `~/.wt`). |
+| `WT_PASSWORD` | `wt login`, `wt register` | Password, instead of an interactive prompt. `--password-stdin` takes precedence. |
+
+Server settings (`WT_ADDR`, `WT_DATA`, `WT_ADMIN_PASSWORD` and others) are documented in [Server configuration](/docs/server/configuration).

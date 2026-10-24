@@ -2,18 +2,14 @@
   "title": "Documentation",
   "description": "W0rkTree documentation",
   "pages": [
+    "---Getting Started---",
     "index",
-    "---CLI---",
-    "...cli",
-    "---Protocol---",
-    "...protocol",
-    "---SDK---",
-    "...sdk",
-    "---Server---",
-    "...server",
-    "---IAM---",
-    "...iam",
-    "---Licensing---",
-    "...licensing"
+    "installation",
+    "---Reference---",
+    "cli",
+    "server",
+    "protocol",
+    "sdk",
+    "security"
   ]
 }

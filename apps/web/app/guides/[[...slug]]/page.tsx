@@ -7,11 +7,10 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 function getCategory(url: string): string {
-  if (url.includes("/admin")) return "Admin Panel";
-  if (url.includes("/quick-start")) return "Getting Started";
-  if (url.includes("/migration")) return "Migration";
-  if (url.includes("/architecture")) return "Architecture";
-  if (url.includes("/versioning")) return "Reference";
+  if (url.endsWith("/admin-panel") || url.endsWith("/self-hosting")) return "Running a Server";
+  if (url.endsWith("/quick-start")) return "Getting Started";
+  if (url.endsWith("/migration") || url.endsWith("/git-interop")) return "Migration";
+  if (url.endsWith("/architecture")) return "Architecture";
   return "Guide";
 }
 

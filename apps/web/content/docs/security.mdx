@@ -1,0 +1,104 @@
+---
+title: Security Model
+description: How W0rkTree v0.2.0 protects secrets, history, credentials, and server access, and which security features are still on the Roadmap.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+This page summarizes the security properties of W0rkTree v0.2.0, from the local worktree to the server. Each section links to the detailed reference.
+
+## Secret scanning before snapshots
+
+Every [`wt snapshot`](/docs/cli/snapshots#wt-snapshot) scans the files it adds or modifies for credentials before anything is written to history.
+
+- Rules detect common secret formats, for example `aws-access-key`, `github-token`, and `private-key`. Binary content is skipped.
+- If anything matches, the snapshot is **not** created. Each finding is reported with its rule, path, 1-based line number, and a **redacted** excerpt, so the secret itself is not echoed back in full.
+- A false positive on a specific line is suppressed by putting the marker `wt:allow-secret` on that same line (for example in a trailing comment).
+- `wt snapshot --no-scan` skips the scan for one snapshot. Use it deliberately.
+- Auto-snapshots taken by the daemon run the same scan. A finding blocks the auto-snapshot and is reported in the daemon's `last_error` (see [`wt daemon`](/docs/cli/daemon#wt-daemon)).
+
+Scanning happens on the client, at snapshot time. Because nothing reaches the object store, nothing can be pushed or staged by mistake.
+
+## Append-only history
+
+History in W0rkTree only grows.
+
+- **No rewriting locally.** [`wt revert`](/docs/cli/snapshots#wt-revert) creates a new snapshot that undoes an earlier one. Branches are archived (soft-deleted) and can be restored; they are never hard-deleted. Every ref change is appended to `.wt/trees/<tree>/reflog.jsonl`. See [Reflog and recovery](/guides/reflog-and-recovery).
+- **Immutable server snapshots.** Once the server has stored a snapshot it is never modified.
+- **No force push.** A push is accepted only if the new tip descends from the server's current tip for that branch; otherwise it is rejected with a conflict and the client must pull and merge first. Branch tips move with a compare-and-swap, so concurrent pushes cannot overwrite each other. See [Sync protocol](/docs/protocol/sync-protocol#push-flow).
+- **Content addressing.** Every blob and manifest is identified by the BLAKE3-256 hash of its exact bytes. The server verifies the hash of every uploaded object and rejects mismatches. See [Object model](/docs/protocol/object-model).
+
+## Accounts, passwords, and tokens
+
+| Item | How it is handled |
+|---|---|
+| Passwords | Hashed with **argon2id** on the server. The CLI never accepts a password as a flag: it reads stdin (`--password-stdin`), the `WT_PASSWORD` environment variable, or an interactive prompt. |
+| Session tokens | Issued by `wt login` / `POST /api/v1/auth/login` (and by registration). Default lifetime **30 days**. |
+| Personal API tokens | Created with `POST /api/v1/auth/tokens` (`name`, optional `ttl_hours`) or the admin panel's Settings page. No expiry when `ttl_hours` is omitted. The raw token is shown once. |
+| Storage on the server | Only the hex **SHA-256** of each token is stored, never the raw value. |
+| Revocation | `POST /api/v1/auth/logout` revokes the token used for the request; `DELETE /api/v1/auth/tokens/{id}` revokes a specific API token. `wt logout` removes the local credential. |
+| Presentation | `authorization: Bearer <token>` in gRPC metadata and `Authorization: Bearer <token>` on REST. |
+
+Prefer a dedicated API token with a `ttl_hours` for CI and scripts over a personal session token, and revoke it when it is no longer needed. Server admins can disable accounts (`PATCH /api/v1/admin/accounts/{username}`), and public sign-up can be turned off with `--allow-registration=false`. See [Access control](/docs/server/access-control#tokens).
+
+## Local credential file
+
+`wt login` and `wt register` save one token per server URL in `$WT_HOME/credentials.toml` (`$WT_HOME` defaults to `~/.wt`, or `%USERPROFILE%\.wt` on Windows). The daemon reads the same file to auto-stage.
+
+<Callout type="warn" title="Protect $WT_HOME">
+  `credentials.toml` contains bearer tokens in plain text. Keep `$WT_HOME` readable only by your user (for example `chmod 700 ~/.wt` and `chmod 600 ~/.wt/credentials.toml` on Unix; on Windows keep it inside your user profile, which is private by default). Never commit it, copy it into containers, or share it. Revoke the token on the server if the file is exposed.
+</Callout>
+
+## Authorization
+
+Access to the server is decided by tenant membership roles and tree visibility.
+
+- **Roles**, most to least privileged: `owner` > `admin` > `maintainer` > `developer` > `viewer`. Each role includes the permissions of the roles below it.
+- **Actions** checked per request include `tree:read`, `tree:write` (push, stage, tag), `tree:admin` (protections, licenses, settings, delete), `tenant:admin` (members, settings), and `server:admin`.
+- **Visibility** widens read access only: `private` (tenant members), `internal` (any authenticated account), `public` (anonymous reads). Writing always requires a membership with a sufficient role.
+- **Anonymous** gRPC calls are allowed only for `Ping` and reads of public trees.
+
+See [Access control](/docs/server/access-control) for the full action table.
+
+## Branch protection and review
+
+Protection rules match branch names by glob (for example `main` or `release/*`) and can forbid direct pushes, require a number of approvals on merge requests, restrict pushes to named users, and forbid deleting the branch. Protected branches change only in ways the rule allows; a rejected push leaves the server unchanged. See [Branch protection](/docs/server/branch-protection).
+
+## License enforcement
+
+License rules attach an SPDX identifier and a grant (`read-only`, `modify`, `redistribute`) to path globs in a tree. On push, the server checks every changed path; a principal outside the owning tenant that changes a path it may not modify gets a `license_violation` rejection naming the path and license. See [License rules](/docs/server/licensing).
+
+## Audit log
+
+Security-relevant actions (for example `auth.login`, `tree.create`, `branch.push`) are written to an **append-only** audit log with the actor, action, resource, details, remote address, and time. Tenant admins can query their tenant's events and server admins can query all of them with `GET /api/v1/audit`. See the [REST API](/docs/server/rest-api).
+
+## Transport
+
+The server listens on **one port** (default `:7420`) and speaks gRPC and REST over **cleartext** HTTP/2 (h2c) and HTTP/1.1. TLS is not built in.
+
+<Callout type="error" title="Never expose port 7420 without TLS">
+  Bearer tokens and file contents travel in cleartext on the server port. For anything beyond `localhost`, put the server behind a reverse proxy that terminates TLS and forwards to the backend over HTTP/2 cleartext (h2c) so gRPC works, bind the server to a private interface, and use the proxy's `https://` URL as the remote URL. See [Deployment](/docs/server/deployment#reverse-proxy-and-tls).
+</Callout>
+
+The CLI talks to the local daemon over loopback TCP (`127.0.0.1`) only. See [Daemon IPC](/docs/sdk/ipc).
+
+## CORS
+
+Browser requests to the REST API are allowed from `http://localhost:5173` (the admin panel's Vite dev server) and from origins listed in `WT_CORS_ORIGINS`. The admin panel served by the server at `/admin/` is same-origin and needs no CORS entry. Add only origins you control. See [Configuration](/docs/server/configuration).
+
+## Roadmap
+
+<Callout type="warn" title="Roadmap">
+  The following are **not** part of v0.2.0:
+
+  - Snapshot signing and signature verification.
+  - Encryption at rest for the object store and metadata database (use disk-level encryption today).
+  - Built-in TLS and the QUIC transport (use a TLS-terminating reverse proxy today).
+  - OAuth / SSO sign-in.
+  - Rate limiting and plan quotas.
+  - Enforcement of declarative TOML access policies (RBAC/ABAC).
+</Callout>
+
+## Reporting vulnerabilities
+
+Please report security issues privately as described on the [Security](/security) page rather than in public issues.

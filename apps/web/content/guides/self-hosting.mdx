@@ -1,149 +1,304 @@
 ---
-title: "Self-Hosting W0rkTree Server"
-description: "Deploy the W0rkTree server on your own infrastructure with Docker, systemd, or Kubernetes."
+title: Self-Hosting
+description: Build and run your own W0rkTree server end to end, from first admin account to TLS, backups, upgrades, and health checks.
 ---
 
-## Prerequisites
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-Before deploying the W0rkTree server, ensure your host meets the minimum requirements. You need at least 2 CPU cores, 4 GB of RAM, and 20 GB of disk space for a small team deployment. The server binary runs on Linux (x86_64 or aarch64), and you will need TLS certificates for production use.
+This guide takes you from a source checkout to a running, backed-up W0rkTree server with the admin panel, behind a TLS reverse proxy. For every flag and endpoint, see the [Server docs](/docs/server).
 
-Download the latest server release from the [releases page](https://github.com/worktree-dev/worktree/releases) or pull the official Docker image:
+The server is a single pure-Go binary. It serves gRPC (for `wt`), the REST API, server-sent events, and the static admin panel on **one port**, `:7420` by default. All state lives in one data directory.
+
+<Callout type="info" title="Pre-1.0">
+  v0.2.0 is built from source only. There are no prebuilt binaries, container images, or package-manager installs yet.
+</Callout>
+
+## 1. Build
+
+You need Go 1.25 or newer for the server and Node.js 22 or newer for the admin panel. No cgo or C toolchain is required.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-# Download the binary
-curl -fsSL https://releases.worktree.dev/latest/worktree-server-linux-amd64 -o /usr/local/bin/worktree-server
-chmod +x /usr/local/bin/worktree-server
+# from the repository root
+cd services/server-go
+go build -o worktree-server .
+cd ../..
 
-# Or pull the Docker image
-docker pull ghcr.io/worktree-dev/worktree-server:latest
+cd apps/admin
+npm install
+npm run build        # output: apps/admin/dist
+cd ../..
 ```
 
-## Docker Deployment
+</Tab>
+<Tab value="PowerShell">
 
-Docker is the fastest way to get a self-hosted W0rkTree server running. Create a `docker-compose.yml` file with the server and a persistent volume for repository data:
+```powershell
+# from the repository root
+Set-Location services\server-go
+go build -o worktree-server.exe .
+Set-Location ..\..
 
-```yaml
-version: "3.9"
-services:
-  worktree:
-    image: ghcr.io/worktree-dev/worktree-server:latest
-    ports:
-      - "4840:4840"
-    volumes:
-      - wt-data:/var/lib/worktree
-      - ./config.toml:/etc/worktree/config.toml:ro
-    environment:
-      - WT_DATA_DIR=/var/lib/worktree
-      - WT_LOG_LEVEL=info
-    restart: unless-stopped
-
-volumes:
-  wt-data:
+Set-Location apps\admin
+npm install
+npm run build        # output: apps\admin\dist
+Set-Location ..\..
 ```
 
-Start the server with `docker compose up -d` and verify it is healthy by visiting `http://localhost:4840/health`.
+</Tab>
+</Tabs>
 
-## Systemd Service
+Copy `worktree-server` and the contents of `apps/admin/dist` to wherever you deploy, for example `/opt/worktree/bin/worktree-server` and `/opt/worktree/admin/`. Details: [Server Installation](/docs/server/installation).
 
-For bare-metal deployments, create a systemd unit file at `/etc/systemd/system/worktree-server.service`:
+## 2. Choose a data directory
 
-```ini
+`--data` (env `WT_DATA`, default `./wt-data`) holds everything the server stores:
+
+| Path | Contents |
+|---|---|
+| `meta.db` | Metadata in a bbolt database: accounts, tenants, trees, branches, snapshots, tags, staged entries, protections, license rules, merge requests, audit log. |
+| `objects/` | Content-addressed object store: file blobs and manifests, keyed by BLAKE3 hash. |
+
+Put it on durable storage with room to grow, readable only by the server's user. See [Storage](/docs/server/storage).
+
+```bash
+sudo useradd --system --home /var/lib/worktree worktree
+sudo mkdir -p /var/lib/worktree
+sudo chown worktree: /var/lib/worktree
+sudo chmod 700 /var/lib/worktree
+```
+
+## 3. First start and the first admin
+
+<Steps>
+<Step>
+
+### Start with an admin password
+
+When `--admin-password` (env `WT_ADMIN_PASSWORD`) is set, the server makes sure a server admin account exists at startup. The username comes from `--admin-user` (env `WT_ADMIN_USER`, default `admin`). Prefer the environment variable so the password does not appear in process listings.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+export WT_ADMIN_PASSWORD='use-a-long-random-password'
+./worktree-server \
+  --addr 127.0.0.1:7420 \
+  --data /var/lib/worktree \
+  --admin-dir /opt/worktree/admin \
+  --allow-registration=false
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$env:WT_ADMIN_PASSWORD = 'use-a-long-random-password'
+.\worktree-server.exe `
+  --addr 127.0.0.1:7420 `
+  --data D:\worktree-data `
+  --admin-dir C:\worktree\admin `
+  --allow-registration=false
+```
+
+</Tab>
+</Tabs>
+
+</Step>
+<Step>
+
+### Sign in
+
+Open `http://127.0.0.1:7420/admin/` and sign in as `admin`. From the CLI:
+
+```bash
+wt login http://127.0.0.1:7420 -u admin
+wt whoami http://127.0.0.1:7420
+```
+
+The admin account is stored in `meta.db`, so it persists across restarts.
+
+</Step>
+</Steps>
+
+Passwords are hashed with argon2id. API tokens are stored only as SHA-256 hashes. See [Security](/docs/security).
+
+## 4. Open or closed registration
+
+By default, anyone who can reach the server can create an account with `wt register` or `POST /api/v1/auth/register`. For a private instance, start with `--allow-registration=false` (env `WT_ALLOW_REGISTRATION=false`).
+
+<Callout type="info">
+  v0.2.0 has no endpoint for an admin to create accounts on someone's behalf. On a closed instance, onboard people by briefly restarting with registration enabled, or by keeping registration on and exposing the server only on a private network. Server admins can disable accounts afterwards from the **Accounts** page of the admin panel (`PATCH /api/v1/admin/accounts/{username}` with `{"disabled": true}`).
+</Callout>
+
+## 5. Put TLS in front
+
+The server does not terminate TLS itself. Bind it to localhost (`--addr 127.0.0.1:7420`) and put a reverse proxy in front that:
+
+- terminates TLS,
+- forwards gRPC to the backend over **HTTP/2 cleartext (h2c)**,
+- does not buffer `text/event-stream` responses (for live events), and
+- allows request bodies up to 64 MiB (the gRPC message limit).
+
+<Callout type="info" title="Examples">
+  The proxy configurations below are starting points to adapt, not files shipped with W0rkTree.
+</Callout>
+
+<Tabs items={['Caddy', 'nginx']}>
+<Tab value="Caddy">
+
+```text
+wt.example.com {
+    reverse_proxy h2c://127.0.0.1:7420
+}
+```
+
+Caddy obtains certificates automatically and speaks h2c to the backend for every request, which covers gRPC, REST, SSE, and the admin panel.
+
+</Tab>
+<Tab value="nginx">
+
+```text
+server {
+    listen 443 ssl http2;
+    server_name wt.example.com;
+
+    ssl_certificate     /etc/ssl/wt.example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/wt.example.com/privkey.pem;
+
+    client_max_body_size 64m;
+
+    location / {
+        if ($content_type ~* "^application/grpc") {
+            grpc_pass grpc://127.0.0.1:7420;
+        }
+        proxy_pass http://127.0.0.1:7420;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+}
+```
+
+`grpc_pass` uses HTTP/2 to the backend; REST, SSE, and `/admin/` go through `proxy_pass`. `proxy_buffering off` and the long read timeout keep `/api/v1/events` streaming.
+
+</Tab>
+</Tabs>
+
+<Callout type="warn" title="Client connections">
+  W0rkTree v0.2.0 documents remote URLs as `http://host:7420`. If your build of `wt` cannot connect to an `https://` remote, keep CLI traffic on a trusted network (VPN, private network, or SSH tunnel to port 7420) and use the TLS proxy for browsers and REST clients. Built-in TLS is on the [Roadmap](/roadmap).
+</Callout>
+
+If you serve the admin panel from a different origin than the API, list that origin in `WT_CORS_ORIGINS`. When the panel is served by the server at `/admin/`, no CORS setup is needed. See [Deployment](/docs/server/deployment).
+
+## 6. Run it as a service
+
+Example systemd unit at `/etc/systemd/system/worktree-server.service`:
+
+```text
 [Unit]
-Description=W0rkTree Server
+Description=W0rkTree server
 After=network.target
 
 [Service]
-Type=simple
 User=worktree
-ExecStart=/usr/local/bin/worktree-server --config /etc/worktree/config.toml
+Environment=WT_ADDR=127.0.0.1:7420
+Environment=WT_DATA=/var/lib/worktree
+Environment=WT_ADMIN_DIR=/opt/worktree/admin
+Environment=WT_ALLOW_REGISTRATION=false
+ExecStart=/opt/worktree/bin/worktree-server
 Restart=on-failure
-RestartSec=5
-LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable and start the service:
-
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now worktree-server
+journalctl -u worktree-server -f
 ```
 
-## Kubernetes with Helm
+The server shuts down gracefully on `SIGTERM`, which is what `systemctl stop` sends. Use `--log-level` to adjust verbosity (for example `debug` while troubleshooting). All flags: [Configuration](/docs/server/configuration).
 
-For production-scale deployments, use the official Helm chart to deploy W0rkTree into your Kubernetes cluster:
+## 7. Back up the data directory
+
+Back up the whole `--data` directory: `meta.db` and `objects/` together.
+
+- `objects/` is content-addressed and write-once, so incremental copies (for example `rsync`) work well while the server runs.
+- `meta.db` is a single bbolt file that the running server holds open. For a consistent copy, stop the server first, or take a filesystem-level snapshot (LVM, ZFS, or a cloud volume snapshot).
+
+A simple, consistent nightly backup:
 
 ```bash
-helm repo add worktree https://charts.worktree.dev
-helm repo update
-helm install worktree worktree/worktree-server \
-  --namespace worktree --create-namespace \
-  --set persistence.size=100Gi \
-  --set ingress.enabled=true \
-  --set ingress.host=wt.example.com
+sudo systemctl stop worktree-server
+sudo tar -C /var/lib -czf /backups/worktree-$(date +%F).tar.gz worktree
+sudo systemctl start worktree-server
 ```
 
-The Helm chart provisions a StatefulSet with persistent volume claims, a ClusterIP service, and an optional Ingress resource. Review the chart values with `helm show values worktree/worktree-server` to customize replica count, resource limits, and storage classes.
+To restore, stop the server, replace the data directory with the backup, and start it again. Test restores regularly on a spare machine.
 
-## Configuration
+## 8. Upgrade
 
-The server reads configuration from `config.toml`. Key settings include the listen address, data directory, authentication backend, and TLS paths:
+<Steps>
+<Step>
 
-```toml
-[server]
-listen = "0.0.0.0:4840"
-data_dir = "/var/lib/worktree"
+### Read the changelog
 
-[auth]
-provider = "builtin"       # or "oidc" for SSO
-registration = "invite"    # "open" or "invite"
+W0rkTree is pre-1.0. Check the [Changelog](/changelog) for breaking changes before upgrading.
 
-[tls]
-enabled = true
-cert_file = "/etc/worktree/tls/cert.pem"
-key_file = "/etc/worktree/tls/key.pem"
-```
+</Step>
+<Step>
 
-For TLS, you can use certificates from Let's Encrypt via `certbot` or provide your organization's internal CA certificates. Always enable TLS in production to protect repository data in transit.
+### Build the new version
 
-## Multi-Tenancy & Isolation
+Pull the new source and rebuild the server and admin panel as in step 1.
 
-W0rkTree's server natively supports multi-tenancy, allowing you to host multiple isolated organizations or business units on a single instance. 
+</Step>
+<Step>
 
-To enable multi-tenancy, configure the tenant model in your `config.toml`:
+### Back up, swap, restart
 
-```toml
-[tenants]
-enabled = true
-default_tier = "standard"
-isolation_mode = "strict"
-```
+Stop the server, back up the data directory, replace the binary and the admin `dist` files, and start the server again.
 
-When `isolation_mode` is set to `"strict"`, W0rkTree enforces hard physical isolation between tenants at the storage layer, ensuring that object data and access policies from one tenant can never leak into another. You can provision new tenants using the `worktree-admin` CLI or via the admin API.
+</Step>
+<Step>
 
-## Rate Limits
+### Verify
 
-To protect your server from abuse or runaway CI pipelines, configure rate limits. These can be defined globally or overridden per-tenant to ensure fair resource allocation.
+Check `/healthz` reports the new version, then sign in to the admin panel and run `wt fetch` from a client.
 
-```toml
-[server.rate_limits]
-enabled = true
-requests_per_second = 100
-burst_size = 50
+</Step>
+</Steps>
 
-[tenants.tiers.enterprise.rate_limits]
-requests_per_second = 500
-burst_size = 200
-```
+Upgrade clients (`wt`, `worktree-bg`) by rebuilding them from the same source version.
 
-## Backups
+## 9. Health checks and monitoring
 
-Schedule regular backups of the data directory to avoid data loss. The server supports online snapshots, so you do not need to stop the service:
+| Endpoint | Auth | Returns |
+|---|---|---|
+| `GET /healthz` | none | `{"status":"ok","version":"...","uptime_seconds":N}` |
+| `GET /metrics` | none | Prometheus text format |
+| `GET /api/v1/admin/stats` | server admin | Counts of `tenants`, `accounts`, `trees`, `branches`, `snapshots`, `staged`, `objects`, and `storage_bytes` |
 
 ```bash
-worktree-server backup --data-dir /var/lib/worktree --output /backups/wt-$(date +%F).tar.zst
+curl -fsS http://127.0.0.1:7420/healthz
 ```
 
-Automate this with a cron job or Kubernetes CronJob and store backups in an offsite location such as S3 or GCS. Test your restore process periodically by running `worktree-server restore --input /backups/wt-2025-01-15.tar.zst --data-dir /tmp/wt-restore` and verifying repository integrity.
+Point your load balancer or uptime checker at `/healthz` and your Prometheus at `/metrics`. Watch the audit log (**Audit log** page, or `GET /api/v1/audit`) for security-relevant actions. See [Monitoring](/docs/server/monitoring).
+
+## Checklist
+
+- [ ] Server and admin panel built from the same source version
+- [ ] Data directory on durable storage, owned by a dedicated user
+- [ ] First admin created, password stored in a secret manager
+- [ ] Registration policy chosen
+- [ ] Server bound to localhost behind a TLS proxy with h2c to the backend
+- [ ] Nightly backups of the whole data directory, with a tested restore
+- [ ] `/healthz` and `/metrics` monitored

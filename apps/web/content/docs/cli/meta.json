@@ -1,23 +1,16 @@
 {
   "title": "CLI",
-  "description": "W0rkTree CLI reference",
+  "description": "Reference for the wt command-line tool",
   "pages": [
     "index",
-    "---Core Commands---",
+    "---Local---",
     "repository",
-    "tree-management",
-    "version-control",
-    "staged",
-    "worker",
-    "---Collaboration & Releases---",
-    "merge-request",
-    "tags-releases",
-    "archive",
-    "git-compatibility",
-    "---Administration & Config---",
-    "tenant",
-    "access",
-    "license",
-    "environment"
+    "snapshots",
+    "branches",
+    "---Collaboration---",
+    "remote",
+    "git",
+    "---Background---",
+    "daemon"
   ]
 }

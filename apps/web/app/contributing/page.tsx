@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { Badge } from "@/components/ui/badge";
+import { CONTRIBUTING_URL, DISCORD_URL, REPO_URL } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Contributing - W0rkTree",
@@ -8,10 +9,56 @@ export const metadata: Metadata = {
     "How to contribute to W0rkTree — setup, conventions, and PR process.",
 };
 
+const prerequisites = [
+  { name: "Rust (stable)", note: "for the CLI, SDK, daemon and Git bridge", href: "https://rustup.rs" },
+  { name: "Go 1.25+", note: "for the server in services/server-go", href: "https://go.dev/dl/" },
+  { name: "Node.js 22+ and npm", note: "for the admin panel and this website", href: "https://nodejs.org/" },
+];
+
+const setupSteps = [
+  { title: "Clone the repository", command: `git clone ${REPO_URL}.git\ncd worktree` },
+  { title: "Build and test the Rust workspace", command: "cargo build --workspace\ncargo test --workspace" },
+  {
+    title: "Build and test the Go server",
+    command: "cd services/server-go\ngo build ./... && go vet ./... && go test ./...",
+  },
+  { title: "Build and test the admin panel", command: "cd apps/admin\nnpm install\nnpm run build && npm test" },
+  { title: "Run the end-to-end suite", command: "bash scripts/e2e.sh" },
+  { title: "Work on this website", command: "cd apps/web\nnpm install\nnpm run dev" },
+];
+
+const styleRules = [
+  {
+    title: "Rust",
+    text: "Edition 2021. Code must pass cargo fmt and cargo clippy --workspace --all-targets -- -D warnings. No unwrap() on I/O in library code.",
+  },
+  {
+    title: "Go",
+    text: "gofmt and go vet clean, table-driven tests using t.TempDir(). Pure Go only (no cgo), with the dependency allow-list from the engineering plan.",
+  },
+  {
+    title: "TypeScript",
+    text: "Strict TypeScript. Run npm run lint and npm run typecheck in the app you changed before opening a PR.",
+  },
+  {
+    title: "Windows",
+    text: "Windows is a first-class platform: no hard-coded /tmp, handle backslash paths, and tolerate atomic renames that fail because the target exists.",
+  },
+];
+
+function CommandBlock({ command }: { command: string }) {
+  return (
+    <pre className="overflow-x-auto rounded-lg border bg-muted/50 px-4 py-3 text-sm">
+      <code>{command}</code>
+    </pre>
+  );
+}
+
+const inlineCode = "rounded bg-muted px-1.5 py-0.5 text-xs";
+
 export default function ContributingPage() {
   return (
     <div className="container mx-auto max-w-4xl px-6 py-16">
-      {/* Hero */}
       <section className="mb-16 text-center">
         <h1 className="mb-4 text-4xl font-bold tracking-tight sm:text-5xl">
           Contributing to W0rkTree
@@ -19,156 +66,75 @@ export default function ContributingPage() {
         <p className="mx-auto max-w-2xl text-lg text-muted-foreground">
           W0rkTree is open source and we welcome contributions of all kinds.
           Whether you&apos;re fixing a typo, improving docs, or building a new
-          feature — every contribution matters.
+          feature — every contribution matters. The repository&apos;s{" "}
+          <a
+            href={CONTRIBUTING_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-4 hover:text-foreground"
+          >
+            CONTRIBUTING
+          </a>{" "}
+          file is the authoritative version of this page.
         </p>
       </section>
 
-      {/* Getting Started */}
       <section className="mb-14">
-        <h2 className="mb-4 text-2xl font-semibold tracking-tight">
-          Getting Started
-        </h2>
+        <h2 className="mb-4 text-2xl font-semibold tracking-tight">Prerequisites</h2>
         <p className="mb-4 text-muted-foreground">
-          Before you begin, make sure you have the following prerequisites
-          installed on your machine:
+          W0rkTree is a polyglot monorepo: a Rust workspace in{" "}
+          <code className={inlineCode}>crates/</code>, a Go server in{" "}
+          <code className={inlineCode}>services/server-go</code> and TypeScript
+          apps in <code className={inlineCode}>apps/</code>.
         </p>
-        <ul className="mb-4 list-inside list-disc space-y-2 text-muted-foreground">
-          <li>
-            <strong className="text-foreground">Rust toolchain</strong> —
-            install via{" "}
-            <a
-              href="https://rustup.rs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline underline-offset-4 hover:text-foreground"
-            >
-              rustup.rs
-            </a>
-          </li>
-          <li>
-            <strong className="text-foreground">Node.js 18+</strong> — we
-            recommend using{" "}
-            <a
-              href="https://github.com/nvm-sh/nvm"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline underline-offset-4 hover:text-foreground"
-            >
-              nvm
-            </a>{" "}
-            to manage versions
-          </li>
-          <li>
-            <strong className="text-foreground">npm</strong> — our package
-            manager of choice for the monorepo
-          </li>
+        <ul className="list-inside list-disc space-y-2 text-muted-foreground">
+          {prerequisites.map((item) => (
+            <li key={item.name}>
+              <a
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-foreground underline underline-offset-4"
+              >
+                {item.name}
+              </a>{" "}
+              — {item.note}
+            </li>
+          ))}
         </ul>
-        <p className="text-muted-foreground">
-          Once those are set up, clone the repo and build the project to verify
-          everything works.
-        </p>
       </section>
 
-      {/* Development Setup */}
       <section className="mb-14">
-        <h2 className="mb-4 text-2xl font-semibold tracking-tight">
-          Development Setup
-        </h2>
-        <p className="mb-4 text-muted-foreground">
-          Follow these steps to get a local development environment running:
-        </p>
-        <div className="space-y-4">
-          <div>
-            <p className="mb-2 text-sm font-medium text-foreground">
-              1. Clone the repository
-            </p>
-            <pre className="overflow-x-auto rounded-lg border bg-muted/50 px-4 py-3 text-sm">
-              <code>
-                git clone https://github.com/W0rkTree/worktree.git{"\n"}cd
-                worktree
-              </code>
-            </pre>
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium text-foreground">
-              2. Build the Rust workspace
-            </p>
-            <pre className="overflow-x-auto rounded-lg border bg-muted/50 px-4 py-3 text-sm">
-              <code>cargo build</code>
-            </pre>
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium text-foreground">
-              3. Install JavaScript dependencies
-            </p>
-            <pre className="overflow-x-auto rounded-lg border bg-muted/50 px-4 py-3 text-sm">
-              <code>npm install</code>
-            </pre>
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium text-foreground">
-              4. Start the docs site in development mode
-            </p>
-            <pre className="overflow-x-auto rounded-lg border bg-muted/50 px-4 py-3 text-sm">
-              <code>npm run dev</code>
-            </pre>
-          </div>
-        </div>
+        <h2 className="mb-4 text-2xl font-semibold tracking-tight">Development Setup</h2>
+        <ol className="space-y-4">
+          {setupSteps.map((step, index) => (
+            <li key={step.title}>
+              <p className="mb-2 text-sm font-medium text-foreground">
+                {index + 1}. {step.title}
+              </p>
+              <CommandBlock command={step.command} />
+            </li>
+          ))}
+        </ol>
         <p className="mt-4 text-sm text-muted-foreground">
-          The docs site will be available at{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-            http://localhost:3000
-          </code>
-          .
+          The website runs at{" "}
+          <code className={inlineCode}>http://localhost:3000</code>. The{" "}
+          <Link href="/docs/installation" className="underline underline-offset-4 hover:text-foreground">
+            installation guide
+          </Link>{" "}
+          covers each component in more detail.
         </p>
       </section>
 
-      {/* Code Style */}
       <section className="mb-14">
-        <h2 className="mb-4 text-2xl font-semibold tracking-tight">
-          Code Style
-        </h2>
-        <p className="mb-4 text-muted-foreground">
-          Consistent code style keeps the project maintainable. Please follow
-          these guidelines:
-        </p>
+        <h2 className="mb-4 text-2xl font-semibold tracking-tight">Code Style</h2>
         <div className="space-y-4">
-          <div className="rounded-lg border p-4">
-            <h3 className="mb-1 font-medium">Rust</h3>
-            <p className="text-sm text-muted-foreground">
-              Follow{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                rustfmt
-              </code>{" "}
-              for formatting and{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                clippy
-              </code>{" "}
-              for linting. Run{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                cargo fmt --check
-              </code>{" "}
-              and{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                cargo clippy
-              </code>{" "}
-              before pushing.
-            </p>
-          </div>
-          <div className="rounded-lg border p-4">
-            <h3 className="mb-1 font-medium">TypeScript</h3>
-            <p className="text-sm text-muted-foreground">
-              Use ESLint + Prettier. Run{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                npm run lint
-              </code>{" "}
-              and{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                npm run format
-              </code>{" "}
-              to check and fix issues automatically.
-            </p>
-          </div>
+          {styleRules.map((rule) => (
+            <div key={rule.title} className="rounded-lg border p-4">
+              <h3 className="mb-1 font-medium">{rule.title}</h3>
+              <p className="text-sm text-muted-foreground">{rule.text}</p>
+            </div>
+          ))}
           <div className="rounded-lg border p-4">
             <h3 className="mb-1 font-medium">Commit Messages</h3>
             <p className="text-sm text-muted-foreground">
@@ -182,35 +148,18 @@ export default function ContributingPage() {
                 Conventional Commits
               </a>
               . Prefix your messages with a type such as{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                feat:
-              </code>
-              ,{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                fix:
-              </code>
-              ,{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                docs:
-              </code>
-              , or{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                chore:
-              </code>
-              .
+              <code className={inlineCode}>feat:</code>,{" "}
+              <code className={inlineCode}>fix:</code>,{" "}
+              <code className={inlineCode}>docs:</code>, or{" "}
+              <code className={inlineCode}>chore:</code>.
             </p>
           </div>
         </div>
       </section>
 
-      {/* Pull Request Process */}
       <section className="mb-14">
-        <h2 className="mb-4 text-2xl font-semibold tracking-tight">
-          Pull Request Process
-        </h2>
-        <p className="mb-4 text-muted-foreground">
-          We follow a standard fork-and-PR workflow:
-        </p>
+        <h2 className="mb-4 text-2xl font-semibold tracking-tight">Pull Request Process</h2>
+        <p className="mb-4 text-muted-foreground">We follow a standard fork-and-PR workflow:</p>
         <ol className="mb-4 list-inside list-decimal space-y-3 text-muted-foreground">
           <li>
             <strong className="text-foreground">Fork</strong> — fork the
@@ -218,49 +167,33 @@ export default function ContributingPage() {
           </li>
           <li>
             <strong className="text-foreground">Branch</strong> — create a
-            feature branch from{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">main</code>{" "}
-            (e.g.{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-              feat/my-feature
-            </code>
-            ).
+            feature branch from <code className={inlineCode}>main</code> (e.g.{" "}
+            <code className={inlineCode}>feat/my-feature</code>).
           </li>
           <li>
             <strong className="text-foreground">Code</strong> — make your
-            changes, keeping commits focused and well-described.
+            changes, keeping commits focused and well-described. Interfaces in{" "}
+            <code className={inlineCode}>docs/ENGINEERING_PLAN.md</code> are
+            contracts: keep changes to them additive.
           </li>
           <li>
-            <strong className="text-foreground">Test</strong> — run the full
-            test suite with{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-              cargo test
-            </code>{" "}
-            and{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-              npm test
-            </code>{" "}
-            to make sure nothing is broken.
+            <strong className="text-foreground">Test</strong> — run the build,
+            lint and test commands above for every component you touched.
           </li>
           <li>
             <strong className="text-foreground">PR</strong> — open a pull
-            request against{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">main</code>
-            . Fill out the PR template and link any related issues.
+            request against <code className={inlineCode}>main</code> and link
+            any related issues.
           </li>
         </ol>
         <p className="text-muted-foreground">
-          All PRs must pass CI checks (linting, formatting, tests) before
-          merging. A maintainer will review your PR, provide feedback if needed,
-          and merge it once approved.
+          A maintainer will review your PR, provide feedback if needed, and
+          merge it once approved.
         </p>
       </section>
 
-      {/* Issue Labels */}
       <section className="mb-14">
-        <h2 className="mb-4 text-2xl font-semibold tracking-tight">
-          Issue Labels
-        </h2>
+        <h2 className="mb-4 text-2xl font-semibold tracking-tight">Issue Labels</h2>
         <p className="mb-4 text-muted-foreground">
           We use labels to categorize issues. Here are the ones you&apos;ll
           encounter most often:
@@ -272,24 +205,10 @@ export default function ContributingPage() {
           <Badge variant="outline">good-first-issue</Badge>
           <Badge variant="outline">help-wanted</Badge>
         </div>
-        <p className="mt-4 text-sm text-muted-foreground">
-          If you&apos;re looking for a place to start, filter issues by{" "}
-          <Badge variant="outline" className="mx-1 text-xs">
-            good-first-issue
-          </Badge>{" "}
-          or{" "}
-          <Badge variant="outline" className="mx-1 text-xs">
-            help-wanted
-          </Badge>
-          .
-        </p>
       </section>
 
-      {/* Code of Conduct */}
       <section className="mb-14">
-        <h2 className="mb-4 text-2xl font-semibold tracking-tight">
-          Code of Conduct
-        </h2>
+        <h2 className="mb-4 text-2xl font-semibold tracking-tight">Code of Conduct</h2>
         <p className="text-muted-foreground">
           All contributors are expected to follow our{" "}
           <Link
@@ -303,16 +222,13 @@ export default function ContributingPage() {
         </p>
       </section>
 
-      {/* Questions */}
       <section className="mb-8">
-        <h2 className="mb-4 text-2xl font-semibold tracking-tight">
-          Questions?
-        </h2>
+        <h2 className="mb-4 text-2xl font-semibold tracking-tight">Questions?</h2>
         <p className="text-muted-foreground">
           If you have questions, need help getting started, or want to discuss
           an idea before working on it, join us on{" "}
           <a
-            href="https://discord.gg/worktree"
+            href={DISCORD_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="font-medium text-foreground underline underline-offset-4 hover:text-primary"

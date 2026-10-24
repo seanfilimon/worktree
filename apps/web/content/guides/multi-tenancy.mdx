@@ -1,100 +1,201 @@
 ---
-title: "Multi-Tenancy & IAM"
-description: "Manage isolated environments for your teams using W0rkTree's multi-tenant architecture."
+title: Multi-Tenancy
+description: Organize trees under personal and organization tenants, grant roles to members, choose tree visibility, and automate with API tokens.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-W0rkTree's multi-tenant architecture allows you to host multiple isolated organizations, business units, or partner teams on a single W0rkTree server. Unlike traditional version control systems where everyone shares a single global namespace, W0rkTree provides strict physical isolation at the storage layer between tenants.
+Every tree on a W0rkTree server belongs to a **tenant**. A tenant is the unit of ownership and membership: who can see a tree, who can push to it, and who can change its settings is decided by the caller's role in the tree's tenant plus the tree's visibility.
 
-## Understanding Tenants
+## Tenant kinds
 
-A **Tenant** in W0rkTree is the highest-level isolation boundary. Every tree belongs to exactly one tenant. 
+| Kind | `kind` value | Created by | Slug |
+|---|---|---|---|
+| Personal | `user` | Automatically, when an account registers | The account's username |
+| Organization | `org` | `POST /api/v1/tenants` (or the admin panel) | Chosen at creation: lowercase letters, digits, and `-` |
 
-Data belonging to one tenant is cryptographically and physically separated from data in another tenant. A user in "Tenant A" cannot even query the existence of trees, staged snapshots, or branches in "Tenant B" unless an explicit cross-tenant grant has been created.
+When `alice` registers, the server creates the account plus a personal tenant with slug `alice`, with `alice` as its owner. Personal tenants are great for experiments; use an organization for anything a team shares.
 
-### Tenant Types
+Trees are addressed as `TENANT/TREE`, for example `alice/notes` or `acme/app`.
 
-W0rkTree supports different tenant types to match your organization's compliance and operational requirements:
+## Create an organization
 
-- **Standard Tenants**: Logical isolation within a shared database and object store. Ideal for internal departments (e.g., `engineering`, `marketing`) that need separation of concerns but share the same infrastructure.
-- **Strict Tenants**: Dedicated storage buckets and isolated database schemas. Ideal for strict compliance requirements, subsidiaries, or external vendor collaboration.
-- **Sandbox Tenants**: Ephemeral environments with strict rate limits and quotas, perfect for automated testing or temporary contractor access.
+<Steps>
+<Step>
 
-## Organization Setup
+### Get a token
 
-When designing your W0rkTree architecture, we recommend mapping your tenants to your company's high-level billing or compliance boundaries, and using **Trees** for team-level organization.
-
-**Recommended Setup:**
-1. Create a `core-engineering` tenant for all internal product development.
-2. Inside `core-engineering`, use nested trees (`platform/api`, `frontend/web`) for individual teams.
-3. Create a separate `vendor-collaboration` tenant for outsourced work.
-
-## Creating and Managing Tenants
-
-Server administrators can provision new tenants using the W0rkTree CLI:
+Log in with the CLI (`wt login http://localhost:7420 -u alice`), or call the REST login endpoint, which returns a session token:
 
 ```bash
-wt tenant create vendor-collaboration --type strict --admin alice@example.com
+curl -s -X POST http://localhost:7420/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"correct horse battery staple"}'
 ```
 
-This provisions the isolated storage environment and assigns the initial tenant administrator. 
+The response is `{"token": "...", "account": {...}}`. Export the token as `WT_TOKEN` for the following steps.
 
-To view the tenants you have access to:
+</Step>
+<Step>
+
+### Create the tenant
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt tenant list
+curl -s -X POST http://localhost:7420/api/v1/tenants \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"acme","name":"Acme Corp"}'
 ```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:WT_TOKEN" }
+Invoke-RestMethod -Method Post -Headers $headers -ContentType "application/json" `
+  -Uri "http://localhost:7420/api/v1/tenants" `
+  -Body '{"slug":"acme","name":"Acme Corp"}'
+```
+
+</Tab>
+</Tabs>
+
+The server answers `201` with the new tenant. Its `kind` is `org` and the caller becomes its `owner`:
+
+```json
+{
+  "id": "9a3e...",
+  "slug": "acme",
+  "name": "Acme Corp",
+  "kind": "org",
+  "plan": "free",
+  "created_at": "2026-10-24T10:00:00Z"
+}
+```
+
+</Step>
+<Step>
+
+### Add members
+
+Members are set by username with `PUT`, which both adds and changes a role:
+
+```bash
+curl -s -X PUT http://localhost:7420/api/v1/tenants/acme/members/bob \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"role":"developer"}'
+```
+
+List members with `GET /api/v1/tenants/acme/members` (each entry is `{"account": {...}, "role": "..."}`) and remove one with `DELETE /api/v1/tenants/acme/members/bob`. The person must already have an account on the server.
+
+</Step>
+</Steps>
+
+You can do all of this in the admin panel too: **Tenants** to create an organization, then the tenant detail page to manage members. See the [Admin Panel guide](/guides/admin-panel).
+
+## Roles
+
+There are five built-in roles, from most to least privileged: `owner` > `admin` > `maintainer` > `developer` > `viewer`. Each role includes everything the roles below it can do.
+
+| Role | Typical capabilities |
+|---|---|
+| `viewer` | Read trees, branches, snapshots, tags, staged WIP, and merge requests (`tree:read`). |
+| `developer` | Everything above, plus push, stage, and tag (`tree:write`), create branches, and open merge requests. |
+| `maintainer` | Everything above, plus approve and merge merge requests and delete (archive) branches. |
+| `admin` | Everything above, plus create trees and administer them (`tree:admin`): branch protections, license rules, tree settings, and deleting trees. |
+| `owner` | Everything above, plus tenant administration (`tenant:admin`): managing members and tenant settings. |
 
 <Callout type="info">
-When interacting with the server, your CLI context is bound to a specific tenant. You can switch your active CLI context using `wt tenant switch <tenant-name>`.
+  The server's IAM service is the authority on which role grants which action. See [Access Control](/docs/server/access-control) for the exact action list, including `tree:read`, `tree:write`, `tree:create`, `tree:admin`, `branch:create`, `branch:delete`, `mr:create`, `mr:approve`, `mr:merge`, `tenant:read`, `tenant:admin`, and `server:admin`.
 </Callout>
 
-## Visibility Modes
+**Server admins** are separate from tenant roles. An account with `is_admin` set can manage every account (`/api/v1/admin/accounts`), view server stats, and read the audit log across tenants. The first server admin is created by the server's `--admin-password` flag; see [Self-Hosting](/guides/self-hosting).
 
-Each tenant enforces a default **Visibility Mode** that determines how trees within that tenant are exposed to users who have authenticated with the server but are not explicitly part of the tenant's IAM roles.
+## Tree visibility
 
-- **Private (Default)**: Trees are invisible. Users must be explicitly granted access via `.wt-tree/access/policies.toml` to see that a tree exists or to pull pushed commits.
-- **Internal**: Trees are discoverable by any authenticated user within the broader organization, allowing them to browse code and request access, but read/write permissions still require explicit roles.
-- **Public**: Trees are readable by anyone, including unauthenticated users (if the server allows public access).
+Each tree has a `visibility`:
 
-Note that **staged snapshots** remain entirely private to your local machine's background worker until explicitly pushed, regardless of the tenant's visibility mode.
+| Visibility | Who can read |
+|---|---|
+| `private` | Members of the owning tenant only. |
+| `internal` | Any authenticated account on the server. |
+| `public` | Anyone, including anonymous clients. |
 
-## Cross-Tenant Access
+Visibility only affects **reads**. Writing always requires the right role in the owning tenant.
 
-In large enterprises, teams in different isolated tenants often need to share code. W0rkTree facilitates this through **Tenant Grants**, allowing secure, read-only code sharing without breaking isolation boundaries.
-
-If the `core-engineering` tenant wants to expose a `shared-ui` tree to the `vendor-collaboration` tenant, an administrator adds a grant to the `shared-ui` tree's declarative access policy (`.wt-tree/access/policies.toml`):
-
-```toml
-[[grants]]
-tenant_id = "vendor-collaboration"
-access = "read"
-reason = "Allow vendors to build against our standard UI components"
-```
-
-Once this grant is pushed, developers in the `vendor-collaboration` tenant can declare a cross-tenant dependency:
+Create a tree explicitly with its visibility:
 
 ```bash
-# Executed within a tree in the vendor-collaboration tenant
-wt tree depend my-vendor-project --on core-engineering/shared-ui
+curl -s -X POST http://localhost:7420/api/v1/tenants/acme/trees \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"app","description":"Main application","visibility":"private","default_branch":"main"}'
 ```
 
-This allows the vendor team to pull the shared UI components and receive automated cross-tree TODOs when the upstream components change, all without ever gaining access to the rest of the `core-engineering` tenant.
+Change it later with `PATCH /api/v1/trees/acme/app` and a body such as `{"visibility":"internal"}`. A tree can also be created on first `wt push` if it does not exist yet and you are allowed to create trees in the tenant.
 
-## Identity and Access Management (IAM)
+## Connect the CLI to a tenant
 
-W0rkTree integrates with standard OIDC and SAML identity providers (Okta, Auth0, Google Workspace). When a user logs in, their identity provider claims are mapped to W0rkTree IAM Roles.
+A remote names both the server and the tenant:
 
-These roles are then referenced in your declarative access configuration (`.wt/access/roles.toml`):
-
-```toml
-[role."@admins"]
-# Map an Okta group directly to a W0rkTree role
-sso_groups = ["okta:engineering-leadership"]
-
-[role."@contractors"]
-sso_groups = ["okta:external-vendors"]
+```bash
+wt remote add origin http://localhost:7420 --tenant acme
+wt login http://localhost:7420 -u bob
+wt push
 ```
 
-By binding SSO groups directly to W0rkTree roles, you can manage onboarding and offboarding entirely through your existing identity provider. When a contractor is removed from your Okta directory, their access to the W0rkTree tenant is immediately revoked.
+To get an existing tree, clone it by `TENANT/TREE`:
+
+```bash
+wt clone http://localhost:7420 acme/app
+wt clone http://localhost:7420 acme/app ./acme-app
+```
+
+`wt clone` configures `[remote.origin]` with the URL and tenant for you. Reference: [`wt remote`](/docs/cli/remote#wt-remote), [`wt clone`](/docs/cli/remote#wt-clone).
+
+## API tokens for CI and scripts
+
+Session tokens from login last 30 days by default. For scripts, create a named **personal API token** instead, optionally with an expiry:
+
+```bash
+curl -s -X POST http://localhost:7420/api/v1/auth/tokens \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"ci-nightly","ttl_hours":720}'
+```
+
+The response is `{"token": "...", "api_token": {...}}`. The raw `token` is shown **only once**: the server stores just its SHA-256 hash. The `api_token` object carries `id`, `account_id`, `name`, `created_at`, and, when set, `expires_at` and `last_used_at`.
+
+- List your tokens with `GET /api/v1/auth/tokens`; revoke one with `DELETE /api/v1/auth/tokens/{id}`. The **Settings** page of the admin panel does the same.
+- Send the token as `Authorization: Bearer <token>` on REST calls. The same bearer scheme is used in gRPC metadata.
+- Tokens act with the full permissions of the account that created them. For CI, create a dedicated account, add it to the tenant with the smallest role that works (often `developer`, or `viewer` for read-only jobs), and create the token as that account.
+
+For running `wt` itself in CI, log in non-interactively with a secret from your CI system:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+printf '%s' "$CI_WT_PASSWORD" | wt login http://wt.internal:7420 -u ci-bot --password-stdin
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$env:WT_PASSWORD = $env:CI_WT_PASSWORD
+wt login http://wt.internal:7420 -u ci-bot
+```
+
+</Tab>
+</Tabs>
+
+<Callout type="warn" title="Roadmap">
+  Declarative access configuration (roles and policies written in TOML and enforced by the server), OAuth/SSO, and `wt` subcommands for tenants and members are not part of v0.2.0. Manage tenants and members through the REST API or the admin panel.
+</Callout>

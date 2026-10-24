@@ -20,7 +20,6 @@ export const articles = defineCollections({
   schema: frontmatterSchema.extend({
     author: z.string(),
     date: z.string().date().or(z.date()),
-    image: z.string().optional(),
     tags: z.array(z.string()).optional(),
     summary: z.string().optional(),
   }),

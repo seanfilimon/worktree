@@ -1,0 +1,163 @@
+---
+title: Admin Panel
+description: Build, serve, and develop the W0rkTree web admin panel, with a tour of every page.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+The admin panel is a single-page web app in `apps/admin`, built with Vite, React 19, TypeScript, Tailwind CSS v4, and React Router. It has no backend of its own: everything it shows and changes goes through the server's [REST API](/docs/server/rest-api) and [event stream](/docs/server/events), with the same permissions as any other client.
+
+## Build and serve
+
+<Steps>
+<Step>
+
+### Build the static files
+
+Requires Node.js 22 or newer.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+cd apps/admin
+npm install
+npm run build
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+Set-Location apps\admin
+npm install
+npm run build
+```
+
+</Tab>
+</Tabs>
+
+The output goes to `apps/admin/dist`.
+
+</Step>
+<Step>
+
+### Point the server at it
+
+```bash
+./worktree-server --admin-dir apps/admin/dist
+```
+
+Or set `WT_ADMIN_DIR`. The server serves the panel at **`/admin/`** on its normal port, with an `index.html` fallback so deep links work. With the default address, open `http://localhost:7420/admin/`.
+
+</Step>
+</Steps>
+
+Because the panel and the API share one origin, no CORS configuration is needed in this setup. Rebuild the panel whenever you upgrade the server, so both come from the same source version. See [Self-Hosting](/guides/self-hosting) for a production setup.
+
+## Development mode
+
+To work on the panel itself, run the Vite dev server against a local W0rkTree server:
+
+<Steps>
+<Step>
+
+### Start the W0rkTree server
+
+```bash
+cd services/server-go
+go build -o worktree-server .
+WT_ADMIN_PASSWORD=dev-password ./worktree-server --data ./dev-data
+```
+
+On PowerShell, set `$env:WT_ADMIN_PASSWORD = 'dev-password'` first, then run `.\worktree-server.exe --data .\dev-data`.
+
+</Step>
+<Step>
+
+### Start Vite
+
+```bash
+cd apps/admin
+npm run dev
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` and `/healthz` to `http://localhost:7420`, and edits reload instantly.
+
+</Step>
+</Steps>
+
+The server's CORS policy already allows `http://localhost:5173`, so requests made directly to port 7420 from the dev server also work. To allow other origins, set `WT_CORS_ORIGINS`.
+
+## Page tour
+
+### Login
+
+Sign in with a username and password. The panel calls `POST /api/v1/auth/login` and uses the returned session token as a bearer token for later requests. Sign out revokes the token (`POST /api/v1/auth/logout`). Every account can sign in; what you see afterwards depends on your roles.
+
+### Dashboard
+
+The landing page has two parts:
+
+- **Stats**: server-wide counts from `GET /api/v1/admin/stats` (tenants, accounts, trees, branches, snapshots, staged snapshots, objects, and storage bytes). Server admins only.
+- **Live activity**: a feed fed by `GET /api/v1/events`, showing events such as `branch.pushed`, `snapshot.staged`, `staged.cleared`, `tag.pushed`, `tree.created`, and the `mr.*` events as they happen.
+
+### Tenants
+
+Lists the tenants visible to you, both personal (`user`) and organizations (`org`). Create an organization here by entering a slug and a name; you become its owner. See [Multi-Tenancy](/guides/multi-tenancy).
+
+### Tenant detail and members
+
+Shows a tenant and its members with their roles. Tenant owners can add an existing account by username, change a member's role (`owner`, `admin`, `maintainer`, `developer`, `viewer`), or remove a member. This uses `GET`, `PUT`, and `DELETE` on `/api/v1/tenants/{tenant}/members`.
+
+### Trees
+
+Lists trees with their counts of branches, snapshots, staged snapshots, and open merge requests. Create a tree by choosing a tenant, name, description, visibility (`private`, `internal`, or `public`), and default branch.
+
+### Tree detail
+
+The tree page is organized in tabs:
+
+| Tab | What it shows | API |
+|---|---|---|
+| Branches | Every branch with its tip and whether it is protected. | `GET .../branches` |
+| Snapshot history | Snapshots for a branch, newest first, with author, message, and whether they were auto-generated. | `GET .../snapshots?branch=&limit=` |
+| File browser | The files of a snapshot (path, size, executable bit); click a file to view its contents. | `GET .../snapshots/{id}`, `GET .../blob/{snapshot}/{path}` |
+| Staged WIP | Everyone's current [staged snapshots](/guides/staged-visibility): author, branch, added, modified, and deleted counts, changed paths. | `GET .../staged?branch=` |
+| Tags | Tags with target snapshot, message, and tagger. | `GET .../tags` |
+| Protections | [Branch protection](/guides/branch-protection) rules; add, edit, or remove rules (requires `tree:admin`). | `GET`, `PUT`, `DELETE .../protections` |
+| Merge requests | Open, merged, and closed MRs; open a new one from a source and target branch. | `GET`, `POST .../merge-requests` |
+
+All paths are under `/api/v1/trees/{tenant}/{tree}`. Tree settings (description, visibility, default branch) map to `PATCH /api/v1/trees/{tenant}/{tree}`. [License rules](/guides/license-compliance) for the tree are managed from the tree page as well, backed by the `.../licenses` endpoints.
+
+### Merge request detail
+
+Shows one merge request: title, description, source and target branches, author, state, and the list of approvals. Depending on your role you can **Approve**, **Merge**, or **Close** it. Merge asks the server to fast-forward the target branch; if the target has moved, the panel reports the conflict and you need to merge the target into the source branch locally, push, and try again (see [Branch Protection](/guides/branch-protection#when-the-target-branch-moved)).
+
+### Audit log
+
+A filterable view of the append-only audit log from `GET /api/v1/audit`: actor, action (for example `branch.push`, `tree.create`, `auth.login`), resource, details, remote address, and time. Filter by tenant and action. Available to tenant admins for their tenants and to server admins for everything.
+
+### Accounts
+
+Server admins only. Lists every account on the server. Toggle **admin** to grant or remove server-admin rights, or **disabled** to block an account from signing in. This calls `PATCH /api/v1/admin/accounts/{username}` with `is_admin` or `disabled`.
+
+### Settings
+
+Manage your personal API tokens. Create a token with a name and an optional lifetime in hours; the raw token is shown once, so copy it immediately. The list shows each token's name, creation time, expiry, and last use, with a button to revoke it. Uses `/api/v1/auth/tokens`.
+
+<Callout type="info">
+  The panel can only do what your account is allowed to do. Buttons for actions you lack permission for may be hidden or fail with `403 forbidden`. The server is always the one enforcing permissions.
+</Callout>
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `/admin/` returns 404 | The server was started without `--admin-dir`, or the path does not contain the `dist` output. |
+| Blank page after an upgrade | Rebuild the panel from the same source version as the server and hard-refresh the browser. |
+| Dashboard stats missing | Stats require a server admin account. |
+| Live activity never updates | Your reverse proxy is buffering `text/event-stream`. Disable buffering for `/api/v1/events` (see [Self-Hosting](/guides/self-hosting#5-put-tls-in-front)). |
+| Dev server cannot reach the API | Make sure the W0rkTree server is running on port 7420. |

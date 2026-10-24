@@ -1,98 +1,232 @@
 ---
 title: Deployment
-description: Deploy the W0rkTree server in production environments.
+description: Run worktree-server in production behind a TLS-terminating reverse proxy, as a system service, with registration locked down and backups in place.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
 
-## Production Checklist
+This page covers running the server for a team. For a narrative walkthrough, see the [self-hosting guide](/guides/self-hosting).
 
-- [ ] Enable TLS/HTTPS
-- [ ] Set `host` to `0.0.0.0` for external access
-- [ ] Configure authentication
-- [ ] Set up monitoring and alerting
-- [ ] Configure backup strategy
-- [ ] Set appropriate resource limits
-- [ ] Configure tenant isolation and storage boundaries
+## Production checklist
 
-## Tenant Isolation Strategies
+- [ ] Build the binary (and the admin panel, if wanted) from a tagged source checkout. See [Installation](/docs/server/installation).
+- [ ] Run as a dedicated, unprivileged user with its own data directory (`--data`).
+- [ ] Listen on loopback only (`--addr 127.0.0.1:7420`) and put a reverse proxy in front that terminates TLS and forwards HTTP/2 cleartext (h2c) to the server.
+- [ ] Set the admin password through `WT_ADMIN_PASSWORD` from a file readable only by the service user, not on the command line.
+- [ ] Disable self-service registration (`--allow-registration=false`) unless you want open sign-up.
+- [ ] Restrict `/metrics` to your monitoring network at the proxy.
+- [ ] Add any extra browser origins that call the API to `WT_CORS_ORIGINS`.
+- [ ] Schedule backups of the data directory and test a restore. See [Storage](/docs/server/storage#backup).
+- [ ] Monitor `/healthz` and disk space. See [Monitoring](/docs/server/monitoring).
 
-When deploying W0rkTree for multiple teams or customers, you must decide on an isolation strategy:
+## Reverse proxy and TLS
 
-- **Logical Isolation (Default):** All tenants share the same database and storage backends, but data is strictly separated by `Tenant ID` at the application and protocol level. This is the most cost-effective approach.
-- **Physical Storage Isolation:** Tenants share the same server process but are configured to write to separate storage buckets (e.g., different AWS S3 buckets per tenant) using `isolated_storage` in the tenant config.
-- **Dedicated Instances:** For the strictest compliance requirements, you can deploy entirely separate W0rkTree Server clusters for specific tenants.
+The server has no built-in TLS (on the Roadmap). The proxy must:
 
-## Multi-Server Scaling
+1. terminate TLS for clients;
+2. forward gRPC (`Content-Type: application/grpc`, path prefix `/worktree.sync.v1.SyncService/`) to the backend over **HTTP/2 cleartext**, because gRPC requires HTTP/2 end to end;
+3. pass REST and `/admin/` requests through (HTTP/1.1 or h2c both work);
+4. not buffer the SSE stream at `/api/v1/events`, and allow long-lived responses (the server sends a heartbeat every 15 seconds);
+5. allow request bodies of at least 64 MiB, the gRPC message size limit.
 
-The W0rkTree Server is designed to scale horizontally. When deploying multiple instances behind a load balancer:
+### Caddy
 
-1. **Shared Storage:** All instances must point to the same shared object storage (e.g., S3, GCS) and metadata database (PostgreSQL/Redis).
-2. **Stateless Operations:** Most sync protocol operations are stateless and can be routed to any node.
-3. **Staged Snapshot Routing:** For real-time staged visibility, clients collaborating on the same branch should ideally be routed to the same node (e.g., via sticky sessions or consistent hashing on the branch ID) to minimize inter-node broadcast latency.
+Caddy obtains certificates automatically and can speak h2c to the backend for all traffic:
 
-## Deployment Options
+```text
+wt.example.com {
+	@metrics_external {
+		path /metrics
+		not remote_ip 10.0.0.0/8 192.168.0.0/16
+	}
+	respond @metrics_external 403
 
-<Tabs items={['Docker', 'Kubernetes', 'Systemd']}>
-<Tab value="Docker">
+	reverse_proxy h2c://127.0.0.1:7420 {
+		flush_interval -1
+	}
+}
+```
+
+The `h2c://` scheme makes Caddy speak cleartext HTTP/2 to the backend for every request, so gRPC, REST, SSE, and the admin panel share one upstream. `flush_interval -1` flushes responses immediately, which keeps the event stream live.
+
+### nginx
+
+nginx forwards gRPC with `grpc_pass` (HTTP/2 to the backend) and everything else with `proxy_pass`. The `http2 on;` directive needs nginx 1.25.1 or newer; on older versions write `listen 443 ssl http2;`.
+
+```text
+upstream worktree {
+    server 127.0.0.1:7420;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name wt.example.com;
+
+    ssl_certificate     /etc/ssl/wt.example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/wt.example.com/privkey.pem;
+
+    client_max_body_size 64m;
+
+    # gRPC sync service (wt, worktree-bg)
+    location /worktree.sync.v1.SyncService/ {
+        grpc_pass grpc://worktree;
+        grpc_read_timeout 1h;
+        grpc_send_timeout 1h;
+    }
+
+    # Server-Sent Events
+    location /api/v1/events {
+        proxy_pass http://worktree;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+
+    location = /metrics {
+        allow 10.0.0.0/8;
+        deny all;
+        proxy_pass http://worktree;
+    }
+
+    # REST API, /healthz, admin panel
+    location / {
+        proxy_pass http://worktree;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Behind a proxy, the `remote_addr` recorded in audit entries can be the proxy's address.
+
+<Callout type="info" title="Client URLs">
+  Remote URLs are the public origin of the proxy. v0.2.0 documentation and tests use `http://` URLs; confirm that your `wt` build connects over `https://` before relying on it for clients, and otherwise reach the server over a private network or VPN. See [Security](/docs/security).
+</Callout>
+
+## Running as a service
+
+### systemd (Linux)
+
+<Steps>
+<Step>
+
+### Create a user and directories
+
 ```bash
-docker pull worktree/server:latest
-docker run -d \
-  --name worktree-server \
-  -p 7433:7433 \
-  -v /data/worktree:/var/lib/worktree \
-  worktree/server:latest
+sudo useradd --system --home /var/lib/worktree --shell /usr/sbin/nologin worktree
+sudo install -d -o worktree -g worktree -m 0750 /var/lib/worktree /var/lib/worktree/data
+sudo install -m 0755 worktree-server /usr/local/bin/worktree-server
+sudo cp -r apps/admin/dist /opt/worktree-admin
 ```
-</Tab>
-<Tab value="Kubernetes">
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: worktree-server
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: worktree-server
-  template:
-    metadata:
-      labels:
-        app: worktree-server
-    spec:
-      containers:
-        - name: worktree-server
-          image: worktree/server:latest
-          ports:
-            - containerPort: 7433
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/worktree
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: worktree-data
+
+</Step>
+<Step>
+
+### Store secrets in an environment file
+
+```bash
+sudo install -d -m 0750 /etc/worktree
+sudo install -m 0600 /dev/null /etc/worktree/server.env
+sudoedit /etc/worktree/server.env
 ```
-</Tab>
-<Tab value="Systemd">
-```ini
+
+```text
+WT_ADMIN_USER=admin
+WT_ADMIN_PASSWORD=use-a-long-random-secret
+WT_CORS_ORIGINS=https://wt.example.com
+```
+
+</Step>
+<Step>
+
+### Install the unit
+
+`/etc/systemd/system/worktree-server.service`:
+
+```text
 [Unit]
-Description=W0rkTree Server
-After=network.target
+Description=W0rkTree server
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=simple
 User=worktree
-ExecStart=/usr/local/bin/wt server start --host 0.0.0.0 --port 7433
-Restart=always
+Group=worktree
+WorkingDirectory=/var/lib/worktree
+EnvironmentFile=/etc/worktree/server.env
+ExecStart=/usr/local/bin/worktree-server \
+  --addr 127.0.0.1:7420 \
+  --data /var/lib/worktree/data \
+  --admin-dir /opt/worktree-admin \
+  --allow-registration=false
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/worktree
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 ```
-</Tab>
-</Tabs>
 
-<Callout type="warn">
-Always run the server behind a reverse proxy (nginx, Caddy) in production for TLS termination and rate limiting.
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now worktree-server
+curl -s http://127.0.0.1:7420/healthz
+```
+
+</Step>
+</Steps>
+
+`systemctl stop` sends `SIGTERM`, and the server shuts down gracefully.
+
+### Windows
+
+`worktree-server.exe` runs as an ordinary console program; it does not register itself with the Windows Service Control Manager. To run it as a service, use a service wrapper such as NSSM or WinSW, or a Task Scheduler task that runs at startup. Configure the same flags, and set `WT_ADMIN_PASSWORD` in the wrapper's environment settings rather than on the command line.
+
+## Containers
+
+<Callout type="warn" title="Roadmap">
+  No official Docker image is published for v0.2.0. The Dockerfile below is an illustrative example of how you could package a build yourself, not a supported artifact.
 </Callout>
+
+```text
+# Example only: build from the repository root.
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY services/server-go/ .
+RUN CGO_ENABLED=0 go build -o /out/worktree-server .
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/worktree-server /usr/local/bin/worktree-server
+VOLUME /data
+EXPOSE 7420
+ENTRYPOINT ["/usr/local/bin/worktree-server", "--addr", ":7420", "--data", "/data"]
+```
+
+```bash
+docker build -t worktree-server:local -f Dockerfile .
+docker run -d --name worktree -p 127.0.0.1:7420:7420 \
+  -v wt-data:/data -e WT_ADMIN_PASSWORD='use-a-long-random-secret' \
+  -e WT_ALLOW_REGISTRATION=false worktree-server:local
+```
+
+Keep the data volume on persistent storage and run a single container per data directory; bbolt allows only one process to open `meta.db`.
+
+## Upgrading
+
+1. Back up the data directory.
+2. Build the new version and replace the binary (and the admin panel build).
+3. Restart the service and check `/healthz` for the new `version`.
+
+v0.2.0 is pre-1.0: read the [changelog](/changelog) before upgrading, and keep the backup until the new version has run cleanly.

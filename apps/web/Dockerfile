@@ -1,4 +1,4 @@
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -26,8 +26,6 @@ COPY apps/web ./apps/web
 # Set working directory to web app
 WORKDIR /app/apps/web
 
-# Generate fumadocs MDX files
-RUN npx fumadocs-mdx
 
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1

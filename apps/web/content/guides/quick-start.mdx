@@ -1,294 +1,402 @@
 ---
 title: Quick Start
-description: Get up and running with W0rkTree in under 5 minutes.
+description: Go from an empty directory to snapshots, branches, a merge, a running server, two synchronized clones and shared work in progress in about fifteen minutes.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
-import { Steps } from 'fumadocs-ui/components/steps';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-Get up and running with W0rkTree in just a few minutes. This guide walks you through installation, initializing your first repository, and the core workflow you'll use every day.
+This tutorial walks through the whole v0.2.0 workflow on one machine: local history first, then a local server, then a second clone that talks to the first one through the server. Every command shown is part of the documented [CLI surface](/docs/cli).
 
-<Callout type="info">
-**Prerequisites:** W0rkTree is built in Rust. You don't need the Rust toolchain to use the pre-built binaries, but if you'd like to build from source, make sure you have [Rust 1.75+](https://rustup.rs/) and Cargo installed. You'll also need Git 2.30+ if you plan to use Git compatibility features.
+<Callout type="info" title="Build from source">
+v0.2.0 is pre-1.0 and is installed from source only. There are no prebuilt binaries or package-manager installs yet.
 </Callout>
 
-## Installation
+## Part 1: local history
 
-Choose your platform to get started:
+<Steps>
+<Step>
 
-<Tabs items={['macOS', 'Linux', 'Windows', 'From Source']}>
-<Tab value="macOS">
+### Install `wt`, `worktree-bg` and the server
 
-Install W0rkTree via Homebrew:
+Follow [Installation](/docs/installation). In short, from a checkout of the repository:
 
-```bash
-brew tap worktree-dev/tap
-brew install worktree
-```
-
-Or using the install script:
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-curl -fsSL https://get.worktree.dev | sh
-```
-
-</Tab>
-<Tab value="Linux">
-
-Install using the official install script:
-
-```bash
-curl -fsSL https://get.worktree.dev | sh
-```
-
-Or download the `.deb` package for Debian/Ubuntu:
-
-```bash
-wget https://releases.worktree.dev/latest/worktree_amd64.deb
-sudo dpkg -i worktree_amd64.deb
-```
-
-For Arch Linux:
-
-```bash
-yay -S worktree-bin
+cargo install --path crates/worktree-cli
+cargo install --path crates/worktree-bg
+cd services/server-go && go build -o worktree-server .
 ```
 
 </Tab>
-<Tab value="Windows">
+<Tab value="PowerShell">
 
-Install via WinGet:
-
-```bash
-winget install worktree
-```
-
-Or using Scoop:
-
-```bash
-scoop bucket add worktree https://github.com/worktree-dev/scoop-bucket
-scoop install worktree
-```
-
-</Tab>
-<Tab value="From Source">
-
-Clone the repository and build with Cargo:
-
-```bash
-git clone https://github.com/worktree-dev/worktree.git
-cd worktree
-cargo build --release
-```
-
-The binary will be available at `target/release/wt`. Add it to your `PATH`:
-
-```bash
-cp target/release/wt ~/.local/bin/
+```powershell
+cargo install --path crates/worktree-cli
+cargo install --path crates/worktree-bg
+cd services/server-go; go build -o worktree-server.exe .
 ```
 
 </Tab>
 </Tabs>
 
-## Verify Installation
-
-After installing, confirm everything is working:
+Check that the client is on your `PATH`:
 
 ```bash
-wt --version
+wt --help
 ```
 
-Expected output:
+</Step>
+<Step>
 
-```
-W0rkTree 0.1.0 (built 2025-01-01)
-```
-
-You can also run the built-in diagnostics to check your environment:
+### Create a worktree
 
 ```bash
-wt doctor
+mkdir hello
+cd hello
+wt init
 ```
 
-This will verify that all required dependencies are available and your configuration is valid.
+`wt init` creates `.wt/` in the current directory with a **root tree** named after the directory (here `hello`) and an empty default branch `main`. No snapshot exists yet. Use `wt init --name N --branch B` to pick a different name or default branch.
 
-## Your First Repository
-
-<Steps>
-
-### Initialize a new W0rkTree repository
-
-Create a new repository in an empty directory. W0rkTree sets up the internal storage engine, default configuration, and a root tree automatically.
+Optionally set the author recorded on your snapshots (otherwise `wt` falls back to your server username, then your OS user):
 
 ```bash
-wt init my-project
-cd my-project
+wt config set user.name "Alice Example"
+wt config set user.email alice@example.com
 ```
 
-You'll see output like:
+</Step>
+<Step>
 
-```
-Initialized W0rkTree repository in /home/user/my-project
-Created root tree: main
-```
+### Add some files
 
-### Create a tree for your team
-
-Trees are the fundamental unit of isolation in W0rkTree. Each team or feature area gets its own tree with independent branches, permissions, and history.
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt tree create frontend
+echo "# Hello" > README.md
+mkdir src
+echo 'fn main() { println!("hello"); }' > src/main.rs
 ```
 
-```
-Created tree 'frontend' (based on root)
-Switched to tree 'frontend'
-```
+</Tab>
+<Tab value="PowerShell">
 
-### Start the background worker
-
-W0rkTree's background worker watches your filesystem and automatically creates staged snapshots of your changes. This means you never lose work — every save is captured.
-
-```bash
-wt worker start
+```powershell
+Set-Content -Encoding utf8 README.md "# Hello"
+New-Item -ItemType Directory src | Out-Null
+Set-Content -Encoding utf8 src\main.rs 'fn main() { println!("hello"); }'
 ```
 
-```
-Worker started for tree 'frontend'
-Watching for changes...
-```
+</Tab>
+</Tabs>
 
-<Callout type="info">
-The worker runs as a lightweight background process. It uses efficient filesystem watchers (FSEvents on macOS, inotify on Linux, ReadDirectoryChanges on Windows) to minimize resource usage. You can stop it at any time with `wt worker stop`.
+<Callout type="warn" title="Windows PowerShell 5.1">
+Plain `>` redirection in Windows PowerShell 5.1 writes UTF-16 files, which `wt diff` treats as binary. Use `Set-Content -Encoding utf8` (or PowerShell 7) for text files.
 </Callout>
 
-### Make changes and check status
+</Step>
+<Step>
 
-Create some files and check what W0rkTree has detected. W0rkTree uses **staged visibility** — your local changes and snapshots remain private to your machine until you explicitly push them.
+### Check the status
 
 ```bash
-echo '<h1>Hello W0rkTree</h1>' > index.html
 wt status
 ```
 
-```
-Tree: frontend
-Branch: main
+Both files are listed as **added**: `wt status` compares the working directory with the head snapshot of the current branch, and there is no head yet. There is no staging area: the next snapshot captures the whole working tree.
 
-Staged Changes:
-  added:  index.html
-```
+</Step>
+<Step>
 
-### Commit your changes
-
-Record your changes with a descriptive message. Commits in W0rkTree are scoped to the current tree and remain as staged snapshots until pushed.
+### Take a snapshot
 
 ```bash
-wt commit -m "Add homepage"
+wt snapshot -m "First snapshot"
 ```
 
-```
-[frontend/main abc1234] Add homepage
- 1 file changed, 1 insertion(+)
- create mode 100644 index.html
-```
+The snapshot records every non-ignored file of the tree and advances `main` to it. Before it is written, added and modified files are scanned for secrets (AWS keys, GitHub tokens, private keys and similar). If something is found the snapshot is refused and the findings are listed; see [`wt snapshot`](/docs/cli/snapshots#wt-snapshot).
 
-### View your history
+</Step>
+<Step>
 
-See the commit log for your tree:
+### Look at the history
 
 ```bash
 wt log
+wt log --oneline
 ```
 
-```
-abc1234 (HEAD -> frontend/main) Add homepage
-  Author: You <you@example.com>
-  Date:   2025-01-15 10:30:00 UTC
-```
+Each snapshot has a UUID id (human output shows the first 8 characters), author, time and message. Any unique id prefix of 4 or more characters works as a revision, as do `HEAD`, `HEAD~1`, branch names and tags.
 
-</Steps>
+</Step>
+<Step>
 
-## Common Workflows
+### Work on a branch
 
-Here are a few workflows you'll use frequently:
-
-<Tabs items={['Branching', 'Dependencies', 'Git Sync']}>
-<Tab value="Branching">
-
-Create a branch within your tree for feature work:
+Create a branch and switch to it in one step:
 
 ```bash
-wt branch create feature/nav
-wt branch switch feature/nav
+wt switch -c feature
+```
 
-# Make changes...
-wt commit -m "Add navigation component"
+This is the same as `wt branch create feature` followed by `wt switch feature`. Now change a file and snapshot it:
 
-# Merge back
-wt branch switch main
-wt merge feature/nav
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+echo "A tiny W0rkTree demo." >> README.md
+wt diff
+wt snapshot -m "Describe the project"
 ```
 
 </Tab>
-<Tab value="Dependencies">
+<Tab value="PowerShell">
 
-Declare a dependency between trees so W0rkTree can notify you of upstream changes:
-
-```bash
-wt tree depend frontend --on shared-components
-```
-
-When `shared-components` changes, W0rkTree automatically generates TODOs in the `frontend` tree so your team knows what to review.
-
-</Tab>
-<Tab value="Git Sync">
-
-W0rkTree has full Git interoperability. Import an existing Git repo or push your changes to a remote Git host:
-
-```bash
-# Import from Git
-wt git import https://github.com/org/repo.git
-
-# Push to a Git remote
-wt git push origin main
-
-# Pull latest from Git
-wt git pull origin main
+```powershell
+Add-Content -Encoding utf8 README.md "A tiny W0rkTree demo."
+wt diff
+wt snapshot -m "Describe the project"
 ```
 
 </Tab>
 </Tabs>
 
-## Next Steps
+`wt switch` refuses to leave a branch with uncommitted changes unless you pass `--force` (which discards them), so snapshot first.
 
-Now that you have W0rkTree running, explore the rest of the documentation to unlock its full potential:
+</Step>
+<Step>
+
+### Merge it back
+
+```bash
+wt switch main
+wt merge feature
+wt log --oneline
+```
+
+`main` has not moved since `feature` was created, so the merge is a **fast-forward**: `main` simply moves to the tip of `feature`. Pass `--no-ff` to always create a two-parent merge snapshot. When both branches have changed, `wt merge` runs a three-way merge and exits with code `3` if there are conflicts; see [Merge strategies](/guides/merge-strategies).
+
+</Step>
+</Steps>
+
+## Part 2: a server and two clones
+
+<Steps>
+<Step>
+
+### Start a local server
+
+Open a **second terminal** in `services/server-go` and run:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+./worktree-server --data ./wt-data --admin-password 'change-me-now'
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+.\worktree-server.exe --data .\wt-data --admin-password 'change-me-now'
+```
+
+</Tab>
+</Tabs>
+
+The server listens on `http://localhost:7420`: gRPC (h2c), REST, Server-Sent Events and the optional admin panel all share that one port. `--data` holds `meta.db` and the `objects/` store; `--admin-password` makes sure the server admin account (`admin`) exists. Leave it running. Check it with:
+
+```bash
+curl http://localhost:7420/healthz
+```
+
+All flags are in [Server configuration](/docs/server/configuration).
+
+</Step>
+<Step>
+
+### Create an account
+
+Back in the first terminal (inside `hello`):
+
+```bash
+wt register http://localhost:7420 -u alice -e alice@example.com
+```
+
+You are prompted for a password. Registration creates the account plus a **personal tenant** whose slug is your username (`alice`), and saves a token in `$WT_HOME/credentials.toml` (default `~/.wt`). If the account already exists, use `wt login http://localhost:7420 -u alice` instead.
+
+To avoid the prompt in scripts, pipe the password with `--password-stdin` or set `WT_PASSWORD`:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+printf '%s' "$ALICE_PASSWORD" | wt register http://localhost:7420 -u alice -e alice@example.com --password-stdin
+# or
+WT_PASSWORD="$ALICE_PASSWORD" wt login http://localhost:7420 -u alice
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$env:ALICE_PASSWORD | wt register http://localhost:7420 -u alice -e alice@example.com --password-stdin
+# or
+$env:WT_PASSWORD = $env:ALICE_PASSWORD; wt login http://localhost:7420 -u alice
+```
+
+</Tab>
+</Tabs>
+
+Confirm with `wt whoami http://localhost:7420`.
+
+</Step>
+<Step>
+
+### Add a remote and push
+
+```bash
+wt remote add origin http://localhost:7420 --tenant alice
+wt push
+```
+
+`wt push` resolves the server tree `alice/hello` (the server-side name defaults to the local tree name), **creates it if it does not exist**, uploads only the objects the server is missing, and moves the server's `main` to your tip. Tags are pushed along with the branch. The server never accepts a push that does not descend from its current tip, and there is no force push.
+
+</Step>
+<Step>
+
+### Clone it somewhere else
+
+Go to the parent directory and clone the tree into `other`:
+
+```bash
+cd ..
+wt clone http://localhost:7420 alice/hello other
+cd other
+wt log --oneline
+```
+
+The clone has the same snapshot ids as the original, a remote `origin` pointing at `alice` on the server, a local branch for every remote branch, and `main` checked out. Your saved credential is per server URL, so the clone can push without logging in again.
+
+</Step>
+<Step>
+
+### Push from the clone, pull in the original
+
+In `other`:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+echo "Edited from the second clone." >> README.md
+wt snapshot -m "Edit from other"
+wt push
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+Add-Content -Encoding utf8 README.md "Edited from the second clone."
+wt snapshot -m "Edit from other"
+wt push
+```
+
+</Tab>
+</Tabs>
+
+Then in `hello`:
+
+```bash
+cd ../hello
+wt pull
+wt log --oneline
+```
+
+`wt pull` fetches the new snapshots and fast-forwards `main`. If both sides had new snapshots, it would merge exactly like `wt merge` (and exit with code `3` on conflicts). If you try to push from `hello` before pulling, the push is rejected because the server tip moved: pull, then push again.
+
+</Step>
+<Step>
+
+### Share work in progress
+
+Staged snapshots let teammates see what you are working on before you push. In `other`, change a file **without** snapshotting it and stage it:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+cd ../other
+echo "// work in progress" >> src/main.rs
+wt stage
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+cd ..\other
+Add-Content -Encoding utf8 src\main.rs "// work in progress"
+wt stage
+```
+
+</Tab>
+</Tabs>
+
+In `hello`, list the team's staged work for this tree:
+
+```bash
+cd ../hello
+wt status --team
+```
+
+You see the staged entry with its author, branch, change counts and time. In a real team the entry would come from a teammate's account; here both clones belong to `alice`. The server keeps at most one staged snapshot per tree, account and branch; a newer `wt stage` replaces it, and pushing that branch clears it. Staged snapshots are never part of branch history.
+
+</Step>
+<Step>
+
+### Let the daemon do it automatically
+
+The background daemon takes auto-snapshots after a period of inactivity and, when a remote and a credential exist, stages them for you:
+
+```bash
+wt daemon start
+wt daemon watch
+wt daemon status
+```
+
+Defaults: an auto-snapshot after 30 seconds without file events (or immediately once 50 files changed), with the message `auto: N files changed`, followed by an auto-stage because `sync.auto_stage = true`. The daemon never snapshots during a merge and never pushes. Stop it with `wt daemon stop`. See [Auto-tracking setup](/guides/auto-tracking-setup).
+
+</Step>
+</Steps>
+
+## What you have now
+
+| Where | What |
+|---|---|
+| `hello/.wt/` | Local object store, snapshots, branches and reflog of the root tree `hello`. |
+| `other/.wt/` | A second worktree linked to the same server tree. |
+| `services/server-go/wt-data/` | The server's `meta.db` and content-addressed `objects/`. |
+| `$WT_HOME` (`~/.wt`) | Your saved token (`credentials.toml`) and daemon files. |
+
+To browse the tree in a UI, build the [admin panel](/guides/admin-panel) (`cd apps/admin && npm install && npm run build`), restart the server with `--admin-dir` pointing at `apps/admin/dist` (from `services/server-go` that is `--admin-dir ../../apps/admin/dist`), and open `http://localhost:7420/admin/`.
+
+## Next steps
 
 <Cards>
-  <Card
-    title="Server Architecture"
-    description="Understand the multi-tenant architecture, storage engine, and event pipeline that powers W0rkTree."
-    href="/docs/server/architecture"
-  />
-  <Card
-    title="CLI Reference"
-    description="Complete reference for every command, flag, and option available in the wt command-line tool."
-    href="/docs/cli"
-  />
-  <Card
-    title="Migration Guide"
-    description="Step-by-step instructions for migrating an existing Git repository to W0rkTree with zero data loss."
-    href="/docs/migration"
-  />
-  <Card
-    title="Server Configuration"
-    description="Customize the W0rkTree server's behavior with per-repo and global configuration options."
-    href="/docs/server/configuration"
-  />
+  <Card title="Architecture" description="How wt, the daemon, the SDK and the Go server fit together." href="/guides/architecture" />
+  <Card title="Migrating from Git" description="Import an existing Git repository and roll W0rkTree out to a team." href="/guides/migration" />
+  <Card title="Merge strategies" description="Fast-forwards, merge snapshots, conflicts and server-side merge requests." href="/guides/merge-strategies" />
+  <Card title="Staged visibility" description="Everything about team-visible work in progress." href="/guides/staged-visibility" />
+  <Card title="Self-hosting" description="Run the server for a team: TLS proxy, service, backups." href="/guides/self-hosting" />
+  <Card title="CLI reference" description="Every command, flag and exit code." href="/docs/cli" />
 </Cards>
-
-<Callout type="info">
-**Need help?** Join the [W0rkTree Discord community](https://discord.gg/worktree) for support, or open an issue on [GitHub](https://github.com/worktree-dev/worktree/issues) if you run into a bug.
-</Callout>

@@ -1,0 +1,223 @@
+---
+title: Snapshots
+description: Record, inspect, compare, undo and export snapshots with snapshot, log, show, diff, reflog, revert, restore and archive.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **snapshot** is an immutable record of a tree's files at a point in time: an id (UUID v4), a manifest of every file (path, BLAKE3 hash, size, executable bit), parent snapshot ids, author, message, timestamp, and whether it was auto-generated. History is append-only: no command on this page rewrites or deletes a snapshot.
+
+Commands act on the selected tree (`--tree <name>` or the tree containing the current directory). `REV` accepts the [revision syntax](/docs/cli#revision-syntax).
+
+## `wt snapshot`
+
+```text
+wt snapshot -m MSG [--allow-empty] [--no-scan]
+```
+
+Record the tree's current working state as a new snapshot on the current branch and advance the branch tip to it.
+
+| Flag | Description |
+|---|---|
+| `-m MSG` | Snapshot message. Required. |
+| `--allow-empty` | Create a snapshot even when nothing changed since the head snapshot. Without it, an unchanged tree is an error ("no changes to snapshot"). |
+| `--no-scan` | Skip the pre-snapshot secret scan. |
+
+```bash
+wt snapshot -m "Add login form"
+wt snapshot -m "Release marker" --allow-empty
+wt --tree frontend snapshot -m "Update styles"
+```
+
+### Secret scan
+
+Before every snapshot, added and modified files are scanned for credentials (rules such as `aws-access-key`, `github-token`, `private-key`). Binary files are skipped. If anything is found the snapshot is **not** created, and each finding is listed with its rule, path, line number and a redacted excerpt (illustrative):
+
+```text
+error: possible secrets detected
+  aws-access-key  config/dev.env:3  AWS_ACCESS_KEY_ID=AKIA****MPLE
+```
+
+To proceed:
+
+- remove the secret and run `wt snapshot` again; or
+- if the match is a false positive, add the marker `wt:allow-secret` on the same line (for example in a trailing comment); or
+- pass `--no-scan` to skip scanning for this snapshot.
+
+### Completing a merge
+
+While a conflicted merge is in progress, `wt snapshot` refuses to run until every conflict marker has been removed from the working files. Once they are gone, `wt snapshot -m MSG` completes the merge and records a snapshot with **two parents**, exactly like [`wt merge --continue`](/docs/cli/branches#wt-merge).
+
+**Notes**
+
+- Ignored paths and nested-tree directories are never included.
+- Author: `user.name <user.email>` from [`wt config`](/docs/cli/repository#wt-config), else the username logged in to the default remote, else the OS user.
+- Each snapshot appends a `snapshot` entry to the reflog. The daemon's automatic snapshots are marked auto-generated and use the message `auto: N files changed`.
+
+## `wt log`
+
+```text
+wt log [-n N] [REV] [--oneline]
+```
+
+List snapshots reachable from `REV`, newest first.
+
+| Argument / flag | Description |
+|---|---|
+| `REV` | Starting revision. Default: head of the current branch. |
+| `-n N` | Show at most `N` snapshots. |
+| `--oneline` | One line per snapshot: short id and message. |
+
+```bash
+wt log
+wt log -n 10 --oneline
+wt log origin/main
+wt log feature/login~2
+```
+
+**Notes**
+
+- Full output includes id, author, date, message, parents (merge snapshots show two) and whether the snapshot was auto-generated.
+
+## `wt show`
+
+```text
+wt show REV [--stat]
+```
+
+Show one snapshot's metadata and its changes relative to its first parent (for the first snapshot of a branch, every file is shown as added).
+
+| Argument / flag | Description |
+|---|---|
+| `REV` | The snapshot to show. Required. |
+| `--stat` | Show per-file added/removed line counts instead of full patches. |
+
+```bash
+wt show HEAD
+wt show 4f9c2a1e --stat
+wt show v1.0.0
+```
+
+## `wt diff`
+
+```text
+wt diff [REV [REV2]] [--name-only] [--stat] [PATH...]
+```
+
+Show differences as unified diffs (`--- a/<path>` / `+++ b/<path>`, with `/dev/null` for added or deleted files and 3 lines of context).
+
+| Form | Compares |
+|---|---|
+| `wt diff` | Working directory vs. `HEAD`. |
+| `wt diff REV` | Working directory vs. `REV`. |
+| `wt diff REV REV2` | `REV` vs. `REV2`. |
+
+| Argument / flag | Description |
+|---|---|
+| `REV`, `REV2` | Revisions to compare (see above). |
+| `--name-only` | Print only the changed paths, without patches. |
+| `--stat` | Print per-file added/removed line counts. |
+| `PATH...` | Restrict the diff to these paths (prefix match). |
+
+```bash
+wt diff
+wt diff --stat
+wt diff HEAD~3 HEAD --name-only
+wt diff main feature/login src/
+```
+
+**Notes**
+
+- Binary files (a NUL byte in the first 8 KiB, or invalid UTF-8) are reported as changed without a patch.
+- `PATH` values are relative to the tree root and use `/` separators.
+
+## `wt reflog`
+
+```text
+wt reflog [-n N]
+```
+
+Show the tree's reflog, newest first. The reflog is an append-only log at `.wt/trees/<tree>/reflog.jsonl` that records every operation that moved a ref, with the branch, old and new snapshot ids, time and message.
+
+| Flag | Description |
+|---|---|
+| `-n N` | Show at most `N` entries. |
+
+Recorded actions: `init`, `snapshot`, `auto-snapshot`, `switch`, `branch.create`, `branch.archive`, `merge`, `fast-forward`, `revert`, `restore`, `pull`, `push`, `tag.create`, `tag.delete`.
+
+```bash
+wt reflog -n 20
+wt reflog --json
+```
+
+**Notes**
+
+- Use the old snapshot id from an entry as a revision to recover earlier state, for example `wt branch create rescue --from <id>`. See [Reflog and recovery](/guides/reflog-and-recovery).
+
+## `wt revert`
+
+```text
+wt revert REV
+```
+
+Create a **new** snapshot on the current branch that undoes the changes `REV` made relative to its first parent. The reverted snapshot stays in history; nothing is rewritten.
+
+| Argument | Description |
+|---|---|
+| `REV` | The snapshot whose changes to undo. Required. |
+
+```bash
+wt revert HEAD
+wt revert 4f9c2a1e
+```
+
+**Notes**
+
+- Appends a `revert` entry to the reflog.
+- Because the result is an ordinary snapshot, it can be pushed like any other.
+
+## `wt restore`
+
+```text
+wt restore [PATH...] [--from REV]
+```
+
+Overwrite working files with their content at a revision. Files that do not exist in that revision are deleted from the working directory. No snapshot is created and branch tips do not move.
+
+| Argument / flag | Description |
+|---|---|
+| `PATH...` | Paths to restore. Default: every file in the tree. |
+| `--from REV` | Revision to restore from. Default: `HEAD`. |
+
+```bash
+wt restore src/app.rs                 # discard local edits to one file
+wt restore                            # discard all uncommitted changes
+wt restore docs/ --from v1.0.0        # bring back docs as of a tag
+```
+
+<Callout type="warn">
+`wt restore` discards uncommitted changes in the given paths. Snapshot first if you may want them back.
+</Callout>
+
+## `wt archive`
+
+```text
+wt archive [REV] -o FILE [--format tar.gz|zip]
+```
+
+Write the files of a snapshot into an archive file. History and `.wt/` metadata are not included.
+
+| Argument / flag | Description |
+|---|---|
+| `REV` | Revision to archive. Default: `HEAD`. |
+| `-o FILE` | Output file. Required. |
+| `--format tar.gz\|zip` | Archive format: `tar.gz` or `zip`. |
+
+```bash
+wt archive -o release.tar.gz
+wt archive v1.0.0 -o my-project-1.0.0.zip --format zip
+```
+
+**Notes**
+
+- Not to be confused with [`wt branch archive`](/docs/cli/branches#wt-branch), which soft-deletes a branch.

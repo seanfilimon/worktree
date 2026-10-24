@@ -1,66 +1,210 @@
 ---
-title: Repository Commands
-description: Commands for creating and managing W0rkTrees.
+title: Repository
+description: Create a worktree, inspect its status, and manage configuration, ignore patterns and nested trees.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-## wt init
+Commands on this page set up and inspect a worktree: the directory that contains `.wt/`. Global flags (`--json`, `-C`, `--tree`, `--no-color`) are described in the [CLI overview](/docs/cli#global-flags).
 
-Initialize a new W0rkTree.
+## `wt init`
 
-```bash
-wt init [directory] [--template <name>] [--bare] [--from-git <url>] [--shallow]
+```text
+wt init [path] [--name N] [--branch B]
 ```
 
-| Option | Description |
+Create a new worktree. `wt init` creates `.wt/` in `path` (creating the directory if it does not exist), registers a **root tree**, creates an empty default branch, and writes an `init` entry to the reflog. No snapshot is taken; the first `wt snapshot` creates the first one.
+
+| Argument / flag | Description |
 |---|---|
-| `directory` | Target directory (defaults to `.`) |
-| `--template <name>` | Use a project template (`monorepo`, `single`, `library`) |
-| `--bare` | Create a bare worktree without a working tree |
-| `--from-git <url>` | Initialize from an existing Git repository |
-| `--shallow` | Only import the latest state without the full history |
-
-**Example:**
+| `path` | Directory to initialize. Default: the current directory. |
+| `--name N` | Name of the worktree and of its root tree. Default: the directory name. |
+| `--branch B` | Name of the default branch. Default: `main`. |
 
 ```bash
-$ wt init my-project --template monorepo
-✓ Initialized W0rkTree in ./my-project
-✓ Applied template: monorepo
-✓ Created default tree: main
+wt init
+wt init ./my-project --name my-project --branch trunk
 ```
 
-## wt status
+**Notes**
 
-Show the working tree status.
+- Fails if `path` already contains `.wt/` (already initialized).
+- The resulting layout (`.wt/config.toml`, `objects/`, `snapshots/`, `trees/<tree>/...`) is described in [Local layout](/docs/protocol/local-layout).
+- To start from an existing Git repository use [`wt git import`](/docs/cli/git#wt-git-import); to start from a server tree use [`wt clone`](/docs/cli/remote#wt-clone).
+
+## `wt status`
+
+```text
+wt status [--team]
+```
+
+Compare the working directory of the selected tree with its head snapshot and list added, modified and deleted files (sorted by path). The report also shows the current branch, the head snapshot id, and any merge in progress with its conflicted paths.
+
+| Flag | Description |
+|---|---|
+| `--team` | Also list the team's **staged snapshots** for this tree from the server (work in progress uploaded by `wt stage` or the daemon): author, branch, change counts, message and time. Requires a configured remote. |
 
 ```bash
-wt status [--tree <name>] [--short]
+wt status
+wt status --team
+wt --tree frontend status --json
 ```
 
-**Example:**
+**Notes**
+
+- Ignored paths, `.wt/`, `.wt-tree/` markers and the directories of nested trees are never reported as changes of the parent tree.
+- With `--json` the output mirrors the SDK `StatusReport` (`tree`, `branch`, `head`, `changes[]` with `path` and `kind`, `merge`).
+- Staged snapshots are explained in [Staged visibility](/guides/staged-visibility).
+
+## `wt config`
+
+```text
+wt config list | get KEY | set KEY VALUE
+```
+
+Read and write the worktree configuration in `.wt/config.toml`. Keys are dotted paths into the TOML file.
+
+| Subcommand | Description |
+|---|---|
+| `list` | Print every key and value, sorted by key. |
+| `get KEY` | Print the value of one key. |
+| `set KEY VALUE` | Set one key and save the file. Unknown keys and values of the wrong type are rejected (invalid configuration). |
+
+### Keys
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `worktree.name` | string | directory name | Worktree name (set by `wt init --name`). |
+| `worktree.id` | string | generated | Worktree id (UUID). Do not change. |
+| `worktree.created_at` | string | init time | Creation timestamp. |
+| `worktree.default_branch` | string | `main` | Default branch (set by `wt init --branch`). |
+| `user.name` | string | empty | Author name for new snapshots. |
+| `user.email` | string | empty | Author email for new snapshots. |
+| `auto_snapshot.enabled` | bool | `true` | Let the daemon take automatic snapshots of this worktree. |
+| `auto_snapshot.inactivity_secs` | integer | `30` | Auto-snapshot after this many seconds without file events. |
+| `auto_snapshot.max_changed_files` | integer | `50` | Auto-snapshot immediately once this many files have changed. |
+| `sync.auto_stage` | bool | `true` | Upload auto-snapshots as staged (team-visible) snapshots. |
+| `sync.remote` | string | `origin` | Remote used by the daemon for auto-staging. |
+| `remote.<name>.url` | string | | Server base URL, e.g. `http://localhost:7420`. |
+| `remote.<name>.tenant` | string | | Tenant slug on that server. |
+
+The snapshot author is `user.name <user.email>` when configured; otherwise the username logged in to the default remote; otherwise the operating-system user.
 
 ```bash
-$ wt status
-On tree: frontend (branch: feature/nav)
-
-Changes tracked automatically:
-  modified:  src/components/Nav.tsx
-  added:     src/components/MobileMenu.tsx
+wt config list
+wt config get remote.origin.url
+wt config set user.name "Ada Lovelace"
+wt config set user.email ada@example.com
+wt config set auto_snapshot.inactivity_secs 60
+wt config set sync.auto_stage false
 ```
 
-## wt clone
+The equivalent `.wt/config.toml`:
 
-Clone a remote W0rkTree.
+```toml
+[worktree]
+name = "my-project"
+id = "4f9c2a1e-..."
+created_at = "..."
+default_branch = "main"
+
+[user]
+name = "Ada Lovelace"
+email = "ada@example.com"
+
+[auto_snapshot]
+enabled = true
+inactivity_secs = 60
+max_changed_files = 50
+
+[sync]
+auto_stage = false
+remote = "origin"
+
+[remote.origin]
+url = "http://localhost:7420"
+tenant = "ada"
+```
+
+**Notes**
+
+- Configuration is per worktree. There is no global `wt config` file; per-user state (credentials, daemon) lives in `$WT_HOME`.
+- Prefer [`wt remote add`](/docs/cli/remote#wt-remote) for creating remotes; `wt config set remote.<name>.url` edits an existing entry.
+- See [Config model](/guides/config-model) for how configuration is layered.
+
+## `wt ignore`
+
+```text
+wt ignore list | add PATTERN | check PATH
+```
+
+Manage which paths are never snapshotted. Patterns use gitignore syntax.
+
+| Subcommand | Description |
+|---|---|
+| `list` | Print the effective patterns: built-ins, then `.wt/ignore`, then `.wtignore` files. |
+| `add PATTERN` | Append `PATTERN` to `.wt/ignore`. |
+| `check PATH` | Report whether `PATH` (relative to the worktree root) is ignored. |
+
+Built-in ignores, always active:
+
+```text
+.wt/
+.wt-tree/
+.git/
+target/
+node_modules/
+.DS_Store
+*.swp
+```
 
 ```bash
-wt clone <url> [directory] [--tree <name>]
+wt ignore list
+wt ignore add "*.log"
+wt ignore add "dist/"
+wt ignore check build/output.log
 ```
 
-**Example:**
+```powershell
+# Quote patterns so PowerShell does not expand them
+wt ignore add '*.log'
+```
+
+**Notes**
+
+- `.wt/ignore` is local to the worktree. `.wtignore` files can be placed in the working directory alongside your files.
+- `wt git import` converts `.gitignore` into `.wt/ignore`.
+- More examples in [Ignore patterns](/guides/ignore-patterns).
+
+## `wt tree`
+
+```text
+wt tree list | add NAME PATH | remove NAME
+```
+
+Manage **nested trees**: independently versioned sub-projects inside one worktree. Each tree has its own branches, `HEAD`, tags, reflog and remote name. A nested tree is a directory containing a `.wt-tree/` marker.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List all trees: name, path relative to the root (empty for the root tree), current branch, default branch, and server-side name. |
+| `add NAME PATH` | Register `PATH` (relative to the worktree root; created if missing) as a nested tree named `NAME`, writing `PATH/.wt-tree/config.toml`. |
+| `remove NAME` | Unregister a nested tree. Its files are kept on disk. The root tree cannot be removed. |
 
 ```bash
-$ wt clone https://wt.example.com/org/project my-project
-✓ Cloning into ./my-project...
-✓ Received 4 trees, 23 branches, 1,847 objects
+wt tree list
+wt tree add frontend apps/frontend
+wt --tree frontend snapshot -m "Initial frontend"
+cd apps/frontend && wt status    # tree inferred from the directory
+wt tree remove frontend
 ```
+
+**Notes**
+
+- A tree's snapshots exclude the paths of trees nested inside it, so each tree's history only contains its own files.
+- Select a tree with `--tree <name>` or by running `wt` from inside its directory (the deepest containing tree wins).
+- Each tree is pushed to its own server tree; see [`wt push`](/docs/cli/remote#wt-push).
+- Adding a tree that already exists fails.
+
+<Callout type="info">
+Design patterns for splitting a project into trees are covered in [Nested trees](/guides/nested-trees).
+</Callout>

@@ -8,10 +8,7 @@ import {
   FolderTree,
   Network,
   GitMerge,
-  GitBranch,
-  GitCommit,
   Clock,
-  Boxes,
   Shield,
   Rocket,
   FileText,
@@ -23,32 +20,24 @@ import {
   Newspaper,
   Users,
   Map,
-  DollarSign,
   Sparkles,
   BookMarked,
   Library,
-  Zap,
-  Lock,
-  Workflow,
   Database,
   Eye,
   ShieldCheck,
   KeyRound,
-  Gauge,
   HardDrive,
-  Cpu,
   RefreshCw,
-  Bell,
   ListChecks,
-  Kanban,
-  Diff,
-  PackageCheck,
-  Plug,
   Server,
   Wrench,
-  Calendar,
   User,
   BookText,
+  ScanSearch,
+  Activity,
+  LayoutDashboard,
+  Milestone,
   type LucideIcon,
 } from "lucide-react";
 import { GeistMono } from "geist/font/mono";
@@ -60,7 +49,6 @@ import {
   NavigationMenuLink,
   NavigationMenuList,
   NavigationMenuTrigger,
-  navigationMenuTriggerStyle,
 } from "@/components/ui/navigation-menu";
 import {
   Sheet,
@@ -97,10 +85,10 @@ const featureTabs: Tab[] = [
     icon: Network,
     tagline: "Version control rebuilt from the protocol up",
     items: [
-      { title: "Nested Trees", description: "Independent versioning, branches, access per tree", href: "/features#trees", icon: FolderTree },
+      { title: "Nested Trees", description: "Independent branches and history per tree", href: "/features#trees", icon: FolderTree },
       { title: "Snapshots & History", description: "BLAKE3 content-addressed, immutable, append-only", href: "/features#trees", icon: Database },
-      { title: "Branches & Merging", description: "Per-tree namespaces, linked branches, merge requests", href: "/features#branches", icon: GitMerge },
-      { title: "Sync Protocol", description: "Staged sync, explicit push, automatic pull, QUIC transport", href: "/features#sync", icon: RefreshCw },
+      { title: "Branches & Merging", description: "Per-tree branches, three-way merge, merge requests", href: "/features#branches", icon: GitMerge },
+      { title: "Sync Protocol", description: "Push, pull and stage over gRPC on one port", href: "/features#sync", icon: RefreshCw },
     ],
   },
   {
@@ -109,10 +97,10 @@ const featureTabs: Tab[] = [
     icon: Users,
     tagline: "See what your team is working on",
     items: [
-      { title: "Staged Visibility", description: "See what your team is working on in real-time", href: "/features#staged-visibility", icon: Eye },
-      { title: "Auto Tracking", description: "Background process, auto-snapshots, auto-merge", href: "/features#automation", icon: Clock },
-      { title: "Branch Protection", description: "Required reviews, CI gates, merge request system", href: "/features#branches", icon: ShieldCheck },
-      { title: "Dependency Graph", description: "Cross-tree dependencies, automatic TODOs, build ordering", href: "/features#trees", icon: Code2 },
+      { title: "Staged Visibility", description: "Team-visible work in progress before push", href: "/features#staged-visibility", icon: Eye },
+      { title: "Auto Tracking", description: "Background daemon, auto-snapshots, auto-stage", href: "/features#automation", icon: Clock },
+      { title: "Branch Protection", description: "No direct push, required approvals, merge requests", href: "/features#branches", icon: ShieldCheck },
+      { title: "Live Events", description: "Server-sent events for pushes, stages and reviews", href: "/docs/server/events", icon: Activity },
     ],
   },
   {
@@ -121,34 +109,34 @@ const featureTabs: Tab[] = [
     icon: Shield,
     tagline: "Built-in identity and access control",
     items: [
-      { title: "Multi-Tenancy", description: "Users, orgs, teams as first-class tenants", href: "/features#iam", icon: User },
-      { title: "Declarative Access", description: "TOML-based RBAC + ABAC, version-controlled", href: "/features#access", icon: KeyRound },
-      { title: "License Compliance", description: "Per-path SPDX, server-enforced, export control", href: "/features#licensing", icon: FileText },
-      { title: "Audit Log", description: "Immutable, append-only, cryptographic verification", href: "/features#iam", icon: ListChecks },
+      { title: "Multi-Tenancy", description: "Personal and organization tenants with members", href: "/features#iam", icon: User },
+      { title: "Roles & Visibility", description: "Five built-in roles, private/internal/public trees", href: "/docs/server/access-control", icon: KeyRound },
+      { title: "License Compliance", description: "Per-path SPDX rules checked on every push", href: "/features#licensing", icon: FileText },
+      { title: "Audit Log", description: "Append-only record of security-relevant actions", href: "/docs/server/monitoring", icon: ListChecks },
     ],
   },
   {
     id: "infrastructure",
     label: "Infrastructure",
     icon: Server,
-    tagline: "High-performance architecture",
+    tagline: "One server, one port",
     items: [
-      { title: "Two-Runtime Model", description: "BGProcess (local) + Server (remote)", href: "/guides/architecture", icon: Layers },
-      { title: "Configuration", description: ".wt/ root + .wt-tree/ per tree", href: "/features#config", icon: Wrench },
-      { title: "Storage Engine", description: "BLAKE3, FastCDC chunking, lazy loading, dedup", href: "/features#storage", icon: Database },
+      { title: "Architecture", description: "Rust CLI and daemon + Go server + admin panel", href: "/guides/architecture", icon: Layers },
+      { title: "Configuration", description: ".wt/config.toml, $WT_HOME and wt config", href: "/features#config", icon: Wrench },
+      { title: "Admin Panel", description: "Tenants, trees, history and audit in the browser", href: "/features#admin", icon: LayoutDashboard },
       { title: "Safety & Recovery", description: "Reflog, revert, append-only — no lost work", href: "/features#safety", icon: HardDrive },
     ],
   },
   {
-    id: "performance-compat",
-    label: "Performance & Compat",
-    icon: Zap,
-    tagline: "Fast and Git-compatible",
+    id: "security-compat",
+    label: "Security & Compat",
+    icon: ScanSearch,
+    tagline: "Safe by default, Git-friendly",
     items: [
-      { title: "Rust Engine", description: "Pure Rust, zero-copy reads, parallel operations", href: "/features#performance", icon: Cpu },
-      { title: "Large Files", description: "Native chunked storage, no LFS required", href: "/features#storage", icon: PackageCheck },
-      { title: "Git Import/Export", description: "Full migration tooling, live mirror mode", href: "/features#git", icon: ArrowRightLeft },
-      { title: "10× Faster", description: "Sub-ms status, 10× checkout, 70% less storage", href: "/features#performance", icon: Zap },
+      { title: "Secret Scanning", description: "Credentials blocked before they reach history", href: "/features#security", icon: ScanSearch },
+      { title: "Security Model", description: "argon2id, hashed tokens, server-side authz", href: "/docs/security", icon: Shield },
+      { title: "Git Import/Export", description: "Move history in from Git and back out again", href: "/features#git", icon: ArrowRightLeft },
+      { title: "Roadmap", description: "What is planned beyond v0.2.0", href: "/roadmap", icon: Milestone },
     ],
   },
 ];
@@ -162,9 +150,9 @@ const docsTabs: Tab[] = [
     icon: Rocket,
     tagline: "Start your journey",
     items: [
-      { title: "Quick Start", description: "Install and run your first W0rkTree command", href: "/guides/quick-start", icon: Terminal },
-      { title: "Architecture Overview", description: "Understand the core protocol concepts", href: "/guides/architecture", icon: Map },
-      { title: "Configuration Model", description: "Learn how to configure .wt and .wt-tree", href: "/guides/config-model", icon: Wrench },
+      { title: "Quick Start", description: "From wt init to your first push and pull", href: "/guides/quick-start", icon: Terminal },
+      { title: "Installation", description: "Build the CLI, daemon, server and admin panel", href: "/docs/installation", icon: Wrench },
+      { title: "Architecture Overview", description: "How the components fit together", href: "/guides/architecture", icon: Map },
       { title: "Migration from Git", description: "Import your Git repositories safely", href: "/guides/migration", icon: ArrowRightLeft },
     ],
   },
@@ -174,10 +162,10 @@ const docsTabs: Tab[] = [
     icon: BookOpen,
     tagline: "Deep dive into W0rkTree",
     items: [
-      { title: "Staged Visibility", description: "How real-time collaboration works", href: "/guides/staged-visibility", icon: Eye },
-      { title: "Multi-Tenancy", description: "Users, organizations, and team access", href: "/guides/multi-tenancy", icon: Users },
-      { title: "Declarative Access", description: "Role-based and attribute-based permissions", href: "/guides/declarative-access", icon: KeyRound },
-      { title: "License Compliance", description: "Per-path SPDX license enforcement", href: "/guides/license-compliance", icon: ShieldCheck },
+      { title: "Staged Visibility", description: "How team-visible work in progress works", href: "/guides/staged-visibility", icon: Eye },
+      { title: "Multi-Tenancy", description: "Tenants, members, roles and visibility", href: "/guides/multi-tenancy", icon: Users },
+      { title: "Branch Protection", description: "Protected branches and merge requests", href: "/guides/branch-protection", icon: ShieldCheck },
+      { title: "License Compliance", description: "Per-path SPDX license enforcement", href: "/guides/license-compliance", icon: FileText },
     ],
   },
   {
@@ -186,10 +174,10 @@ const docsTabs: Tab[] = [
     icon: Library,
     tagline: "Complete API and CLI documentation",
     items: [
-      { title: "CLI Reference", description: "Complete list of commands and flags", href: "/docs/cli", icon: Terminal },
-      { title: "Protocol Spec", description: "The official W0rkTree protocol specification", href: "/docs/protocol", icon: FileText },
-      { title: "SDK Reference", description: "Rust and Node.js SDK documentation", href: "/docs/sdk", icon: Code2 },
-      { title: "Server Guide", description: "Detailed server documentation", href: "/docs/server", icon: Server },
+      { title: "CLI Reference", description: "Every wt command and flag", href: "/docs/cli", icon: Terminal },
+      { title: "REST API", description: "Every /api/v1 endpoint with examples", href: "/docs/server/rest-api", icon: Server },
+      { title: "Sync Protocol", description: "gRPC push, pull and stage flows", href: "/docs/protocol/sync-protocol", icon: RefreshCw },
+      { title: "Rust SDK", description: "The worktree-sdk crate API", href: "/docs/sdk", icon: Code2 },
     ],
   },
   {
@@ -198,10 +186,10 @@ const docsTabs: Tab[] = [
     icon: Server,
     tagline: "Run and manage W0rkTree",
     items: [
-      { title: "Server Deployment", description: "Deploy W0rkTree Server to production", href: "/docs/server/deployment", icon: Server },
-      { title: "Admin Panel", description: "Manage users, tenants, and licenses", href: "/guides/admin", icon: Wrench },
+      { title: "Server Configuration", description: "Flags and environment variables", href: "/docs/server/configuration", icon: Wrench },
+      { title: "Deployment", description: "Reverse proxy, TLS, backups, services", href: "/docs/server/deployment", icon: Server },
+      { title: "Admin Panel", description: "Manage tenants, trees and accounts", href: "/guides/admin-panel", icon: LayoutDashboard },
       { title: "Self-Hosting", description: "Run W0rkTree on your own infrastructure", href: "/guides/self-hosting", icon: HardDrive },
-      { title: "Security", description: "Security architecture and deep dive", href: "/guides/security-deep-dive", icon: Shield },
     ],
   },
 ];
@@ -238,9 +226,9 @@ const resourceTabs: ResourceTab[] = [
     viewAllLabel: "All articles",
     previews: [
       {
-        title: "Performance Benchmarks: W0rkTree vs Git",
-        meta: "Sean F · Feb 10, 2025",
-        href: "/articles/performance-benchmarks",
+        title: "Staged Snapshots: The End of Surprise Merge Conflicts",
+        meta: "Sean Filimon · Oct 15, 2025",
+        href: "/articles/staged-snapshots-explained",
       },
       {
         title: "Introducing W0rkTree",
@@ -734,42 +722,3 @@ export function SiteHeader() {
     </header>
   );
 }
-
-// ─── Shared ListItem for Resources ───────────────────────────────────────────
-
-const ListItem = React.forwardRef<
-  React.ElementRef<"a">,
-  React.ComponentPropsWithoutRef<"a"> & {
-    title: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }
->(({ className, title, children, href, icon: Icon, ...props }, ref) => {
-  return (
-    <li>
-      <NavigationMenuLink asChild>
-        <Link
-          ref={ref}
-          href={href || "#"}
-          className={cn(
-            "flex items-start gap-3 select-none rounded-lg p-3 leading-none no-underline outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground",
-            className,
-          )}
-          {...props}
-        >
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 mt-0.5">
-            <Icon className="h-4 w-4 text-primary" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-sm font-medium leading-none mb-1.5">
-              {title}
-            </div>
-            <p className="line-clamp-2 text-xs leading-snug text-muted-foreground">
-              {children}
-            </p>
-          </div>
-        </Link>
-      </NavigationMenuLink>
-    </li>
-  );
-});
-ListItem.displayName = "ListItem";

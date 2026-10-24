@@ -1,90 +1,133 @@
 ---
-title: "License Compliance"
-description: "Manage SPDX licenses, handle cross-tree compliance, and generate attribution automatically in W0rkTree."
+title: License Compliance
+description: Attach SPDX licenses to paths in a tree and control what other tenants may read, modify, or redistribute.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-W0rkTree treats open-source licensing and corporate compliance as first-class citizens. By integrating license metadata directly into the tree structure and dependency graph, W0rkTree automates compliance checks, prevents accidental licensing violations, and generates attribution reports with zero manual overhead.
+Trees often mix code with different licenses: your own proprietary code, a vendored MIT library, a GPL tool. W0rkTree lets a tree's owners record that per path with **license rules**, and the server enforces them for callers outside the owning tenant.
 
-## SPDX License Assignment
+## License rules
 
-Every tree in a W0rkTree repository can be assigned a specific license using standard [SPDX license identifiers](https://spdx.org/licenses/). Because trees are fully isolated, you can safely mix open-source and proprietary code within the same repository.
+A `LicenseRule` assigns an SPDX license and a **grant** to every path matching a glob:
 
-To assign a license to a tree, use the CLI:
+| Field | Meaning |
+|---|---|
+| `path_glob` | `**`-style glob with `/` separators, for example `vendor/**`, `third_party/zlib/**`, or `**/*.proto`. One rule per glob per tree. |
+| `spdx` | SPDX license identifier, for example `MIT`, `Apache-2.0`, `GPL-3.0-only`, or `LicenseRef-Proprietary`. |
+| `grant` | What non-owning tenants may do with matching paths: `read-only`, `modify`, or `redistribute`. |
+
+The response objects also carry `tree_id`.
+
+### Grants
+
+| Grant | Read | Push changes | Export / redistribute |
+|---|---|---|---|
+| `read-only` | Yes | No | No |
+| `modify` | Yes | Yes | No |
+| `redistribute` | Yes | Yes | Yes |
+
+Rules restrict **non-owning tenants** only. The tenant that owns the tree is not limited by its own license rules.
+
+## How the server enforces rules
+
+- **Pushes.** For every push, the server computes the changed paths and asks the license checker whether the pusher's tenant may write them. If a changed path is covered by a rule whose grant does not allow modification, the whole push is rejected with `license_violation`, naming the offending `path` and its `license`.
+- **Reads and exports.** When a caller from another tenant reads or exports covered paths, the server checks the grant and refuses with `license_violation` if the paths may not be read or exported by that caller.
+
+Other checks still apply first: a caller needs read access to the tree at all (see [tree visibility](/guides/multi-tenancy#tree-visibility)) and `tree:write` to push. License rules narrow what is allowed; they never grant access on their own.
+
+A rejected push looks like any other push rejection: `wt push` exits with code 1 and prints the reason, here the path and license. Nothing from the rejected push becomes part of the branch. See [Branch Protection](/guides/branch-protection#push-rejections) for the other rejection kinds.
+
+## Set up rules
+
+Managing license rules requires `tree:admin` on the tree (tenant `admin` or `owner`).
+
+<Steps>
+<Step>
+
+### Inventory your licenses
+
+List the third-party directories in the tree and the license of each. Rules are matched by glob, so group paths by directory where you can.
+
+</Step>
+<Step>
+
+### Create the rules
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt tree license set frontend --spdx MIT
-wt tree license set backend/billing --spdx Proprietary
+curl -s -X PUT http://localhost:7420/api/v1/trees/acme/app/licenses \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"path_glob":"vendor/zlib/**","spdx":"Zlib","grant":"redistribute"}'
+
+curl -s -X PUT http://localhost:7420/api/v1/trees/acme/app/licenses \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"path_glob":"engine/**","spdx":"LicenseRef-Proprietary","grant":"read-only"}'
 ```
 
-This command updates the `.wt-tree/config.toml` file at the root of the tree:
+</Tab>
+<Tab value="PowerShell">
 
-```toml
-[license]
-spdx = "MIT"
-copyright = "Copyright (c) 2025 Acme Corp"
+```powershell
+$headers = @{ Authorization = "Bearer $env:WT_TOKEN" }
+$uri = "http://localhost:7420/api/v1/trees/acme/app/licenses"
+
+Invoke-RestMethod -Method Put -Headers $headers -ContentType "application/json" -Uri $uri `
+  -Body '{"path_glob":"vendor/zlib/**","spdx":"Zlib","grant":"redistribute"}'
+
+Invoke-RestMethod -Method Put -Headers $headers -ContentType "application/json" -Uri $uri `
+  -Body '{"path_glob":"engine/**","spdx":"LicenseRef-Proprietary","grant":"read-only"}'
 ```
 
-Once assigned, W0rkTree enforces compliance rules whenever code moves into or out of the tree.
+</Tab>
+</Tabs>
 
-## License Compatibility & Grants
+`PUT` creates the rule for that `path_glob`, or replaces it if one exists.
 
-When you declare a dependency between two trees, W0rkTree evaluates their SPDX licenses for compatibility. If a tree with an Apache-2.0 license tries to depend on a tree with a GPL-3.0 license, W0rkTree flags the potential copyleft violation before the dependency is established.
+</Step>
+<Step>
 
-```bash
-wt tree depend platform-api --on shared-gpl-lib
-# Error: License incompatibility detected.
-# Tree 'platform-api' (Apache-2.0) cannot safely depend on 'shared-gpl-lib' (GPL-3.0)
-# without inheriting copyleft restrictions.
+### Review and prune
+
+```text
+GET    /api/v1/trees/{tenant}/{tree}/licenses              list rules
+DELETE /api/v1/trees/{tenant}/{tree}/licenses?path_glob=   remove the rule for one glob
 ```
 
-### Exception Grants
+URL-encode the glob when deleting, for example `?path_glob=vendor%2Fzlib%2F%2A%2A`.
 
-In enterprise environments, legal teams often grant specific exceptions for internal usage. You can override the compatibility check by creating a **License Grant** in your `.wt/access/policies.toml`:
+</Step>
+</Steps>
 
-```toml
-[[license_grants]]
-from_tree = "shared-gpl-lib"
-to_tree = "platform-api"
-approved_by = "legal-team@example.com"
-reason = "Internal microservice boundary; copyleft does not trigger."
+In the admin panel, open **Trees**, select the tree, and manage its license rules from the tree detail page. See the [Admin Panel guide](/guides/admin-panel).
+
+## Detecting licenses with the SDK
+
+The Rust SDK includes a helper that recognizes an SPDX id from a `LICENSE` file body or an `SPDX-License-Identifier:` header:
+
+```rust
+use worktree_sdk::scan::detect_license;
+
+let body = std::fs::read("vendor/zlib/LICENSE")?;
+if let Some(id) = detect_license(&body) {
+    println!("vendor/zlib/** -> {id}");
+}
 ```
 
-With the grant in place, the dependency command will succeed while leaving a clear audit trail of the legal exception.
+It returns `None` when the license is not recognized. It is a library function for building your own tooling, such as a script that proposes rules for each vendored directory. It does not create rules by itself, and `wt` does not call it for you.
 
-## Export Handling and Attribution
+## Tips
 
-When you export a W0rkTree tree to a standard Git repository (for example, to publish an open-source library to GitHub), W0rkTree automatically ensures the exported repository is fully compliant.
+- **Prefer directory globs.** `vendor/foo/**` is easier to audit than many per-file rules.
+- **Use `LicenseRef-` ids** for licenses that have no SPDX identifier, such as internal proprietary terms.
+- **Keep rules next to the code they describe.** When you add or move a vendored directory, update its rule in the same change window.
 
-```bash
-wt git export --tree frontend --output ./frontend-git
-```
-
-During the export process, W0rkTree performs several automated steps:
-
-1. **License Injection:** It ensures the canonical `LICENSE` file matching the SPDX identifier is present in the root directory.
-2. **Author Attribution:** It scans all commits and generates an `AUTHORS` or `CONTRIBUTORS` file based on the staged snapshots pushed to the tree.
-3. **Third-Party Notices:** If the exported tree depends on other internally tracked open-source trees, W0rkTree compiles their licenses into a `THIRDPARTY_NOTICES.txt` file.
-
-<Callout type="info">
-By automating attribution on export, your engineers never have to worry about manually tracking third-party licenses before a release. The `wt git export` command guarantees the resulting Git repository is legally sound.
+<Callout type="warn" title="Roadmap">
+  `wt` subcommands for managing license rules are not part of v0.2.0. Use the REST API or the admin panel.
 </Callout>
-
-## Auditing Compliance
-
-Legal and security teams can run repository-wide audits to verify that all trees have assigned licenses and that no incompatible dependencies exist.
-
-Run the audit command to generate a full compliance report:
-
-```bash
-wt license audit
-```
-
-For automated CI/CD pipelines, output the report as JSON:
-
-```bash
-wt license audit --format json > compliance-report.json
-```
-
-If the audit detects missing licenses or unapproved dependencies, it exits with a non-zero status code, allowing you to block merges or flag issues during the review process.
