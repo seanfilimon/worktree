@@ -492,7 +492,9 @@ func (s *fakeStore) DeleteLicenseRule(_ context.Context, tree, glob string) erro
 // ---- Authenticator ----
 
 type fakeAuth struct {
-	store     *fakeStore
+	store *fakeStore
+	// resolve maps a raw bearer token to a principal (set by the fixture).
+	resolve   func(raw string) *domain.Principal
 	mu        sync.Mutex
 	passwords map[string]string // username -> password
 	regOpen   bool
@@ -537,7 +539,12 @@ func (f *fakeAuth) Login(ctx context.Context, username, password string) (string
 	return tok, a, err
 }
 
-func (f *fakeAuth) Authenticate(context.Context, string) (*domain.Principal, error) {
+func (f *fakeAuth) Authenticate(_ context.Context, raw string) (*domain.Principal, error) {
+	if f.resolve != nil {
+		if p := f.resolve(raw); p != nil {
+			return p, nil
+		}
+	}
 	return nil, domain.ErrUnauthenticated
 }
 

@@ -20,7 +20,6 @@ import (
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
-	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 )
 
@@ -155,7 +154,8 @@ func newFixture(t testing.TB, mutate ...func(*Deps)) *fixture {
 	for _, m := range mutate {
 		m(&f.deps)
 	}
-	f.h = f.withTestAuth(New(f.deps))
+	f.auth.resolve = f.principalFor
+	f.h = New(f.deps)
 	return f
 }
 
@@ -166,21 +166,13 @@ func must(t testing.TB, err error) {
 	}
 }
 
-// withTestAuth stands in for the real iam middleware: "Bearer <username>"
-// or "Bearer <raw token>" attaches the matching principal.
-func (f *fixture) withTestAuth(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if raw := bearerToken(r); raw != "" {
-			p := f.tokens[raw]
-			if p == nil {
-				p = f.users[raw]
-			}
-			if p != nil {
-				r = r.WithContext(iam.WithPrincipal(r.Context(), p))
-			}
-		}
-		h.ServeHTTP(w, r)
-	})
+// principalFor backs the fake Authenticator used by the real iam middleware:
+// "Bearer <username>" or "Bearer <raw token>" resolves to the matching principal.
+func (f *fixture) principalFor(raw string) *domain.Principal {
+	if p := f.tokens[raw]; p != nil {
+		return p
+	}
+	return f.users[raw]
 }
 
 // do performs a request; body may be nil, a string (sent verbatim) or a
