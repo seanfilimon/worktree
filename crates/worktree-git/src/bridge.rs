@@ -252,7 +252,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration: needs sdk-core"]
     fn import_builds_snapshot_graph() {
         isolate_wt_home();
         let s = sample();
@@ -354,7 +353,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration: needs sdk-core"]
     fn reimport_yields_identical_snapshot_ids() {
         isolate_wt_home();
         let s = sample();
@@ -387,7 +385,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration: needs sdk-core"]
     fn import_selected_branch_only() {
         isolate_wt_home();
         let s = sample();
@@ -443,7 +440,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration: needs sdk-core"]
     fn round_trip_reproduces_trees_and_topology() {
         isolate_wt_home();
         let s = sample();
@@ -515,7 +511,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration: needs sdk-core"]
     fn export_into_source_reuses_original_commits_and_is_incremental() {
         isolate_wt_home();
         let s = sample();
@@ -569,7 +564,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration: needs sdk-core"]
     fn export_native_worktree_is_deterministic_and_incremental() {
         isolate_wt_home();
         let wt = tempfile::tempdir().unwrap();

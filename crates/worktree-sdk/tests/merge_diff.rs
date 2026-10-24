@@ -84,7 +84,6 @@ fn name_only_diffs_need_no_content() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn diffs_include_patches_and_stats() {
     let fx = Fixture::new();
     fx.write("a.txt", "one\ntwo\n");
@@ -104,7 +103,6 @@ fn diffs_include_patches_and_stats() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn clean_three_way_merge_creates_two_parent_snapshot() {
     let fx = Fixture::new();
     diverge(&fx, "ONE\n2\n3\n4\n5\n", "1\n2\n3\n4\nFIVE\n");
@@ -128,7 +126,6 @@ fn clean_three_way_merge_creates_two_parent_snapshot() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn no_ff_merge_records_merge_snapshot() {
     let fx = Fixture::new();
     fx.write("a.txt", "1\n");
@@ -163,7 +160,6 @@ fn no_ff_merge_records_merge_snapshot() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn conflicted_merge_continue_flow() {
     let fx = Fixture::new();
     diverge(&fx, "1\nMAIN\n3\n4\n5\n", "1\nFEATURE\n3\n4\n5\n");
@@ -226,7 +222,6 @@ fn conflicted_merge_continue_flow() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn snapshot_completes_resolved_merge() {
     let fx = Fixture::new();
     diverge(&fx, "1\nMAIN\n3\n4\n5\n", "1\nFEATURE\n3\n4\n5\n");
@@ -240,7 +235,6 @@ fn snapshot_completes_resolved_merge() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn abort_merge_restores_pre_merge_state() {
     let fx = Fixture::new();
     diverge(&fx, "1\nMAIN\n3\n4\n5\n", "1\nFEATURE\n3\n4\n5\n");
@@ -264,7 +258,6 @@ fn abort_merge_restores_pre_merge_state() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn merge_base_of_diverged_branches() {
     let fx = Fixture::new();
     diverge(&fx, "a\n", "b\n");

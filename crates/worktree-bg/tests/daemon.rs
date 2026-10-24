@@ -231,7 +231,6 @@ async fn wait_for(
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn auto_snapshot_after_inactivity() {
     isolate_wt_home();
     let home = tempfile::tempdir().unwrap();
@@ -272,7 +271,6 @@ async fn auto_snapshot_after_inactivity() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn snapshot_now_and_pause() {
     isolate_wt_home();
     let home = tempfile::tempdir().unwrap();
@@ -320,7 +318,6 @@ async fn snapshot_now_and_pause() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn metadata_and_ignored_paths_do_not_trigger() {
     isolate_wt_home();
     let home = tempfile::tempdir().unwrap();
@@ -341,7 +338,6 @@ async fn metadata_and_ignored_paths_do_not_trigger() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn watch_list_survives_restart_and_unwatch_stops_snapshots() {
     isolate_wt_home();
     let home = tempfile::tempdir().unwrap();
@@ -390,7 +386,6 @@ async fn watch_list_survives_restart_and_unwatch_stops_snapshots() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn no_auto_snapshot_during_merge() {
     isolate_wt_home();
     let home = tempfile::tempdir().unwrap();

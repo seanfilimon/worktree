@@ -331,7 +331,6 @@ fn revert_of_root_snapshot_empties_its_files() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-merge-diff"]
 fn revert_with_later_edits_merges_text() {
     let fx = Fixture::new();
     fx.write("a.txt", "1\n2\n3\n4\n5\n");

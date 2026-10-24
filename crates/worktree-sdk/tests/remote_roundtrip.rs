@@ -95,7 +95,6 @@ async fn clone_to(server: &FakeServer, dir: &Path) -> Repository {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_push_then_clone_round_trip() {
     let (_home, server) = setup().await;
     let a_dir = tempfile::tempdir().unwrap();
@@ -156,7 +155,6 @@ async fn remote_push_then_clone_round_trip() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_fetch_then_pull_fast_forwards() {
     let (_home, server) = setup().await;
     let a_dir = tempfile::tempdir().unwrap();
@@ -209,7 +207,6 @@ async fn remote_fetch_then_pull_fast_forwards() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_diverged_push_is_rejected_then_pull_merges() {
     let (_home, server) = setup().await;
     let a_dir = tempfile::tempdir().unwrap();
@@ -268,7 +265,6 @@ fn repo_has(repo: &Repository, id: &str) -> bool {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_pull_refuses_to_overwrite_uncommitted_changes() {
     let (_home, server) = setup().await;
     let a_dir = tempfile::tempdir().unwrap();
@@ -290,7 +286,6 @@ async fn remote_pull_refuses_to_overwrite_uncommitted_changes() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_tags_travel_with_push_clone_and_fetch() {
     let (_home, server) = setup().await;
     let a_dir = tempfile::tempdir().unwrap();
@@ -329,7 +324,6 @@ async fn remote_tags_travel_with_push_clone_and_fetch() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_stage_lists_wip_until_pushed() {
     let (_home, server) = setup().await;
     let a_dir = tempfile::tempdir().unwrap();
@@ -382,7 +376,6 @@ async fn remote_stage_lists_wip_until_pushed() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_server_rejections_are_reported() {
     use wire::push_rejection::{Reason, ReviewRequired};
     let (_home, server) = setup().await;
@@ -414,7 +407,6 @@ async fn remote_server_rejections_are_reported() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_push_preconditions() {
     let (home, server) = setup().await;
     let dir = tempfile::tempdir().unwrap();
@@ -453,7 +445,6 @@ async fn remote_push_preconditions() {
 }
 
 #[tokio::test]
-#[ignore = "integration: needs sdk-core"]
 async fn remote_objects_stream_up_and_down_in_batches() {
     let (_home, server) = setup().await;
     let token = remote::load_credential(&server.url).unwrap().unwrap().token;

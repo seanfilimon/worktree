@@ -217,13 +217,26 @@ pub(crate) fn commits_oldest_first(
     Ok(walk.collect::<std::result::Result<_, _>>()?)
 }
 
-/// Branch each commit is attributed to: the first branch in `priority`
-/// order whose history contains it.
+/// Branch each commit is attributed to.
+///
+/// A commit belongs to the first branch in `priority` order whose
+/// *first-parent* chain contains it (the branch it was made on, as with
+/// `git log --first-parent`). Commits reachable only through merge parents
+/// fall back to the first branch in `priority` order whose full history
+/// contains them.
 pub(crate) fn assign_branches(
     git: &git2::Repository,
     priority: &[(String, Oid)],
 ) -> Result<HashMap<Oid, String>> {
     let mut assigned = HashMap::new();
+    for (name, tip) in priority {
+        let mut walk = git.revwalk()?;
+        walk.push(*tip)?;
+        walk.simplify_first_parent()?;
+        for oid in walk {
+            assigned.entry(oid?).or_insert_with(|| name.clone());
+        }
+    }
     let mut done: Vec<Oid> = Vec::new();
     for (name, tip) in priority {
         let mut walk = git.revwalk()?;
@@ -565,11 +578,15 @@ mod tests {
         assert!(pos(c1) < pos(c2) && pos(c1) < pos(f1));
         assert!(pos(c2) < pos(m) && pos(f1) < pos(m));
 
-        // main has priority: every commit reachable from main belongs to it.
+        // main has priority: its first-parent chain (m, c2, c1) belongs to it;
+        // f1 was made on feature and keeps that attribution after the merge.
         let priority = vec![("main".to_owned(), m), ("feature".to_owned(), f1)];
         let assigned = assign_branches(&fx.repo, &priority).unwrap();
-        assert!(assigned.values().all(|b| b == "main"));
         assert_eq!(assigned.len(), 4);
+        assert_eq!(assigned[&m], "main");
+        assert_eq!(assigned[&c2], "main");
+        assert_eq!(assigned[&c1], "main");
+        assert_eq!(assigned[&f1], "feature");
 
         // feature first: c1 and f1 belong to feature, the rest to main.
         let priority = vec![("feature".to_owned(), f1), ("main".to_owned(), m)];

@@ -266,7 +266,6 @@ fn git_import_of_a_missing_repository_fails() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn init_creates_a_worktree() {
     let sb = Sandbox::new();
     sb.wt(&["init", "--name", "proj", "--branch", "trunk"])
@@ -287,7 +286,6 @@ fn init_creates_a_worktree() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn init_json_and_explicit_path() {
     let sb = Sandbox::new();
     let out = sb.json(&["init", "sub/project"]);
@@ -299,7 +297,6 @@ fn init_json_and_explicit_path() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn commands_outside_a_worktree_suggest_init() {
     let sb = Sandbox::new();
     for args in [
@@ -317,7 +314,6 @@ fn commands_outside_a_worktree_suggest_init() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn snapshot_status_and_log() {
     let sb = Sandbox::init();
     sb.write("a.txt", "one\n");
@@ -419,7 +415,6 @@ fn snapshot_status_and_log() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core + sdk-merge-diff"]
 fn show_and_reflog() {
     let sb = Sandbox::init();
     sb.write("a.txt", "one\n");
@@ -469,7 +464,6 @@ fn show_and_reflog() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn branches_and_switching() {
     let sb = Sandbox::init();
     sb.write("a.txt", "base\n");
@@ -541,7 +535,6 @@ fn branches_and_switching() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core + sdk-merge-diff"]
 fn merge_fast_forward_and_three_way() {
     let sb = Sandbox::init();
     sb.write("a.txt", "base\n");
@@ -576,7 +569,6 @@ fn merge_fast_forward_and_three_way() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core + sdk-merge-diff"]
 fn merge_conflicts_exit_with_code_3() {
     let sb = Sandbox::init();
     sb.write("a.txt", "line one\nshared line\nline three\n");
@@ -647,7 +639,6 @@ fn merge_conflicts_exit_with_code_3() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core + sdk-merge-diff"]
 fn diff_modes() {
     let sb = Sandbox::init();
     sb.write("a.txt", "old line\nkept\n");
@@ -721,7 +712,6 @@ fn diff_modes() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn tags() {
     let sb = Sandbox::init();
     sb.write("a.txt", "v1\n");
@@ -762,7 +752,6 @@ fn tags() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core + sdk-merge-diff"]
 fn revert_and_restore() {
     let sb = Sandbox::init();
     sb.write("a.txt", "version one\n");
@@ -792,7 +781,6 @@ fn revert_and_restore() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn config_get_set_list() {
     let sb = Sandbox::init();
     assert_eq!(sb.stdout(&["config", "get", "user.name"]), "Test User\n");
@@ -827,7 +815,6 @@ fn config_get_set_list() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn remotes() {
     let sb = Sandbox::init();
     assert_eq!(sb.json(&["remote", "list"]), serde_json::json!([]));
@@ -862,7 +849,6 @@ fn remotes() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn ignore_patterns() {
     let sb = Sandbox::init();
     sb.json(&["ignore", "add", "*.log"]);
@@ -894,7 +880,6 @@ fn ignore_patterns() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn nested_trees() {
     let sb = Sandbox::init();
     sb.write("root.txt", "root\n");
@@ -951,7 +936,6 @@ fn nested_trees() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn dash_c_runs_elsewhere() {
     let sb = Sandbox::new();
     fs::create_dir_all(sb.path().join("proj")).expect("mkdir");
@@ -961,7 +945,6 @@ fn dash_c_runs_elsewhere() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn archive_tar_gz_and_zip() {
     let sb = Sandbox::init();
     sb.write("README.md", "# readme\n");
@@ -1015,7 +998,6 @@ fn archive_tar_gz_and_zip() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core"]
 fn json_output_is_one_document_per_command() {
     let sb = Sandbox::init();
     sb.write("a.txt", "a\n");
@@ -1041,10 +1023,9 @@ fn json_output_is_one_document_per_command() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core + sdk-scan"]
 fn secret_scan_blocks_snapshots() {
     let sb = Sandbox::init();
-    sb.write("config.env", "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");
+    sb.write("config.env", "AWS_ACCESS_KEY_ID=AKIAZ4Q7RJ2KXW3MPLQ9\n");
     sb.wt(&["snapshot", "-m", "oops"])
         .assert()
         .code(1)
@@ -1060,7 +1041,6 @@ fn secret_scan_blocks_snapshots() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "integration: needs sdk-remote"]
 fn whoami_without_credentials() {
     Sandbox::new()
         .wt(&["whoami", "http://127.0.0.1:9"])
@@ -1073,7 +1053,6 @@ fn whoami_without_credentials() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-remote"]
 fn logout_without_credentials() {
     let sb = Sandbox::new();
     let out = sb.json(&["logout", "http://127.0.0.1:9"]);
@@ -1084,7 +1063,6 @@ fn logout_without_credentials() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-remote"]
 fn login_to_an_unreachable_server_fails() {
     Sandbox::new()
         .wt(&[
@@ -1101,7 +1079,6 @@ fn login_to_an_unreachable_server_fails() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-core + sdk-remote"]
 fn push_without_a_remote() {
     let sb = Sandbox::init();
     sb.write("a.txt", "a\n");
@@ -1114,7 +1091,6 @@ fn push_without_a_remote() {
 }
 
 #[test]
-#[ignore = "integration: needs bg-daemon"]
 fn daemon_status_when_not_running() {
     Sandbox::new()
         .wt(&["daemon", "status"])
@@ -1125,7 +1101,6 @@ fn daemon_status_when_not_running() {
 }
 
 #[test]
-#[ignore = "integration: needs git-bridge (and a `git` executable)"]
 fn git_import_and_export() {
     let sb = Sandbox::new();
     let git_dir = sb.path().join("src").join("gitrepo");

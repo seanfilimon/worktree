@@ -481,10 +481,9 @@ fn executable_bit_is_tracked() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-scan"]
 fn secret_scan_blocks_snapshot() {
     let fx = Fixture::new();
-    fx.write("config.env", "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");
+    fx.write("config.env", "AWS_ACCESS_KEY_ID=AKIAZ4Q7RJ2KXW3MPLQ9\n");
     let err = fx
         .repo
         .snapshot(
@@ -505,7 +504,6 @@ fn secret_scan_blocks_snapshot() {
 }
 
 #[test]
-#[ignore = "integration: needs sdk-scan"]
 fn secret_scan_passes_clean_files() {
     let fx = Fixture::new();
     fx.write("main.rs", "fn main() { println!(\"hi\"); }\n");
