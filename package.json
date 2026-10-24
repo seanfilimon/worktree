@@ -22,7 +22,6 @@
     "node": ">=22.0.0"
   },
   "workspaces": [
-    "apps/web",
-    "crates/worktree-admin"
+    "apps/*"
   ]
 }
