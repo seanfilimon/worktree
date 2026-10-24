@@ -6,7 +6,7 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 export const metadata: Metadata = {
   title: "W0rkTree - Next-Generation Version Control",
   description:
-    "Modern version control system with nested trees, automatic change tracking, fine-grained permissions, and full Git compatibility. Built in Rust for speed and reliability.",
+    "Version control with nested trees, automatic change tracking, team-visible work in progress and a self-hosted multi-tenant server. Rust CLI, Go server, Git import and export.",
   keywords: [
     "version control",
     "git",
@@ -21,14 +21,14 @@ export const metadata: Metadata = {
   openGraph: {
     title: "W0rkTree - Next-Generation Version Control",
     description:
-      "Modern version control system with nested trees, automatic change tracking, and full Git compatibility.",
+      "Version control with nested trees, automatic change tracking, team-visible work in progress and Git import and export.",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "W0rkTree - Next-Generation Version Control",
     description:
-      "Modern version control system with nested trees, automatic change tracking, and full Git compatibility.",
+      "Version control with nested trees, automatic change tracking, team-visible work in progress and Git import and export.",
   },
 };
 

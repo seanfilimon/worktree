@@ -1,74 +1,116 @@
 ---
-title: Configuration
-description: Configure the W0rkTree server daemon, storage engine, and networking.
+title: Server Configuration
+description: Every command-line flag and environment variable accepted by worktree-server, with defaults and examples.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-## Configuration File
+The server is configured with command-line flags and environment variables. There is no configuration file.
 
-The server reads configuration from `~/.worktree/server.toml` or the path specified by `--config`.
+## Flags and environment variables
 
-```toml
-[server]
-host = "0.0.0.0"
-port = 7433
-max_connections = 1000
-workers = 4
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--addr` | `WT_ADDR` | `:7420` | Listen address. One port serves gRPC (h2c), REST, SSE, `/healthz`, `/metrics`, and `/admin/`. Use `127.0.0.1:7420` to listen on loopback only (recommended behind a reverse proxy). |
+| `--data` | `WT_DATA` | `./wt-data` | Data directory. Holds `meta.db` (bbolt metadata) and `objects/` (content-addressed blobs and manifests). Created if missing. See [Storage](/docs/server/storage). |
+| `--admin-user` | `WT_ADMIN_USER` | `admin` | Username of the server admin account managed at startup. |
+| `--admin-password` | `WT_ADMIN_PASSWORD` | unset | When set, the server ensures the admin account exists at startup: it is created if missing, or promoted to server admin if it already exists. When unset, no admin account is managed. |
+| `--admin-dir` | `WT_ADMIN_DIR` | unset | Directory containing the static admin panel build (normally `apps/admin/dist`). Served at `/admin/` with `index.html` fallback. When unset, the panel is not served. |
+| `--allow-registration` | `WT_ALLOW_REGISTRATION` | `true` | Allow self-service account creation through `POST /api/v1/auth/register` (and `wt register`). |
+| `--log-level` | none | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. |
 
-[tenants]
-default_storage_quota_gb = 500
-allow_public_discovery = false
+Additional environment variable:
 
-[limits]
-rate_limit_rps = 1000
-max_concurrent_streams = 100
+| Environment variable | Default | Description |
+|---|---|---|
+| `WT_CORS_ORIGINS` | unset | Extra browser origins allowed by CORS, as a comma-separated list (for example `https://admin.example.com`). `http://localhost:5173` (the Vite dev server for the admin panel) is always allowed. |
 
-[staged]
-retention_days = 14
-max_size_mb = 500
+### Precedence
 
-[audit]
-enabled = true
-log_dir = "/var/log/worktree/audit"
-retention_days = 90
+A flag given on the command line overrides the matching environment variable, which overrides the built-in default.
 
-[storage]
-data_dir = "/var/lib/worktree"
-cache_size_mb = 512
-compression = "zstd"
+### Boolean flags
 
-[tracking]
-enabled = true
-debounce_ms = 200
-auto_snapshot = true
-ignore_patterns = ["*.tmp", "node_modules/**", "target/**"]
+`--allow-registration` is a boolean flag. Turn it off with an explicit value: `--allow-registration=false`. The environment variable accepts `true` or `false`.
 
-[tracking.validation]
-max_file_size = "50MB"
-forbidden_patterns = ["\\.env$", "secret"]
+### Fixed settings
 
-[git]
-enabled = true
-auto_fetch = true
-fetch_interval = 300
+These values are not configurable in v0.2.0:
 
-[logging]
-level = "info"
-format = "json"
-file = "/var/log/worktree/server.log"
+| Setting | Value |
+|---|---|
+| Session token lifetime (tokens issued by login) | 30 days |
+| gRPC maximum message size | 64 MiB, both directions |
+| SSE heartbeat interval | 15 seconds |
+| Default audit query limit | 100 entries |
+
+## Examples
+
+### Local development
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+./worktree-server --admin-password dev --log-level debug
 ```
 
-## Environment Variables
+</Tab>
+<Tab value="PowerShell">
 
-| Variable | Description | Default |
-|---|---|---|
-| `WT_SERVER_HOST` | Bind address | `127.0.0.1` |
-| `WT_SERVER_PORT` | Listen port | `7433` |
-| `WT_DATA_DIR` | Data directory | `~/.worktree/data` |
-| `WT_LOG` | Log level | `info` |
-| `WT_CACHE_SIZE` | Cache size in MB | `512` |
+```powershell
+.\worktree-server.exe --admin-password dev --log-level debug
+```
 
-<Callout type="info">
-Environment variables take precedence over config file values.
+</Tab>
+</Tabs>
+
+### Production-style, configured through the environment
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+export WT_ADDR=127.0.0.1:7420
+export WT_DATA=/var/lib/worktree/data
+export WT_ADMIN_USER=root
+export WT_ADMIN_PASSWORD='use-a-long-random-secret'
+export WT_ADMIN_DIR=/opt/worktree/admin
+export WT_ALLOW_REGISTRATION=false
+export WT_CORS_ORIGINS=https://git.example.com
+./worktree-server
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$env:WT_ADDR = '127.0.0.1:7420'
+$env:WT_DATA = 'D:\worktree\data'
+$env:WT_ADMIN_USER = 'root'
+$env:WT_ADMIN_PASSWORD = 'use-a-long-random-secret'
+$env:WT_ADMIN_DIR = 'D:\worktree\admin'
+$env:WT_ALLOW_REGISTRATION = 'false'
+$env:WT_CORS_ORIGINS = 'https://git.example.com'
+.\worktree-server.exe
+```
+
+</Tab>
+</Tabs>
+
+### Overriding one value with a flag
+
+```bash
+WT_ADDR=:7420 ./worktree-server --addr 127.0.0.1:9000
+```
+
+The server listens on `127.0.0.1:9000` because the flag wins over `WT_ADDR`.
+
+<Callout type="warn" title="Secrets">
+  Prefer `WT_ADMIN_PASSWORD` over `--admin-password` outside local testing; command-line arguments are visible to other users in process listings. With systemd, load it from an `EnvironmentFile` readable only by the service user. See [Deployment](/docs/server/deployment).
 </Callout>
+
+## Not configurable in v0.2.0
+
+TLS certificates, rate limits and plan quotas, OAuth/SSO providers, and encryption at rest are not available in v0.2.0. They are on the Roadmap. Terminate TLS at a reverse proxy instead.

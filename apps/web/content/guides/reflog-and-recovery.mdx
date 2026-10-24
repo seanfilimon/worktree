@@ -1,127 +1,181 @@
 ---
-title: "Reflog & Recovery"
-description: "Learn how to use the reflog to undo mistakes, recover deleted branches, and restore lost work in W0rkTree."
+title: Reflog and Recovery
+description: Use the append-only history model, wt reflog, wt revert, wt restore and branch archive/restore to undo mistakes and recover lost work, and know what the server guarantees.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-W0rkTree is designed to be highly forgiving. Thanks to the background worker continuously creating staged snapshots, combined with a robust reference log (reflog), permanently losing work is incredibly difficult. 
+W0rkTree never rewrites history. Undoing something always means **adding** to history, and anything that was ever snapshotted stays reachable. This page shows how to find earlier states and get back to them.
 
-This guide covers how to undo mistakes, navigate your local history, and recover deleted branches or lost changes.
+## The append-only model
 
-## Understanding the Reflog
+| Thing | Guarantee |
+|---|---|
+| Snapshots | Immutable. No command rewrites or deletes one. There is no `amend`, `rebase` or `reset`. |
+| Undo | `wt revert` creates a **new** snapshot that undoes an earlier one. |
+| Branches | Never hard-deleted. `wt branch archive` hides a branch; `wt branch restore` brings it back with all its history. |
+| Reflog | Every ref-moving action is appended to `.wt/trees/<tree>/reflog.jsonl`. Entries are never removed. |
+| Server | Snapshots are immutable, pushes must descend from the server tip, there is no force push, and the audit log is append-only. |
 
-Whenever a branch pointer is updated—whether by a commit, a merge, a rebase, or a reset—W0rkTree records the previous state in the **reflog**. The reflog is a chronological, local-only ledger of every movement your references have made.
+The one thing that can be lost is work that was **never snapshotted**: uncommitted edits discarded by `wt restore` or `wt switch --force`. Running the [daemon](/guides/auto-tracking-setup) closes most of that gap, because it snapshots your work automatically after 30 seconds of inactivity.
 
-To view your reflog for the current tree, run:
+## `wt reflog`
+
+```text
+wt reflog [-n N]
+```
+
+Shows the selected tree's reflog, newest first. Each entry has a time, tree, branch, action, the **old** and **new** snapshot ids, and a message.
+
+| Action | Recorded by |
+|---|---|
+| `init` | `wt init` |
+| `snapshot`, `auto-snapshot` | `wt snapshot`, the daemon |
+| `switch` | `wt switch` |
+| `branch.create`, `branch.archive` | `wt branch create`, `wt branch archive` |
+| `merge`, `fast-forward` | `wt merge`, `wt pull` |
+| `revert` | `wt revert` |
+| `restore` | `wt restore` |
+| `pull`, `push` | `wt pull`, `wt push` |
+| `tag.create`, `tag.delete` | `wt tag create`, `wt tag delete` |
 
 ```bash
-wt reflog
+wt reflog -n 20
+wt --tree frontend reflog
 ```
 
-The output looks like this:
-
-```txt
-abc1234 HEAD@{0}: commit: Implement new checkout flow
-def5678 HEAD@{1}: reset: moving to def5678
-9ab3456 HEAD@{2}: merge feature/auth: Fast-forward
-def5678 HEAD@{3}: branch switch: from main to feature/checkout
-```
-
-Each entry shows the snapshot hash, the reflog syntax (`HEAD@{n}`), and the action that caused the pointer to move. `HEAD@{0}` is where you are right now, `HEAD@{1}` is where you were one action ago, and so on.
-
-## Recovery Workflows
-
-### Recovering from a Bad Reset
-
-If you perform a `wt reset --hard` and realize you just wiped out commits you actually needed, you can use the reflog to travel back in time.
-
-1. Run `wt reflog` to find the snapshot hash before the reset occurred.
-2. Reset your branch back to that hash:
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt reset --hard HEAD@{1}
+# Snapshot ids that main pointed to before each merge
+wt reflog --json | jq -r '.[] | select(.action == "merge" and .branch == "main") | .old'
 ```
 
-Because W0rkTree objects are immutable and the reflog retains the reference, your "lost" commits are instantly restored.
+</Tab>
+<Tab value="PowerShell">
 
-### Rescuing a Deleted Branch
+```powershell
+wt reflog --json | ConvertFrom-Json |
+  Where-Object { $_.action -eq 'merge' -and $_.branch -eq 'main' } |
+  ForEach-Object old
+```
 
-If you accidentally delete a branch using `wt branch delete feature/auth`, it is not immediately gone from your local object store. You can easily bring it back.
+</Tab>
+</Tabs>
 
-1. Search the reflog to find the last known hash for that branch:
+Any id from the reflog (or a unique prefix of at least 4 characters) is a valid revision for `wt show`, `wt log`, `wt diff`, `wt restore --from`, `wt branch create --from` and `wt tag create`.
+
+## Recovery recipes
+
+### Discard uncommitted changes
 
 ```bash
-wt reflog | grep "feature/auth"
+wt restore src/app.rs     # one file back to HEAD
+wt restore                # the whole tree back to HEAD
 ```
 
-2. Recreate the branch pointing at that specific snapshot:
+`wt restore` overwrites working files with their content at a revision (default `HEAD`) and deletes files that do not exist there. It creates no snapshot and moves no branch. Uncommitted changes in those paths are gone afterwards, so snapshot first if in doubt.
+
+### Bring back a file from an earlier snapshot
 
 ```bash
-wt branch create feature/auth 9ab3456
+wt log --oneline -n 20                   # find the snapshot
+wt restore config/app.toml --from 4f9c2a1e
+wt diff
+wt snapshot -m "Restore config/app.toml from 4f9c2a1e"
 ```
 
-### Recovering Uncommitted Work
+`--from` accepts any revision: `HEAD~3`, `main~1`, `origin/main`, a tag such as `v1.0.0`.
 
-Unlike traditional version control where uncommitted working directory changes are fragile, W0rkTree's background worker continuously captures your work as **staged snapshots**. 
-
-If you accidentally delete a file or mess up your working directory *before* creating a formal commit, you can query the worker's staged snapshot history:
+### Undo a snapshot
 
 ```bash
-wt staged list
+wt revert HEAD            # undo the last snapshot
+wt revert 4f9c2a1e        # undo an older one
 ```
 
-Find the staged snapshot from right before your mistake, and restore your working directory to it:
+The revert is a normal snapshot that undoes the target's changes relative to its first parent. Both the original and the revert stay in history.
+
+### Undo something that was already pushed
+
+The server's history can only grow, so the fix is the same: revert locally and push the revert.
 
 ```bash
-wt restore --source <staged-snapshot-hash> -- path/to/file.ts
+wt revert 4f9c2a1e
+wt push
 ```
 
-<Callout type="info">
-Staged snapshots act as a continuous safety net. Even if you haven't run `wt commit` all day, the worker has been saving your progress in the background.
+### Recover after a bad merge
+
+If the merge **is still in progress** (it stopped with conflicts), abandon it:
+
+```bash
+wt merge --abort
+```
+
+If the merge **completed** (fast-forward or merge snapshot), choose one of:
+
+- **Revert it.** For a merge snapshot, `wt revert <merge-id>` undoes everything the merge brought in relative to the first parent (the branch you merged into). This is the right choice once the merge has been pushed.
+- **Restore the old content.** Find the pre-merge tip in the reflog (the `old` id of the `merge` or `fast-forward` entry), then restore the whole tree from it and snapshot:
+
+  ```bash
+  wt reflog -n 5
+  wt restore --from 7d2e91b0
+  wt snapshot -m "Back out the merge of feature/x"
+  ```
+
+- **Continue from the old state on a new branch.** Branch tips never move backwards, but you can start a branch at the pre-merge snapshot:
+
+  ```bash
+  wt branch create main-before-merge --from 7d2e91b0
+  wt switch main-before-merge
+  ```
+
+### Find work that seems lost
+
+Every snapshot that was ever taken is still in `.wt/`. Look in the reflog for the `new` ids of `snapshot`, `auto-snapshot` and `switch` entries, inspect them, and put a branch on the one you want:
+
+```bash
+wt reflog -n 50
+wt show 9a0c33f1 --stat
+wt branch create rescue --from 9a0c33f1
+```
+
+### Restore an archived branch
+
+```bash
+wt branch -a                       # archived branches are listed too
+wt branch restore feature/old-spike
+wt switch feature/old-spike
+```
+
+An archived name cannot be reused for a new branch until it is restored. The current branch and the default branch cannot be archived.
+
+### Recreate a deleted tag
+
+`wt tag delete` removes a tag **locally** only. Find the snapshot it pointed to (in `wt log`, or the `tag.delete` reflog entry) and tag it again:
+
+```bash
+wt tag create v1.2.0 3b8f02aa -m "Release 1.2.0"
+```
+
+If the tag had been pushed, the server still has it: there is no command to delete a tag on the server, and `wt fetch` downloads remote tags.
+
+## What the server guarantees
+
+| Guarantee | Detail |
+|---|---|
+| Immutable snapshots | A stored snapshot never changes; re-sending the same id with different content is rejected. |
+| No lost pushes | A push must descend from the current server tip, and tips move by compare-and-swap, so concurrent pushes cannot overwrite each other. |
+| No force push | There is no way to move a server branch backwards or to an unrelated snapshot. |
+| Branch deletion | Not available from `wt`. Protection rules can additionally forbid deletion with `no_delete`. See [Branch protection](/docs/server/branch-protection). |
+| Audit trail | Security-relevant actions (pushes, membership changes, protection changes and others) are appended to an append-only audit log. See [Monitoring](/docs/server/monitoring#audit-log). |
+| Verified objects | Every uploaded object is checked against its BLAKE3 hash. |
+
+<Callout type="warn" title="Limits of the guarantees">
+- **Deleting a server tree** (`DELETE /api/v1/trees/{tenant}/{tree}`, requires `tree:admin`) removes its metadata. Only a backup of the data directory brings it back. See [Storage](/docs/server/storage#backup).
+- **Local history is local.** Snapshots you have not pushed live only in your `.wt/`. Deleting `.wt/` deletes them. Push regularly.
+- Objects are not garbage-collected in v0.2.0, so storage only grows.
 </Callout>
-
-## Undoing Commits: Revert vs. Reset
-
-When you need to undo a formal commit, you must choose between `revert` and `reset`. The choice depends entirely on whether the commit has been **pushed** to the server.
-
-### Safe Undo: `wt revert`
-
-If the commit has already been pushed and shared with your team, you should never rewrite history. Instead, use `wt revert`.
-
-```bash
-wt revert abc1234
-```
-
-This command creates a *new* commit that applies the exact inverse of the changes made in `abc1234`. It preserves the public history while safely rolling back the feature.
-
-### Local Undo: `wt reset`
-
-If the commit is still local (i.e., it exists only in your staged history and hasn't been pushed), you can safely rewrite history using `wt reset`.
-
-- **`wt reset --soft HEAD~1`**: Moves the branch pointer back one commit, but leaves all the changes in your working directory and staging area. Use this if you want to amend the commit message or add more files.
-- **`wt reset --hard HEAD~1`**: Moves the branch pointer back and forcefully overwrites your working directory to match. 
-
-<Callout type="warn">
-Only use `wt reset --hard` if you are absolutely sure you want to discard your current working directory state. (Though, as mentioned above, the reflog and staged snapshots can usually bail you out if you make a mistake!)
-</Callout>
-
-## Garbage Collection
-
-Because the reflog and staged snapshots retain references to otherwise "orphaned" objects, your local `.wt/objects/` directory will grow over time. 
-
-W0rkTree automatically runs a garbage collection (GC) process in the background to clean up objects that are no longer reachable from any branch, tag, or active reflog entry.
-
-By default, reflog entries expire after **30 days**, and unreferenced staged snapshots expire after **14 days**. You can configure these retention periods in your global `.wt/config.toml`:
-
-```toml
-[storage.retention]
-reflog_days = 30
-staged_snapshots_days = 14
-```
-
-If you urgently need to free up disk space, you can force an immediate prune of expired objects:
-
-```bash
-wt gc --prune=now
-```

@@ -1,0 +1,143 @@
+---
+title: Branch Protection and Merge Requests
+description: Protect branches with glob-matched rules and move protected branches forward through approved, fast-forward merge requests.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+Branch protection rules restrict how branches matching a pattern may change. Merge requests are the path for changing a branch that does not accept direct pushes. Both are managed through the [REST API](/docs/server/rest-api#protections) and the admin panel; there are no `wt` subcommands for them in v0.2.0.
+
+## Protection rules
+
+A rule belongs to one tree and is keyed by its `pattern`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `tree_id` | string | Set by the server. |
+| `pattern` | string | Branch name glob. Matches with Go `path.Match` semantics: `*` matches any run of characters except `/`, `?` matches one character, `[...]` is a character class. |
+| `no_direct_push` | bool | Reject every direct push to matching branches. The branch only moves when a merge request is merged. |
+| `required_approvals` | int | Number of approvals a merge request needs before it can be merged into a matching branch. `0` means none. |
+| `allowed_pushers` | string array | Usernames allowed to push to matching branches. Empty means role-based only: anyone with `tree:write` may push. |
+| `no_delete` | bool | Reject deletion of matching branches. |
+
+Every rule whose pattern matches a branch applies to it. Branch listings report `protected: true` for branches that at least one rule matches.
+
+### Pattern examples
+
+| Pattern | Matches | Does not match |
+|---|---|---|
+| `main` | `main` | `main2`, `feature/main` |
+| `release/*` | `release/1.0`, `release/2026-10` | `release/1.0/hotfix`, `release` |
+| `*` | every branch without a `/` | `feature/x` |
+| `hotfix-?` | `hotfix-1`, `hotfix-a` | `hotfix-10` |
+
+### Creating a rule
+
+```bash
+curl -s -X PUT http://localhost:7420/api/v1/trees/acme/payments/protections \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"pattern":"main","no_direct_push":true,"required_approvals":2,"allowed_pushers":[],"no_delete":true}'
+```
+
+Requires `tree:admin`. Putting a rule with an existing pattern replaces it; `DELETE .../protections?pattern=main` removes it. See the [branch protection guide](/guides/branch-protection) for recommended setups.
+
+## How pushes are checked
+
+On every push the server first checks `tree:write`, then runs the branch protection check for the target branch (`review.CheckPush`), then license rules, object completeness, and ancestry (see the [push flow](/docs/server#what-happens-on-a-push)). The protection check rejects the push when a matching rule:
+
+- has `no_direct_push: true`, or
+- has a non-empty `allowed_pushers` list that does not contain the pusher's username.
+
+A rejected push returns a `branch_protection` rejection naming the rule, and `wt push` exits with an error. Nothing is written.
+
+Deleting a branch runs the equivalent check (`review.CheckDeleteBranch`), which rejects deletion when a matching rule has `no_delete: true`. Locally, branches are never hard-deleted; `wt branch archive` soft-deletes them (see [`wt branch`](/docs/cli/branches#wt-branch)).
+
+## Merge requests
+
+A merge request asks the server to move `target_branch` to the tip of `source_branch`.
+
+| State | Meaning |
+|---|---|
+| `open` | Created and awaiting approvals or merge. |
+| `merged` | The target was fast-forwarded. `merged_at` and `merged_snapshot` are set. |
+| `closed` | Closed without merging. |
+
+Numbers are per tree and start at 1. Each approval records `account_id`, `username`, and `at`.
+
+<Steps>
+<Step>
+
+### Push the source branch
+
+```bash
+wt switch -c feature/refunds
+wt snapshot -m "Add refund endpoint"
+wt push --branch feature/refunds
+```
+
+</Step>
+<Step>
+
+### Open
+
+```bash
+curl -s -X POST http://localhost:7420/api/v1/trees/acme/payments/merge-requests \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"Add refund endpoint","description":"","source_branch":"feature/refunds","target_branch":"main"}'
+```
+
+Requires `mr:create`. Publishes `mr.opened`. The response contains the merge request `number`.
+
+</Step>
+<Step>
+
+### Approve
+
+```bash
+curl -s -X POST http://localhost:7420/api/v1/trees/acme/payments/merge-requests/4/approve \
+  -H "Authorization: Bearer $REVIEWER_TOKEN"
+```
+
+Requires `mr:approve`. Publishes `mr.approved`.
+
+</Step>
+<Step>
+
+### Merge
+
+```bash
+curl -s -X POST http://localhost:7420/api/v1/trees/acme/payments/merge-requests/4/merge \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Requires `mr:merge`. The server:
+
+1. counts approvals against the `required_approvals` of every protection rule matching the target branch; too few fails with `review_required`;
+2. checks that the target tip is an ancestor of the source tip; if not, the merge fails with `409 conflict`;
+3. fast-forwards the target branch to the source tip (no new snapshot is created), sets the state to `merged`, and publishes `mr.merged`.
+
+</Step>
+</Steps>
+
+Close an open merge request without merging with `POST .../merge-requests/{n}/close`, which publishes `mr.closed`.
+
+### Resolving a merge conflict
+
+The server only fast-forwards; it never creates merge snapshots itself. When the target branch has moved on since the source branch was created, bring the target into the source locally and push:
+
+```bash
+wt pull --branch main
+wt switch feature/refunds
+wt merge main -m "Merge main into feature/refunds"
+# resolve any conflicts, then: wt merge --continue
+wt push --branch feature/refunds
+```
+
+The source tip now descends from the target tip, so retrying the merge request fast-forwards. See [`wt merge`](/docs/cli/branches#wt-merge) and the [merge strategies guide](/guides/merge-strategies).
+
+## Not in v0.2.0
+
+<Callout type="warn" title="Roadmap">
+  CI gates and required status checks are not implemented. The protocol reserves a `ci_checks_failed` rejection, but the server never produces it in v0.2.0. Merge readiness depends only on approvals and fast-forwardability.
+</Callout>

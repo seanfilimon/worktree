@@ -1,0 +1,140 @@
+---
+title: Event Stream (SSE)
+description: Subscribe to live server activity such as pushes, staged snapshots, tags, and merge requests over Server-Sent Events.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+The server publishes an event whenever something visible to a team happens: a snapshot is staged, a branch is pushed, a tree is created, a merge request changes state. Clients subscribe with a long-lived HTTP request that returns a `text/event-stream` (Server-Sent Events). The admin panel's dashboard uses this stream for its live activity feed.
+
+## Endpoint
+
+```text
+GET /api/v1/events?tenant=<tenant>&tree=<tree>
+Authorization: Bearer <token>
+Accept: text/event-stream
+```
+
+| Query | Meaning |
+|---|---|
+| `tenant` | Only events of this tenant. Optional. |
+| `tree` | Only events of this tree within `tenant`. Optional. |
+
+Omitting a filter matches everything the caller is allowed to see. The response stays open until the client disconnects or the server shuts down.
+
+## Authentication
+
+The token is sent in the `Authorization: Bearer <token>` header, like every other API request. There is no query-parameter form of the token.
+
+<Callout type="warn" title="Browser EventSource">
+  The browser `EventSource` API cannot set request headers, so it cannot send the bearer token. Browser clients should read the stream with `fetch()` and a streaming response body (example below). The admin panel served at `/admin/` is same-origin with the API, so no CORS setup is needed for it.
+</Callout>
+
+## Frame format
+
+Each event is one SSE frame: an `event:` line with the event type, a `data:` line with the event as single-line JSON, and a blank line.
+
+```text
+event: branch.pushed
+data: {"type":"branch.pushed","tenant_id":"b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e","tree_id":"e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9","actor":"alice","payload":{"branch":"main"},"at":"2026-10-21T09:30:00Z"}
+
+```
+
+Every 15 seconds the server writes an SSE comment line (a line starting with `:`) as a heartbeat. Comments carry no event and are ignored by SSE parsers; they keep proxies and load balancers from closing an idle connection. Their text is not significant.
+
+## Event object
+
+The `data` line is a JSON object with these fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | One of the event types below; same value as the `event:` line. |
+| `tenant_id` | string | Tenant the event belongs to. |
+| `tree_id` | string | Tree the event belongs to. Omitted for events without a tree. |
+| `actor` | string | Username that caused the event. Omitted when not applicable. |
+| `payload` | object | Event-specific details. Omitted when empty. |
+| `at` | string | RFC 3339 timestamp. |
+
+<Callout type="info">
+  The `payload` object varies by event type and is not a stable contract in v0.2.0; payloads shown on this page are illustrative. Use `type`, `tenant_id`, `tree_id`, and `actor` for routing, and re-read state through the [REST API](/docs/server/rest-api) when you need exact data.
+</Callout>
+
+## Event types
+
+| Type | Published when |
+|---|---|
+| `snapshot.staged` | A staged (WIP) snapshot is uploaded by `wt stage` or the daemon. |
+| `staged.cleared` | A staged snapshot is removed, for example when its author pushes that branch. |
+| `branch.pushed` | A push moves a branch tip. |
+| `branch.created` | A branch is created on the server (first push of a new branch). |
+| `tag.pushed` | A tag is pushed. |
+| `tree.created` | A tree is created, by REST or by a first push. |
+| `mr.opened` | A merge request is opened. |
+| `mr.approved` | A merge request receives an approval. |
+| `mr.merged` | A merge request is merged (the target branch fast-forwarded). |
+| `mr.closed` | A merge request is closed without merging. |
+
+## Delivery semantics
+
+- Events are delivered to subscribers that are connected when the event is published. There is no replay and no `Last-Event-ID` resume; after reconnecting, re-read current state over REST.
+- Publishing never blocks the server. A subscriber that reads too slowly drops events rather than slowing pushes down.
+- Order is the publish order within the server process.
+
+## Consuming the stream
+
+### curl
+
+`-N` disables output buffering so frames print as they arrive.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:7420/api/v1/events?tenant=acme&tree=payments"
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+curl.exe -N -H "Authorization: Bearer $TOKEN" "http://localhost:7420/api/v1/events?tenant=acme&tree=payments"
+```
+
+</Tab>
+</Tabs>
+
+### Browser or Node.js with fetch
+
+```js
+const res = await fetch('/api/v1/events?tenant=acme', {
+  headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+});
+const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+let buffer = '';
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += value;
+  let end;
+  while ((end = buffer.indexOf('\n\n')) !== -1) {
+    const frame = buffer.slice(0, end);
+    buffer = buffer.slice(end + 2);
+    const data = frame
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n');
+    if (!data) continue; // heartbeat comment
+    const event = JSON.parse(data);
+    console.log(event.type, event.actor, event.at);
+  }
+}
+```
+
+From another origin, add that origin to `WT_CORS_ORIGINS` (see [Configuration](/docs/server/configuration)).
+
+### Through a reverse proxy
+
+Disable response buffering for `/api/v1/events` and keep the read timeout above the 15 second heartbeat. See [Deployment](/docs/server/deployment).

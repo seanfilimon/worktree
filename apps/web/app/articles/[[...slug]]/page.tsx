@@ -5,6 +5,13 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { Callout } from "fumadocs-ui/components/callout";
+import { CURRENT_VERSION, CURRENT_VERSION_DATE } from "@/lib/site";
+
+/** Articles published before the current release may describe superseded designs. */
+function predatesRebuild(date: string | Date | undefined): boolean {
+  return date !== undefined && new Date(date) < new Date(CURRENT_VERSION_DATE);
+}
 
 function formatDate(date: string | Date): string {
   return new Date(date).toLocaleDateString("en-US", {
@@ -174,6 +181,15 @@ async function ArticlePage({ slug }: { slug: string[] }) {
       <div className="container mx-auto max-w-7xl px-6 py-12">
         <div className="flex gap-12">
           <article className="min-w-0 flex-1 max-w-3xl prose prose-neutral dark:prose-invert">
+            {predatesRebuild(page.data.date) && (
+              <Callout type="warn" title={`Written before ${CURRENT_VERSION}`}>
+                This article predates the {CURRENT_VERSION} rebuild. Some
+                features it describes work differently today or are still on
+                the <Link href="/roadmap">roadmap</Link>. The{" "}
+                <Link href="/docs">documentation</Link> reflects the current
+                release.
+              </Callout>
+            )}
             <MDX components={getMDXComponents()} />
           </article>
 

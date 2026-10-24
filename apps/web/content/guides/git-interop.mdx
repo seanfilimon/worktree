@@ -1,80 +1,162 @@
 ---
-title: "Git Interoperability"
-description: "Import Git repositories, export to Git, and use the remote bridge for seamless two-way sync."
+title: Git Interop
+description: Use wt git import and wt git export to bring Git history into W0rkTree and publish snapshots back to Git for Git-only tools, CI and mirrors.
 ---
 
-W0rkTree is designed to coexist with Git, not replace it overnight. Whether you are migrating an existing codebase or maintaining a two-way sync with a Git remote, the `worktree-git` bridge gives you full interoperability without data loss.
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-## Importing a Git Repository
+W0rkTree talks to Git through a local bridge, the `worktree-git` crate (libgit2), exposed as two commands:
 
-The fastest way to bring an existing Git project into W0rkTree is the `wt git import` command. It translates Git history, branches, and tags into W0rkTree's native object model while preserving every commit.
+```text
+wt git import GIT_PATH [DEST]
+wt git export GIT_PATH [--rev REV]
+```
+
+Both work on Git repositories **on disk**. Neither talks to a Git hosting server; use `git clone` and `git push` for that. The full reference is [`wt git`](/docs/cli/git#wt-git).
+
+## `wt git import`
+
+Creates a **new** worktree at `DEST` from the Git repository at `GIT_PATH`. The worktree and its root tree are named after `DEST`.
+
+| Git | Becomes |
+|---|---|
+| Every local branch | A branch of the root tree, with its full commit graph as snapshots. |
+| Commit parents | Snapshot parents. Merge commits become two-parent snapshots. |
+| Author, timestamp, message | Snapshot author, `created_at`, message. |
+| Lightweight and annotated tags | Tags (annotated tag messages are kept). |
+| `.gitignore` | `.wt/ignore` (same syntax). |
+| File contents | Blobs re-hashed with BLAKE3 into `.wt/objects/`. |
+
+After the import one branch is checked out in `DEST`, and the working tree is clean.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt git import https://github.com/your-org/your-repo.git
+wt git import ~/src/app ./app
+wt -C ./app log -n 5 --oneline
+wt -C ./app branch
 ```
 
-By default the importer maps the Git `main` branch to a root tree called `main`. You can control the mapping with the `--tree` flag:
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+wt git import C:\src\app .\app
+wt -C .\app log -n 5 --oneline
+wt -C .\app branch
+```
+
+</Tab>
+</Tabs>
+
+Import always creates a new worktree; it does not merge Git history into an existing one. Re-running it into a fresh directory produces fresh snapshot ids.
+
+## `wt git export`
+
+Writes snapshots into the Git repository at `GIT_PATH` (created if it does not exist) as Git commits with the same parents, author, timestamp and message.
+
+| Option | Effect |
+|---|---|
+| (none) | Export all branches of the tree. |
+| `--rev REV` | Export only `REV` (any [revision](/docs/cli#revision-syntax): branch, tag, `HEAD~N`, id prefix). |
+| `--tree <name>` (global) | Export a nested tree instead of the root tree. |
 
 ```bash
-wt git import https://github.com/your-org/your-repo.git --tree backend
+wt git export ../app-git
+wt git export ../app-git --rev main
+wt --tree frontend git export ../frontend-git
 ```
 
-After the import finishes, run `wt log` to verify that your full commit history is intact. Tags are stored under the imported tree and can be listed with `wt tag list`.
+### Incremental and deterministic
 
-## Exporting to Git
+The mapping from snapshot id to Git commit SHA is stored in `.wt/git-map.json`. On the next export, snapshots that are already mapped are skipped and only new ones are written, and the same snapshot always produces the same commit. That makes it safe to export repeatedly into the same Git repository, for example after every push, and to push the result to a Git host with normal fast-forward pushes.
 
-If you need to publish a W0rkTree tree as a standalone Git repository, use the export command. This builds a Git-compatible pack file from the selected tree and writes it to a local directory.
+<Callout type="info">
+`.wt/git-map.json` is local to the worktree that ran the export (`.wt/` is never synchronized). Run repeated exports from the same worktree, or the mapping starts over.
+</Callout>
+
+## Workflows
+
+### One-time migration
+
+Import, verify, push to a W0rkTree server, and retire the Git repository. The full checklist is in [Migrating from Git](/guides/migration).
 
 ```bash
-wt git export --tree frontend --output ./frontend-git
+wt git import ~/src/app ./app
+cd app
+wt remote add origin https://wt.example.com --tenant acme
+wt push --branch main
 ```
 
-The resulting directory is a standard Git repository that you can push to any Git host. Commit hashes will differ because W0rkTree uses BLAKE3 internally, but commit messages, authors, and timestamps are preserved one-to-one.
+### Publishing to Git-only consumers
 
-### License Compliance Interaction
+Some tools (CI systems, package managers, code search) only read Git. Keep a Git repository next to the worktree and export into it whenever you want them to see new history:
 
-If your organization relies on W0rkTree's licensing features, `wt git export` automatically performs a license compliance check. Any required SPDX license headers, attribution metadata, or compliance logs are injected into the exported Git commits to ensure downstream consumers remain compliant.
+<Steps>
+<Step>
 
-## Pushing and Pulling to Git Remotes
-
-For ongoing synchronization you can register a Git remote and push or pull just like you would with Git itself.
+### Create the export target once
 
 ```bash
-wt remote add origin https://github.com/your-org/your-repo.git
-wt git push origin main
-wt git pull origin main
+wt git export ../app-git
+git -C ../app-git remote add origin git@git.example.com:acme/app.git
 ```
 
-The remote bridge translates W0rkTree branch references into Git refs automatically. A tree called `frontend` with branch `feature/nav` maps to the Git ref `refs/heads/frontend/feature/nav`. You can customize this mapping in `.wt/config.toml` under the `[git.ref-map]` section.
+</Step>
+<Step>
 
-## Live Mirror Mode
-
-When you need continuous two-way sync — for example, during a gradual migration — enable live mirror mode. The background worker watches for new commits on both sides and synchronizes them automatically.
+### Export and push after each release or merge
 
 ```bash
-wt git mirror start origin --interval 30s
+wt pull
+wt git export ../app-git --rev main
+git -C ../app-git push origin main --follow-tags
 ```
 
-Mirror mode polls the Git remote at the configured interval, pulls any new commits, and pushes local changes back. Conflicts are flagged in `wt status` and must be resolved manually before the next sync cycle. Stop the mirror at any time with `wt git mirror stop origin`.
+</Step>
+</Steps>
 
-## Credential Management
+Because export is incremental, each run only writes the snapshots added since the last one.
 
-W0rkTree reuses your existing Git credential helpers so you do not need to configure authentication twice. It reads from `~/.gitconfig` and respects the `GIT_ASKPASS` and `SSH_AUTH_SOCK` environment variables.
+### Exporting for CI
 
-If you prefer to store credentials separately, add them to `.wt/credentials.toml`:
+To build a revision in a Git-based CI system, export just that revision into a scratch repository:
 
-```toml
-[remote.origin]
-url = "https://github.com/your-org/your-repo.git"
-username = "deploy-bot"
-token_env = "WORKTREE_GIT_TOKEN"
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+wt git export /tmp/app-ci --rev v1.2.0
+git -C /tmp/app-ci log -1
 ```
 
-Setting `token_env` tells W0rkTree to read the token from an environment variable rather than storing it on disk, which is the recommended approach for CI environments and shared machines.
+</Tab>
+<Tab value="PowerShell">
 
-## Tips for a Smooth Migration
+```powershell
+$dest = Join-Path $env:TEMP 'app-ci'
+wt git export $dest --rev v1.2.0
+git -C $dest log -1
+```
 
-- Run `wt git import --dry-run` first to preview what will be created without writing anything.
-- Use `wt diff --git-compat` to generate diffs in unified diff format that existing code-review tools understand.
-- If your Git repository uses submodules, import each submodule as its own tree and declare dependencies between them with `wt tree depend`.
-- Keep the Git remote registered even after migration so team members can transition at their own pace.
+</Tab>
+</Tabs>
+
+If the CI system only needs files, not history, [`wt archive`](/docs/cli/snapshots#wt-archive) is simpler: `wt archive v1.2.0 -o app.tar.gz --format tar.gz`.
+
+## Limitations
+
+- **One-shot commands, not a mirror.** Nothing runs in the background; Git and W0rkTree only meet when you run `wt git import` or `wt git export`.
+- **Import goes one way into a new worktree.** New Git commits made after an import cannot be pulled into the existing worktree. Pick a cut-over point.
+- **Local branches only.** Remote-tracking branches are not imported.
+- **Root tree only on import.** Submodules are not converted into nested trees.
+- **No LFS, hooks, config, stashes, index or Git reflog.** `.gitattributes` filters are not applied, so LFS files arrive as pointer files.
+- **No signatures.** Commit and tag signatures are not imported, and exported commits are unsigned.
+- **Different ids.** Snapshots use UUIDs and BLAKE3 object hashes; Git uses SHA-1. Correlate with `.wt/git-map.json`.
+
+<Callout type="warn" title="Roadmap">
+A live Git mirror mode that keeps a Git remote continuously in sync with a W0rkTree branch is planned but **not** part of v0.2.0. See the [roadmap](/roadmap).
+</Callout>

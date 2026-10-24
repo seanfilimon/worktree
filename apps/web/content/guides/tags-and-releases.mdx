@@ -1,100 +1,167 @@
 ---
-title: "Tags & Releases"
-description: "Create lightweight and annotated tags, publish releases, and manage changelogs in W0rkTree."
+title: Tags and Releases
+description: Mark releases with wt tag, share tags through the server with wt push and wt fetch, and produce release archives with wt archive.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-In W0rkTree, tags and releases are strictly scoped to **trees**. Unlike traditional monorepos where a single tag applies globally to the entire repository—often creating confusion about which services were actually updated—W0rkTree allows each team to tag and release their trees independently.
+A **tag** is a named, fixed pointer to one snapshot, with an optional message, the tagger and a creation time. Tags belong to a tree, so each nested tree can have its own release line.
 
-## Tag Types
-
-W0rkTree supports two types of tags, similar to Git, but optimized for tree-scoped object graphs.
-
-### Lightweight Tags
-
-A lightweight tag is simply a named pointer to a specific commit. It is ideal for temporary bookmarks or local milestones.
-
-```bash
-wt tag create v1.2.0-rc1
+```text
+wt tag [list] | create NAME [REV] [-m MSG] | delete NAME
 ```
 
-### Annotated Tags
-
-Annotated tags are full objects in the W0rkTree storage engine. They contain a tagging message, the tagger's identity, a timestamp, and can be cryptographically signed.
+## Creating and listing tags
 
 ```bash
-wt tag create v1.2.0 -m "Release version 1.2.0" --sign
+wt tag create v1.0.0 -m "First stable release"   # tags HEAD
+wt tag create v0.9.0 4f9c2a1e                     # tags an older snapshot
+wt tag create v1.0.1 release-1.x                  # tags a branch tip
+wt tag                                            # list: name, target, tagger, date, message
 ```
 
-<Callout type="info">
-By default, tags are created as **staged** objects on your local machine. They are not visible to the rest of the team until you explicitly run `wt push --tags`.
+- `REV` defaults to `HEAD` and accepts any [revision](/docs/cli#revision-syntax).
+- Creating a tag that already exists fails. Tags never move: to point a name somewhere else, delete it and create it again (locally only; see below).
+- Each tag records its tagger and creation time; set `user.name` and `user.email` with [`wt config`](/docs/cli/repository#wt-config) so they identify you.
+- A tag name works anywhere a revision does: `wt log v1.0.0`, `wt diff v1.0.0 HEAD --stat`, `wt restore docs/ --from v1.0.0`.
+
+## Sharing tags
+
+Tags travel with branches:
+
+| Command | Tags |
+|---|---|
+| `wt push` | Uploads every local tag of the tree that the server does not have yet. |
+| `wt fetch`, `wt pull` | Downloads remote tags. |
+| `wt clone` | Brings all tags of the server tree. |
+
+```bash
+wt tag create v1.1.0 -m "Search and filters"
+wt push
+```
+
+Pushing a tag requires `tree:write` on the server tree, like pushing a branch. Tags are listed by `GET /api/v1/trees/{tenant}/{tree}/tags` ([REST API](/docs/server/rest-api#tags)), shown in the [admin panel](/guides/admin-panel), and published as `tag.pushed` events on the [SSE stream](/docs/server/events).
+
+<Callout type="warn" title="Deleting tags">
+`wt tag delete NAME` removes the tag from your worktree only. There is no command to delete or move a tag on the server, and the next `wt fetch` brings a pushed tag back. Treat pushed tags as permanent and pick names carefully.
 </Callout>
 
-## Managing Tags
+## Release archives
 
-You can list all tags for your current tree using the `list` command:
-
-```bash
-wt tag list
+```text
+wt archive [REV] -o FILE [--format tar.gz|zip]
 ```
 
-To see tags across all trees in your workspace, you can use the global flag:
+`wt archive` writes the files of one snapshot into a `tar.gz` or `zip` file. Only the tree's files are included: no history, no `.wt/` metadata, no ignored files (they were never snapshotted), and no files of nested trees.
 
 ```bash
-wt tag list --all-trees
+wt archive v1.0.0 -o my-project-1.0.0.tar.gz --format tar.gz
+wt archive v1.0.0 -o my-project-1.0.0.zip --format zip
+wt archive -o snapshot.tar.gz --format tar.gz        # HEAD
+wt --tree frontend archive v2.3.0 -o frontend-2.3.0.zip --format zip
 ```
 
-If you need to move a tag (for example, floating a `latest` tag), use the force flag:
+The archive is built from the snapshot, not from your working directory, so uncommitted changes never end up in a release file.
+
+## A release workflow
+
+<Steps>
+<Step>
+
+### Get up to date and clean
 
 ```bash
-wt tag create latest --force
+wt switch main
+wt pull
+wt status          # should show no changes
 ```
 
-## Creating Releases
+</Step>
+<Step>
 
-A **Release** in W0rkTree builds on top of an annotated tag by adding release notes, compiled artifacts, and status metadata.
+### Record the release
 
-To create a release from an existing tag:
+Optionally record version bumps as a snapshot first, then tag it:
 
 ```bash
-wt release create v1.2.0 --title "The Performance Update" --notes ./release-notes.md
+wt snapshot -m "Release 1.2.0"
+wt tag create v1.2.0 -m "Release 1.2.0"
 ```
 
-### Attaching Artifacts
+If nothing changed, `wt snapshot -m "Release 1.2.0" --allow-empty` creates an explicit release marker snapshot.
 
-You can attach build artifacts directly to a release. These artifacts are stored in the W0rkTree server's object store and distributed globally via the sync protocol.
+</Step>
+<Step>
+
+### Publish the tag
 
 ```bash
-wt release upload v1.2.0 ./target/release/frontend-bundle.tar.gz
+wt push
 ```
 
-Because W0rkTree's underlying transport uses QUIC, artifact downloads are highly concurrent and extremely fast, even for multi-gigabyte binaries.
+If the push is rejected because `main` moved on the server, `wt pull` and push again; the tag stays on the snapshot you chose.
 
-## Automated Changelogs
+</Step>
+<Step>
 
-W0rkTree can automatically generate comprehensive changelogs by analyzing the commit history between two tags. Because W0rkTree understands the **dependency graph** between trees, its changelogs can be deeply context-aware.
+### Build the release files
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt changelog generate v1.1.0..v1.2.0
+version=1.2.0
+wt archive "v$version" -o "dist/my-project-$version.tar.gz" --format tar.gz
+wt archive "v$version" -o "dist/my-project-$version.zip" --format zip
+sha256sum dist/my-project-$version.*
 ```
 
-This command parses commit messages and groups them by type (e.g., Features, Fixes, Breaking Changes). 
+</Tab>
+<Tab value="PowerShell">
 
-If your tree depends on an upstream tree (e.g., `frontend` depends on `api`), you can include upstream changes that impacted this release:
+```powershell
+$version = '1.2.0'
+wt archive "v$version" -o "dist\my-project-$version.tar.gz" --format tar.gz
+wt archive "v$version" -o "dist\my-project-$version.zip" --format zip
+Get-FileHash "dist\my-project-$version.*" -Algorithm SHA256
+```
+
+</Tab>
+</Tabs>
+
+Keep `dist/` in your ignore rules (`wt ignore add "dist/"`) so release files are never snapshotted.
+
+</Step>
+</Steps>
+
+### Maintenance releases
+
+Branch from a tag to patch an older release:
 
 ```bash
-wt changelog generate v1.1.0..v1.2.0 --include-dependencies
+wt branch create release-1.2 --from v1.2.0
+wt switch release-1.2
+# fix, then
+wt snapshot -m "Fix crash on empty input"
+wt tag create v1.2.1 -m "Release 1.2.1"
+wt push --branch release-1.2
 ```
 
-This ensures that when the frontend team publishes their release notes, they automatically include any breaking API changes that were merged into the `api` tree during that release window.
+Protect release branches on the server with [branch protection](/guides/branch-protection) if changes to them should be reviewed.
 
-## Tagging Linked Branches
+### Exporting a release to Git
 
-When working with **Linked Branches** that span multiple trees, you can create a synchronized tag across all participating trees simultaneously.
+Consumers that need a Git tag can get one from [`wt git export`](/guides/git-interop), which converts tags along with snapshots:
 
 ```bash
-wt branch link tag v2.0.0-beta feature/unified-auth -m "Beta release of unified auth"
+wt git export ../my-project-git
+git -C ../my-project-git push origin v1.2.0   # after adding a Git remote named origin
 ```
 
-This command guarantees that `v2.0.0-beta` points to the exact atomic commits in the `frontend`, `backend`, and `infrastructure` trees that were merged together, providing a perfect snapshot for multi-service deployment.
+## Not in v0.2.0
+
+<Callout type="warn" title="Roadmap">
+Signed tags and snapshot signing are not implemented, and there are no prebuilt release binaries for W0rkTree itself yet. See the [roadmap](/roadmap).
+</Callout>

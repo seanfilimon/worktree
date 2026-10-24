@@ -1,40 +1,125 @@
 ---
-title: W0rkTree SDK
-description: Programmatic access to W0rkTree — build custom integrations, editor plugins, and automation tools.
+title: Rust SDK
+description: The worktree-sdk crate — the local W0rkTree engine used by wt, worktree-bg, and worktree-git, and how to embed it in your own Rust tools.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
 
-The **W0rkTree SDK** (`worktree-sdk`) provides a high-level Rust API for embedding W0rkTree capabilities in your own applications. It powers both the CLI and the Admin Panel, ensuring feature parity across all interfaces.
+`worktree-sdk` (`crates/worktree-sdk`) is the local W0rkTree engine. Everything that touches a `.wt/` directory lives in this crate; the CLI (`wt`), the background daemon (`worktree-bg`), and the Git bridge (`worktree-git`) are thin layers over it. You can use it to build your own tools: editor integrations, CI helpers, migration scripts, or custom clients.
 
-<Callout type="info">
-The SDK API is not yet stable during the `0.x` series. Pin your version and review changelogs before upgrading.
+<Callout type="warn" title="Pre-1.0 API">
+  The SDK API documented here is the v0.2.0 contract. It is not published to crates.io and may change before 1.0. A Node.js SDK is on the Roadmap; v0.2.0 ships only the Rust crate.
 </Callout>
 
-## Overview
+## Module map
 
-Use the SDK to:
+| Module | Purpose |
+|---|---|
+| `lib` | Crate root. Re-exports `Repository`, `ObjectHash`, `ObjectStore`, `Result`, `SdkError`, and every type in `model`. |
+| `model` | Data types shared by all consumers: `Snapshot`, `Manifest`, `ManifestEntry`, `TreeInfo`, `BranchInfo`, `TagInfo`, `StatusReport`, `FileChange`, `ChangeKind`, option structs, `MergeOutcome`, `MergeState`, `ConflictInfo`, `ConflictKind`, `FileDiff`, `DiffOptions`, `ReflogEntry`. |
+| `store` | `ObjectStore`: the content-addressed store under `.wt/objects/` (BLAKE3, raw bytes, atomic writes). `hash_bytes(data)`. |
+| `config` | `WorktreeConfig` (`.wt/config.toml`) with dotted-key `get` / `set` / `entries`, and `wt_home()` for `$WT_HOME`. |
+| `repo` | `Repository`: lifecycle, trees, status, snapshots, revisions, branches, merge, revert, restore, diff, tags, reflog, ignores, and low-level ref operations. See [Repository](/docs/sdk/repository). |
+| `diff` | Pure text diffing: `diff_lines`, `unified_diff`, `diff_stat`, `is_binary`. See [Merge and diff](/docs/protocol/merge-and-diff#diff). |
+| `merge` | Pure merge algorithms: `merge_text` (diff3), `merge_manifests`, `merge_base`. See [Merge and diff](/docs/protocol/merge-and-diff). |
+| `scan` | Pure content scanning: `scan_secrets` (pre-snapshot secret scan), `detect_license` (SPDX), `chunk_boundaries` (FastCDC). |
+| `remote` | Client for the server: credentials, login/register, ping, push, fetch, pull, clone, stage, list staged. See [Remote](/docs/sdk/remote). |
+| `ipc` | CLI ⇄ daemon protocol: request/response types, `bg.json` discovery, `send`. See [Daemon IPC](/docs/sdk/ipc). |
+| `error` | `SdkError` and `Result<T>`. |
 
-- **Manage repositories** programmatically — create, open, and configure
-- **Perform version control operations** — commit, branch, diff, merge
-- **Build editor integrations** — VS Code, IntelliJ, Neovim plugins
-- **Automate CI/CD workflows** — custom pipeline steps with full W0rkTree access
-- **Create monitoring tools** — real-time dashboards and health checks
-- **Manage multi-tenancy** — create, configure, and isolate tenants
-- **Enforce licensing** — assign SPDX licenses and issue grants
-- **View staged visibility** — track in-flight changes and real-time edits
-- **Administer access** — configure IAM roles and declarative access
+The crate also still contains a legacy `engine` module (and the `WorktreeEngine` alias) that is being removed. Do not use it in new code.
 
-## Quick Links
+## Adding the dependency
+
+The crate is consumed as a path (or Git) dependency from a checkout of the repository:
+
+```toml
+[dependencies]
+worktree-sdk = { path = "../worktree/crates/worktree-sdk" }
+# Needed only for the async `remote` and `ipc` functions
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+Local operations (`Repository`, `ObjectStore`, `diff`, `merge`, `scan`) are synchronous. The `remote` functions and `ipc::send` are `async` and run on Tokio.
+
+## Errors
+
+Every fallible function returns `worktree_sdk::Result<T>`, an alias for `std::result::Result<T, SdkError>`. `SdkError` is a `thiserror` enum; match on the variants you handle and display the rest.
+
+| Area | Variants |
+|---|---|
+| Repository | `NotAWorktree`, `AlreadyInitialized`, `InvalidConfig(String)`, `InvalidArgument(String)` |
+| Trees | `TreeNotFound(String)`, `TreeExists(String)` |
+| Branches and tags | `BranchNotFound(String)`, `BranchExists(String)`, `TagExists(String)`, `TagNotFound(String)` |
+| Revisions and objects | `SnapshotNotFound(String)`, `AmbiguousId(String)`, `InvalidRevision(String)`, `ObjectNotFound(String)`, `CorruptObject(String, String)` |
+| Snapshots and working tree | `NoChanges`, `DirtyWorkingTree(usize)`, `SecretsDetected(String)` |
+| Merge | `MergeConflict(String)`, `MergeInProgress`, `NoMergeInProgress` |
+| Server policy | `BranchProtection(String)`, `PermissionDenied(String)`, `PushRejected(String)` |
+| Remote | `RemoteNotConfigured(String)`, `NotLoggedIn(String)`, `Remote(String)` |
+| Daemon | `DaemonNotRunning` |
+| Generic | `Io(std::io::Error)`, `Serialization(String)`, `Other(String)` |
+
+`std::io::Error`, `serde_json::Error`, and TOML (de)serialization errors convert into `SdkError` automatically, so `?` works on them.
+
+## Minimal example
+
+Create a worktree, write a file, snapshot it, and print the log:
+
+```rust
+use std::path::Path;
+
+use worktree_sdk::{InitOptions, Repository, Result, SnapshotOptions};
+
+fn main() -> Result<()> {
+    let repo = Repository::init(Path::new("demo"), InitOptions::default())?;
+    let tree = repo.root_tree()?.name;
+
+    std::fs::write(repo.root().join("README.md"), "hello\n")?;
+
+    let snap = repo.snapshot(
+        &tree,
+        SnapshotOptions { message: "First snapshot".into(), ..Default::default() },
+    )?;
+    println!("created {}", snap.short_id());
+
+    for s in repo.log(&tree, None, Some(10))? {
+        println!("{} {} {}", s.short_id(), s.author, s.message);
+    }
+    Ok(())
+}
+```
+
+Open an existing worktree from any directory inside it with `Repository::open`, and push with the async remote API:
+
+```rust
+use std::path::Path;
+
+use worktree_sdk::{remote, Repository, Result};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let repo = Repository::open(Path::new("."))?;
+    let tree = repo.tree_for_path(Path::new("."))?.name;
+
+    let report = remote::push(&repo, &tree, "origin", None).await?;
+    if report.up_to_date {
+        println!("{} is up to date", report.branch);
+    } else {
+        println!("pushed {} snapshots to {}", report.snapshots_sent, report.branch);
+    }
+    Ok(())
+}
+```
+
+<Callout type="info" title="Tests">
+  Code that logs in or talks to the daemon reads and writes `$WT_HOME`. Set `WT_HOME` to a temporary directory in tests so they never touch real credentials.
+</Callout>
+
+## Pages
 
 <Cards>
-  <Card title="Installation" description="Add the SDK to your Rust project and configure features." href="/docs/sdk/installation" />
-  <Card title="Connecting" description="Connect to local or remote W0rkTree servers." href="/docs/sdk/connecting" />
-  <Card title="Tree Operations" description="Create, list, and manage trees programmatically." href="/docs/sdk/tree-operations" />
-  <Card title="Snapshot Operations" description="Create, inspect, and compare snapshots." href="/docs/sdk/snapshot-operations" />
-  <Card title="Tenant Operations" description="Manage isolated tenants and configure limits." href="/docs/sdk/tenant-operations" />
-  <Card title="License Operations" description="Check compliance and manage license grants." href="/docs/sdk/license-operations" />
-  <Card title="Staged Operations" description="Subscribe to and query real-time staged snapshots." href="/docs/sdk/staged-operations" />
-  <Card title="Access Operations" description="Manage roles, permissions, and declarative access." href="/docs/sdk/access-operations" />
+  <Card title="Repository" href="/docs/sdk/repository" description="The full Repository API, grouped by area, with signatures." />
+  <Card title="Remote" href="/docs/sdk/remote" description="Credentials, login, push, fetch, pull, clone, and staged snapshots." />
+  <Card title="Daemon IPC" href="/docs/sdk/ipc" description="The JSON-over-TCP protocol between wt and worktree-bg." />
 </Cards>

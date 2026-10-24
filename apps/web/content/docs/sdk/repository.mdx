@@ -1,0 +1,258 @@
+---
+title: Repository API
+description: The worktree_sdk::Repository API grouped by area — lifecycle, trees, status and snapshots, revisions, branches, merge, revert and restore, diff, tags, reflog, ignores, and low-level store and ref operations.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`worktree_sdk::Repository` is the local engine over one `.wt/` directory. Every method that acts on history takes a **tree name** (`tree: &str`); use `root_tree()` or `tree_for_path()` to pick one. All methods are synchronous and return `worktree_sdk::Result<T>`. Signatures below are exactly those in `crates/worktree-sdk/src/repo/mod.rs`.
+
+<Callout type="info">
+  Revisions (`rev`, `from`, `source`) accept `"HEAD"`, `"HEAD~N"`, `"<branch>"`, `"<branch>~N"`, `"origin/<branch>"`, `"<tag>"`, or a snapshot id prefix of at least 4 characters.
+</Callout>
+
+## Lifecycle
+
+```rust
+pub fn init(path: &Path, opts: InitOptions) -> Result<Self>
+pub fn open(path: &Path) -> Result<Self>
+pub fn root(&self) -> &Path
+pub fn wt_dir(&self) -> PathBuf
+pub fn config(&self) -> &WorktreeConfig
+pub fn set_config(&mut self, config: WorktreeConfig) -> Result<()>
+pub fn store(&self) -> &ObjectStore
+pub fn author(&self) -> String
+```
+
+| Method | Behavior |
+|---|---|
+| `init` | Creates `.wt/` at `path` (creating the directory if needed) with a root tree named after the directory, an empty default branch, and an `init` reflog entry. `AlreadyInitialized` if `.wt/` exists. |
+| `open` | Opens the worktree containing `path`, walking up to find `.wt/`. `NotAWorktree` if none. |
+| `root` / `wt_dir` | The worktree root and its `.wt/` directory. |
+| `config` / `set_config` | Read the loaded `WorktreeConfig`; replace and persist it. |
+| `store` | The worktree's `ObjectStore`. |
+| `author` | Author for new snapshots: config user (`"Name <email>"`), else the logged-in username for the default remote, else the OS user. |
+
+`InitOptions` has `name: Option<String>` (worktree and root tree name; default the directory name) and `default_branch: Option<String>` (default `"main"`).
+
+`WorktreeConfig` (in `worktree_sdk::config`) also offers `load(path)`, `save(path)`, `get(key) -> Option<String>`, `set(key, value) -> Result<()>` (`InvalidConfig` for unknown keys or bad values), and `entries() -> Vec<(String, String)>` over dotted keys such as `user.name` or `remote.origin.url`. See [Local layout](/docs/protocol/local-layout#configtoml).
+
+## Trees
+
+```rust
+pub fn trees(&self) -> Result<Vec<TreeInfo>>
+pub fn tree(&self, name: &str) -> Result<TreeInfo>
+pub fn root_tree(&self) -> Result<TreeInfo>
+pub fn tree_for_path(&self, path: &Path) -> Result<TreeInfo>
+pub fn add_tree(&self, name: &str, rel_path: &Path) -> Result<TreeInfo>
+pub fn remove_tree(&self, name: &str) -> Result<()>
+pub fn set_tree_remote_name(&self, tree: &str, remote_name: &str) -> Result<()>
+pub fn set_tree_id(&self, tree: &str, id: &str) -> Result<()>
+pub fn tree_dir(&self, tree: &str) -> Result<PathBuf>
+```
+
+| Method | Behavior |
+|---|---|
+| `trees` / `tree` | All trees, or one by name (`TreeNotFound`). |
+| `root_tree` | The root tree created by `init`. |
+| `tree_for_path` | Deepest tree whose directory contains `path` (absolute or relative to the current directory); falls back to the root tree. |
+| `add_tree` | Registers `rel_path` (relative to the root; created if missing) as a nested tree, writing `<rel_path>/.wt-tree/config.toml`. `TreeExists` if the name is taken. |
+| `remove_tree` | Unregisters a nested tree; files are kept. The root tree cannot be removed. |
+| `set_tree_remote_name` | Sets the tree's name on the server. |
+| `set_tree_id` | Replaces a tree's id (used by clone so the local id matches the server). |
+| `tree_dir` | Absolute directory of a tree. |
+
+`TreeInfo` fields: `name`, `id`, `path` (relative to the root, empty for the root tree), `current_branch`, `default_branch`, `remote_name`.
+
+## Status, snapshots, and log
+
+```rust
+pub fn status(&self, tree: &str) -> Result<StatusReport>
+pub fn snapshot(&self, tree: &str, opts: SnapshotOptions) -> Result<Snapshot>
+pub fn log(&self, tree: &str, rev: Option<&str>, limit: Option<usize>) -> Result<Vec<Snapshot>>
+```
+
+| Method | Behavior |
+|---|---|
+| `status` | Compares the working directory with the tree's head snapshot. `StatusReport` has `tree`, `branch`, `head`, `changes` (sorted `FileChange{path, kind}` with `kind` `Added` / `Modified` / `Deleted`), and `merge` (the pending `MergeState`, if any). `is_clean()` is true when there are no changes. |
+| `snapshot` | Snapshots the tree's working state onto its current branch. Runs the secret scan on added and modified files unless `skip_secret_scan` (`SecretsDetected`). `NoChanges` if identical to head and not `allow_empty`. Refuses during a conflicted merge unless all conflict markers are gone, in which case it completes the merge with two parents. |
+| `log` | Snapshots reachable from `rev` (default: the current branch head), newest first, at most `limit`. |
+
+`SnapshotOptions` fields: `message`, `author: Option<String>` (overrides the configured author), `auto_generated`, `allow_empty`, `skip_secret_scan`. It implements `Default`.
+
+## Revisions and content
+
+```rust
+pub fn get_snapshot(&self, id: &str) -> Result<Snapshot>
+pub fn has_snapshot(&self, id: &str) -> bool
+pub fn resolve(&self, tree: &str, rev: &str) -> Result<Snapshot>
+pub fn manifest_of(&self, snapshot: &Snapshot) -> Result<Manifest>
+pub fn read_file_at(&self, snapshot: &Snapshot, path: &str) -> Result<Vec<u8>>
+```
+
+| Method | Behavior |
+|---|---|
+| `get_snapshot` | Loads a snapshot by full id or unique prefix (at least 4 characters). `SnapshotNotFound` or `AmbiguousId`. |
+| `has_snapshot` | Whether a snapshot record exists locally. |
+| `resolve` | Resolves a revision in `tree` (see the syntax above). `InvalidRevision` for malformed input. |
+| `manifest_of` | The manifest of a snapshot. |
+| `read_file_at` | Content of `path` in `snapshot`. |
+
+## Branches
+
+```rust
+pub fn branches(&self, tree: &str, include_archived: bool) -> Result<Vec<BranchInfo>>
+pub fn current_branch(&self, tree: &str) -> Result<String>
+pub fn create_branch(&self, tree: &str, name: &str, from: Option<&str>) -> Result<BranchInfo>
+pub fn switch_branch(&self, tree: &str, name: &str, opts: SwitchOptions) -> Result<()>
+pub fn archive_branch(&self, tree: &str, name: &str) -> Result<()>
+pub fn restore_branch(&self, tree: &str, name: &str) -> Result<()>
+```
+
+| Method | Behavior |
+|---|---|
+| `branches` | Non-archived branches (all if `include_archived`), sorted by name. |
+| `current_branch` | Name in `trees/<tree>/HEAD`. |
+| `create_branch` | Creates `name` pointing at `from` (a revision; default the current head). `BranchExists` if taken. |
+| `switch_branch` | Switches branches and rewrites the working directory to the target head. `DirtyWorkingTree` if there are uncommitted changes and not `force`. `SwitchOptions{create, force}`: `create` makes the branch at the current head first. |
+| `archive_branch` | Soft-deletes a branch. History stays reachable; the name can be reused only after `restore_branch`. Cannot archive the current or default branch. |
+| `restore_branch` | Un-archives a branch. |
+
+`BranchInfo` fields: `name`, `tip`, `is_current`, `created_at`, `archived`, `upstream_tip` (tip of `refs/remotes/origin/<name>`, if known).
+
+## Merge
+
+```rust
+pub fn merge(&self, tree: &str, source: &str, opts: MergeOptions) -> Result<MergeOutcome>
+pub fn merge_state(&self, tree: &str) -> Result<Option<MergeState>>
+pub fn abort_merge(&self, tree: &str) -> Result<()>
+pub fn continue_merge(&self, tree: &str, message: Option<&str>) -> Result<Snapshot>
+```
+
+| Method | Behavior |
+|---|---|
+| `merge` | Merges `source` (branch or revision) into the current branch using `crate::merge`. Requires a clean working tree. Returns `UpToDate`, `FastForward{to}`, `Merged{snapshot}`, or `Conflicts{conflicts}`. On conflicts it writes markers into files and saves `MERGE_STATE.json` and `.wt/conflicts/<tree>.json`. |
+| `merge_state` | The pending merge, if any. |
+| `abort_merge` | Restores the pre-merge head into the working tree and clears the merge state. |
+| `continue_merge` | Finishes a conflicted merge once markers are resolved, creating the two-parent merge snapshot. `MergeConflict` if markers remain. |
+
+`MergeOptions` fields: `message`, `no_fast_forward`, `author`. Semantics are described in [Merge and diff](/docs/protocol/merge-and-diff).
+
+```rust
+use worktree_sdk::{MergeOptions, MergeOutcome};
+
+match repo.merge(&tree, "feature/login", MergeOptions::default())? {
+    MergeOutcome::UpToDate => println!("already up to date"),
+    MergeOutcome::FastForward { to } => println!("fast-forwarded to {to}"),
+    MergeOutcome::Merged { snapshot } => println!("merged as {}", snapshot.short_id()),
+    MergeOutcome::Conflicts { conflicts } => {
+        for c in conflicts {
+            println!("conflict ({:?}): {}", c.kind, c.path);
+        }
+    }
+}
+```
+
+## Revert and restore
+
+```rust
+pub fn revert(&self, tree: &str, rev: &str) -> Result<Snapshot>
+pub fn restore(&self, tree: &str, paths: &[String], rev: Option<&str>) -> Result<Vec<String>>
+```
+
+| Method | Behavior |
+|---|---|
+| `revert` | Creates a new snapshot on the current branch that undoes `rev`'s changes relative to its first parent. History is append-only; nothing is rewritten. |
+| `restore` | Overwrites working files at `paths` (all if empty) with their content at `rev` (default `HEAD`), deleting files absent there. Returns the restored paths. |
+
+## Diff
+
+```rust
+pub fn diff_working(&self, tree: &str, rev: Option<&str>, opts: &DiffOptions) -> Result<Vec<FileDiff>>
+pub fn diff_revs(&self, tree: &str, from: &str, to: &str, opts: &DiffOptions) -> Result<Vec<FileDiff>>
+```
+
+`diff_working` compares the working directory with `rev` (default `HEAD`); `diff_revs` compares two revisions. `DiffOptions` (default `context: 3`, `name_only: false`, `paths: []`) and `FileDiff` are described in [Merge and diff](/docs/protocol/merge-and-diff#repository-diffs).
+
+## Tags
+
+```rust
+pub fn create_tag(&self, tree: &str, name: &str, rev: Option<&str>, message: Option<&str>) -> Result<TagInfo>
+pub fn tags(&self, tree: &str) -> Result<Vec<TagInfo>>
+pub fn delete_tag(&self, tree: &str, name: &str) -> Result<()>
+```
+
+`create_tag` tags `rev` (default `HEAD`) with an optional message; `TagExists` if the name is taken. `delete_tag` fails with `TagNotFound` for an unknown tag. `TagInfo` fields: `name`, `target`, `message`, `tagger`, `created_at`.
+
+## Reflog and ignore
+
+```rust
+pub fn reflog(&self, tree: &str, limit: Option<usize>) -> Result<Vec<ReflogEntry>>
+pub fn append_reflog(&self, entry: &ReflogEntry) -> Result<()>
+pub fn ignore_patterns(&self) -> Result<Vec<String>>
+pub fn add_ignore_pattern(&self, pattern: &str) -> Result<()>
+pub fn is_ignored(&self, rel_path: &str) -> Result<bool>
+```
+
+| Method | Behavior |
+|---|---|
+| `reflog` | Reflog entries, newest first, at most `limit`. |
+| `append_reflog` | Appends one `ReflogEntry` to the tree's `reflog.jsonl`. |
+| `ignore_patterns` | Effective patterns: built-ins, `.wt/ignore`, `.wtignore` files. |
+| `add_ignore_pattern` | Appends a pattern to `.wt/ignore`. |
+| `is_ignored` | Whether `rel_path` (`/`-separated, relative to the root) is ignored. |
+
+`ReflogEntry` fields and actions are listed in [Local layout](/docs/protocol/local-layout#reflog-entries).
+
+## Low-level store and ref operations
+
+These plumbing methods are used by remote sync and the Git bridge. They do not run safety checks such as the secret scan or clean-tree checks, so prefer the high-level API unless you are moving history between systems.
+
+```rust
+pub fn write_manifest(&self, manifest: &Manifest) -> Result<ObjectHash>
+pub fn read_manifest(&self, hash: &ObjectHash) -> Result<Manifest>
+pub fn write_snapshot(&self, snapshot: &Snapshot) -> Result<()>
+pub fn branch_tip(&self, tree: &str, branch: &str) -> Result<Option<SnapshotId>>
+pub fn set_branch_tip(&self, tree: &str, branch: &str, tip: Option<&str>) -> Result<()>
+pub fn remote_tip(&self, tree: &str, remote: &str, branch: &str) -> Result<Option<SnapshotId>>
+pub fn set_remote_tip(&self, tree: &str, remote: &str, branch: &str, tip: Option<&str>) -> Result<()>
+pub fn put_tag(&self, tree: &str, tag: &TagInfo) -> Result<()>
+pub fn ancestry(&self, tip: &str) -> Result<Vec<Snapshot>>
+pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool>
+pub fn merge_base(&self, a: &str, b: &str) -> Result<Option<SnapshotId>>
+pub fn checkout(&self, tree: &str, snapshot: &str, force: bool) -> Result<()>
+pub fn manifest_from_working(&self, tree: &str) -> Result<Manifest>
+```
+
+| Method | Behavior |
+|---|---|
+| `write_manifest` / `read_manifest` | Store or load a manifest object. |
+| `write_snapshot` | Persists a snapshot record (idempotent). Does not move any ref. |
+| `branch_tip` / `set_branch_tip` | Read or move (or create) a branch ref. Does not touch the working tree. |
+| `remote_tip` / `set_remote_tip` | Read or move `refs/remotes/<remote>/<branch>`. |
+| `put_tag` | Writes a tag record directly (used by pull and import). |
+| `ancestry` | All snapshots reachable from `tip`, parents before children. |
+| `is_ancestor` | Whether `ancestor` is reachable from `descendant`. |
+| `merge_base` | Best common ancestor of two snapshots. |
+| `checkout` | Rewrites the tree's working directory to `snapshot`, removing tracked files absent from it (never touching ignored or nested-tree paths), and refreshes the index. `DirtyWorkingTree` unless clean or `force`. |
+| `manifest_from_working` | Builds a manifest of the current working directory, storing blobs. |
+
+### `ObjectStore`
+
+`repo.store()` returns the `ObjectStore` over `.wt/objects/`:
+
+```rust
+pub fn open(root: impl Into<PathBuf>) -> Self
+pub fn root(&self) -> &Path
+pub fn put(&self, data: &[u8]) -> Result<ObjectHash>
+pub fn put_with_hash(&self, hash: &ObjectHash, data: &[u8]) -> Result<()>
+pub fn get(&self, hash: &ObjectHash) -> Result<Vec<u8>>
+pub fn has(&self, hash: &ObjectHash) -> bool
+pub fn path_of(&self, hash: &ObjectHash) -> PathBuf
+pub fn list(&self) -> Result<Vec<ObjectHash>>
+pub fn stats(&self) -> Result<(u64, u64)>
+```
+
+`put` is idempotent and atomic (temp file + rename) and safe under concurrent writers. `put_with_hash` fails with `CorruptObject` if the data does not hash to the expected value; `get` fails with `ObjectNotFound`. `stats` returns (object count, total bytes).
+
+`Manifest` itself offers `from_entries` (sorts and dedups by path, last wins), `get(path)`, `to_bytes` (canonical `ManifestRecord` encoding), `from_bytes`, and `hash` (BLAKE3 of `to_bytes()`). `Snapshot` offers `short_id`, `is_merge`, and `to_record` / `from_record` for the wire `SnapshotRecord`. See [Object model](/docs/protocol/object-model).

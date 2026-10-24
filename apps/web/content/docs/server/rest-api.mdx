@@ -1,0 +1,707 @@
+---
+title: REST API Reference
+description: Complete reference for the worktree-server REST API, including authentication, every endpoint, request and response bodies, and errors.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+The REST API is served under `/api/v1` on the same port as gRPC (default `http://localhost:7420`). Requests and responses are JSON unless noted. JSON field names are exactly the field names shown here. The admin panel uses this API; anything it can do, you can script.
+
+`wt` itself uses gRPC for push, pull, stage, and tags (see [Sync protocol](/docs/protocol/sync-protocol)). Merge requests, branch protections, license rules, tenants, and members are managed only through this API and the admin panel in v0.2.0.
+
+## Conventions
+
+### Authentication
+
+Send a bearer token in the `Authorization` header:
+
+```text
+Authorization: Bearer <token>
+```
+
+Tokens come from `POST /api/v1/auth/login` (session token, valid 30 days), `POST /api/v1/auth/register`, or `POST /api/v1/auth/tokens` (personal API token). The same token works for gRPC, so a token from `wt login` (stored in `$WT_HOME/credentials.toml`) is valid here too.
+
+Requests without a token are anonymous. Anonymous callers can reach `/healthz`, `/metrics`, the register and login endpoints, and read endpoints of `public` trees. Everything else returns `401 unauthenticated`. Authorization rules are described in [Access control](/docs/server/access-control); the **Auth** column below names the check each endpoint performs.
+
+### Errors
+
+Every error uses the same envelope:
+
+```json
+{"error":{"code":"not_found","message":"tree acme/payments not found"}}
+```
+
+| `code` | HTTP status | Typical cause |
+|---|---|---|
+| `bad_request` | 400 | Malformed JSON, missing required field, invalid slug, role, visibility, or glob. |
+| `unauthenticated` | 401 | Missing, invalid, expired, or revoked token; wrong password; disabled account. |
+| `forbidden` | 403 | Authenticated but not allowed; registration disabled; a protection, approval, or license rule denies the operation. |
+| `not_found` | 404 | Tenant, tree, branch, snapshot, merge request, or path does not exist, or is not visible to the caller. |
+| `conflict` | 409 | Name already taken (tenant slug, username, tree name); merge request cannot fast-forward. |
+| `internal` | 500 | Unexpected server error. Details are in the server log. |
+
+### Path parameters
+
+| Parameter | Meaning |
+|---|---|
+| `{tenant}` | Tenant slug (lowercase `a-z`, `0-9`, `-`). A user's personal tenant slug is their username. |
+| `{tree}` | Tree name, unique within the tenant. |
+| `{username}` | Account username. |
+| `{id}` | Snapshot id (UUID) or API token id, depending on the endpoint. |
+| `{n}` | Merge request number (per tree, starting at 1). |
+
+### Formats
+
+- Timestamps are RFC 3339 strings in UTC, for example `"2026-10-20T14:03:11Z"`.
+- Ids of tenants, accounts, trees, snapshots, merge requests, tokens, and audit events are UUID strings.
+- Content hashes (`manifest_hash`, file `hash`) are 64-character lowercase hex BLAKE3-256 digests.
+- List endpoints return a JSON array; an empty result is `[]`.
+
+The curl examples assume:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+export WT=http://localhost:7420
+export TOKEN=...   # from login
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$WT = 'http://localhost:7420'
+$TOKEN = '...'   # from login
+# Use curl.exe (not the curl alias) for the examples below.
+```
+
+</Tab>
+</Tabs>
+
+## Auth
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/register` | none (registration must be enabled) | `201` |
+| `POST` | `/api/v1/auth/login` | none | `200` |
+| `POST` | `/api/v1/auth/logout` | token | `204` |
+| `GET` | `/api/v1/auth/me` | token | `200` |
+| `GET` | `/api/v1/auth/tokens` | token | `200` |
+| `POST` | `/api/v1/auth/tokens` | token | `200` |
+| `DELETE` | `/api/v1/auth/tokens/{id}` | token | `204` |
+
+### `POST /api/v1/auth/register`
+
+Creates an account and its personal tenant (slug = username, kind `user`) with the new account as `owner`, and returns a session token. Returns `403 forbidden` when the server runs with `--allow-registration=false`, and `409 conflict` if the username is taken.
+
+```json
+{"username":"alice","email":"alice@example.com","password":"correct horse battery staple"}
+```
+
+Response `201`:
+
+```json
+{
+  "token": "wt_3q8Zr0...",
+  "account": {
+    "id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
+    "username": "alice",
+    "email": "alice@example.com",
+    "display_name": "",
+    "tenant_id": "9d8e7f60-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "is_admin": false,
+    "disabled": false,
+    "created_at": "2026-10-20T14:03:11Z"
+  }
+}
+```
+
+The token format shown is illustrative; treat tokens as opaque strings.
+
+### `POST /api/v1/auth/login`
+
+Verifies the password and issues a new session token (valid 30 days).
+
+```bash
+curl -s -X POST $WT/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"correct horse battery staple"}'
+```
+
+Response `200`: same shape as register, `{"token": "...", "account": {...}}`. A wrong password or disabled account returns `401 unauthenticated`.
+
+### `POST /api/v1/auth/logout`
+
+Revokes the token used to make the request. No body. Response `204`.
+
+### `GET /api/v1/auth/me`
+
+Returns the caller's account and tenant memberships.
+
+```json
+{
+  "account": {
+    "id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
+    "username": "alice",
+    "email": "alice@example.com",
+    "display_name": "",
+    "tenant_id": "9d8e7f60-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "is_admin": false,
+    "disabled": false,
+    "created_at": "2026-10-20T14:03:11Z"
+  },
+  "memberships": [
+    {
+      "tenant": {"id": "9d8e7f60-1a2b-4c3d-8e9f-0a1b2c3d4e5f", "slug": "alice", "name": "alice", "kind": "user", "plan": "free", "created_at": "2026-10-20T14:03:11Z"},
+      "role": "owner"
+    },
+    {
+      "tenant": {"id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e", "slug": "acme", "name": "Acme Corp", "kind": "org", "plan": "free", "created_at": "2026-10-20T15:00:00Z"},
+      "role": "developer"
+    }
+  ]
+}
+```
+
+### `GET /api/v1/auth/tokens`
+
+Lists the caller's API tokens. Token secrets are never returned.
+
+```json
+[
+  {
+    "id": "c0ffee00-1234-4abc-9def-0123456789ab",
+    "account_id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
+    "name": "ci",
+    "created_at": "2026-10-20T16:00:00Z",
+    "expires_at": "2026-11-19T16:00:00Z",
+    "last_used_at": "2026-10-21T08:12:45Z"
+  }
+]
+```
+
+`expires_at` and `last_used_at` are omitted when not set.
+
+### `POST /api/v1/auth/tokens`
+
+Creates a personal API token. `ttl_hours` is optional; omit it for a token without an expiry.
+
+```bash
+curl -s -X POST $WT/api/v1/auth/tokens \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"ci","ttl_hours":720}'
+```
+
+Response:
+
+```json
+{
+  "token": "wt_Xk91...",
+  "api_token": {
+    "id": "c0ffee00-1234-4abc-9def-0123456789ab",
+    "account_id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
+    "name": "ci",
+    "created_at": "2026-10-20T16:00:00Z",
+    "expires_at": "2026-11-19T16:00:00Z"
+  }
+}
+```
+
+<Callout type="warn">
+  The raw `token` is returned only once. The server stores only its SHA-256 hash and cannot show it again.
+</Callout>
+
+### `DELETE /api/v1/auth/tokens/{id}`
+
+Revokes one of the caller's tokens. Response `204`.
+
+## Tenants and members
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/api/v1/tenants` | token | `200` |
+| `POST` | `/api/v1/tenants` | token | `201` |
+| `GET` | `/api/v1/tenants/{tenant}` | `tenant:read` | `200` |
+| `GET` | `/api/v1/tenants/{tenant}/members` | `tenant:read` | `200` |
+| `PUT` | `/api/v1/tenants/{tenant}/members/{username}` | `tenant:admin` | `200` |
+| `DELETE` | `/api/v1/tenants/{tenant}/members/{username}` | `tenant:admin` | `204` |
+
+### `GET /api/v1/tenants`
+
+Returns the tenants visible to the caller, as an array of tenant objects.
+
+```json
+[
+  {"id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e", "slug": "acme", "name": "Acme Corp", "kind": "org", "plan": "free", "created_at": "2026-10-20T15:00:00Z"}
+]
+```
+
+`kind` is `user` (personal tenant) or `org`. `plan` is one of `free`, `pro`, `enterprise`; it is informational in v0.2.0 (plan quotas are on the Roadmap).
+
+### `POST /api/v1/tenants`
+
+Creates an organization tenant. The caller becomes its `owner`. `slug` must be lowercase `[a-z0-9-]` and unique; `409 conflict` if taken.
+
+```bash
+curl -s -X POST $WT/api/v1/tenants \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"slug":"acme","name":"Acme Corp"}'
+```
+
+Response `201`: the tenant object (`kind` is `org`).
+
+### `GET /api/v1/tenants/{tenant}`
+
+Returns one tenant object.
+
+### `GET /api/v1/tenants/{tenant}/members`
+
+```json
+[
+  {
+    "account": {"id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b", "username": "alice", "email": "alice@example.com", "display_name": "", "tenant_id": "9d8e7f60-1a2b-4c3d-8e9f-0a1b2c3d4e5f", "is_admin": false, "disabled": false, "created_at": "2026-10-20T14:03:11Z"},
+    "role": "owner"
+  }
+]
+```
+
+### `PUT /api/v1/tenants/{tenant}/members/{username}`
+
+Adds an existing account to the tenant or changes its role. `role` is one of `owner`, `admin`, `maintainer`, `developer`, `viewer`.
+
+```bash
+curl -s -X PUT $WT/api/v1/tenants/acme/members/bob \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"role":"developer"}'
+```
+
+Response: the member, `{"account": {...}, "role": "developer"}`.
+
+### `DELETE /api/v1/tenants/{tenant}/members/{username}`
+
+Removes the membership. Response `204`.
+
+## Trees
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/api/v1/tenants/{tenant}/trees` | read (per tree visibility) | `200` |
+| `POST` | `/api/v1/tenants/{tenant}/trees` | `tree:create` | `201` |
+| `GET` | `/api/v1/trees/{tenant}/{tree}` | `tree:read` | `200` |
+| `PATCH` | `/api/v1/trees/{tenant}/{tree}` | `tree:admin` | `200` |
+| `DELETE` | `/api/v1/trees/{tenant}/{tree}` | `tree:admin` | `204` |
+
+Trees are also created implicitly the first time `wt push` targets a tree that does not exist yet, when the caller is allowed to create it.
+
+### Tree summary
+
+`GET /api/v1/tenants/{tenant}/trees` returns an array of tree summaries, and `GET /api/v1/trees/{tenant}/{tree}` returns one:
+
+```json
+{
+  "tree": {
+    "id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+    "tenant_id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+    "name": "payments",
+    "description": "Payment service",
+    "default_branch": "main",
+    "visibility": "private",
+    "created_at": "2026-10-20T15:05:00Z",
+    "updated_at": "2026-10-21T09:30:00Z"
+  },
+  "branch_count": 3,
+  "snapshot_count": 128,
+  "staged_count": 2,
+  "open_mr_count": 1
+}
+```
+
+### `POST /api/v1/tenants/{tenant}/trees`
+
+```bash
+curl -s -X POST $WT/api/v1/tenants/acme/trees \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"payments","description":"Payment service","visibility":"private","default_branch":"main"}'
+```
+
+`name` is required. `visibility` is `private`, `internal`, or `public`. Response `201`: the tree object (not a summary). A `tree.created` event is published and a `tree.create` audit entry is written.
+
+### `PATCH /api/v1/trees/{tenant}/{tree}`
+
+Updates any subset of `description`, `visibility`, `default_branch`. Fields you omit are unchanged.
+
+```json
+{"visibility":"internal"}
+```
+
+Response: the updated tree object.
+
+### `DELETE /api/v1/trees/{tenant}/{tree}`
+
+Deletes the tree and its metadata. Response `204`.
+
+## History
+
+All endpoints in this group require `tree:read`, which anonymous callers have on `public` trees.
+
+| Method | Path | Query | Returns |
+|---|---|---|---|
+| `GET` | `/api/v1/trees/{tenant}/{tree}/branches` | none | `[branch]` |
+| `GET` | `/api/v1/trees/{tenant}/{tree}/snapshots` | `branch`, `limit` (default 50) | `[snapshot]`, newest first |
+| `GET` | `/api/v1/trees/{tenant}/{tree}/snapshots/{id}` | none | `{snapshot, files}` |
+| `GET` | `/api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}` | none | raw file bytes |
+| `GET` | `/api/v1/trees/{tenant}/{tree}/tags` | none | `[tag]` |
+| `GET` | `/api/v1/trees/{tenant}/{tree}/staged` | `branch` (optional) | `[staged]` |
+
+### Branches
+
+```json
+[
+  {
+    "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+    "name": "main",
+    "tip": "7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a",
+    "protected": true,
+    "created_at": "2026-10-20T15:05:00Z",
+    "updated_at": "2026-10-21T09:30:00Z"
+  }
+]
+```
+
+`tip` is a snapshot id, or `""` for an empty branch. `protected` is `true` when a [branch protection](/docs/server/branch-protection) rule matches the branch.
+
+### Snapshots
+
+```bash
+curl -s "$WT/api/v1/trees/acme/payments/snapshots?branch=main&limit=2" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+[
+  {
+    "id": "7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a",
+    "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+    "branch_name": "main",
+    "parents": ["0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d"],
+    "manifest_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+    "author": "alice",
+    "message": "Add refund endpoint",
+    "created_at": "2026-10-21T09:28:40Z",
+    "auto_generated": false,
+    "pushed_by": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
+    "pushed_at": "2026-10-21T09:30:00Z"
+  }
+]
+```
+
+Pass `branch` to select the branch whose history is walked (the tree's `default_branch` is the natural choice). `pushed_by` is an account id. `auto_generated` is `true` for daemon auto-snapshots (message `auto: N files changed`).
+
+### Snapshot detail
+
+`GET /api/v1/trees/{tenant}/{tree}/snapshots/{id}` returns the snapshot and the full file list of its manifest:
+
+```json
+{
+  "snapshot": {
+    "id": "7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a",
+    "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+    "branch_name": "main",
+    "parents": ["0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d"],
+    "manifest_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+    "author": "alice",
+    "message": "Add refund endpoint",
+    "created_at": "2026-10-21T09:28:40Z",
+    "auto_generated": false,
+    "pushed_by": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
+    "pushed_at": "2026-10-21T09:30:00Z"
+  },
+  "files": [
+    {"path": "README.md", "hash": "4f1a...e09c", "size": 1832, "executable": false},
+    {"path": "scripts/deploy.sh", "hash": "9b02...71aa", "size": 410, "executable": true}
+  ]
+}
+```
+
+Hashes are shortened here for readability; the API returns the full 64 hex characters.
+
+### Blob
+
+`GET /api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}` returns the raw bytes of one file at a snapshot. `{path...}` is the `/`-separated file path and may contain slashes.
+
+```bash
+curl -s "$WT/api/v1/trees/acme/payments/blob/7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a/scripts/deploy.sh" \
+  -H "Authorization: Bearer $TOKEN" -o deploy.sh
+```
+
+Reads are subject to [license rules](/docs/server/licensing): a rule that does not permit the caller to read the path rejects the request with `403 forbidden`.
+
+### Tags
+
+```json
+[
+  {
+    "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+    "name": "v1.4.0",
+    "target": "7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a",
+    "message": "Release 1.4.0",
+    "tagger": "alice",
+    "created_at": "2026-10-21T10:00:00Z"
+  }
+]
+```
+
+Tags reach the server through the gRPC `PushTag` call made by `wt`; see the [tags guide](/guides/tags-and-releases).
+
+### Staged snapshots
+
+`GET /api/v1/trees/{tenant}/{tree}/staged?branch=main` lists team-visible work in progress. Omit `branch` for all branches.
+
+```json
+[
+  {
+    "snapshot_id": "5c4b3a29-1807-4f6e-8d5c-4b3a29180716",
+    "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+    "tenant_id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+    "account_id": "7e6d5c4b-3a29-4180-9f6e-5d4c3b2a1908",
+    "author": "bob",
+    "branch_name": "main",
+    "files_changed": ["src/refund.rs", "src/lib.rs"],
+    "files_added": 1,
+    "files_modified": 1,
+    "files_deleted": 0,
+    "message": "auto: 2 files changed",
+    "staged_at": "2026-10-21T11:42:07Z"
+  }
+]
+```
+
+There is at most one staged snapshot per tree, account, and branch. See the [staged visibility guide](/guides/staged-visibility).
+
+## Protections
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/api/v1/trees/{tenant}/{tree}/protections` | `tree:read` | `200` |
+| `PUT` | `/api/v1/trees/{tenant}/{tree}/protections` | `tree:admin` | `200` |
+| `DELETE` | `/api/v1/trees/{tenant}/{tree}/protections?pattern=` | `tree:admin` | `204` |
+
+The body of `PUT` is a branch protection. Rules are keyed by `pattern`: putting a rule with an existing pattern replaces it. `tree_id` is filled in by the server.
+
+```bash
+curl -s -X PUT $WT/api/v1/trees/acme/payments/protections \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"pattern":"main","no_direct_push":true,"required_approvals":1,"allowed_pushers":[],"no_delete":true}'
+```
+
+Response (also the element type of `GET`):
+
+```json
+{
+  "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+  "pattern": "main",
+  "no_direct_push": true,
+  "required_approvals": 1,
+  "allowed_pushers": [],
+  "no_delete": true
+}
+```
+
+Delete a rule by pattern (URL-encode it, for example `release%2F*`):
+
+```bash
+curl -s -X DELETE "$WT/api/v1/trees/acme/payments/protections?pattern=release%2F*" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Semantics are described in [Branch protection](/docs/server/branch-protection).
+
+## Licenses
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/api/v1/trees/{tenant}/{tree}/licenses` | `tree:read` | `200` |
+| `PUT` | `/api/v1/trees/{tenant}/{tree}/licenses` | `tree:admin` | `200` |
+| `DELETE` | `/api/v1/trees/{tenant}/{tree}/licenses?path_glob=` | `tree:admin` | `204` |
+
+The body of `PUT` is a license rule, keyed by `path_glob` (putting an existing glob replaces the rule). `grant` is `read-only`, `modify`, or `redistribute`.
+
+```bash
+curl -s -X PUT $WT/api/v1/trees/acme/payments/licenses \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"path_glob":"vendor/crypto/**","spdx":"Apache-2.0","grant":"read-only"}'
+```
+
+```json
+{
+  "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+  "path_glob": "vendor/crypto/**",
+  "spdx": "Apache-2.0",
+  "grant": "read-only"
+}
+```
+
+```bash
+curl -s -X DELETE "$WT/api/v1/trees/acme/payments/licenses?path_glob=vendor%2Fcrypto%2F**" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Semantics are described in [Licensing](/docs/server/licensing).
+
+## Merge requests
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/api/v1/trees/{tenant}/{tree}/merge-requests?state=` | `tree:read` | `200` |
+| `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests` | `mr:create` | `201` |
+| `GET` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}` | `tree:read` | `200` |
+| `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}/approve` | `mr:approve` | `200` |
+| `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}/merge` | `mr:merge` | `200` |
+| `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}/close` | see below | `200` |
+
+`state` filters the list: `open`, `merged`, or `closed`; omit it for all merge requests.
+
+### `POST .../merge-requests`
+
+```bash
+curl -s -X POST $WT/api/v1/trees/acme/payments/merge-requests \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"Add refund endpoint","description":"Implements POST /refunds","source_branch":"feature/refunds","target_branch":"main"}'
+```
+
+Response `201`, and the shape returned by every merge request endpoint:
+
+```json
+{
+  "id": "a9b8c7d6-e5f4-4a3b-9c2d-1e0f9a8b7c6d",
+  "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
+  "number": 4,
+  "title": "Add refund endpoint",
+  "description": "Implements POST /refunds",
+  "source_branch": "feature/refunds",
+  "target_branch": "main",
+  "author_id": "7e6d5c4b-3a29-4180-9f6e-5d4c3b2a1908",
+  "author": "bob",
+  "state": "open",
+  "approvals": [],
+  "created_at": "2026-10-21T12:00:00Z",
+  "updated_at": "2026-10-21T12:00:00Z"
+}
+```
+
+After a merge, `state` is `merged` and the optional fields `merged_at` and `merged_snapshot` (the new target tip) are present. Each approval looks like `{"account_id": "...", "username": "alice", "at": "2026-10-21T12:30:00Z"}`.
+
+### `POST .../merge-requests/{n}/approve`
+
+Records the caller's approval. No body. Returns the merge request.
+
+### `POST .../merge-requests/{n}/merge`
+
+Fast-forwards the target branch to the source branch's tip. No body. Returns the merged merge request. Fails with:
+
+- `409 conflict` when the target tip is not an ancestor of the source tip. Merge the target into the source locally (`wt merge`), push the source branch, and retry.
+- an error when the merge request has fewer approvals than the `required_approvals` of the protection rules matching the target branch (`review_required`).
+
+### `POST .../merge-requests/{n}/close`
+
+Closes an open merge request without merging. No body. Returns the closed merge request. Intended for the author or a caller allowed to merge.
+
+The full lifecycle is described in [Branch protection](/docs/server/branch-protection#merge-requests).
+
+## Audit
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/api/v1/audit?tenant=&action=&limit=` | `tenant:admin` on `tenant`, or server admin | `200` |
+
+| Query | Meaning |
+|---|---|
+| `tenant` | Tenant slug to filter on. |
+| `action` | Exact action name, for example `branch.push`. |
+| `limit` | Maximum entries (default 100). |
+
+Entries are returned newest first:
+
+```json
+[
+  {
+    "id": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+    "tenant_id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+    "actor_id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
+    "actor": "alice",
+    "action": "branch.push",
+    "resource_type": "branch",
+    "resource_id": "main",
+    "details": {"tree": "payments"},
+    "remote_addr": "203.0.113.7:51544",
+    "at": "2026-10-21T09:30:00Z"
+  }
+]
+```
+
+`actor` is a username, `anonymous`, or `system`. `details` and `remote_addr` are omitted when empty. The `resource_type`, `resource_id`, and `details` values shown are illustrative. See [Monitoring](/docs/server/monitoring#audit-log).
+
+## Events
+
+| Method | Path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/api/v1/events?tenant=&tree=` | token (events are limited to what the caller may read) | `200`, `text/event-stream` |
+
+See [Events](/docs/server/events) for the stream format and event types.
+
+## Admin
+
+All admin endpoints require a server admin (`is_admin: true`).
+
+| Method | Path | Success |
+|---|---|---|
+| `GET` | `/api/v1/admin/stats` | `200` |
+| `GET` | `/api/v1/admin/accounts` | `200` |
+| `PATCH` | `/api/v1/admin/accounts/{username}` | `200` |
+
+### `GET /api/v1/admin/stats`
+
+```json
+{
+  "tenants": 4,
+  "accounts": 12,
+  "trees": 9,
+  "branches": 31,
+  "snapshots": 2048,
+  "staged": 5,
+  "objects": 18734,
+  "storage_bytes": 734003200
+}
+```
+
+### `GET /api/v1/admin/accounts`
+
+Returns every account as an array of account objects.
+
+### `PATCH /api/v1/admin/accounts/{username}`
+
+Sets `is_admin` and/or `disabled`. Returns the updated account.
+
+```bash
+curl -s -X PATCH $WT/api/v1/admin/accounts/mallory \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"disabled":true}'
+```
+
+## Health and metrics
+
+These endpoints have no `/api/v1` prefix and need no token.
+
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/healthz` | `{"status":"ok","version":"0.2.0","uptime_seconds":3600}` |
+| `GET` | `/metrics` | Prometheus text exposition format |
+| `GET` | `/admin/...` | Static admin panel (when `--admin-dir` is set), `index.html` fallback |
+
+See [Monitoring](/docs/server/monitoring).
+
+## CORS
+
+Browser requests are allowed from `http://localhost:5173` (the admin panel's Vite dev server) and from every origin listed in `WT_CORS_ORIGINS`. The admin panel served at `/admin/` is same-origin and needs no CORS configuration.

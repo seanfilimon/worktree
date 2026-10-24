@@ -1,101 +1,187 @@
 ---
-title: "Staged Visibility"
-description: "Understand how W0rkTree keeps your work-in-progress private and secure until you are ready to share it."
+title: Staged Visibility
+description: Share work-in-progress with your team as staged snapshots that are visible on the server but never part of branch history.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-In traditional version control, uncommitted work is fragile. To back it up, you often have to commit and push, exposing your messy work-in-progress (WIP) to the rest of the team. W0rkTree solves this with **staged visibility**.
+A **staged snapshot** is a team-visible picture of your work-in-progress (WIP). It lets teammates see what you are working on, which files you are touching, and on which branch, before you push anything.
 
-Staged visibility ensures that your local changes and auto-tracked snapshots remain completely private to your machine until you explicitly choose to publish them, while still providing the safety of continuous versioning.
+Staged snapshots are deliberately separate from history:
 
-## How Staged Snapshots Work
+| Property | Behavior |
+|---|---|
+| Visibility | Stored on the server and visible to everyone who can read the tree. |
+| Cardinality | At most **one** per (tree, account, branch). |
+| Replacement | A newer stage from the same account on the same branch replaces the older one. |
+| Lifetime | Cleared automatically when you push that branch. |
+| History | Never part of branch history. Staging does not move a branch tip, create a snapshot in `wt log`, or affect merges. |
 
-When you run `wt worker start`, the background worker begins watching your filesystem. Every time you save a file, the worker creates a **staged snapshot**. 
+Use staged snapshots to avoid duplicate work and surprise conflicts: if `wt status --team` shows a teammate editing `src/auth/session.rs` on `main`, you know to coordinate before you start changing the same file.
 
-These snapshots are fully immutable checkpoints of your codebase, but they have a special property: they are *staged*. A staged snapshot lives exclusively in your local object store. It is not synchronized to the W0rkTree server, it does not trigger CI pipelines, and it is completely invisible to your teammates.
+## Prerequisites
 
-This gives you the freedom to experiment, make mistakes, and save constantly without polluting the public commit history.
+- A remote configured for the worktree (`wt remote add origin http://localhost:7420 --tenant acme`) or a worktree created with `wt clone`.
+- A saved credential for that server (`wt login http://localhost:7420 -u alice`).
+- `tree:write` permission on the tree (developer role or higher in the owning tenant). Staging is a write action, like push and tag.
 
-## Viewing Your Staged Changes
+See [Multi-Tenancy](/guides/multi-tenancy) for roles and [`wt remote`](/docs/cli/remote) for remote setup.
 
-To see your current staged snapshots, use the `staged` command:
+## Staging manually with `wt stage`
 
 ```bash
-wt staged list
+wt stage [--remote R]
 ```
 
-This will output a chronological list of all the private snapshots the worker has captured for your current tree.
+`wt stage` builds a manifest from your **working directory** (including changes you have not snapshotted), uploads any file contents the server does not already have, and records a staged snapshot for your current branch with a change summary relative to your current head. `--remote` selects the remote (default `origin`).
 
-If you want to see a summary of the unpushed work across your entire local workspace, you can use:
+<Steps>
+<Step>
+
+### Make some changes
+
+Edit files as usual. You do not need to run `wt snapshot` first.
+
+</Step>
+<Step>
+
+### Stage them
 
 ```bash
-wt status
+wt stage
 ```
 
-This command shows you exactly what is staged, what has been committed locally, and how far ahead you are of the remote server.
+Run it again whenever you want to refresh what the team sees. Each run replaces your previous staged snapshot for this branch.
 
-## Team Visibility
+</Step>
+<Step>
 
-One of the unique benefits of W0rkTree's architecture is the ability to see the aggregate state of your team without exposing individual WIP. 
+### Push when ready
 
-When you want to know what your colleagues are actively working on—to avoid merge conflicts or duplicate work—you can query the server:
+```bash
+wt snapshot -m "Add session refresh"
+wt push
+```
+
+A successful push clears your staged entry for the pushed branch on the server.
+
+</Step>
+</Steps>
+
+## Seeing your team's WIP with `wt status --team`
 
 ```bash
 wt status --team
 ```
 
-Because of staged visibility, this command does *not* show the contents of your teammates' unpushed files. Instead, it securely queries the server's presence and lock metadata to show you:
-- Which branches your teammates are currently active on.
-- Which files they have write-locks on (if using pessimistic locking).
-- The general areas of the codebase experiencing high churn.
+In addition to the usual local status, `--team` asks the server for the tree's staged snapshots and lists, for each one, the author, branch, counts of added, modified, and deleted files, the changed paths, and when it was staged. Use `--json` for machine-readable output:
 
-Your code remains private, but your team maintains high situational awareness.
-
-## Privacy Controls
-
-Staged visibility is secure by default, but you can configure exactly what the worker is allowed to snapshot using your `.wt-tree/config.toml` or global `.wt/config.toml`.
-
-For example, you can prevent the worker from ever staging specific file types or secrets:
-
-```toml
-[tracking.validation]
-forbidden_patterns = ["\\.env$", "secret", "password", "*.key"]
-max_file_size = "50MB"
+```bash
+wt status --team --json
 ```
 
-Files matching these patterns will never be snapshotted, keeping them completely out of your local object store. 
+## Automatic staging by the daemon
 
-<Callout type="info">
-Remember, even standard files that *are* snapshotted remain completely private to your local machine until you explicitly push them to the server.
+The background daemon can stage for you. After each auto-snapshot it uploads a staged snapshot when **all** of these hold:
+
+- `[sync].auto_stage = true` in `.wt/config.toml` (the default),
+- the remote named by `[sync].remote` (default `origin`) is configured, and
+- a credential for that remote's server exists in `$WT_HOME/credentials.toml`.
+
+```toml
+[sync]
+auto_stage = true
+remote = "origin"
+```
+
+To turn auto-staging off for one worktree while keeping auto-snapshots:
+
+```bash
+wt config set sync.auto_stage false
+```
+
+See [Auto-Tracking Setup](/guides/auto-tracking-setup) for running the daemon.
+
+## Reading staged snapshots over REST
+
+```text
+GET /api/v1/trees/{tenant}/{tree}/staged?branch=
+```
+
+Omit `branch` (or leave it empty) to list every branch. The response is an array of staged snapshots. Field names are exact:
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+curl -s -H "Authorization: Bearer $WT_TOKEN" \
+  "http://localhost:7420/api/v1/trees/acme/app/staged?branch=main"
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:WT_TOKEN" }
+Invoke-RestMethod -Headers $headers `
+  -Uri "http://localhost:7420/api/v1/trees/acme/app/staged?branch=main"
+```
+
+</Tab>
+</Tabs>
+
+```json
+[
+  {
+    "snapshot_id": "5f0c2a9e-0d4b-4d7e-9a51-3c1f6f2b8e10",
+    "tree_id": "b1d7...",
+    "tenant_id": "9a3e...",
+    "account_id": "c42f...",
+    "author": "alice",
+    "branch_name": "main",
+    "files_changed": ["src/auth/session.rs", "src/auth/mod.rs"],
+    "files_added": 1,
+    "files_modified": 1,
+    "files_deleted": 0,
+    "message": "",
+    "staged_at": "2026-10-24T09:41:07Z"
+  }
+]
+```
+
+Values above are illustrative. Full endpoint details are in the [REST API reference](/docs/server/rest-api).
+
+## Live updates over SSE
+
+The server streams events at `GET /api/v1/events?tenant=&tree=` as `text/event-stream`. Two event types concern staged snapshots:
+
+| Event | When |
+|---|---|
+| `snapshot.staged` | Someone staged (or replaced) a staged snapshot. |
+| `staged.cleared` | A staged entry was removed, for example after its author pushed the branch. |
+
+Each event is sent as `event: <type>` followed by a `data:` line holding the JSON event (`type`, `tenant_id`, `tree_id`, `actor`, `payload`, `at`). A heartbeat comment is sent every 15 seconds.
+
+```bash
+curl -N -H "Authorization: Bearer $WT_TOKEN" \
+  "http://localhost:7420/api/v1/events?tenant=acme&tree=app"
+```
+
+See [Events](/docs/server/events) for the full event list.
+
+## In the admin panel
+
+Open **Trees**, select a tree, and switch to the **Staged WIP** tab on the tree detail page. It lists every staged snapshot for the tree with author, branch, change counts, and changed paths. See the [Admin Panel guide](/guides/admin-panel).
+
+## Privacy considerations
+
+<Callout type="warn" title="Staging uploads file contents">
+  A staged snapshot is not just metadata. `wt stage` and daemon auto-staging upload the contents of your changed files to the server, and anyone who can read the tree can see the staged entry.
 </Callout>
 
-## Moving from Staged to Public
-
-When your feature is complete and you are ready to share it with your team, you transition your staged snapshots into public history. 
-
-Typically, you don't want to push hundreds of micro-snapshots. Instead, you squash them into a cohesive commit:
-
-```bash
-wt squash --all -m "Implement new checkout flow"
-wt push
-```
-
-The `wt push` command is the boundary. It takes your local, private commits and synchronizes them with the W0rkTree server. Once pushed, the commits become part of the tree's public history, triggering dependencies, CI gates, and cross-tree TODOs.
-
-## Retention and Cleanup
-
-Because the background worker captures changes constantly, staged snapshots can accumulate quickly. W0rkTree automatically manages this local storage through retention policies.
-
-By default, W0rkTree runs a local garbage collection process that prunes unreferenced staged snapshots older than 14 days. You can adjust this retention period in your global `.wt/config.toml`:
-
-```toml
-[storage.retention]
-staged_snapshots_days = 14
-```
-
-If you ever need to manually clean up your staged snapshots to free up disk space, you can run:
-
-```bash
-wt staged prune
-```
+- **Visibility follows the tree.** For a `private` tree that means tenant members; for `internal`, every authenticated account on the server; for `public`, anyone, including anonymous readers.
+- **Clearing is not erasure.** A push removes the staged *entry*. Do not assume file contents already uploaded are erased from the server's object store.
+- **Keep secrets out of the worktree.** Secret scanning runs before every `wt snapshot`, but the safest approach is to never place credentials in tracked paths. Use [ignore patterns](/guides/ignore-patterns) for local env files.
+- **Opt out where needed.** Set `sync.auto_stage` to `false` for sensitive worktrees, or pause the daemon with `wt daemon pause` while you work on something you do not want shared.

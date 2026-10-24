@@ -1,0 +1,126 @@
+---
+title: Daemon
+description: Run the worktree-bg background daemon that watches worktrees, takes automatic snapshots, and stages work in progress.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+The background daemon is a separate binary, `worktree-bg` (crate `worktree-bg`, installed with `cargo install --path crates/worktree-bg`). You normally control it through `wt daemon`. It watches worktrees for file changes, takes automatic snapshots after a period of inactivity, and optionally uploads them as staged snapshots so your team can see work in progress.
+
+## `wt daemon`
+
+```text
+wt daemon start [--foreground] | stop | status | watch [PATH] | unwatch [PATH] | pause | resume
+```
+
+| Subcommand | Description |
+|---|---|
+| `start` | Start the daemon (`worktree-bg run`) in the background. |
+| `stop` | Ask the running daemon to shut down cleanly. |
+| `status` | Show the daemon's pid, version, start time and per-worktree state. |
+| `watch [PATH]` | Start watching the worktree at `PATH`. |
+| `unwatch [PATH]` | Stop watching the worktree at `PATH`. |
+| `pause` | Pause automatic snapshots for all watched worktrees. File watching continues. |
+| `resume` | Resume automatic snapshots for all watched worktrees. |
+
+| Argument / flag | Applies to | Description |
+|---|---|---|
+| `--foreground` | `start` | Run the daemon attached to the terminal instead of detaching (runs `worktree-bg run --foreground`). Stop it with Ctrl+C. Useful for debugging. |
+| `PATH` | `watch`, `unwatch` | Worktree root. Default: the current worktree. |
+
+```bash
+wt daemon start
+wt daemon watch               # watch the worktree you are in
+wt daemon watch ~/src/other-project
+wt daemon status
+wt daemon pause
+wt daemon resume
+wt daemon unwatch ~/src/other-project
+wt daemon stop
+```
+
+```powershell
+wt daemon start
+wt daemon watch C:\src\other-project
+wt daemon status --json | ConvertFrom-Json | Select-Object -ExpandProperty watched
+```
+
+### `status` fields
+
+| Field | Description |
+|---|---|
+| `pid`, `version`, `started_at` | Daemon process and build. |
+| `watched[].root` | Worktree root. |
+| `watched[].paused` | Whether auto-snapshots are paused. |
+| `watched[].pending_changes` | Changed files waiting for the next auto-snapshot. |
+| `watched[].snapshots_created` | Auto-snapshots taken since start. |
+| `watched[].last_snapshot`, `last_snapshot_at` | Most recent auto-snapshot id and time. |
+| `watched[].last_stage_at` | Time of the last successful auto-stage. |
+| `watched[].last_error` | Last error (for example a secret-scan failure or an unreachable server). |
+
+## How it works
+
+<Steps>
+  <Step>
+**Watch.** For every worktree in the watched list, the daemon runs a filesystem watcher. Events under `.wt/` are ignored, as are ignored paths.
+  </Step>
+  <Step>
+**Debounce.** Changes are collected until no file event arrives for `auto_snapshot.inactivity_secs` (default `30`) seconds, or immediately once `auto_snapshot.max_changed_files` (default `50`) files have changed.
+  </Step>
+  <Step>
+**Auto-snapshot.** For each tree with changes, the daemon creates a snapshot marked auto-generated with the message `auto: N files changed`, on the tree's current branch. Reflog action: `auto-snapshot`.
+  </Step>
+  <Step>
+**Auto-stage.** If `sync.auto_stage` is `true` (default), the remote named by `sync.remote` (default `origin`) is configured, and you are logged in to it, the daemon uploads the working state as your staged snapshot, just like [`wt stage`](/docs/cli/remote#wt-stage).
+  </Step>
+</Steps>
+
+Configure the behavior per worktree with [`wt config`](/docs/cli/repository#wt-config):
+
+```toml
+[auto_snapshot]
+enabled = true
+inactivity_secs = 30
+max_changed_files = 50
+
+[sync]
+auto_stage = true
+remote = "origin"
+```
+
+**Rules**
+
+- The daemon **never snapshots while a merge is in progress** in that tree.
+- Auto-snapshots go through the same secret scan as `wt snapshot`; a finding blocks the snapshot and is reported in `last_error`.
+- `auto_snapshot.enabled = false` turns auto-snapshots off for that worktree without unwatching it.
+- Auto-snapshots never push. Only `wt push` changes branch history on the server.
+
+## Files
+
+All daemon state lives in `$WT_HOME` (default `~/.wt`):
+
+| File | Description |
+|---|---|
+| `bg.toml` | `watched = ["path", ...]`, the watched worktree roots. Updated on `watch` / `unwatch`, so the list survives restarts. |
+| `bg.json` | `{"pid": ..., "port": ..., "version": "..."}`, written on startup and removed on clean shutdown. The CLI reads it to find the daemon. |
+| `bg.log` | Daemon log. Check it when `last_error` is set or the daemon exits. |
+
+```toml
+# $WT_HOME/bg.toml
+watched = ["/home/ada/src/my-project", "/home/ada/src/other-project"]
+```
+
+## IPC
+
+The CLI talks to the daemon with newline-delimited JSON over TCP on `127.0.0.1`, using the port from `bg.json`: one request line and one response line per connection. Requests are tagged by `cmd` (`status`, `watch`, `unwatch`, `pause`, `resume`, `snapshot_now`, `shutdown`), responses by `result` (`status`, `ok`, `error`). See [SDK IPC](/docs/sdk/ipc).
+
+```json
+{"cmd":"watch","path":"/home/ada/src/my-project"}
+```
+
+<Callout type="info" title="Daemon not running">
+If `bg.json` is missing, or it is stale and the connection is refused, commands other than `start` fail with "background daemon is not running". Run `wt daemon start`. A stale `bg.json` left by a crash is harmless.
+</Callout>
+
+See [Auto-tracking setup](/guides/auto-tracking-setup) for a walkthrough, including starting the daemon at login.

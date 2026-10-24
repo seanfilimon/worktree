@@ -1,85 +1,147 @@
 ---
-title: "Ignore Patterns"
-description: "Learn how to exclude files from tracking using the W0rkTree ignore hierarchy."
+title: Ignore Patterns
+description: Keep build output, dependencies and local files out of snapshots with built-in ignores, .wt/ignore, .wtignore files and the wt ignore command.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-Not every file in your workspace belongs in version control. Build artifacts, temporary files, and sensitive credentials should be excluded so they are never snapshotted or pushed to the W0rkTree server.
+Because W0rkTree has no staging area, **ignore rules are how you decide what is versioned**: every file in a tree's working directory that is not ignored ends up in the next snapshot. Ignored paths are never snapshotted, never reported by `wt status`, never touched by `wt switch` or `wt restore`, and never watched by the daemon.
 
-W0rkTree manages this through a strict, hierarchical ignore system that integrates deeply with the local background worker.
+## Where patterns come from
 
-## The Ignore Hierarchy
+| Source | Location | Shared with the team? | Edited with |
+|---|---|---|---|
+| Built-ins | compiled into `wt` | always active everywhere | (fixed) |
+| `.wt/ignore` | inside `.wt/` at the worktree root | **No.** `.wt/` is never snapshotted. | `wt ignore add`, or any editor |
+| `.wtignore` | a regular file in the working directory | **Yes.** It is snapshotted and pushed like any other file. | any editor |
 
-W0rkTree evaluates ignore patterns using a two-tiered hierarchy, allowing you to enforce repository-wide rules while giving individual teams control over their specific trees.
+`wt ignore list` prints the effective patterns in that order: built-ins, then `.wt/ignore`, then `.wtignore`.
 
-### Global Rules (`.wt/ignore`)
+### Built-in ignores
 
-At the root of your repository, the `.wt/ignore` file defines global patterns. These rules apply to every tree in the workspace. This is the ideal place to ban universal files like `.DS_Store`, `Thumbs.db`, or top-level environment files.
-
-```text
-# .wt/ignore
-.DS_Store
-*.log
-.env
-```
-
-### Tree-Specific Rules (`.wt-tree/ignore`)
-
-Inside any nested tree, you can place a `.wt-tree/ignore` file. Patterns defined here apply *only* to that specific tree and its subdirectories. 
-
-Unlike configuration files where the tree-level overrides the global level, ignore patterns are **additive**. When the background worker decides whether to create a staged snapshot for a file in the `frontend` tree, it checks if the file matches *either* the global `.wt/ignore` rules *or* the `frontend/.wt-tree/ignore` rules.
+These are always ignored and cannot be un-ignored:
 
 ```text
-# frontend/.wt-tree/ignore
+.wt/
+.wt-tree/
+.git/
+target/
 node_modules/
-dist/
-.next/
+.DS_Store
+*.swp
 ```
 
-## Built-in Defaults
+`.wt/` and `.wt-tree/` are W0rkTree's own metadata and nested-tree markers. `.git/` means a Git repository in the same directory is never captured, which is convenient while migrating.
 
-To prevent catastrophic mistakes and infinite loops, W0rkTree includes a set of built-in ignore rules that cannot be overridden. You do not need to add these to your ignore files:
+### `.wt/ignore` vs `.wtignore`
 
-- `.wt/` (The internal object store and global configuration)
-- `.git/` (If you are using W0rkTree alongside Git)
-- System-level temporary files that interfere with filesystem watchers
+- Use **`.wtignore`** for project rules everyone needs (build output, caches, generated code). Commit it with a snapshot so clones get it.
+- Use **`.wt/ignore`** for rules that only apply to your machine (editor folders, personal scratch files). `wt ignore add` writes here.
+- `wt git import` converts `.gitignore` into `.wt/ignore`. Copy the rules into `.wtignore` if your team should share them (see [Migration](/guides/migration)).
 
-## Pattern Syntax
+## Pattern syntax
 
-W0rkTree ignore files use standard glob syntax, identical to what you are likely used to from Git.
+Patterns use gitignore syntax, one per line:
 
-- `*` matches zero or more characters.
-- `?` matches a single character.
-- `**` matches directories recursively.
-- `!` negates a pattern, explicitly including a file that would otherwise be ignored.
-- A trailing slash (`/`) explicitly matches a directory.
+| Pattern | Matches |
+|---|---|
+| `# comment` | Nothing; blank lines are ignored too. |
+| `*.log` | Any file named `*.log` in any directory (a pattern without `/` matches the file name at any depth). |
+| `dist/` | A trailing `/` restricts the pattern to directories: `dist` and everything below it. |
+| `docs/build/` | A pattern containing `/` is matched against the whole path from the root. |
+| `*` | Any run of characters except `/`. |
+| `?` | Any single character except `/`. |
+| `**` | Any number of directories: `src/**/*.gen.rs` matches `src/a.gen.rs` and `src/x/y/b.gen.rs`. |
+| `!important.log` | Negation: re-include a path that an earlier pattern ignored. |
 
-<Callout type="info">
-Because W0rkTree relies on an active filesystem watcher, highly complex or deeply nested negate (`!`) rules can occasionally impact the performance of the background worker. Keep your ignore rules as simple as possible.
+The **last** matching pattern wins, so put negations after the patterns they override:
+
+```text
+*.log
+!release-notes.log
+```
+
+Paths are `/`-separated and relative to the worktree root on every platform, including Windows.
+
+## `wt ignore`
+
+```text
+wt ignore list | add PATTERN | check PATH
+```
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+wt ignore list
+wt ignore add "*.log"
+wt ignore add ".idea/"
+wt ignore check build/output.log
+wt ignore check src/main.rs
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+wt ignore list
+wt ignore add '*.log'
+wt ignore add '.idea/'
+wt ignore check build/output.log
+wt ignore check src/main.rs
+```
+
+</Tab>
+</Tabs>
+
+Quote patterns so your shell does not expand `*` itself. `wt ignore check PATH` reports whether a path relative to the worktree root is ignored; use it to debug a rule before snapshotting.
+
+## A typical `.wtignore`
+
+```text
+# build output
+dist/
+build/
+coverage/
+
+# caches and environments
+.cache/
+__pycache__/
+*.pyc
+.venv/
+
+# local configuration that may hold secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+```
+
+`target/` and `node_modules/` are already built-in, so they do not need to be listed.
+
+<Callout type="info" title="Ignore rules and secrets">
+Ignoring `.env` and similar files keeps them out of snapshots entirely. The [secret scan](/docs/cli/snapshots#secret-scan) is the safety net for anything that slips through: it runs on added and modified files before every snapshot and refuses the snapshot when it finds credentials.
 </Callout>
 
-## Validation Rules vs. Ignore Patterns
+## Ignoring files that are already versioned
 
-While `.wt/ignore` prevents the worker from tracking files entirely, W0rkTree also offers **Validation Rules** in your `.wt/config.toml` (or `.wt-tree/config.toml`).
+Adding a pattern does not remove a file from snapshots that already contain it. Once the pattern is in place, the path is no longer part of the tree's working state, so the **next** snapshot no longer contains it, while older snapshots keep it (history is append-only).
 
-```toml
-# .wt/config.toml
-[tracking.validation]
-max_file_size = "50MB"
-forbidden_patterns = ["*secret*", "*.pem"]
+```bash
+wt ignore add "secrets.local.toml"
+wt status                 # check what the next snapshot will drop
+wt snapshot -m "Stop versioning secrets.local.toml"
 ```
 
-What is the difference? 
-- **Ignore patterns** mean the worker silently skips the file as if it doesn't exist. It is a standard operational configuration.
-- **Validation rules** mean the worker actively flags the file as a policy violation. If a file matches a validation rule, it is rejected and a warning is written to your `wt worker log`. Use validation rules for security enforcement and ignore files for standard build artifacts.
+If the file contained a real secret, rotate the secret: it remains readable in earlier snapshots, locally and on the server if they were pushed.
 
-## Migrating from `.gitignore`
+## Ignore rules and nested trees
 
-If you are migrating an existing Git repository, W0rkTree makes it seamless. 
+Ignore rules apply to the whole worktree, including nested trees. In addition, each nested tree's directory is automatically excluded from its parent tree, so you never need ignore patterns to separate trees. See [Nested trees](/guides/nested-trees).
 
-When you run the `wt git import` command, W0rkTree automatically parses your existing `.gitignore` files:
-- The root `.gitignore` is translated into `.wt/ignore`.
-- Any `.gitignore` files found deeper in the directory structure are automatically translated into `.wt-tree/ignore` files within the appropriate nested trees.
+## Ignore rules and the daemon
 
-If you are maintaining an active two-way sync via Live Mirror Mode (`wt git mirror start`), W0rkTree will continuously respect `.gitignore` for Git compatibility while enforcing `.wt/ignore` for W0rkTree-native operations.
+The daemon ignores file events for ignored paths and under `.wt/`, so build output does not trigger auto-snapshots. If the daemon snapshots more often than you expect, look for a busy directory that should be ignored with `wt daemon status` (pending changes) and `wt ignore check`.

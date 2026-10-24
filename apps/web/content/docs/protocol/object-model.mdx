@@ -1,100 +1,94 @@
 ---
 title: Object Model
-description: Core object types — blob, tree, snapshot, commit, manifest, delta, tag, and branch — with BLAKE3 content-addressable storage.
+description: How W0rkTree identifies and stores content — BLAKE3-256 hashes, blob and manifest objects, snapshot records, tags, and branch tips.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-## Overview
+W0rkTree stores file content in a **content-addressed object store** and records history as **snapshots** that point at a manifest object. The client and server use the same bytes and the same hashes, so moving objects between them is a byte copy.
 
-W0rkTree uses a **content-addressable object store** where every object is identified by its BLAKE3 hash. This provides deduplication, integrity verification, and efficient comparison.
+## Hashes
 
-## Object Types
+- An object's hash is **BLAKE3-256 of its exact bytes**. There is no header, type prefix, or compression in the hashed data.
+- On the wire, `ContentHash.value` is the **32 raw bytes** of the hash.
+- In JSON (local snapshot records, REST responses) and in file paths, a hash is written as **64 lowercase hex characters**.
+- In Rust the type is `worktree_sdk::ObjectHash` (a re-export of `worktree_protocol::core::hash::ContentHash`); `worktree_sdk::store::hash_bytes(data)` computes it. The Go server uses an equivalent 32-byte type, so hashes round-trip without re-encoding.
 
-### Blob
+The server verifies `BLAKE3(data) == hash` for every uploaded object and rejects mismatches; the client verifies downloaded objects the same way (`ObjectStore::put_with_hash` fails with `CorruptObject` on a mismatch).
 
-Raw file content. A blob is simply the bytes of a file, addressed by its BLAKE3 hash.
+## Objects
 
-```
-BLAKE3("Hello W0rkTree\n") → wt:a3f2b1c8d4e5f6...
-```
+There are exactly two kinds of object (`ObjectKind` on the wire):
 
-### Tree
+| Kind | Content | Hash |
+|---|---|---|
+| `BLOB` | The raw bytes of one file, uncompressed. | BLAKE3 of the file bytes. Identical files share one blob. |
+| `MANIFEST` | A protobuf-encoded `ManifestRecord`: the complete file listing of a snapshot. | BLAKE3 of the encoded `ManifestRecord`. |
 
-A directory listing that maps names to object references (blobs or other trees).
+Snapshots, branches, and tags are **not** objects; they are records that refer to objects by hash.
 
-```json
-{
-  "entries": [
-    { "name": "index.html", "type": "blob", "hash": "wt:a3f2b1c8..." },
-    { "name": "src", "type": "tree", "hash": "wt:b4c3d2e1..." }
-  ]
-}
-```
+### Manifests
 
-### Snapshot
-
-An immutable point-in-time capture of a tree state. References a root tree object and includes metadata.
-
-### Commit
-
-A metadata wrapper around a snapshot with parent references, author information, timestamp, and message.
-
-```json
-{
-  "snapshot": "wt:e7d1f2a4...",
-  "parents": ["wt:b9c3d5e6..."],
-  "author": "user@example.com",
-  "timestamp": "2025-01-15T10:30:00Z",
-  "message": "Add homepage"
-}
+```text
+ManifestRecord { entries: repeated ManifestEntry }
+ManifestEntry  { path: string, blob_hash: ContentHash, size: uint64, executable: bool }
 ```
 
-### Manifest (Large File)
+Rules for a valid manifest:
 
-Manifests are used to efficiently store and address large files by breaking them into smaller, content-addressed chunks.
+- `path` is relative to the tree root and uses `/` as the separator on every platform (also on Windows).
+- Entries are **sorted** lexicographically by path and paths are **unique**.
+- The manifest lists every tracked file of the tree. It excludes `.wt/`, `.wt-tree/` markers, ignored paths, and paths that belong to nested trees.
+- `size` is the file size in bytes; `executable` records the executable bit.
 
-```json
-{
-  "size": 104857600,
-  "chunk_size": 4194304,
-  "chunks": [
-    "wt:c1a2b3c4...",
-    "wt:c2d3e4f5..."
-  ]
-}
-```
+Because the encoding is canonical (`Manifest::to_bytes`), two identical file listings always produce the same manifest hash. `Manifest::from_entries` sorts and dedups entries (last wins) so callers cannot produce a non-canonical manifest.
 
-### Delta
+## Snapshots
 
-Deltas represent a minimal set of changes between two objects (typically blobs or trees) to optimize storage and network transfer.
+A snapshot is an immutable point-in-time record of one tree. On the wire it is a `SnapshotRecord`; locally it is the JSON form of `worktree_sdk::Snapshot` in `.wt/snapshots/<id>.json`.
 
-### Tag
+| `SnapshotRecord` field | Rust `Snapshot` field | Meaning |
+|---|---|---|
+| `id` | `id` | Snapshot id, a **UUID v4** string. |
+| `tree_id` | `tree_id` | Stable tree id (UUID); also the server's tree id once the tree is linked to a remote. |
+| `branch_name` | `branch` | Branch the snapshot was created on. |
+| `parents` | `parents` | Parent snapshot ids: none for the first snapshot, one normally, two for a merge. |
+| `manifest_hash` | `manifest` | Hash of the `MANIFEST` object. |
+| `author` | `author` | Account username or `"Name <email>"`. |
+| `message` | `message` | Snapshot message. |
+| `created_at` | `created_at` | Creation time (`google.protobuf.Timestamp` / RFC 3339 UTC). |
+| `auto_generated` | `auto_generated` | `true` for daemon auto-snapshots (message `auto: N files changed`). |
 
-An immutable pointer to a specific object (usually a snapshot), along with metadata such as an annotation, author, and timestamp.
+Snapshot ids are random UUIDs, not content hashes. The integrity of a snapshot's content comes from its `manifest_hash`, which pins every file through its blob hash. The first 8 characters of an id are its short form (`Snapshot::short_id`), and any unique prefix of at least 4 characters is accepted as a revision.
 
-```json
-{
-  "object": "wt:e7d1f2a4...",
-  "type": "snapshot",
-  "name": "v1.0.0",
-  "tagger": "release-bot@example.com",
-  "message": "Release v1.0.0"
-}
-```
+Snapshots form a DAG through `parents`. A push must send parents before children, and the server stores records immutably: once a snapshot id exists on the server it never changes. The server additionally records `pushed_by` and `pushed_at`.
 
-### Branch
-
-A mutable reference to a snapshot that represents the tip of a line of development. Branches are lightweight and heavily used in the Staged Sync and Push protocols.
-
-## Object Identity
-
-Objects are immutable once created. The same content always produces the same hash, enabling:
-
-- **Deduplication** — identical files across trees are stored once
-- **Integrity** — any corruption is immediately detectable
-- **Efficient comparison** — equal hashes mean equal content without byte comparison
-
-<Callout type="info">
-W0rkTree uses BLAKE3 instead of SHA-1 (Git) for faster hashing and resistance to collision attacks.
+<Callout type="warn" title="Roadmap">
+  Snapshot signing and signature verification are not part of v0.2.0.
 </Callout>
+
+## Branch tips
+
+A branch is a named pointer to its newest snapshot (its **tip**), or to nothing for an empty branch.
+
+- Locally, `.wt/trees/<tree>/refs/branches/<branch>` contains the tip's snapshot id (or is empty), and `refs/remotes/<remote>/<branch>` records the last known server tip.
+- On the server, a branch is `(tree, name) → tip`, plus a `protected` flag and timestamps. A tip only moves forward to a descendant snapshot, through a compare-and-swap during `Push`.
+- Archived (soft-deleted) branches keep their tip, so their history stays reachable.
+
+## Tags
+
+A tag names one snapshot: `TagRecord{name, target, message?, tagger, created_at}` on the wire, `worktree_sdk::TagInfo` locally (`.wt/trees/<tree>/refs/tags/<tag>.json`). Tags are per tree. See [Tags and releases](/guides/tags-and-releases).
+
+## Where objects live
+
+| Location | Path |
+|---|---|
+| Local worktree | `.wt/objects/<hh>/<62 hex>`: the first two hex characters of the hash form the directory, the remaining 62 the file name. |
+| Server | `<data>/objects/<hh>/<62 hex>` in the server's data directory (default `./wt-data`). Metadata, including snapshot records and branch tips, lives in `<data>/meta.db` (bbolt). See [Storage](/docs/server/storage). |
+
+Objects are stored raw. Writes go to a temporary file followed by a rename, so concurrent writers are safe; if the rename target already exists, the content is by definition identical.
+
+## Related
+
+- [Sync protocol](/docs/protocol/sync-protocol): how objects and snapshot records move between client and server.
+- [Local layout](/docs/protocol/local-layout): the rest of the `.wt/` directory.

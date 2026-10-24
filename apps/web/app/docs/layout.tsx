@@ -2,19 +2,15 @@ import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import type { ReactNode } from "react";
 import { docsSource } from "@/lib/source";
 import { baseOptions } from "@/lib/layout.shared";
-import { VersionSelector } from "@/components/version-selector";
+import { CURRENT_VERSION } from "@/lib/site";
+import { VersionSelector, type Version } from "@/components/version-selector";
 
-const versions = [
+const versions: Version[] = [
   {
-    name: "v0.1.0-alpha",
+    name: CURRENT_VERSION,
     url: "/docs",
     active: true,
     label: "latest",
-  },
-  {
-    name: "v0.0.1-dev",
-    url: "/docs",
-    label: "deprecated",
   },
 ];
 

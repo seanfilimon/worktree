@@ -1,107 +1,186 @@
 ---
-title: "Branch Protection & Merge Requests"
-description: "Configure branch protection rules, require reviews, and enforce CI gates for safe collaboration."
+title: Branch Protection
+description: Protect main and release branches with server-side rules and land changes through merge requests with required approvals.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-In W0rkTree, branch protection ensures that critical branches—like `main` or release branches—cannot be modified directly or accidentally broken. Instead of relying on a web UI to configure these rules, W0rkTree uses a declarative, version-controlled approach.
+Branch protection rules live on the server and apply to every push, from every client. A typical setup forbids direct pushes to `main` and `release/*`, so changes land only through **merge requests** that collect approvals first.
 
-## Configuring Protection Rules
+Even without protection, history on the server is safe: snapshots are immutable and a push must descend from the current server tip. There is no force push. Protection adds *who* and *how* on top of that.
 
-Branch protection rules are defined in `protection.toml` files. You can configure them globally for the entire repository in `.wt/protection.toml` or scope them to a specific tree in `.wt-tree/protection.toml`.
+## Protection rule fields
 
-Here is an example of a tree-specific protection configuration:
+A rule (`BranchProtection`) matches branches by a glob `pattern`, for example `main` or `release/*`.
 
-```toml
-# .wt-tree/protection.toml
+| Field | Type | Meaning |
+|---|---|---|
+| `pattern` | string | Branch-name glob. `release/*` matches `release/1.0` and `release/2.3`. |
+| `no_direct_push` | bool | Matching branches change only through merge requests. Direct pushes are rejected. |
+| `required_approvals` | int | Approvals a merge request needs before it can be merged into a matching branch. |
+| `allowed_pushers` | string array | Usernames allowed to push to matching branches. Empty means role-based only: anyone with `tree:write` on the tree. |
+| `no_delete` | bool | Matching branches cannot be deleted (archived). |
 
-[branch."main"]
-# Prevent direct pushes to the branch
-allow_direct_push = false
+Managing protections requires `tree:admin` on the tree (tenant `admin` or `owner`).
 
-# Prevent force-pushes and history rewrites
-allow_force_push = false
+## Protect `main` and `release/*`
 
-# Require a linear history (no merge commits)
-requires_linear_history = true
-
-[branch."release/*"]
-allow_direct_push = false
-allow_force_push = false
-```
-
-When a branch is protected with `allow_direct_push = false`, developers must use **Merge Requests** to integrate their changes.
-
-## Merge Requests
-
-W0rkTree features native Merge Requests (MRs). Because W0rkTree's architecture distinguishes between your local staged snapshots and public pushed history, MRs act as the official gateway for sharing your work.
-
-To create a merge request, push your local branch and use the CLI:
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-wt push origin feature/new-dashboard
-wt mr create --target main --title "Add new dashboard"
+curl -s -X PUT http://localhost:7420/api/v1/trees/acme/app/protections \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"pattern":"main","no_direct_push":true,"required_approvals":1,"allowed_pushers":[],"no_delete":true}'
+
+curl -s -X PUT http://localhost:7420/api/v1/trees/acme/app/protections \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"pattern":"release/*","no_direct_push":true,"required_approvals":2,"allowed_pushers":[],"no_delete":true}'
 ```
 
-This creates a new MR proposing to merge `feature/new-dashboard` into `main`. The MR captures the exact state of your pushed commits and begins evaluating your tree's protection rules.
+</Tab>
+<Tab value="PowerShell">
 
-## Review Requirements
+```powershell
+$headers = @{ Authorization = "Bearer $env:WT_TOKEN" }
+$uri = "http://localhost:7420/api/v1/trees/acme/app/protections"
 
-You can enforce peer reviews before a merge request can be merged. This is configured in the `merge_requests` section of your protection rules.
+Invoke-RestMethod -Method Put -Headers $headers -ContentType "application/json" -Uri $uri `
+  -Body '{"pattern":"main","no_direct_push":true,"required_approvals":1,"allowed_pushers":[],"no_delete":true}'
 
-```toml
-[branch."main".merge_requests]
-# Require at least two approvals from team members
-approvals_required = 2
-
-# Dismiss existing approvals when new commits are pushed
-dismiss_stale_approvals = true
-
-# Require approval from specific roles (defined in roles.toml)
-require_approval_from = ["@frontend-team", "@security-reviewers"]
+Invoke-RestMethod -Method Put -Headers $headers -ContentType "application/json" -Uri $uri `
+  -Body '{"pattern":"release/*","no_direct_push":true,"required_approvals":2,"allowed_pushers":[],"no_delete":true}'
 ```
 
-When a developer opens an MR against `main`, W0rkTree checks these rules. The MR cannot be merged until the required approvals are met. Reviewers can approve or request changes directly via the CLI or connected integrations.
+</Tab>
+</Tabs>
+
+`PUT` creates or replaces the rule for that pattern and returns it. The response also includes `tree_id`.
+
+Other operations:
+
+```text
+GET    /api/v1/trees/{tenant}/{tree}/protections            list rules
+DELETE /api/v1/trees/{tenant}/{tree}/protections?pattern=   remove the rule for one pattern
+```
+
+URL-encode the pattern when deleting, for example `?pattern=release%2F%2A`. Branches covered by a rule report `"protected": true` in `GET /api/v1/trees/{tenant}/{tree}/branches`.
+
+In the admin panel: **Trees**, select the tree, then the **Protections** tab. See the [Admin Panel guide](/guides/admin-panel).
+
+## The merge request workflow
+
+With `no_direct_push` on `main`, work happens on a feature branch and lands through a merge request (MR). Merge requests are managed through the REST API and the admin panel. There are no `wt` subcommands for them in v0.2.0.
+
+<Steps>
+<Step>
+
+### Push a feature branch
 
 ```bash
-wt mr list
-wt mr review 123 --approve -m "Looks good to me."
+wt branch create feature/login
+wt switch feature/login
+# ...edit...
+wt snapshot -m "Add login form"
+wt push
 ```
 
-## CI Gates and Status Checks
+</Step>
+<Step>
 
-Merge Requests in W0rkTree tightly integrate with your CI/CD pipelines. You can configure branch protection to block merges until all required CI checks (or "gates") have passed.
-
-```toml
-[branch."main".merge_requests]
-require_all_ci_gates_pass = true
-required_ci_gates = ["build", "test", "lint"]
-```
-
-When a downstream tree fails its CI gates, the W0rkTree server automatically blocks the merge request until all required checks are green. This guarantees that cross-tree changes and dependencies never land in a broken state.
-
-For more details on setting up CI pipelines to report these statuses, see the [CI/CD Integration](/guides/ci-cd-integration) guide.
-
-## Linked Branch Merges
-
-W0rkTree's branch protection is fully aware of **Linked Branches**. If you are developing a cross-tree feature using linked branches, the protection rules for *all* participating trees must be satisfied before the linked branch can be merged.
+### Open the merge request
 
 ```bash
-wt branch link status feature/unified-auth
-wt branch link merge feature/unified-auth
+curl -s -X POST http://localhost:7420/api/v1/trees/acme/app/merge-requests \
+  -H "Authorization: Bearer $WT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Add login form","description":"Implements the login page.","source_branch":"feature/login","target_branch":"main"}'
 ```
 
-If the `backend` tree requires 2 approvals and the `frontend` tree requires CI gates to pass, the `wt branch link merge` command will enforce both conditions atomically. If any condition fails, the entire merge is aborted, ensuring your repository remains in a consistent state.
+The server responds `201` with the MR. Numbers are per tree and start at 1:
 
-## Bypassing Protection
+```json
+{
+  "id": "e7b1...",
+  "tree_id": "b1d7...",
+  "number": 4,
+  "title": "Add login form",
+  "description": "Implements the login page.",
+  "source_branch": "feature/login",
+  "target_branch": "main",
+  "author_id": "c42f...",
+  "author": "bob",
+  "state": "open",
+  "approvals": [],
+  "created_at": "2026-10-24T11:00:00Z",
+  "updated_at": "2026-10-24T11:00:00Z"
+}
+```
 
-In rare emergency scenarios, repository administrators can bypass branch protection rules. This requires explicit confirmation and is permanently recorded in the repository's audit log.
+</Step>
+<Step>
+
+### Review and approve
+
+Reviewers inspect the source branch (in the admin panel, or locally with `wt fetch` and `wt diff main origin/feature/login`) and approve:
 
 ```bash
-wt mr merge 123 --bypass-protection --reason "Emergency hotfix for production outage"
+curl -s -X POST http://localhost:7420/api/v1/trees/acme/app/merge-requests/4/approve \
+  -H "Authorization: Bearer $WT_TOKEN"
 ```
 
-<Callout type="warn">
-Bypassing protection should be used strictly for emergencies. The action is flagged in the audit log (`wt audit log`) and notifications are immediately dispatched to tree owners.
+Each approval is added to `approvals` as `{"account_id", "username", "at"}`.
+
+</Step>
+<Step>
+
+### Merge
+
+```bash
+curl -s -X POST http://localhost:7420/api/v1/trees/acme/app/merge-requests/4/merge \
+  -H "Authorization: Bearer $WT_TOKEN"
+```
+
+The server **fast-forwards** the target branch to the source branch's tip. On success `state` becomes `merged` and `merged_at` and `merged_snapshot` are set.
+
+</Step>
+</Steps>
+
+Other MR endpoints: `GET .../merge-requests?state=open|merged|closed` to list, `GET .../merge-requests/{n}` to read one, and `POST .../merge-requests/{n}/close` to close without merging. SSE subscribers receive `mr.opened`, `mr.approved`, `mr.merged`, and `mr.closed` events.
+
+### When the target branch moved
+
+A server-side merge only fast-forwards. If someone else merged into `main` after you pushed, `main`'s tip is no longer an ancestor of your branch and the merge fails with `409 conflict`. Bring `main` into your branch locally, push, and retry:
+
+```bash
+wt switch feature/login
+wt fetch
+wt merge origin/main          # resolve conflicts if any, then: wt merge --continue
+wt push
+```
+
+Then call `POST .../merge-requests/4/merge` again. See [Merge Strategies](/guides/merge-strategies) for resolving conflicts.
+
+### Not enough approvals
+
+If the MR has fewer approvals than the target branch's protection rule requires (`required_approvals`), the merge is refused as `review_required`, reporting how many approvals are required and how many the MR currently has.
+
+## Push rejections
+
+When the server refuses a push, `wt push` exits with code 1 and prints the reason. The rejection kinds are:
+
+| Kind | Cause | What to do |
+|---|---|---|
+| `branch_protection` | A rule forbids this push, for example `no_direct_push` on `main`, or you are not in `allowed_pushers`. The rule is named. | Push to a feature branch and open a merge request. |
+| `access_denied` | Your account lacks `tree:write` on the tree. | Ask a tenant owner for a role with write access. |
+| `review_required` | The change needs approvals that it does not have. | Collect approvals on the merge request. |
+| `license_violation` | A changed path is covered by a license rule that does not allow your tenant to modify it. The path and license are named. | See [License Compliance](/guides/license-compliance). |
+| `conflict_detected` | The branch tip on the server moved since your last pull. | `wt pull`, resolve any conflicts, then push again. |
+
+<Callout type="warn" title="Roadmap">
+  CI gates and required status checks are not part of v0.2.0. The protocol reserves a `ci_checks_failed` rejection, but the server does not run or require checks yet. Gate merges with `required_approvals` for now.
 </Callout>

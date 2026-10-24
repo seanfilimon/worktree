@@ -34,6 +34,12 @@ export function VersionSelector({ versions }: VersionSelectorProps) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`Documentation version: ${selected.name}`}
         className="flex w-full items-center gap-2 rounded-lg border bg-fd-secondary/50 p-2 text-start text-fd-secondary-foreground transition-colors hover:bg-fd-accent data-[state=open]:bg-fd-accent data-[state=open]:text-fd-accent-foreground"
         data-state={open ? "open" : "closed"}
       >
@@ -58,14 +64,20 @@ export function VersionSelector({ versions }: VersionSelectorProps) {
       {open && (
         <>
           {/* Backdrop to close on outside click */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 right-0 top-full z-50 mt-1 flex flex-col gap-0.5 rounded-lg border bg-fd-popover p-1 shadow-md">
+          <div className="fixed inset-0 z-40" aria-hidden="true" onClick={() => setOpen(false)} />
+          <div
+            role="listbox"
+            aria-label="Documentation versions"
+            className="absolute left-0 right-0 top-full z-50 mt-1 flex flex-col gap-0.5 rounded-lg border bg-fd-popover p-1 shadow-md"
+          >
             {versions.map((version) => {
               const isActive = version.name === selected.name;
               return (
                 <button
                   key={version.name}
                   type="button"
+                  role="option"
+                  aria-selected={isActive}
                   onClick={() => {
                     setOpen(false);
                     if (version.url && !isActive) {

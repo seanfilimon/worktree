@@ -1,110 +1,224 @@
 ---
-title: "Merge Strategies"
-description: "Learn how W0rkTree handles three-way merges, conflict markers, and resolution workflows."
+title: Merge Strategies
+description: How wt merge chooses between fast-forward and merge snapshots, how the three-way merge works, and how to resolve, finish or abort conflicted merges locally and through server merge requests.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-Merging is a fundamental part of any version control system. Because W0rkTree isolates history into independent trees, merges happen at the tree level. When you merge branches within a tree—or sync changes from the server—W0rkTree employs a robust three-way merge algorithm optimized for modern development workflows.
+All merging in W0rkTree happens **locally**, in `wt merge` and `wt pull`. The server never merges content: it only accepts pushes that descend from its tip and, for merge requests, fast-forwards a target branch. This page covers the local merge and how it combines with server-side merge requests.
 
-This guide explains how W0rkTree handles merges, how to read its enhanced conflict markers, and how to use the resolution CLI.
-
-## The Three-Way Merge
-
-When you merge one branch into another, W0rkTree performs a **three-way merge**. It looks at three specific snapshots:
-
-1. **Local (HEAD)**: The current state of your active branch.
-2. **Incoming (Theirs)**: The state of the branch you are merging in.
-3. **Merge Base**: The most recent common ancestor snapshot between the two branches.
-
-By comparing the Local and Incoming snapshots against the Base, W0rkTree can automatically determine what changed and safely combine the modifications. If a file was changed in both Local and Incoming in overlapping ways, W0rkTree pauses the merge and flags a **conflict**.
-
-## Enhanced Conflict Markers
-
-When a conflict occurs, W0rkTree leaves standard conflict markers in your file, but enhances them with **machine-readable metadata**. This allows editors, IDEs, and custom scripts to provide rich conflict resolution interfaces.
-
-A conflicted file in W0rkTree looks like this:
-
-```txt
-<<<<<<< HEAD (local) [snapshot: abc1234, author: alice@example.com]
-function calculateTax(amount) {
-  return amount * 1.05;
-}
-||||||| BASE [snapshot: def5678]
-function calculateTax(amount) {
-  return amount;
-}
-======= (incoming) [snapshot: ghi9012, author: bob@example.com]
-function calculateTax(amount, rate) {
-  return amount * (1 + rate);
-}
->>>>>>> feature/tax-rates
+```text
+wt merge SOURCE [-m MSG] [--no-ff] | --continue [-m MSG] | --abort
 ```
 
-### Machine-Readable Metadata
+`SOURCE` is any [revision](/docs/cli#revision-syntax) of the current tree: a branch, `origin/<branch>`, a tag or a snapshot id prefix. The working tree must be clean before you start.
 
-Notice the bracketed metadata (`[snapshot: ..., author: ...]`) next to the standard `<<<<<<<`, `|||||||`, and `>>>>>>>` markers. 
+## The four outcomes
 
-W0rkTree injects this metadata to give context directly within the file. Tooling can parse this to tell you exactly *who* made the incoming change and *which snapshot* introduced it, eliminating the need to run separate `blame` or `log` commands while you are trying to resolve the conflict.
+| Outcome | When | Result | Exit code |
+|---|---|---|---|
+| Up to date | `SOURCE` is already an ancestor of the current branch. | Nothing changes. | `0` |
+| Fast-forward | The current branch tip is an ancestor of `SOURCE`. | The branch tip moves to `SOURCE` and its files are checked out. No new snapshot. | `0` |
+| Merged | Both sides have new snapshots and the merge is clean. | A new **merge snapshot** with two parents (current tip first, then `SOURCE`). | `0` |
+| Conflicts | Both sides changed something in incompatible ways. | The working tree holds the partial merge with conflicts to resolve. | `3` |
 
-## The Resolution CLI
+The reflog records `fast-forward` or `merge` accordingly.
 
-W0rkTree provides a dedicated set of CLI commands for navigating and resolving conflicts.
+### Fast-forward or merge snapshot
 
-When a merge stops due to conflicts, your tree enters a merging state. You can view the conflicted files by checking the status:
+By default `wt merge` fast-forwards whenever it can. That keeps history linear but leaves no record that a branch was merged. Pass `--no-ff` to always create a merge snapshot:
 
 ```bash
-wt status
+wt switch main
+wt merge feature/search --no-ff -m "Merge feature/search"
+wt log -n 3
 ```
 
-This will list files under an `Unmerged paths:` or `Conflicted:` section.
+| Use | When |
+|---|---|
+| Default (fast-forward when possible) | Short-lived branches, personal work, pulling a teammate's changes. |
+| `--no-ff` | Feature branches whose integration you want visible in history, or when you may want to `wt revert` the whole feature as one snapshot later. |
 
-### Resolving Conflicts
+## How the three-way merge works
 
-You have several ways to resolve a conflicted file using the `wt resolve` command.
+<Steps>
+<Step>
 
-**Accepting a specific side:**
-If you know you want to completely discard one side's changes in favor of the other, use the `--ours` or `--theirs` flags:
+### Find the merge base
+
+The base is the best common ancestor of the two tips: an ancestor reachable from both that is not itself an ancestor of another common ancestor. Ties are broken by the shortest distance from the current tip, then by id. Two tips that share no history have no merge base.
+
+</Step>
+<Step>
+
+### Merge the manifests path by path
+
+| Situation | Result |
+|---|---|
+| Unchanged on both sides, or changed identically | Kept once. |
+| Changed (or added, or deleted) on one side only | That side's version is taken. |
+| Deleted on one side, unchanged on the other | Deleted. |
+| Modified on one side, deleted on the other | `modify_delete` conflict. |
+| Text changed on both sides | Line-based three-way merge (next step). |
+| Added on both sides with different content | Two-way text merge; `add_add` conflict if lines overlap. |
+| Binary changed on both sides | `binary` conflict; our version is kept in the working tree. |
+
+</Step>
+<Step>
+
+### Merge text line by line
+
+Text files changed on both sides are merged with diff3 semantics against the base: non-overlapping edits from both sides are combined, identical edits are taken once, and only overlapping edits become a `content` conflict with markers written into the file. A file is treated as binary if it contains a NUL byte in its first 8 KiB or is not valid UTF-8.
+
+</Step>
+</Steps>
+
+The algorithm is specified in [Merge and diff](/docs/protocol/merge-and-diff).
+
+## Conflicts
+
+### Conflict kinds
+
+| Kind | Cause | How to resolve |
+|---|---|---|
+| `content` | Overlapping line edits. | Edit the file and remove all markers. |
+| `add_add` | Both sides added the path with different content. | Edit the merged file (markers appear where lines overlap). |
+| `modify_delete` | One side modified, the other deleted. | Keep the file (with the content you want) or delete it. |
+| `binary` | A binary file changed on both sides. | "Ours" is in the working tree; replace it with the version you want. |
+
+### Markers
+
+Markers are diff3-style and labelled with the branch names, so you can see the base as well as both sides:
+
+```text
+<<<<<<< main
+const TIMEOUT_SECS: u64 = 30;
+||||||| base
+const TIMEOUT_SECS: u64 = 10;
+=======
+const TIMEOUT_SECS: u64 = 60;
+>>>>>>> feature/retry
+```
+
+Keep the lines you want and delete every marker line (`<<<<<<<`, `|||||||`, `=======`, `>>>>>>>`).
+
+### State on disk
+
+While a merge is in progress:
+
+- `.wt/trees/<tree>/MERGE_STATE.json` stores the source branch and tip, the target tip, the base, the conflicts and the merge message;
+- `.wt/conflicts/<tree>.json` lists the conflicts (`path` and `kind`) for editors and scripts;
+- `wt status` shows the merge and the conflicted paths;
+- the daemon does not auto-snapshot that tree.
+
+## Resolve, finish or abort
+
+<Steps>
+<Step>
+
+### Start the merge
 
 ```bash
-wt resolve --ours src/tax.js
-# or
-wt resolve --theirs src/tax.js
+wt merge feature/retry
 ```
 
-**Manual Resolution:**
-If you need to combine the changes (e.g., keeping the new `rate` parameter but adjusting the logic), open the file in your editor, manually fix the code, and remove the conflict markers. Once the file is correct, mark it as resolved:
+Exit code `3` means conflicts. Branch on the exit code in scripts, not on the message text.
+
+</Step>
+<Step>
+
+### Resolve each conflict
 
 ```bash
-wt resolve --mark src/tax.js
+wt status                 # conflicted paths
+wt diff                   # what the merge produced so far
 ```
 
-<Callout type="info">
-If you use a visual merge tool, you can configure W0rkTree to launch it automatically via `wt mergetool`. W0rkTree integrates out-of-the-box with popular tools like VS Code, KDiff3, and Meld.
-</Callout>
+Edit the files, remove all markers, and keep or delete `modify_delete` paths.
 
-### Completing the Merge
+</Step>
+<Step>
 
-Once you have resolved all conflicted files, you can finalize the merge operation:
+### Finish
 
 ```bash
-wt merge --continue
+wt merge --continue -m "Merge feature/retry"
 ```
 
-This will automatically create a staged snapshot representing the merge commit and clear the merging state.
+`--continue` fails while conflict markers remain. Alternatively, `wt snapshot -m MSG` completes the merge once the markers are gone; either way the result is a snapshot with **two parents**.
 
-### Aborting a Merge
+</Step>
+</Steps>
 
-If a merge is too complex or was started by mistake, you can abort it at any time before running `--continue`:
+To give up instead, restore the pre-merge state:
 
 ```bash
 wt merge --abort
 ```
 
-This command restores your working directory and tree state to exactly how it was before you initiated the merge, discarding any partial resolutions.
+### Scripting
 
-## Cross-Tree Merging
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
-Because W0rkTree isolates branches to specific trees, you cannot directly merge a branch from the `frontend` tree into the `backend` tree. 
+```bash
+wt merge feature/retry
+case $? in
+  0) echo "merged" ;;
+  3) wt --json status | jq -r '.merge.conflicts[].path'; exit 3 ;;
+  *) exit 1 ;;
+esac
+```
 
-If you need to coordinate changes across multiple trees, you should use **Linked Branches**. Linked branches allow you to group tree-specific branches together and merge them atomically. See the [Linked Branches](/guides/linked-branches) guide for more details on managing multi-tree features.
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+wt merge feature/retry
+switch ($LASTEXITCODE) {
+  0 { 'merged' }
+  3 { (wt --json status | ConvertFrom-Json).merge.conflicts | ForEach-Object path; exit 3 }
+  default { exit 1 }
+}
+```
+
+</Tab>
+</Tabs>
+
+## Merging during `wt pull`
+
+`wt pull` fetches and then integrates `origin/<branch>` into the local branch exactly like `wt merge origin/<branch>`: fast-forward when possible, otherwise a merge snapshot, or exit code `3` with conflicts to resolve the same way. This is also how you recover from a rejected push: the server only accepts pushes that descend from its tip, so pull, resolve, and push again.
+
+```bash
+wt push        # rejected: the server tip moved
+wt pull        # merge origin/main into main
+wt push
+```
+
+There is no force push and no rebase, so a merge snapshot is the only way to combine diverged histories.
+
+## Merge requests on the server
+
+On protected branches you do not push directly; you open a **merge request** through the [REST API](/docs/server/rest-api#merge-requests) or the [admin panel](/guides/admin-panel). There is no `wt` subcommand for merge requests in v0.2.0.
+
+The server's merge is **fast-forward only**: it moves the target branch to the source tip if the target tip is an ancestor of the source tip, and rejects the merge with `409 conflict` otherwise. It never creates a merge snapshot. So before merging a request whose target has moved on, merge the target into the source locally and push:
+
+```bash
+wt pull --branch main
+wt switch feature/retry
+wt merge main -m "Merge main into feature/retry"
+# resolve conflicts if any, then: wt merge --continue
+wt push --branch feature/retry
+```
+
+The source now descends from the target, and the merge request fast-forwards. Approval requirements come from branch protection rules; see [Branch protection](/guides/branch-protection).
+
+<Callout type="warn" title="Roadmap">
+Required CI status checks before merging are not implemented in v0.2.0. Merge readiness depends only on approvals and fast-forwardability.
+</Callout>
+
+## Undoing a merge
+
+History is append-only, so a merge is undone with a new snapshot. `wt revert REV` undoes a snapshot's changes relative to its **first parent**; for a merge snapshot that is the branch you merged into, so reverting the merge snapshot removes everything the merge brought in. See [Reflog and recovery](/guides/reflog-and-recovery).

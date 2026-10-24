@@ -1,59 +1,149 @@
 ---
 title: Sync Protocol
-description: The synchronization engine powering staged sync, branch operations, delta transfers, and offline mode.
+description: The worktree.sync.v1.SyncService gRPC API — every RPC, authentication, and the exact push, pull, stage, and tag flows used by wt and worktree-bg.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-W0rkTree's synchronization protocol is designed to handle both continuous real-time collaboration (staged sync) and traditional explicit version control operations (push/pull). It is optimized for low latency, minimal bandwidth usage via delta compression, and robust offline capabilities.
+Clients synchronize with the server through one gRPC service, `worktree.sync.v1.SyncService`, defined in `crates/worktree-protocol/proto/sync.proto`. The Rust client in `worktree_sdk::remote` and the Go server in `services/server-go/internal/syncsvc` both implement this file; it is the contract between them.
 
-## Staged Sync
+## Transport
 
-The defining feature of W0rkTree's protocol is **Staged Sync**. When the background worker is active (`wt track start`), it continuously streams uncommitted local changes to the server.
+| Property | Value |
+|---|---|
+| Protocol | gRPC over cleartext HTTP/2 (h2c) |
+| Port | The server's single port, default `7420`. gRPC requests (`content-type: application/grpc*`) share the listener with REST, SSE, and the admin panel. |
+| Base URL | The remote URL, e.g. `http://localhost:7420`; the same URL is used for REST authentication. |
+| Max message size | 64 MiB in both directions |
+| TLS | Not built in. Terminate TLS at a reverse proxy that forwards HTTP/2 (h2c) to the server. See [Deployment](/docs/server/deployment). |
 
-1. **Local Snapshots:** Every time a file is saved, the worker generates a lightweight local snapshot.
-2. **Delta Computation:** The worker computes the delta between the new snapshot and the last synchronized state.
-3. **Streaming:** These small deltas are serialized via Bincode, compressed with zstd, and streamed to the server.
-4. **Server Staging:** The server stores these changes in a temporary "staged" store associated with the user and branch, allowing other team members to view them in real-time (`wt staged`).
-
-<Callout type="info">
-Staged sync is unidirectional (client to server) by default, meaning your uncommitted changes are safely backed up and visible to the team, but you don't automatically pull other people's uncommitted work into your working directory unless explicitly requested.
+<Callout type="warn" title="Roadmap">
+  QUIC transport, built-in TLS, and chunked (FastCDC) large-file transfer are not part of v0.2.0. Each object travels whole in one `ObjectData` message, so a single object must fit within the 64 MiB message limit.
 </Callout>
 
-## Branch Push
+## Authentication
 
-While staged sync handles uncommitted work, **Pushing** promotes those changes to permanent, immutable history.
+Tokens are obtained over REST (`POST /api/v1/auth/login` or `/register`, or a personal API token from `/api/v1/auth/tokens`) and sent on every gRPC call as metadata:
 
-When a user runs `wt snapshot` (or `wt commit`), the local state is finalized into a permanent snapshot object. Since the changes were likely already streamed to the server via staged sync, the `Push` operation is incredibly fast:
+```text
+authorization: Bearer <token>
+```
 
-1. The client sends the new snapshot and commit objects to the server.
-2. The server verifies it already has the required blob and tree objects in the staged store.
-3. The server updates the branch pointer (Ref Update) to the new snapshot.
-4. The server clears the temporary staged state for that user on that branch.
+The server resolves the caller from the token; the `account_id` fields in request messages are informational and do not grant identity. Calls without a token are anonymous and are allowed only for `Ping` and reads of `public` trees. Every other call is authorized against the caller's tenant role and the tree's visibility; for example `Push`, `Stage`, and `PushTag` require `tree:write`. See [Access control](/docs/server/access-control).
 
-If staged sync was disabled, the Push operation acts as a bulk transfer, sending all missing objects to the server in a compressed pack.
+## RPCs
 
-## Branch Pull
+| RPC | Request → Response | Purpose |
+|---|---|---|
+| `Ping` | `PingRequest` → `PingResponse` | Liveness and identity probe. Returns `server_version`, and `account_id`, `username`, `tenant_slug` when the bearer token is valid. Used by `wt whoami`. |
+| `ResolveTree` | `ResolveTreeRequest` → `TreeInfo` | Look up a tree by `tenant_slug` + `tree_name`. With `create_if_missing`, creates it (requires `tree:create`) and sets `created = true`. Returns `tree_id`, `tenant_id`, `tenant_slug`, `name`, `default_branch`. |
+| `ListBranches` | `ListBranchesRequest` → `ListBranchesResponse` | Every branch of a tree with its `tip`, `protected` flag, and `updated_at`. |
+| `Pull` | `PullRequest` → `PullResponse` | Delta sync of one branch: snapshots the client is missing and the objects they reference. |
+| `Negotiate` | `NegotiateRequest` → `ObjectTransferPlan` | Have/want negotiation: the client lists candidate hashes in `have`; the server answers with `objects_to_send`, the hashes it does not have, and their `total_size`. |
+| `UploadObjects` | stream `ObjectData` → `UploadObjectsResponse` | Client-streaming upload of manifests and blobs. The server verifies `BLAKE3(data) == hash` for every object, dedups, and reports `received`, `stored` (newly stored), and `rejected` (hash mismatches). |
+| `DownloadObjects` | `WantMessage` → stream `ObjectData` | Server-streaming download of the requested hashes. Unknown hashes are skipped. |
+| `Push` | `PushRequest` → `PushResponse` | Advance a branch tip with conflict detection and policy checks. |
+| `Stage` | `StageUploadRequest` → `StageUploadResponse` | Upload a staged (team-visible WIP) snapshot summary. |
+| `ListStaged` | `ListStagedRequest` → `ListStagedResponse` | Staged snapshots of a tree visible to the caller, optionally for one `branch_name`. Used by `wt status --team`. |
+| `PushTag` | `PushTagRequest` → `PushTagResponse` | Create a tag on the server from a `TagRecord`. |
+| `ListTags` | `ListTagsRequest` → `ListTagsResponse` | All tags of a tree. |
+| `SyncAccessConfig` | `AccessConfigSyncRequest` → `AccessConfigSyncResponse` | Upload a raw access-config document (roles, policies, tenant access, branch protection, or license) for a tenant. The server stores it; v0.2.0 does not enforce it. |
 
-**Pulling** is the process of fetching new permanent history from the remote server.
+<Callout type="warn" title="Roadmap">
+  Declarative access policies sent through `SyncAccessConfig` are stored but not enforced in v0.2.0. Authorization uses tenant roles and tree visibility only.
+</Callout>
 
-1. **Ref Negotiation:** The client and server exchange their current branch pointers.
-2. **Missing Object Calculation:** The server determines exactly which objects (commits, trees, blobs) the client lacks.
-3. **Transfer:** The server streams the missing objects.
-4. **Local Update:** The client updates its local branch pointers and optionally checks out the new state into the working directory.
+`SyncEnvelope`, `SyncMessageType`, and `SyncState` are defined in the file for parity with the Rust domain types. They are not sent on the wire by any RPC.
 
-## Delta Sync
+### Object messages
 
-To minimize network bandwidth, W0rkTree relies heavily on **Delta Sync**. Instead of transmitting entire files when a small change is made, the protocol only transmits the modified chunks.
+```text
+ObjectData   { hash: ContentHash, kind: ObjectKind, data: bytes }
+ObjectKind   OBJECT_KIND_BLOB = 1 | OBJECT_KIND_MANIFEST = 2
+ContentHash  { value: bytes }   // 32 raw bytes of BLAKE3-256
+```
 
-- **BLAKE3 Chunking:** Large files are chunked, and each chunk is hashed. If a file is modified, only the chunks with new hashes are transmitted.
-- **Tree Deltas:** When directories change, only the modified tree nodes are sent, leaving unchanged subdirectories entirely out of the network payload.
+Snapshots are never objects; they travel as `SnapshotRecord` messages inside `Push` and `Pull`. See [Object model](/docs/protocol/object-model).
 
-## Offline Mode
+## Push flow
 
-W0rkTree is fundamentally an offline-first system. The protocol gracefully handles network partitions and offline environments.
+`wt push` (`worktree_sdk::remote::push`) runs these steps for one branch of one tree:
 
-- **Local Buffering:** If the connection to the server is lost, the background worker continues to track changes and buffer staged snapshots locally.
-- **Background Reconnection:** The worker continuously attempts to reconnect in the background using exponential backoff.
-- **Reconciliation:** Upon reconnection, the worker automatically computes the delta between the server's last known state and the client's current local state, flushing the buffered changes in a single optimized transfer.
-- **Local History:** All explicit operations (`wt snapshot`, `wt branch`, `wt log`) function perfectly while offline, as they operate on the local replica of the object store.
+1. **Resolve the tree.** `ResolveTree{tenant_slug, tree_name, create_if_missing: true}`. The tenant comes from `[remote.<name>].tenant`; the tree name is the local tree's remote name. The returned `tree_id` is used for the rest of the flow.
+2. **Learn the remote tip.** `Pull` or `ListBranches` tells the client the branch's current tip on the server. The client computes the local snapshots the server does not have yet (the chain from the remote tip to the local tip).
+3. **Upload missing objects.** The client collects the manifests and blobs referenced by those snapshots and calls `Negotiate` with `have` = the candidate hashes. The response's `objects_to_send` lists the hashes the server is missing. The client streams exactly those through `UploadObjects`.
+4. **Push.** `Push{tenant_id, tree_id, branch_id, branch_name, old_tip, new_tip, snapshot_chain, snapshots}`. `old_tip` is the last known remote tip (unset for a new branch), `snapshot_chain` lists the ids being added, and `snapshots` carries the full `SnapshotRecord` for each of them, **oldest first**.
+
+The server then checks, in order:
+
+| Check | Failure |
+|---|---|
+| Caller has `tree:write` on the tree | `access_denied` |
+| Branch protection for a direct push (`review.CheckPush`) | `branch_protection` or `review_required` |
+| License rules on the paths the push changes (`license.CheckPush`) | `license_violation` |
+| Every referenced manifest and blob is present in the object store | push rejected |
+| Every snapshot's parents are known (already stored, or in this request) | push rejected |
+| `new_tip` descends from the server's current tip for the branch | `conflict_detected` with `server_tip` |
+| Compare-and-swap of the branch tip from the expected old value | `conflict_detected` with `server_tip` |
+
+On success the server stores the snapshot records (immutable from then on), moves the branch tip, clears the pusher's staged snapshot for that branch, publishes a `branch.pushed` event, and writes a `branch.push` audit entry. The response is `PushResponse{accepted: true, new_tip}`.
+
+The client then updates `refs/remotes/<remote>/<branch>` and pushes local tags the server does not have: it calls `ListTags` and sends each missing tag with `PushTag`.
+
+### Push rejections
+
+A rejected push returns `PushResponse{accepted: false, rejection_reason}` and changes nothing on the server. `PushRejection` is a `oneof`:
+
+| Variant | Payload | Meaning |
+|---|---|---|
+| `conflict_detected` | `server_tip` | The server tip moved since the client's last pull; `new_tip` does not descend from it. Pull, merge, and push again. |
+| `branch_protection` | `rule` | A [protection rule](/docs/server/branch-protection) forbids this direct push. |
+| `access_denied` | `reason` | The caller lacks the required permission. |
+| `license_violation` | `path`, `license` | A changed path is covered by a [license rule](/docs/server/licensing) that does not allow the caller to modify it. |
+| `review_required` | `required`, `current` | The protection rule requires more approvals than the push has. |
+| `ci_checks_failed` | `checks` | Defined in the schema; CI gates are on the Roadmap and v0.2.0 never produces it. |
+| `quota_exceeded` | `limit` | Defined in the schema; plan quotas are on the Roadmap. |
+
+The SDK maps any rejection to `SdkError::PushRejected`, and `wt push` exits with code `1`.
+
+<Callout type="info" title="No force push">
+  There is no way to move a server branch to a snapshot that does not descend from its current tip. History on the server only grows.
+</Callout>
+
+## Pull flow
+
+`wt fetch` and `wt pull` (`worktree_sdk::remote::fetch` / `pull`) use the same delta protocol per branch:
+
+1. `ResolveTree{create_if_missing: false}` to get the `tree_id`, then `ListBranches` to learn every remote branch and its tip.
+2. For each branch: `Pull{tenant_id, tree_id, branch_id, current_tip, depth}`, where `branch_id` carries the branch name and `current_tip` is the client's remote-tracking tip for that branch (unset if it has none).
+3. The server answers with `PullResponse{has_updates, new_tip, snapshot_chain, snapshots, objects_to_fetch}`:
+   - `snapshot_chain` and `snapshots` are the snapshots reachable from the server tip that the client is missing, **oldest first** (parents before children). `depth`, when set, limits how many are returned.
+   - `objects_to_fetch` lists every manifest and blob hash referenced by those snapshots.
+4. The client calls `DownloadObjects(want = the hashes from objects_to_fetch it does not already have)` and stores each streamed object after verifying its hash.
+5. The client writes the snapshot records, updates `refs/remotes/<remote>/<branch>`, and fetches tags with `ListTags`.
+
+`fetch` stops there and never touches local branches or working files. `pull` then integrates `<remote>/<branch>` into the local branch: a fast-forward plus checkout when possible, otherwise a three-way [merge](/docs/protocol/merge-and-diff). `wt clone` resolves the tree, fetches every branch, creates local branches for them, and checks out the default branch.
+
+<Callout type="warn" title="Roadmap">
+  `PullRequest.depth` exists in the protocol, but the CLI has no shallow-clone flag in v0.2.0.
+</Callout>
+
+## Staged snapshot upload
+
+`wt stage`, and the daemon after each auto-snapshot when `[sync].auto_stage = true`, upload the working state as team-visible WIP (`worktree_sdk::remote::stage`):
+
+1. Build a manifest from the working directory, storing blobs locally.
+2. Resolve the tree, then `Negotiate` + `UploadObjects` for the manifest and blobs the server is missing.
+3. `Stage{tenant_id, tree_id, branch_id, branch_name, snapshot_id, files_changed, files_added, files_modified, files_deleted, message}`, where the file lists and counts summarize the working state against the branch head.
+
+The server requires `tree:write`, keeps **at most one** staged snapshot per (tree, account, branch) — a newer stage replaces the older one — and publishes a `snapshot.staged` event. A successful push of that branch clears the entry. `ListStaged{tree_id, branch_name?}` returns `StagedInfo` records (`snapshot_id`, `author`, `branch_name`, `files_changed`, counts, `message`, `staged_at`). Staged snapshots never become part of branch history. See [Staged visibility](/guides/staged-visibility).
+
+## Tags
+
+Tags travel as `TagRecord{name, target, message?, tagger, created_at}`, where `target` is a snapshot id. `PushTag{tree_id, tag}` creates one tag (requires `tree:write`) and returns `accepted` or an `error`; the server publishes `tag.pushed`. `ListTags{tree_id}` returns all tags. The client pushes tags after the branch push, so their target snapshots are already on the server.
+
+## Related
+
+- [Object model](/docs/protocol/object-model): hash rules, manifests, and snapshot records.
+- [`wt push`](/docs/cli/remote#wt-push), [`wt pull`](/docs/cli/remote#wt-pull), [`wt stage`](/docs/cli/remote#wt-stage): the CLI side of these flows.
+- [Remote API](/docs/sdk/remote): the Rust functions that implement them.

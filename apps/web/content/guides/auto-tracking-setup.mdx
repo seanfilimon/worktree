@@ -1,101 +1,283 @@
 ---
-title: "Setting Up Auto Tracking"
-description: "Configure W0rkTree's background worker to automatically track and commit your changes."
+title: Auto-Tracking Setup
+description: Run the worktree-bg background daemon to take automatic snapshots of your worktrees and share them as staged WIP.
 ---
 
-W0rkTree's auto-tracking system runs as a lightweight background worker that watches your working directory and automatically snapshots every change. This means you never lose work — every save is captured without you running a single command.
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-## Starting the Worker
+The background daemon, `worktree-bg`, watches the worktrees you register with it and takes **automatic snapshots** when you stop typing. With a remote and a login configured, it also uploads each one as a [staged snapshot](/guides/staged-visibility) so your team can see your work-in-progress.
 
-Enable auto-tracking for your current tree with a single command:
+You never have to run the daemon: every feature of `wt` works without it. It just removes the need to remember `wt snapshot`.
 
-```bash
-wt worker start
-```
+## Install
 
-The worker launches in the background and immediately begins monitoring your working directory. You can verify it's running with:
-
-```bash
-wt worker status
-```
-
-To stop the worker at any time, run:
+The daemon is a separate binary from the CLI. Build and install both from the repository root:
 
 ```bash
-wt worker stop
+cargo install --path crates/worktree-cli
+cargo install --path crates/worktree-bg
 ```
 
-The worker uses platform-native filesystem watchers — FSEvents on macOS, inotify on Linux, and ReadDirectoryChanges on Windows — so resource usage stays minimal even on large repositories.
+Both land in Cargo's bin directory (`~/.cargo/bin`, or `%USERPROFILE%\.cargo\bin` on Windows). Keep that directory on your `PATH` so `wt` can launch `worktree-bg`. You normally control the daemon through `wt daemon` rather than running `worktree-bg run [--foreground]` yourself.
 
-## Configuring Auto-Snapshot Triggers
+## Quick setup
 
-When you save a file rapidly (for example, during a refactor across multiple files), the worker batches those changes together instead of creating a snapshot for every individual write. The trigger configuration controls how the worker determines when to commit an auto-snapshot.
+<Steps>
+<Step>
 
-Edit your `.wt/config.toml` (or `.wt-tree/config.toml` for a specific tree) to adjust the triggers:
+### Start the daemon
+
+```bash
+wt daemon start
+```
+
+The daemon detaches and runs in the background. Use `wt daemon start --foreground` to keep it attached to your terminal while you experiment.
+
+</Step>
+<Step>
+
+### Watch a worktree
+
+```bash
+cd ~/code/app
+wt daemon watch
+```
+
+`wt daemon watch [PATH]` registers the worktree at `PATH` (default: the current worktree). The list is saved in `$WT_HOME/bg.toml`, so it survives restarts.
+
+</Step>
+<Step>
+
+### Check on it
+
+```bash
+wt daemon status
+```
+
+Edit some files, wait about 30 seconds, then run `wt log -n 3`. You will see snapshots with messages like `auto: 3 files changed`.
+
+</Step>
+</Steps>
+
+## `wt daemon` commands
+
+| Command | What it does |
+|---|---|
+| `wt daemon start [--foreground]` | Start `worktree-bg`. `--foreground` keeps it attached to the terminal. |
+| `wt daemon stop` | Ask the daemon to shut down cleanly. |
+| `wt daemon status` | Show the daemon's pid, version, start time, and every watched worktree. |
+| `wt daemon watch [PATH]` | Start watching a worktree (default: current worktree). Persisted to `bg.toml`. |
+| `wt daemon unwatch [PATH]` | Stop watching a worktree (default: current worktree). Persisted to `bg.toml`. |
+| `wt daemon pause` | Pause auto-snapshots. |
+| `wt daemon resume` | Resume auto-snapshots. |
+
+Full reference: [`wt daemon`](/docs/cli/daemon#wt-daemon).
+
+### Reading `wt daemon status`
+
+With `--json`, status follows the `DaemonStatus` structure from `worktree_sdk::ipc`. Values here are illustrative:
+
+```json
+{
+  "pid": 41872,
+  "version": "0.2.0",
+  "started_at": "2026-10-24T08:02:11Z",
+  "watched": [
+    {
+      "root": "/home/alice/code/app",
+      "paused": false,
+      "pending_changes": 2,
+      "snapshots_created": 17,
+      "last_snapshot": "5f0c2a9e-0d4b-4d7e-9a51-3c1f6f2b8e10",
+      "last_snapshot_at": "2026-10-24T09:41:05Z",
+      "last_stage_at": "2026-10-24T09:41:07Z",
+      "last_error": null
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `paused` | Auto-snapshots are paused for this worktree. |
+| `pending_changes` | Changed paths seen since the last auto-snapshot. |
+| `snapshots_created` | Auto-snapshots taken since the daemon started. |
+| `last_snapshot` / `last_snapshot_at` | Id and time of the latest auto-snapshot. |
+| `last_stage_at` | Time of the latest successful auto-stage upload. |
+| `last_error` | The most recent error for this worktree, if any. |
+
+## Files in `$WT_HOME`
+
+`$WT_HOME` defaults to `~/.wt` (`%USERPROFILE%\.wt` on Windows). The CLI and the daemon must use the same `$WT_HOME`.
+
+| File | Purpose |
+|---|---|
+| `bg.toml` | Watched worktrees, `watched = [...]`. Written on every watch and unwatch. |
+| `bg.json` | Written by the daemon on startup: `pid`, `port`, `version`. Removed on clean shutdown. |
+| `bg.log` | Daemon log. Check here first when something goes wrong. |
+| `credentials.toml` | Saved server logins, used for auto-staging. |
 
 ```toml
-[tracking]
-enabled = true
-debounce_ms = 500
-idle_timeout_ms = 2000
-```
-
-The default debounce is 200 milliseconds. Increase it if you find too many micro-snapshots cluttering your history, or decrease it if you want near-instant capture. The `idle_timeout_ms` ensures that if you make a change and then stop typing, the snapshot is created after that idle period.
-
-## Setting Up Ignore Patterns
-
-Not every file belongs in version control. Configure ignore patterns to exclude build artifacts, temporary files, and dependency directories from auto-tracking:
-
-```toml
-[tracking]
-ignore_patterns = [
-  "*.tmp",
-  "*.swp",
-  "node_modules/**",
-  "target/**",
-  ".env",
-  "dist/**",
+# $WT_HOME/bg.toml
+watched = [
+  "/home/alice/code/app",
+  "/home/alice/code/docs-site",
 ]
 ```
 
-These patterns follow standard glob syntax and are applied in addition to any rules defined in your `.wtignore` file at the repository root.
+You can edit `bg.toml` by hand while the daemon is stopped, but `wt daemon watch` and `wt daemon unwatch` are the supported way to change it.
 
-## Snapshot Rules and Validation
+## How auto-snapshots are triggered
 
-You can enforce rules on what gets snapshotted to prevent accidentally committing secrets or oversized files:
-
-```toml
-[tracking.validation]
-max_file_size = "10MB"
-forbidden_patterns = ["\\.env$", "secret", "password"]
-```
-
-When a file matches a forbidden pattern or exceeds the size limit, the worker skips it and logs a warning. Check the worker log at any time with:
-
-```bash
-wt worker log
-```
-
-## Auto-Branch Rules
-
-Auto-tracking can automatically create new branches based on directory or file patterns. This is useful when you want feature work isolated without remembering to branch manually:
+For each watched worktree, the daemon receives file-system events and debounces them using the worktree's `[auto_snapshot]` section in `.wt/config.toml`:
 
 ```toml
-[tracking.auto_branch]
-enabled = true
-pattern = "features/*"
-prefix = "auto/"
+[auto_snapshot]
+enabled = true          # default
+inactivity_secs = 30    # snapshot after this many seconds with no file events
+max_changed_files = 50  # snapshot immediately once this many files have changed
 ```
 
-With this configuration, any changes made inside a `features/` directory automatically land on a branch named `auto/<directory-name>`, keeping your main branch clean.
+The rules:
 
-## Reviewing and Squashing Snapshots
+1. A snapshot is taken after `inactivity_secs` seconds pass with no new file events, **or** as soon as `max_changed_files` files have changed, whichever comes first.
+2. Each tree in the worktree that has changes gets its own snapshot (see [Nested Trees](/guides/nested-trees)), with the message `auto: N files changed` and the `auto_generated` flag set.
+3. **No snapshots while a merge is in progress.** Finish it with `wt merge --continue` or abandon it with `wt merge --abort` and auto-snapshots resume.
+4. Events under `.wt/` are ignored. Paths excluded by [ignore patterns](/guides/ignore-patterns) are never included in a snapshot.
 
-Auto-tracking generates many small snapshots over time. Before sharing your work, you'll typically want to squash them into meaningful commits:
+Tune the settings per worktree with `wt config`:
 
 ```bash
-wt log --snapshots
-wt squash --last 15 -m "Implement search component"
+wt config set auto_snapshot.inactivity_secs 120
+wt config set auto_snapshot.max_changed_files 200
+wt config set auto_snapshot.enabled false   # stop auto-snapshots for this worktree
 ```
 
-The `squash` command combines the specified snapshots into a single commit with your message, giving you a clean history to push upstream while preserving the full snapshot trail locally for recovery purposes.
+Auto-snapshots are ordinary local snapshots. They appear in `wt log` and are pushed like any other snapshot when you run `wt push`.
+
+## Auto-staging
+
+After auto-snapshots are taken, the daemon uploads a staged snapshot if `[sync].auto_stage` is `true` (the default) **and** the remote named by `[sync].remote` (default `origin`) exists **and** you have a saved credential for that server.
+
+```bash
+wt remote add origin http://localhost:7420 --tenant acme
+wt login http://localhost:7420 -u alice
+```
+
+To keep snapshots local only:
+
+```bash
+wt config set sync.auto_stage false
+```
+
+## Running at login
+
+`wt daemon start` only lasts until you log out or reboot. To start the daemon automatically, register it with your platform's service manager.
+
+<Callout type="info" title="Examples">
+  W0rkTree v0.2.0 does not install any service definitions. The snippets below are examples to adapt: adjust paths and names for your machine.
+</Callout>
+
+<Tabs items={['Linux (systemd)', 'macOS (launchd)', 'Windows (Task Scheduler)']}>
+<Tab value="Linux (systemd)">
+
+Example user unit at `~/.config/systemd/user/worktree-bg.service`:
+
+```text
+[Unit]
+Description=W0rkTree background daemon
+
+[Service]
+ExecStart=%h/.cargo/bin/worktree-bg run --foreground
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now worktree-bg.service
+```
+
+The service manager supervises the process, so run it with `--foreground`.
+
+</Tab>
+<Tab value="macOS (launchd)">
+
+Example agent at `~/Library/LaunchAgents/dev.worktree.bg.plist` (replace `alice`):
+
+```text
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.worktree.bg</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/alice/.cargo/bin/worktree-bg</string>
+    <string>run</string>
+    <string>--foreground</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/dev.worktree.bg.plist
+```
+
+</Tab>
+<Tab value="Windows (Task Scheduler)">
+
+Example task that runs `wt daemon start` when you sign in:
+
+```powershell
+$action  = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.cargo\bin\wt.exe" -Argument "daemon start"
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+Register-ScheduledTask -TaskName "W0rkTree daemon" -Action $action -Trigger $trigger
+```
+
+Remove it later with `Unregister-ScheduledTask -TaskName "W0rkTree daemon"`.
+
+</Tab>
+</Tabs>
+
+Because the watched list lives in `bg.toml`, a daemon started this way picks up the same worktrees.
+
+## How `wt` talks to the daemon
+
+The CLI and daemon communicate over newline-delimited JSON on a TCP socket bound to `127.0.0.1`: one request line and one response line per connection. The port is read from `$WT_HOME/bg.json`.
+
+```json
+{"cmd":"watch","path":"/home/alice/code/app"}
+```
+
+```json
+{"result":"ok","message":"watching /home/alice/code/app"}
+```
+
+Requests are tagged by `cmd` (`status`, `watch`, `unwatch`, `pause`, `resume`, `snapshot_now`, `shutdown`); responses are tagged by `result` (`status`, `ok`, `error`). The response message text above is illustrative. See [IPC](/docs/sdk/ipc) for the full schema.
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| `wt daemon status` says the daemon is not running | `bg.json` is missing, or it is stale and the connection is refused (for example after a crash). Run `wt daemon start`. |
+| No auto-snapshots appear | Is the worktree listed in `wt daemon status`? Is `paused` true (`wt daemon resume`)? Is `auto_snapshot.enabled` false? Is a merge in progress? Are the changed files ignored? |
+| `last_error` is set | Read the message and the matching lines in `$WT_HOME/bg.log`. An auto-snapshot can fail for the same reasons a manual `wt snapshot` can. |
+| Snapshots are local but nothing is staged | Check `sync.auto_stage`, that the remote named by `sync.remote` exists (`wt remote list`), and that you are logged in (`wt whoami`). `last_stage_at` stays empty until a stage succeeds. |
+| Too many tiny snapshots | Raise `auto_snapshot.inactivity_secs`. |
+| One huge snapshot after a big refactor | Lower `auto_snapshot.max_changed_files` so the daemon snapshots sooner. |
+| CLI and daemon disagree | Make sure both run with the same `WT_HOME` value. |
+
+To restart cleanly:
+
+```bash
+wt daemon stop
+wt daemon start
+```
