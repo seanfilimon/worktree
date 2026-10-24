@@ -16,3 +16,16 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 blake3 = "1"
 walkdir = "2"
+
+# --- sdk-remote: gRPC + REST client for the W0rkTree server ---
+tonic = { version = "0.12", features = ["tls", "tls-native-roots", "tls-webpki-roots"] }
+prost-types = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+tokio-stream = "0.1"
+url = "2"
+
+[dev-dependencies]
+# --- sdk-remote: in-process fake server for tests/remote_*.rs ---
+tempfile = "3"
+prost = "0.13"
+axum = { version = "0.7", default-features = false, features = ["http1", "http2", "json", "tokio"] }
