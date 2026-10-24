@@ -14,6 +14,16 @@
 //!   wire→domain (fallible — wire may have None for required-in-spirit
 //!   fields, invalid UUIDs, missing oneof variants, out-of-range timestamps).
 //! - `#[non_exhaustive]` on the error enum to allow additive evolution.
+//! - Where a wire message has no complete domain counterpart (the
+//!   content-addressed object/record messages: `ObjectData`,
+//!   `ManifestRecord`, `SnapshotRecord`, `TreeInfo`, `BranchInfo`,
+//!   `StagedInfo`, `TagRecord`), conversions are inherent helper methods on
+//!   the wire type that take the missing context as arguments, plus
+//!   `From`/`TryFrom` impls where nothing is missing.
+//! - `PushRequest.snapshots` / `PullResponse.snapshots` (`SnapshotRecord`s)
+//!   have no counterpart in the legacy domain types: domain→wire leaves them
+//!   empty and wire→domain drops them. Callers that need records build the
+//!   wire messages directly.
 
 use std::str::FromStr;
 
@@ -62,6 +72,38 @@ pub enum ConversionError {
     /// (`Option<...::Reason>` was None).
     #[error("oneof `{0}` has no variant set")]
     MissingOneofVariant(&'static str),
+
+    /// A manifest path violated the wire contract (relative, `/`-separated,
+    /// no `.`/`..`/empty segments, sorted and unique within a record).
+    #[error("invalid manifest path `{path}`: {reason}")]
+    InvalidPath { path: String, reason: &'static str },
+
+    /// A content-addressed object's bytes do not hash to its declared hash.
+    #[error("object hash mismatch: declared {expected}, computed {actual}")]
+    HashMismatch {
+        expected: ContentHash,
+        actual: ContentHash,
+    },
+
+    /// An object of the wrong kind was supplied (e.g. a BLOB where a
+    /// MANIFEST was expected).
+    #[error("unexpected object kind: expected {expected}, got {actual}")]
+    UnexpectedObjectKind {
+        expected: &'static str,
+        actual: &'static str,
+    },
+
+    /// Protobuf bytes (e.g. a MANIFEST object body) failed to decode.
+    #[error("failed to decode {what}: {source}")]
+    Decode {
+        what: &'static str,
+        #[source]
+        source: prost::DecodeError,
+    },
+
+    /// The domain value cannot be represented on the wire.
+    #[error("unsupported conversion: {0}")]
+    Unsupported(&'static str),
 }
 
 // ============================================================
@@ -81,12 +123,19 @@ pub(crate) fn prost_to_datetime(
     ts: prost_types::Timestamp,
     field: &'static str,
 ) -> Result<chrono::DateTime<chrono::Utc>, ConversionError> {
-    chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).ok_or(
-        ConversionError::InvalidTimestamp {
+    // protobuf requires 0 <= nanos < 1e9; chrono would otherwise accept
+    // 1e9..2e9 as a leap-second encoding.
+    let nanos = u32::try_from(ts.nanos)
+        .ok()
+        .filter(|n| *n < 1_000_000_000)
+        .ok_or(ConversionError::InvalidTimestamp {
             field,
-            reason: "out of range",
-        },
-    )
+            reason: "nanos out of range",
+        })?;
+    chrono::DateTime::from_timestamp(ts.seconds, nanos).ok_or(ConversionError::InvalidTimestamp {
+        field,
+        reason: "out of range",
+    })
 }
 
 // ============================================================
@@ -693,6 +742,591 @@ impl TryFrom<wire::PushResponse> for dom::PushResponse {
 }
 
 // ============================================================
+// ContentHash helpers (borrowing conversions + hex)
+// ============================================================
+
+impl From<&ContentHash> for wire::ContentHash {
+    fn from(h: &ContentHash) -> Self {
+        (*h).into()
+    }
+}
+
+impl TryFrom<&wire::ContentHash> for ContentHash {
+    type Error = ConversionError;
+
+    fn try_from(w: &wire::ContentHash) -> Result<Self, Self::Error> {
+        ContentHash::from_slice(&w.value).ok_or(ConversionError::InvalidContentHash {
+            field: "ContentHash.value",
+            actual: w.value.len(),
+        })
+    }
+}
+
+impl wire::ContentHash {
+    /// Convert to the domain hash without consuming `self`.
+    pub fn to_domain(&self) -> Result<ContentHash, ConversionError> {
+        ContentHash::try_from(self)
+    }
+
+    /// Lowercase hex of the raw bytes (whatever their length).
+    pub fn to_hex(&self) -> String {
+        self.value.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+/// Convert a required wire hash field, naming the field on failure.
+fn required_hash(
+    hash: Option<&wire::ContentHash>,
+    field: &'static str,
+) -> Result<ContentHash, ConversionError> {
+    let hash = hash.ok_or(ConversionError::MissingRequired(field))?;
+    ContentHash::from_slice(&hash.value).ok_or(ConversionError::InvalidContentHash {
+        field,
+        actual: hash.value.len(),
+    })
+}
+
+/// Parse a UUID-backed wire id by reference, naming the field on failure.
+fn parse_uuid(value: &str, field: &'static str) -> Result<Uuid, ConversionError> {
+    Uuid::from_str(value).map_err(|source| ConversionError::InvalidUuid { field, source })
+}
+
+fn required_snapshot_id(
+    id: Option<&wire::SnapshotId>,
+    field: &'static str,
+) -> Result<SnapshotId, ConversionError> {
+    let id = id.ok_or(ConversionError::MissingRequired(field))?;
+    parse_uuid(&id.value, field).map(SnapshotId::from_uuid)
+}
+
+fn required_timestamp(
+    ts: Option<&prost_types::Timestamp>,
+    field: &'static str,
+) -> Result<chrono::DateTime<chrono::Utc>, ConversionError> {
+    let ts = ts.ok_or(ConversionError::MissingRequired(field))?;
+    prost_to_datetime(*ts, field)
+}
+
+// ============================================================
+// Manifest paths
+// ============================================================
+
+/// Validate a manifest path: non-empty, relative, `/`-separated, with no
+/// empty, `.` or `..` segments, no backslashes, NUL bytes or drive prefixes.
+///
+/// This is the wire contract for `ManifestEntry.path`; receivers must call it
+/// (directly or via [`wire::ManifestRecord::validate`]) before writing files,
+/// since it is what prevents path traversal out of the worktree.
+pub fn validate_manifest_path(path: &str) -> Result<(), ConversionError> {
+    let invalid = |reason: &'static str| ConversionError::InvalidPath {
+        path: path.to_string(),
+        reason,
+    };
+    if path.is_empty() {
+        return Err(invalid("empty path"));
+    }
+    if path.starts_with('/') {
+        return Err(invalid("absolute path"));
+    }
+    if path.contains('\\') {
+        return Err(invalid("backslash in path (use '/')"));
+    }
+    if path.contains('\0') {
+        return Err(invalid("NUL byte in path"));
+    }
+    for (i, segment) in path.split('/').enumerate() {
+        match segment {
+            "" => return Err(invalid("empty path segment")),
+            "." | ".." => return Err(invalid("'.' or '..' path segment")),
+            s if i == 0 && s.len() == 2 && s.ends_with(':') => {
+                return Err(invalid("drive prefix in path"))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Render a domain path as a wire path (`/`-separated, UTF-8, validated).
+fn path_to_wire(path: &std::path::Path) -> Result<String, ConversionError> {
+    let s = path.to_str().ok_or_else(|| ConversionError::InvalidPath {
+        path: path.to_string_lossy().into_owned(),
+        reason: "path is not valid UTF-8",
+    })?;
+    let s = s.replace('\\', "/");
+    validate_manifest_path(&s)?;
+    Ok(s)
+}
+
+// ============================================================
+// ManifestEntry / ManifestRecord  <->  object::manifest
+// ============================================================
+
+use crate::object::manifest::{EntryKind, Manifest, ManifestEntry as DomainManifestEntry};
+
+/// Domain → wire. Only regular files are representable on the wire
+/// (directories are implied by paths; symlinks are not supported by
+/// `ManifestRecord`), so other kinds are rejected.
+impl TryFrom<&DomainManifestEntry> for wire::ManifestEntry {
+    type Error = ConversionError;
+
+    fn try_from(e: &DomainManifestEntry) -> Result<Self, Self::Error> {
+        if e.kind != EntryKind::File {
+            return Err(ConversionError::Unsupported(
+                "only file entries can be encoded in a ManifestRecord",
+            ));
+        }
+        Ok(Self {
+            path: path_to_wire(&e.path)?,
+            blob_hash: Some(e.hash.into()),
+            size: e.size,
+            executable: e.executable,
+        })
+    }
+}
+
+/// Wire → domain. Produces a [`EntryKind::File`] entry after validating the
+/// path and hash.
+impl TryFrom<wire::ManifestEntry> for DomainManifestEntry {
+    type Error = ConversionError;
+
+    fn try_from(w: wire::ManifestEntry) -> Result<Self, Self::Error> {
+        validate_manifest_path(&w.path)?;
+        let hash = required_hash(w.blob_hash.as_ref(), "ManifestEntry.blob_hash")?;
+        Ok(DomainManifestEntry::file(w.path, hash, w.size).with_executable(w.executable))
+    }
+}
+
+/// Domain → wire. Directory entries are dropped (implied by file paths);
+/// symlinks are rejected. Entries are sorted by path string (byte-wise, as
+/// the wire contract and the Go server require — note this differs from
+/// `Path` ordering) and must be unique.
+impl TryFrom<&Manifest> for wire::ManifestRecord {
+    type Error = ConversionError;
+
+    fn try_from(m: &Manifest) -> Result<Self, Self::Error> {
+        let entries = m
+            .entries
+            .iter()
+            .filter(|e| e.kind != EntryKind::Directory)
+            .map(wire::ManifestEntry::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut record = Self { entries };
+        record.entries.sort_by(|a, b| a.path.cmp(&b.path));
+        record.validate()?;
+        Ok(record)
+    }
+}
+
+impl wire::ManifestRecord {
+    /// Build a canonical record: entries sorted by path; for duplicate paths
+    /// the last entry wins.
+    pub fn from_entries(entries: impl IntoIterator<Item = wire::ManifestEntry>) -> Self {
+        let mut by_path = std::collections::BTreeMap::new();
+        for entry in entries {
+            by_path.insert(entry.path.clone(), entry);
+        }
+        Self {
+            entries: by_path.into_values().collect(),
+        }
+    }
+
+    /// Check the wire contract: every path valid, paths strictly increasing
+    /// (sorted and unique), and every blob hash present and 32 bytes.
+    pub fn validate(&self) -> Result<(), ConversionError> {
+        let mut previous: Option<&str> = None;
+        for entry in &self.entries {
+            validate_manifest_path(&entry.path)?;
+            required_hash(entry.blob_hash.as_ref(), "ManifestEntry.blob_hash")?;
+            if let Some(prev) = previous {
+                if prev >= entry.path.as_str() {
+                    return Err(ConversionError::InvalidPath {
+                        path: entry.path.clone(),
+                        reason: if prev == entry.path {
+                            "duplicate manifest path"
+                        } else {
+                            "manifest entries not sorted by path"
+                        },
+                    });
+                }
+            }
+            previous = Some(&entry.path);
+        }
+        Ok(())
+    }
+
+    /// Protobuf encoding of this record — the exact bytes of the MANIFEST
+    /// object.
+    pub fn encode_object_bytes(&self) -> Vec<u8> {
+        prost::Message::encode_to_vec(self)
+    }
+
+    /// The object hash of this manifest: BLAKE3 of its protobuf encoding.
+    pub fn content_hash(&self) -> ContentHash {
+        crate::core::hash::hash_bytes(&self.encode_object_bytes())
+    }
+
+    /// Wrap this record as a MANIFEST [`wire::ObjectData`].
+    pub fn to_object(&self) -> wire::ObjectData {
+        wire::ObjectData::new(wire::ObjectKind::Manifest, self.encode_object_bytes())
+    }
+
+    /// Decode a record from MANIFEST object bytes and validate it.
+    pub fn decode_object_bytes(data: &[u8]) -> Result<Self, ConversionError> {
+        let record: Self =
+            prost::Message::decode(data).map_err(|source| ConversionError::Decode {
+                what: "ManifestRecord",
+                source,
+            })?;
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// Convert into a domain [`Manifest`] for `tree_id` (validated first).
+    pub fn into_manifest(self, tree_id: TreeId) -> Result<Manifest, ConversionError> {
+        self.validate()?;
+        let mut manifest = Manifest::new(tree_id);
+        for entry in self.entries {
+            manifest.add_entry(entry.try_into()?);
+        }
+        Ok(manifest)
+    }
+}
+
+// ============================================================
+// ObjectData  <->  object::blob::Blob
+// ============================================================
+
+use crate::object::blob::Blob;
+
+impl wire::ObjectData {
+    /// Build an object of `kind` from its exact bytes, computing the hash.
+    pub fn new(kind: wire::ObjectKind, data: Vec<u8>) -> Self {
+        Self {
+            hash: Some(crate::core::hash::hash_bytes(&data).into()),
+            kind: kind as i32,
+            data,
+        }
+    }
+
+    /// A BLOB object holding raw file content.
+    pub fn blob(data: Vec<u8>) -> Self {
+        Self::new(wire::ObjectKind::Blob, data)
+    }
+
+    /// The object kind, rejecting UNSPECIFIED and unknown values.
+    pub fn object_kind(&self) -> Result<wire::ObjectKind, ConversionError> {
+        match wire::ObjectKind::try_from(self.kind) {
+            Ok(wire::ObjectKind::Unspecified) | Err(_) => Err(ConversionError::InvalidEnum {
+                enum_name: "ObjectKind",
+                value: self.kind,
+            }),
+            Ok(kind) => Ok(kind),
+        }
+    }
+
+    /// BLAKE3 of `data`.
+    pub fn computed_hash(&self) -> ContentHash {
+        crate::core::hash::hash_bytes(&self.data)
+    }
+
+    /// Check that `hash` is present and equals BLAKE3(`data`); returns it.
+    pub fn verify(&self) -> Result<ContentHash, ConversionError> {
+        let expected = required_hash(self.hash.as_ref(), "ObjectData.hash")?;
+        let actual = self.computed_hash();
+        if expected != actual {
+            return Err(ConversionError::HashMismatch { expected, actual });
+        }
+        Ok(expected)
+    }
+
+    /// Verify and decode a MANIFEST object.
+    pub fn decode_manifest(&self) -> Result<wire::ManifestRecord, ConversionError> {
+        self.expect_kind(wire::ObjectKind::Manifest)?;
+        self.verify()?;
+        wire::ManifestRecord::decode_object_bytes(&self.data)
+    }
+
+    fn expect_kind(&self, expected: wire::ObjectKind) -> Result<(), ConversionError> {
+        let actual = self.object_kind()?;
+        if actual != expected {
+            return Err(ConversionError::UnexpectedObjectKind {
+                expected: expected.as_str_name(),
+                actual: actual.as_str_name(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl From<Blob> for wire::ObjectData {
+    fn from(b: Blob) -> Self {
+        // Hash recomputed from the bytes: the wire hash must match the data
+        // even if the domain blob was constructed inconsistently.
+        wire::ObjectData::blob(b.content)
+    }
+}
+
+/// Wire → domain. The object must be a BLOB whose hash matches its bytes.
+impl TryFrom<wire::ObjectData> for Blob {
+    type Error = ConversionError;
+
+    fn try_from(w: wire::ObjectData) -> Result<Self, Self::Error> {
+        w.expect_kind(wire::ObjectKind::Blob)?;
+        w.verify()?;
+        Ok(Blob::from_bytes(w.data))
+    }
+}
+
+// ============================================================
+// SnapshotRecord  <->  object::snapshot::Snapshot
+// ============================================================
+
+use crate::object::snapshot::Snapshot;
+
+impl wire::SnapshotRecord {
+    /// Domain → wire. The domain snapshot carries no branch name, so the
+    /// caller supplies it; `author` is the account id string.
+    pub fn from_snapshot(s: &Snapshot, branch_name: impl Into<String>) -> Self {
+        Self {
+            id: Some(s.id.into()),
+            tree_id: Some(s.tree_id.into()),
+            branch_name: branch_name.into(),
+            parents: s.parents.iter().copied().map(Into::into).collect(),
+            manifest_hash: Some(s.manifest_hash.into()),
+            author: s.author.to_string(),
+            message: s.message.clone(),
+            created_at: Some(datetime_to_prost(s.timestamp)),
+            auto_generated: s.auto_generated,
+        }
+    }
+
+    /// Check required fields: id, tree id, parents (valid UUIDs), a 32-byte
+    /// manifest hash and a valid `created_at`.
+    pub fn validate(&self) -> Result<(), ConversionError> {
+        self.snapshot_id()?;
+        let tree = self
+            .tree_id
+            .as_ref()
+            .ok_or(ConversionError::MissingRequired("SnapshotRecord.tree_id"))?;
+        parse_uuid(&tree.value, "SnapshotRecord.tree_id")?;
+        self.parent_ids()?;
+        required_hash(self.manifest_hash.as_ref(), "SnapshotRecord.manifest_hash")?;
+        required_timestamp(self.created_at.as_ref(), "SnapshotRecord.created_at")?;
+        Ok(())
+    }
+
+    /// The snapshot id.
+    pub fn snapshot_id(&self) -> Result<SnapshotId, ConversionError> {
+        required_snapshot_id(self.id.as_ref(), "SnapshotRecord.id")
+    }
+
+    /// The parent ids, in order.
+    pub fn parent_ids(&self) -> Result<Vec<SnapshotId>, ConversionError> {
+        self.parents
+            .iter()
+            .map(|p| parse_uuid(&p.value, "SnapshotRecord.parents").map(SnapshotId::from_uuid))
+            .collect()
+    }
+
+    /// Wire → domain with an explicitly resolved author (the wire `author`
+    /// is usually a username, which the domain type cannot hold).
+    pub fn to_snapshot_with_author(&self, author: AccountId) -> Result<Snapshot, ConversionError> {
+        let tree = self
+            .tree_id
+            .as_ref()
+            .ok_or(ConversionError::MissingRequired("SnapshotRecord.tree_id"))?;
+        Ok(Snapshot {
+            id: self.snapshot_id()?,
+            tree_id: TreeId::from_uuid(parse_uuid(&tree.value, "SnapshotRecord.tree_id")?),
+            manifest_hash: required_hash(
+                self.manifest_hash.as_ref(),
+                "SnapshotRecord.manifest_hash",
+            )?,
+            parents: self.parent_ids()?,
+            message: self.message.clone(),
+            author,
+            timestamp: required_timestamp(self.created_at.as_ref(), "SnapshotRecord.created_at")?,
+            auto_generated: self.auto_generated,
+        })
+    }
+}
+
+/// Wire → domain. Requires `author` to be an account id (as written by
+/// [`wire::SnapshotRecord::from_snapshot`]); use
+/// [`wire::SnapshotRecord::to_snapshot_with_author`] otherwise. The branch
+/// name is not carried by the domain type.
+impl TryFrom<wire::SnapshotRecord> for Snapshot {
+    type Error = ConversionError;
+
+    fn try_from(w: wire::SnapshotRecord) -> Result<Self, Self::Error> {
+        let author = AccountId::from_uuid(parse_uuid(&w.author, "SnapshotRecord.author")?);
+        w.to_snapshot_with_author(author)
+    }
+}
+
+// ============================================================
+// TreeInfo / BranchInfo typed accessors (+ Branch → BranchInfo)
+// ============================================================
+
+use crate::object::branch::Branch;
+
+impl wire::TreeInfo {
+    /// The server tree id.
+    pub fn tree_id_domain(&self) -> Result<TreeId, ConversionError> {
+        let id = self
+            .tree_id
+            .as_ref()
+            .ok_or(ConversionError::MissingRequired("TreeInfo.tree_id"))?;
+        parse_uuid(&id.value, "TreeInfo.tree_id").map(TreeId::from_uuid)
+    }
+
+    /// The owning tenant id.
+    pub fn tenant_id_domain(&self) -> Result<TenantId, ConversionError> {
+        let id = self
+            .tenant_id
+            .as_ref()
+            .ok_or(ConversionError::MissingRequired("TreeInfo.tenant_id"))?;
+        parse_uuid(&id.value, "TreeInfo.tenant_id").map(TenantId::from_uuid)
+    }
+}
+
+impl wire::BranchInfo {
+    /// Domain → wire. The domain branch does not track protection or its
+    /// last update, so the caller supplies both.
+    pub fn from_branch(
+        branch: &Branch,
+        protected: bool,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        Self {
+            name: branch.name.clone(),
+            tip: Some(branch.tip.into()),
+            protected,
+            updated_at: Some(datetime_to_prost(updated_at)),
+        }
+    }
+
+    /// The tip snapshot, or `None` for an empty branch.
+    pub fn tip_id(&self) -> Result<Option<SnapshotId>, ConversionError> {
+        self.tip
+            .as_ref()
+            .map(|t| parse_uuid(&t.value, "BranchInfo.tip").map(SnapshotId::from_uuid))
+            .transpose()
+    }
+
+    /// When the branch tip last moved, if the server reported it.
+    pub fn updated_at_utc(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>, ConversionError> {
+        self.updated_at
+            .map(|ts| prost_to_datetime(ts, "BranchInfo.updated_at"))
+            .transpose()
+    }
+}
+
+// ============================================================
+// StagedInfo  <->  object::staged::StagedSnapshot
+// ============================================================
+
+use crate::object::staged::{StagedSnapshot, StagedStatus};
+
+impl wire::StagedInfo {
+    /// Domain → wire with an explicit display author (e.g. a username).
+    pub fn from_staged(s: &StagedSnapshot, author: impl Into<String>) -> Self {
+        Self {
+            snapshot_id: Some(s.id.into()),
+            author: author.into(),
+            branch_name: s.branch_name.clone(),
+            files_changed: s.files_changed.clone(),
+            files_added: s.files_added,
+            files_modified: s.files_modified,
+            files_deleted: s.files_deleted,
+            message: s.message.clone(),
+            staged_at: Some(datetime_to_prost(s.timestamp)),
+        }
+    }
+
+    /// Wire → domain. The wire message carries neither the tree, the branch
+    /// id nor the user id, so the caller supplies them. Status is `Staged`.
+    pub fn to_staged(
+        &self,
+        user: AccountId,
+        tree_id: TreeId,
+        branch_id: BranchId,
+    ) -> Result<StagedSnapshot, ConversionError> {
+        Ok(StagedSnapshot {
+            id: required_snapshot_id(self.snapshot_id.as_ref(), "StagedInfo.snapshot_id")?,
+            user,
+            tree_id,
+            branch_id,
+            branch_name: self.branch_name.clone(),
+            files_changed: self.files_changed.clone(),
+            files_added: self.files_added,
+            files_modified: self.files_modified,
+            files_deleted: self.files_deleted,
+            message: self.message.clone(),
+            status: StagedStatus::Staged,
+            timestamp: required_timestamp(self.staged_at.as_ref(), "StagedInfo.staged_at")?,
+        })
+    }
+}
+
+/// Domain → wire; `author` is the user's account id string.
+impl From<StagedSnapshot> for wire::StagedInfo {
+    fn from(s: StagedSnapshot) -> Self {
+        let author = s.user.to_string();
+        wire::StagedInfo::from_staged(&s, author)
+    }
+}
+
+// ============================================================
+// TagRecord  <->  object::tag::Tag
+// ============================================================
+
+use crate::object::tag::{Tag, TagKind};
+
+impl wire::TagRecord {
+    /// Domain → wire with an explicit display tagger (e.g. a username).
+    /// Signatures are not carried on the wire.
+    pub fn from_tag(tag: &Tag, tagger: impl Into<String>) -> Self {
+        Self {
+            name: tag.name.clone(),
+            target: Some(tag.target.into()),
+            message: tag.message.clone(),
+            tagger: tagger.into(),
+            created_at: Some(datetime_to_prost(tag.created_at)),
+        }
+    }
+
+    /// Wire → domain for `tree_id`. The kind is `Annotated` when a message
+    /// is present, else `Lightweight`; `tagger` is kept only if it is an
+    /// account id.
+    pub fn to_tag(&self, tree_id: TreeId) -> Result<Tag, ConversionError> {
+        Ok(Tag {
+            name: self.name.clone(),
+            target: required_snapshot_id(self.target.as_ref(), "TagRecord.target")?,
+            tree_id,
+            kind: if self.message.is_some() {
+                TagKind::Annotated
+            } else {
+                TagKind::Lightweight
+            },
+            message: self.message.clone(),
+            tagger: Uuid::from_str(&self.tagger).ok().map(AccountId::from_uuid),
+            created_at: required_timestamp(self.created_at.as_ref(), "TagRecord.created_at")?,
+            signature: None,
+        })
+    }
+}
+
+/// Domain → wire; `tagger` is the tagger's account id string (or empty).
+impl From<Tag> for wire::TagRecord {
+    fn from(t: Tag) -> Self {
+        let tagger = t.tagger.map(|a| a.to_string()).unwrap_or_default();
+        wire::TagRecord::from_tag(&t, tagger)
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -1174,5 +1808,448 @@ mod tests {
             Some(dom::PushRejection::AccessDenied { reason }) => assert_eq!(reason, "denied"),
             other => panic!("expected AccessDenied, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+    use crate::core::hash::hash_bytes;
+    use crate::object::manifest::ManifestEntry as DomainEntry;
+
+    fn wire_entry(path: &str, data: &[u8]) -> wire::ManifestEntry {
+        wire::ManifestEntry {
+            path: path.into(),
+            blob_hash: Some(hash_bytes(data).into()),
+            size: data.len() as u64,
+            executable: false,
+        }
+    }
+
+    #[test]
+    fn content_hash_borrowed_conversions_and_hex() {
+        let h = hash_bytes(b"borrowed");
+        let w: wire::ContentHash = (&h).into();
+        assert_eq!(w.to_domain().unwrap(), h);
+        assert_eq!(ContentHash::try_from(&w).unwrap(), h);
+        assert_eq!(w.to_hex(), h.to_hex());
+        let short = wire::ContentHash { value: vec![1; 31] };
+        assert!(matches!(
+            short.to_domain(),
+            Err(ConversionError::InvalidContentHash { actual: 31, .. })
+        ));
+    }
+
+    #[test]
+    fn manifest_path_validation() {
+        for ok in ["a", "a/b.txt", "dir/sub/file", ".hidden", "a..b", "x:y"] {
+            assert!(validate_manifest_path(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "", "/abs", "a//b", "a/", "./a", "a/./b", "../x", "a/../b", "a\\b", "C:", "C:/x",
+            "nul\0",
+        ] {
+            assert!(
+                matches!(
+                    validate_manifest_path(bad),
+                    Err(ConversionError::InvalidPath { .. })
+                ),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_record_roundtrip_via_domain() {
+        let tree = TreeId::new();
+        let mut m = Manifest::new(tree);
+        // Path ordering differs from string ordering: "a/b" < "a-b" as
+        // paths, but "a-b" < "a/b" as strings (the wire order).
+        m.add_entry(DomainEntry::file("a/b", hash_bytes(b"1"), 1));
+        m.add_entry(DomainEntry::file("a-b", hash_bytes(b"2"), 1).with_executable(true));
+        m.add_entry(DomainEntry::directory("a"));
+
+        let record = wire::ManifestRecord::try_from(&m).unwrap();
+        let paths: Vec<&str> = record.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["a-b", "a/b"]);
+        record.validate().unwrap();
+
+        let back = record.clone().into_manifest(tree).unwrap();
+        assert_eq!(back.len(), 2);
+        let e = back.find_entry(std::path::Path::new("a-b")).unwrap();
+        assert!(e.executable);
+        assert_eq!(e.kind, EntryKind::File);
+        assert_eq!(wire::ManifestRecord::try_from(&back).unwrap(), record);
+    }
+
+    #[test]
+    fn manifest_record_rejects_symlinks_and_bad_paths() {
+        let mut m = Manifest::new(TreeId::new());
+        m.add_entry(DomainEntry::symlink("ln", hash_bytes(b"t")));
+        assert!(matches!(
+            wire::ManifestRecord::try_from(&m),
+            Err(ConversionError::Unsupported(_))
+        ));
+
+        let mut m = Manifest::new(TreeId::new());
+        m.add_entry(DomainEntry::file("../escape", hash_bytes(b"x"), 1));
+        assert!(matches!(
+            wire::ManifestRecord::try_from(&m),
+            Err(ConversionError::InvalidPath { .. })
+        ));
+
+        let mut m = Manifest::new(TreeId::new());
+        m.add_entry(DomainEntry::file("win\\path.txt", hash_bytes(b"x"), 1));
+        let r = wire::ManifestRecord::try_from(&m).unwrap();
+        assert_eq!(r.entries[0].path, "win/path.txt");
+    }
+
+    #[test]
+    fn manifest_record_validate_order_and_uniqueness() {
+        let unsorted = wire::ManifestRecord {
+            entries: vec![wire_entry("b", b"1"), wire_entry("a", b"2")],
+        };
+        assert!(matches!(
+            unsorted.validate(),
+            Err(ConversionError::InvalidPath {
+                reason: "manifest entries not sorted by path",
+                ..
+            })
+        ));
+        let dup = wire::ManifestRecord {
+            entries: vec![wire_entry("a", b"1"), wire_entry("a", b"2")],
+        };
+        assert!(matches!(
+            dup.validate(),
+            Err(ConversionError::InvalidPath {
+                reason: "duplicate manifest path",
+                ..
+            })
+        ));
+        let mut no_hash = wire_entry("a", b"1");
+        no_hash.blob_hash = None;
+        let missing = wire::ManifestRecord {
+            entries: vec![no_hash],
+        };
+        assert!(matches!(
+            missing.validate(),
+            Err(ConversionError::MissingRequired("ManifestEntry.blob_hash"))
+        ));
+
+        // from_entries canonicalises: sorted, last duplicate wins.
+        let canon = wire::ManifestRecord::from_entries(vec![
+            wire_entry("b", b"1"),
+            wire_entry("a", b"2"),
+            wire_entry("b", b"3"),
+        ]);
+        canon.validate().unwrap();
+        assert_eq!(canon.entries.len(), 2);
+        assert_eq!(canon.entries[1].blob_hash, Some(hash_bytes(b"3").into()));
+    }
+
+    #[test]
+    fn manifest_object_roundtrip_and_hash() {
+        let record = wire::ManifestRecord::from_entries(vec![
+            wire_entry("src/main.rs", b"fn main() {}"),
+            wire_entry("README.md", b"# hi"),
+        ]);
+        let obj = record.to_object();
+        assert_eq!(obj.object_kind().unwrap(), wire::ObjectKind::Manifest);
+        // Object hash = BLAKE3 of the exact protobuf bytes.
+        assert_eq!(obj.verify().unwrap(), record.content_hash());
+        assert_eq!(
+            record.content_hash(),
+            hash_bytes(&prost::Message::encode_to_vec(&record))
+        );
+        assert_eq!(obj.decode_manifest().unwrap(), record);
+
+        // A BLOB is not a manifest.
+        let blob = wire::ObjectData::blob(b"data".to_vec());
+        assert!(matches!(
+            blob.decode_manifest(),
+            Err(ConversionError::UnexpectedObjectKind { .. })
+        ));
+
+        // Garbage bytes under a valid hash fail to decode.
+        let junk = wire::ObjectData::new(wire::ObjectKind::Manifest, vec![0xff, 0xff, 0xff]);
+        assert!(matches!(
+            junk.decode_manifest(),
+            Err(ConversionError::Decode { .. })
+        ));
+    }
+
+    #[test]
+    fn object_data_blob_roundtrip_and_verification() {
+        let blob = Blob::from_bytes(b"hello".to_vec());
+        let obj: wire::ObjectData = blob.clone().into();
+        assert_eq!(obj.object_kind().unwrap(), wire::ObjectKind::Blob);
+        assert_eq!(obj.verify().unwrap(), blob.hash);
+        let back = Blob::try_from(obj.clone()).unwrap();
+        assert_eq!(back, blob);
+
+        let mut tampered = obj.clone();
+        tampered.data.push(b'!');
+        assert!(matches!(
+            Blob::try_from(tampered),
+            Err(ConversionError::HashMismatch { .. })
+        ));
+
+        let mut no_hash = obj.clone();
+        no_hash.hash = None;
+        assert!(matches!(
+            no_hash.verify(),
+            Err(ConversionError::MissingRequired("ObjectData.hash"))
+        ));
+
+        let mut unspecified = obj;
+        unspecified.kind = wire::ObjectKind::Unspecified as i32;
+        assert!(matches!(
+            Blob::try_from(unspecified.clone()),
+            Err(ConversionError::InvalidEnum { .. })
+        ));
+        unspecified.kind = 99;
+        assert!(unspecified.object_kind().is_err());
+
+        let manifest_obj = wire::ManifestRecord::default().to_object();
+        assert!(matches!(
+            Blob::try_from(manifest_obj),
+            Err(ConversionError::UnexpectedObjectKind { .. })
+        ));
+    }
+
+    fn sample_snapshot() -> Snapshot {
+        let mut s = Snapshot::new(
+            TreeId::new(),
+            hash_bytes(b"manifest"),
+            vec![SnapshotId::new(), SnapshotId::new()],
+            "merge",
+            AccountId::new(),
+        );
+        s.auto_generated = true;
+        s
+    }
+
+    #[test]
+    fn snapshot_record_roundtrip() {
+        let s = sample_snapshot();
+        let rec = wire::SnapshotRecord::from_snapshot(&s, "main");
+        assert_eq!(rec.branch_name, "main");
+        rec.validate().unwrap();
+        assert_eq!(rec.snapshot_id().unwrap(), s.id);
+        assert_eq!(rec.parent_ids().unwrap(), s.parents);
+
+        // Survives protobuf encoding.
+        let bytes = prost::Message::encode_to_vec(&rec);
+        let decoded: wire::SnapshotRecord = prost::Message::decode(bytes.as_slice()).unwrap();
+        let back = Snapshot::try_from(decoded).unwrap();
+        assert_eq!(back.id, s.id);
+        assert_eq!(back.tree_id, s.tree_id);
+        assert_eq!(back.manifest_hash, s.manifest_hash);
+        assert_eq!(back.parents, s.parents);
+        assert_eq!(back.message, s.message);
+        assert_eq!(back.author, s.author);
+        assert_eq!(back.timestamp, s.timestamp);
+        assert!(back.auto_generated);
+    }
+
+    #[test]
+    fn snapshot_record_with_username_author() {
+        let s = sample_snapshot();
+        let mut rec = wire::SnapshotRecord::from_snapshot(&s, "main");
+        rec.author = "alice".into();
+        assert!(matches!(
+            Snapshot::try_from(rec.clone()),
+            Err(ConversionError::InvalidUuid {
+                field: "SnapshotRecord.author",
+                ..
+            })
+        ));
+        let who = AccountId::new();
+        assert_eq!(rec.to_snapshot_with_author(who).unwrap().author, who);
+    }
+
+    #[test]
+    fn snapshot_record_validation_errors() {
+        let base = wire::SnapshotRecord::from_snapshot(&sample_snapshot(), "main");
+
+        let mut r = base.clone();
+        r.id = None;
+        assert!(matches!(
+            r.validate(),
+            Err(ConversionError::MissingRequired("SnapshotRecord.id"))
+        ));
+
+        let mut r = base.clone();
+        r.manifest_hash = Some(wire::ContentHash { value: vec![0; 3] });
+        assert!(matches!(
+            r.validate(),
+            Err(ConversionError::InvalidContentHash { actual: 3, .. })
+        ));
+
+        let mut r = base.clone();
+        r.parents.push(wire::SnapshotId {
+            value: "nope".into(),
+        });
+        assert!(r.validate().is_err());
+
+        let mut r = base.clone();
+        r.created_at = Some(prost_types::Timestamp {
+            seconds: 0,
+            nanos: -1,
+        });
+        assert!(matches!(
+            r.validate(),
+            Err(ConversionError::InvalidTimestamp { .. })
+        ));
+
+        let mut r = base;
+        r.created_at = None;
+        assert!(matches!(
+            r.validate(),
+            Err(ConversionError::MissingRequired(
+                "SnapshotRecord.created_at"
+            ))
+        ));
+    }
+
+    #[test]
+    fn timestamp_rejects_leap_second_nanos() {
+        let ts = prost_types::Timestamp {
+            seconds: 1_700_000_000,
+            nanos: 1_500_000_000,
+        };
+        assert!(prost_to_datetime(ts, "t").is_err());
+    }
+
+    #[test]
+    fn tree_info_accessors() {
+        let (tree, tenant) = (TreeId::new(), TenantId::new());
+        let info = wire::TreeInfo {
+            tree_id: Some(tree.into()),
+            tenant_id: Some(tenant.into()),
+            tenant_slug: "acme".into(),
+            name: "web".into(),
+            default_branch: "main".into(),
+            created: true,
+        };
+        assert_eq!(info.tree_id_domain().unwrap(), tree);
+        assert_eq!(info.tenant_id_domain().unwrap(), tenant);
+        let empty = wire::TreeInfo::default();
+        assert!(matches!(
+            empty.tree_id_domain(),
+            Err(ConversionError::MissingRequired("TreeInfo.tree_id"))
+        ));
+    }
+
+    #[test]
+    fn branch_info_from_branch_and_accessors() {
+        let branch = Branch::new(TreeId::new(), "main", SnapshotId::new(), AccountId::new());
+        let updated = chrono::Utc::now();
+        let info = wire::BranchInfo::from_branch(&branch, true, updated);
+        assert_eq!(info.name, "main");
+        assert!(info.protected);
+        assert_eq!(info.tip_id().unwrap(), Some(branch.tip));
+        assert_eq!(info.updated_at_utc().unwrap(), Some(updated));
+
+        let empty = wire::BranchInfo {
+            name: "new".into(),
+            ..Default::default()
+        };
+        assert_eq!(empty.tip_id().unwrap(), None);
+        assert_eq!(empty.updated_at_utc().unwrap(), None);
+    }
+
+    #[test]
+    fn staged_info_roundtrip() {
+        let staged = StagedSnapshot::new(
+            AccountId::new(),
+            TreeId::new(),
+            BranchId::new(),
+            "feature",
+            vec!["src/a.rs".into(), "src/b.rs".into()],
+        )
+        .with_message("wip")
+        .with_counts(1, 1, 0);
+
+        let info: wire::StagedInfo = staged.clone().into();
+        assert_eq!(info.author, staged.user.to_string());
+        let back = info
+            .to_staged(staged.user, staged.tree_id, staged.branch_id)
+            .unwrap();
+        assert_eq!(back.id, staged.id);
+        assert_eq!(back.branch_name, "feature");
+        assert_eq!(back.files_changed, staged.files_changed);
+        assert_eq!(back.total_changes(), 2);
+        assert_eq!(back.message.as_deref(), Some("wip"));
+        assert_eq!(back.timestamp, staged.timestamp);
+        assert!(back.is_staged());
+
+        let named = wire::StagedInfo::from_staged(&staged, "alice");
+        assert_eq!(named.author, "alice");
+        let mut broken = named;
+        broken.staged_at = None;
+        assert!(broken
+            .to_staged(staged.user, staged.tree_id, staged.branch_id)
+            .is_err());
+    }
+
+    #[test]
+    fn tag_record_roundtrip() {
+        let tree = TreeId::new();
+        let tagger = AccountId::new();
+        let tag = Tag::annotated("v1.0", SnapshotId::new(), tree, "release", tagger);
+        let rec: wire::TagRecord = tag.clone().into();
+        assert_eq!(rec.tagger, tagger.to_string());
+        let back = rec.to_tag(tree).unwrap();
+        assert_eq!(back.name, "v1.0");
+        assert_eq!(back.target, tag.target);
+        assert_eq!(back.kind, TagKind::Annotated);
+        assert_eq!(back.message.as_deref(), Some("release"));
+        assert_eq!(back.tagger, Some(tagger));
+        assert_eq!(back.created_at, tag.created_at);
+
+        let light = Tag::lightweight("v0", SnapshotId::new(), tree);
+        let rec = wire::TagRecord::from_tag(&light, "bob");
+        let back = rec.to_tag(tree).unwrap();
+        assert_eq!(back.kind, TagKind::Lightweight);
+        assert_eq!(back.tagger, None);
+
+        let mut no_target = rec;
+        no_target.target = None;
+        assert!(matches!(
+            no_target.to_tag(tree),
+            Err(ConversionError::MissingRequired("TagRecord.target"))
+        ));
+    }
+
+    #[test]
+    fn push_and_pull_domain_conversions_leave_snapshots_empty() {
+        let req = dom::PushRequest {
+            tenant_id: TenantId::new(),
+            tree_id: TreeId::new(),
+            branch_id: BranchId::new(),
+            branch_name: "main".into(),
+            old_tip: None,
+            new_tip: SnapshotId::new(),
+            snapshot_chain: vec![],
+            account_id: AccountId::new(),
+        };
+        let mut w: wire::PushRequest = req.into();
+        assert!(w.snapshots.is_empty());
+        // Records present on the wire are dropped by wire→domain.
+        w.snapshots.push(wire::SnapshotRecord::from_snapshot(
+            &sample_snapshot(),
+            "main",
+        ));
+        assert!(dom::PushRequest::try_from(w).is_ok());
+
+        let resp = dom::PullResponse {
+            has_updates: false,
+            new_tip: None,
+            snapshot_chain: vec![],
+            objects_to_fetch: vec![],
+        };
+        let w: wire::PullResponse = resp.into();
+        assert!(w.snapshots.is_empty());
     }
 }
