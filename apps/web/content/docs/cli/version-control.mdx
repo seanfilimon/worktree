@@ -1,0 +1,136 @@
+---
+title: Version Control
+description: Core version control commands — track, snapshot, branch, diff, log, merge, revert, and reflog.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+## wt track
+
+Control the automatic change tracking daemon.
+
+<Tabs items={['start', 'stop', 'status']}>
+<Tab value="start">
+
+```bash
+wt track start [--tree <name>] [--interval <seconds>]
+```
+
+</Tab>
+<Tab value="stop">
+
+```bash
+wt track stop
+```
+
+</Tab>
+<Tab value="status">
+
+```bash
+wt track status
+```
+
+</Tab>
+</Tabs>
+
+## wt snapshot
+
+Record a permanent snapshot of changes to the repository. Unlike Git, W0rkTree automatically tracks changes as staged snapshots. `wt snapshot` promotes these staged changes to a permanent, immutable point in history.
+
+```bash
+wt snapshot -m "<message>" [--tree <name>] [--all]
+```
+
+| Option | Description |
+|---|---|
+| `-m <message>` | Snapshot message (required) |
+| `--tree <name>` | Create snapshot in a specific tree |
+| `--all` | Snapshot changes across all trees |
+
+## wt push
+
+Explicitly push permanent snapshots to a remote. (Note: Staged changes sync automatically in the background if enabled).
+
+```bash
+wt push [<remote>] [<branch>] [--tree <name>]
+```
+
+## wt branch
+
+Manage branches within trees.
+
+<Tabs items={['create', 'list', 'delete', 'switch']}>
+<Tab value="create">
+
+```bash
+wt branch create <name> [--from <branch>]
+```
+
+</Tab>
+<Tab value="list">
+
+```bash
+wt branch list [--tree <name>] [--all]
+```
+
+</Tab>
+<Tab value="delete">
+
+```bash
+wt branch delete <name> [--force]
+```
+
+</Tab>
+<Tab value="switch">
+
+```bash
+wt branch switch <name>
+```
+
+</Tab>
+</Tabs>
+
+## wt diff
+
+Show differences between states.
+
+```bash
+wt diff [<target>] [--stat] [--tree <name>]
+```
+
+## wt log
+
+Show snapshot history.
+
+```bash
+wt log [--tree <name>] [--oneline] [--limit <n>] [--author <name>]
+```
+
+## wt reflog
+
+View the history of reference updates, allowing you to recover lost snapshots.
+
+```bash
+wt reflog [--tree <name>] [--limit <n>]
+```
+
+## wt merge
+
+Merge a branch into the current branch.
+
+```bash
+wt merge <branch> [--no-ff] [--squash]
+```
+
+## wt revert
+
+Revert a specific snapshot.
+
+```bash
+wt revert <snapshot> [--no-snapshot]
+```
+
+<Callout type="warn">
+This creates a new snapshot that undoes the specified snapshot's changes. The original snapshot remains in history.
+</Callout>

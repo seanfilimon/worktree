@@ -1,0 +1,86 @@
+---
+title: "Using Linked Branches"
+description: "Create linked branches across multiple trees for coordinated multi-team feature development."
+---
+
+Linked branches are one of W0rkTree's most powerful collaboration features. They let you tie branches across multiple trees together so that changes land atomically — either every tree's branch merges, or none of them do. This is essential for cross-cutting features that span team boundaries.
+
+## Understanding Linked Branches
+
+In a traditional monorepo, a single branch covers the entire codebase. In W0rkTree, branches are scoped to individual trees. Linked branches bridge that gap by creating a named group of branches across trees that move through the development lifecycle together.
+
+When branches are linked, W0rkTree enforces that they merge as a unit. This guarantees that an API change in the `backend` tree and the corresponding client update in the `frontend` tree deploy simultaneously — no more broken integrations from partial merges.
+
+## Creating a Linked Branch
+
+Start by creating a linked branch group with a descriptive name. This command creates the group and a branch in your current tree:
+
+```bash
+wt branch link create feature/unified-auth
+```
+
+Then, from each tree that participates in the feature, join the linked branch:
+
+```bash
+wt tree switch backend
+wt branch link join feature/unified-auth
+
+wt tree switch frontend
+wt branch link join feature/unified-auth
+```
+
+You can verify the link with:
+
+```bash
+wt branch link status feature/unified-auth
+```
+
+This displays every tree participating in the linked branch, their current commit, and readiness status.
+
+## Working Across Trees
+
+Once the linked branch is set up, each team works independently on their own tree's branch. There is no special workflow required — commit, push, and review as you normally would within each tree.
+
+Because these branches are linked, **cross-tree TODO generation** becomes branch-aware. As the backend team pushes commits to their branch, W0rkTree automatically generates TODOs specifically for the linked frontend branch, rather than the main branch. This allows the frontend team to track upstream API changes and resolve integration issues before the feature is ever merged into production.
+
+```bash
+wt tree switch backend
+# Make API changes...
+wt commit -m "Add auth token refresh endpoint"
+
+wt tree switch frontend
+# Update client code...
+wt commit -m "Integrate token refresh flow"
+```
+
+W0rkTree tracks progress on all participating branches and provides a unified view of the linked branch's overall status through `wt branch link status`.
+
+## Merging Atomically
+
+When all participating branches are ready, merge the entire linked branch in one operation:
+
+```bash
+wt branch link merge feature/unified-auth
+```
+
+W0rkTree performs pre-merge validation across all trees before committing anything. If any tree has conflicts or fails validation, the entire merge is aborted and you receive a detailed report of what needs to be fixed.
+
+## Handling Cross-Tree Conflicts
+
+Conflicts within a single tree are resolved the same way as any normal branch merge. Cross-tree conflicts arise when linked branches have incompatible dependency changes. W0rkTree detects these by analyzing the dependency graph.
+
+```bash
+wt branch link check feature/unified-auth
+```
+
+This runs a dry-run merge and dependency analysis, reporting any issues without modifying your branches. Fix the conflicts in the relevant trees, commit, and run the check again until it passes cleanly.
+
+## CI/CD Integration for Linked Branches
+
+Linked branches integrate naturally with CI/CD pipelines. Configure your pipeline to trigger a unified build when any branch in a linked group is updated:
+
+```bash
+wt branch link ci-status feature/unified-auth
+```
+
+In your CI configuration, use the `wt branch link list` command to discover all trees in the group and build them in dependency order. The exit code of `wt branch link check` can serve as a merge gate, ensuring that only fully validated linked branches are merged into production.

@@ -1,0 +1,53 @@
+---
+title: Monitoring
+description: Real-time dashboards, health checks, and metrics for W0rkTree servers.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Dashboard
+
+The Admin Panel includes a real-time dashboard showing:
+
+- **Server health** — uptime, memory usage, CPU utilization
+- **Connection metrics** — active connections, request rate, error rate
+- **Storage metrics** — disk usage, object count, cache hit rate
+- **Repository activity** — recent commits, active branches, tree changes
+
+## TUI Dashboard
+
+For quick terminal inspection:
+
+```bash
+worktree-admin tui
+```
+
+This opens a terminal-based dashboard with live-updating metrics.
+
+## Prometheus Integration
+
+Export metrics to Prometheus at `/metrics`:
+
+```yaml
+scrape_configs:
+  - job_name: 'worktree'
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: '/api/metrics'
+```
+
+## Alerting
+
+Configure alert thresholds in the admin config:
+
+```toml
+[alerts]
+disk_usage_warn = 80    # percent
+disk_usage_critical = 95
+connection_limit = 900
+error_rate_threshold = 0.05  # 5%
+```
+
+<Callout type="info">
+Alerts can be sent via webhook, email, or Slack. Configure notification channels in the Admin Panel UI.
+</Callout>

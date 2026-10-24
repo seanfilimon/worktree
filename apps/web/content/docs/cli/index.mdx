@@ -1,0 +1,43 @@
+---
+title: W0rkTree CLI
+description: Complete command-line interface documentation for the wt tool.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+The `wt` command-line interface is the primary way to interact with W0rkTree. This section documents every available command, grouped by category.
+
+<Callout type="info">
+All commands support the global flags listed below. Command-specific flags are documented under each command.
+</Callout>
+
+## Global Options
+
+| Flag | Short | Description |
+|---|---|---|
+| `--verbose` | `-v` | Enable verbose output with debug information |
+| `--quiet` | `-q` | Suppress non-essential output |
+| `--config <path>` | `-c` | Path to a custom config file |
+| `--no-color` | | Disable colored output |
+| `--json` | | Output results as JSON (useful for scripting) |
+| `--help` | `-h` | Show help for any command |
+| `--version` | `-V` | Print the current W0rkTree version |
+
+## Command Categories
+
+<Cards>
+  <Card title="Repository" description="Initialize, clone, and manage W0rkTree repositories." href="/docs/cli/repository" />
+  <Card title="Tree Management" description="Create, list, switch, and delete trees." href="/docs/cli/tree-management" />
+  <Card title="Version Control" description="Track, snapshot, branch, diff, log, merge, revert, and reflog." href="/docs/cli/version-control" />
+  <Card title="Staged Visibility" description="View and manage staged uncommitted changes." href="/docs/cli/staged" />
+  <Card title="Git Compatibility" description="Import, export, push, and pull with Git remotes." href="/docs/cli/git-compatibility" />
+  <Card title="Worker Process" description="Manage the background worker process." href="/docs/cli/worker" />
+  <Card title="Access Control" description="Declarative access model, roles, and scope hierarchy." href="/docs/cli/access" />
+  <Card title="Tenant Management" description="Create, switch, list, and inspect tenants." href="/docs/cli/tenant" />
+  <Card title="License Compliance" description="Show and audit license compliance." href="/docs/cli/license" />
+  <Card title="Tags & Releases" description="Create and manage tags and releases." href="/docs/cli/tags-releases" />
+  <Card title="Merge Requests" description="Create, review, approve, and merge requests." href="/docs/cli/merge-request" />
+  <Card title="Archive" description="Export project archives with format and license options." href="/docs/cli/archive" />
+  <Card title="Environment" description="Environment variables and configuration." href="/docs/cli/environment" />
+</Cards>

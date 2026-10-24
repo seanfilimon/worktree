@@ -1,0 +1,54 @@
+---
+title: API Surface
+description: Understanding the gRPC, REST, and WebSocket APIs exposed by the W0rkTree Server.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# API Surface
+
+The W0rkTree Server exposes a multi-protocol API surface designed to handle different types of workloads efficiently. Rather than forcing all operations through a single protocol (like traditional REST-only platforms), W0rkTree uses the best tool for each specific job.
+
+## 1. gRPC (Sync Protocol)
+
+The core of W0rkTree's high-performance synchronization relies on **gRPC** over HTTP/2. This protocol is used almost exclusively for communication between the local W0rkTree background daemon and the central server.
+
+### Why gRPC?
+- **Multiplexing:** Allows multiple parallel streams of objects over a single connection.
+- **Binary Efficiency:** Protocol Buffers (Protobuf) serialization is significantly smaller and faster to parse than JSON, which is critical when syncing thousands of file chunks.
+- **Bidirectional Streaming:** Enables the server to push updates down to the client while the client simultaneously pushes local changes up.
+
+### Primary Uses
+- Delta-compressed object and chunk syncing
+- Append-only event log replication
+- IAM policy evaluation requests and caching
+- Cryptographic Merkle tree verification
+
+## 2. REST (Admin & Integration)
+
+For administrative tasks, web interfaces, and third-party integrations that don't require high-throughput streaming, the Server exposes a standard **REST API**.
+
+### Primary Uses
+- **Tenant Administration:** Creating, suspending, modifying limits, and configuring tenants.
+- **Identity & Access:** OAuth2 callbacks, SSO SAML integration, session management, and API key provisioning.
+- **CI/CD Integration:** Triggering builds, updating merge request statuses, and downloading specific release archives.
+- **Webhooks:** The server also acts as a REST client, dispatching HTTP POST webhooks to your external services when events occur (e.g., branch pushed, MR merged).
+
+<Callout type="warning">
+  The Admin REST API requires strict authentication. Requests must use an Admin API Key or a bearer token from a user account with the global `tenant:manage` or `server:admin` role.
+</Callout>
+
+## 3. WebSocket (Real-Time)
+
+To support W0rkTree's unique real-time collaboration features without the latency and overhead of continuous polling, the Server utilizes **WebSockets**.
+
+### Primary Uses
+- **Staged Snapshots:** Streaming in-flight, uncommitted local changes to other developers currently viewing or working on the same branch.
+- **Presence:** Tracking and broadcasting which users are currently active in a specific tree or on a specific file.
+- **Live UI Updates:** Pushing instant notifications to the W0rkTree Admin Panel or external editor plugins (e.g., when a CI pipeline finishes, an MR is approved, or an IAM grant is accepted).
+
+## API Stability & Integration
+
+W0rkTree is currently in active development. While the REST API is relatively stable, the gRPC Sync Protocol and WebSocket event schemas are subject to breaking changes between minor versions as we heavily optimize chunking, compression, and latency. 
+
+If you are building custom tooling, editor plugins, or internal platforms on top of W0rkTree, we strongly recommend using the official [W0rkTree Rust SDK](/docs/sdk) rather than implementing these wire protocols manually. The SDK abstracts away the transport layer and provides a stable, forward-compatible interface.

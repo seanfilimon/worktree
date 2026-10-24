@@ -1,0 +1,111 @@
+---
+title: "Security Deep Dive"
+description: "Explore W0rkTree's threat model, transport security, proactive secret scanning, and cryptographic guarantees."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree is designed with a security-first architecture. By combining a modern cryptographic foundation with proactive local scanning and declarative access controls, W0rkTree protects your codebase from both external threats and internal mistakes.
+
+This guide explores the core pillars of W0rkTree's security model, from the transport layer down to the local worker.
+
+## Cryptographic Foundation
+
+At the heart of W0rkTree is a content-addressable object store powered by **BLAKE3**. 
+
+Every blob, tree, and snapshot in W0rkTree is identified by its BLAKE3 hash. This provides several critical security guarantees:
+- **Immutability:** Once a snapshot is created, its contents cannot be altered without changing its hash.
+- **Tamper Resistance:** Any corruption on disk or tampering over the network is immediately detected during hash verification.
+- **Collision Resistance:** BLAKE3 provides robust protection against collision attacks, ensuring that malicious actors cannot substitute files without detection.
+
+Because W0rkTree calculates hashes at the chunk level rather than the file level, it can deduplicate data securely and efficiently, even for multi-gigabyte files.
+
+## Transport Security
+
+All communication between the local `wt worker` and the W0rkTree server is encrypted in transit. 
+
+W0rkTree's native sync protocol runs over **QUIC (HTTP/3)**, which mandates **TLS 1.3** encryption by default. There is no option to downgrade to unencrypted transport or older, vulnerable TLS versions.
+
+- **Perfect Forward Secrecy (PFS):** Every connection generates unique session keys, ensuring that even if a server's private key is compromised in the future, past traffic cannot be decrypted.
+- **Certificate Pinning:** For high-security environments, W0rkTree clients can be configured to pin the server's public key, preventing man-in-the-middle (MITM) attacks even if a local certificate authority is compromised.
+- **Mutual TLS (mTLS):** W0rkTree Enterprise supports mTLS, requiring the client worker to present a valid cryptographic certificate before the server will accept any sync requests.
+
+If QUIC is blocked by a corporate firewall, the protocol falls back to standard HTTPS (TCP/443), maintaining the same TLS 1.3 guarantees.
+
+## Proactive Secret Scanning
+
+Traditional version control systems often rely on server-side hooks to detect accidentally committed secrets. By the time the server rejects the push, the secret has already left the developer's machine and resides in their local history.
+
+W0rkTree shifts this paradigm to the absolute left using the local background worker.
+
+As the `wt worker` captures filesystem changes and creates staged snapshots, it runs a highly optimized, regex-based secret scanner locally. You can configure this in your global `.wt/config.toml` or tree-specific `.wt-tree/config.toml`:
+
+```toml
+[tracking.validation]
+# Block snapshots containing high-entropy strings or known token formats
+scan_for_secrets = true
+forbidden_patterns = [
+  "(?i)aws_access_key_id",
+  "-----BEGIN PRIVATE KEY-----",
+  "ghp_[0-9a-zA-Z]{36}"
+]
+```
+
+If a developer accidentally pastes an API key into a file, the `wt worker` intercepts the save, skips creating the staged snapshot, and immediately surfaces a warning in the CLI (`wt status`). **The secret never even enters the local object store**, completely eliminating the risk of it being pushed to the server.
+
+## Authentication and IAM
+
+W0rkTree integrates seamlessly with standard Identity Providers (IdPs) via OIDC and SAML (e.g., Okta, Google Workspace, Azure AD). 
+
+Instead of managing passwords or SSH keys manually, developers authenticate via their browser:
+
+```bash
+wt login
+```
+
+This issues a short-lived, cryptographically signed token to the local machine. W0rkTree Maps your IdP claims (like team memberships) directly to **Declarative Roles** defined in your `.wt/access/roles.toml` file. When an engineer leaves the company or changes teams, their access is instantly revoked or updated at the IdP level, propagating immediately to the W0rkTree server.
+
+## Commit Signing
+
+To ensure the provenance of code, W0rkTree supports cryptographic signing of pushed commits.
+
+Unlike Git, which traditionally relies on GPG, W0rkTree strongly encourages the use of **SSH signing** or **Sigstore (Keyless Signing)**. 
+
+When you push your staged snapshots to the server, the W0rkTree CLI can automatically sign the resulting commit:
+
+```toml
+# .wt/config.toml
+[security]
+require_signed_commits = true
+signing_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
+```
+
+The W0rkTree server verifies these signatures upon receipt. If `require_signed_commits` is enforced via branch protection rules, the server will outright reject any pushed commits that lack a valid, verifiable signature from an authorized tree contributor.
+
+## Audit Logging
+
+Visibility is a core tenet of W0rkTree's security model. The W0rkTree server maintains a tamper-evident, append-only **Audit Log**.
+
+Every sensitive action is recorded, including:
+- Logins and token issuances
+- Pushes to protected branches
+- Changes to declarative access policies (`policies.toml`)
+- Tenant grants and cross-tree dependencies
+- Administrative bypasses of branch protection
+
+Security teams can stream the audit log directly to their SIEM (Security Information and Event Management) system or query it via the CLI:
+
+```bash
+wt audit log --action "acl.update" --since "7d" --format json
+```
+
+<Callout type="warn">
+Audit logs are immutable. Even repository administrators cannot delete or alter audit log entries, ensuring a reliable trail for compliance and forensic investigations.
+</Callout>
+
+## Threat Model Summary
+
+W0rkTree's architecture assumes a "Zero Trust" posture:
+1. **The Server does not trust the Client:** Every pushed chunk is cryptographically verified, and all operations are subjected to strict scope and access policy checks.
+2. **Tenants are physically isolated:** A vulnerability or misconfiguration in one tenant cannot expose data in another tenant due to strict physical isolation at the storage layer.
+3. **Policies are version-controlled:** Because permissions live in `.wt/access/policies.toml`, an attacker cannot unilaterally escalate privileges without committing a change, passing branch protection (CI/CD gates, mandatory peer review), and successfully merging.

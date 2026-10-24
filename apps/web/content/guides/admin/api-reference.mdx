@@ -1,0 +1,76 @@
+---
+title: API Reference
+description: RESTful API for managing W0rkTree servers programmatically.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Base URL
+
+```
+http://localhost:8080/api
+```
+
+## Authentication
+
+Include the API key in the `Authorization` header:
+
+```
+Authorization: Bearer <api-key>
+```
+
+## Endpoints
+
+### Health & Status
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/status` | Server status and metrics |
+
+### Server Control
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/server/reload` | Reload server configuration |
+| `POST` | `/api/server/gc` | Trigger garbage collection |
+
+### Repository Management
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/repos` | List repositories |
+| `POST` | `/api/repos` | Create a repository |
+| `GET` | `/api/repos/:id` | Get repository details |
+| `DELETE` | `/api/repos/:id` | Delete a repository |
+
+### User Management
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/users` | List users |
+| `POST` | `/api/users` | Create a user |
+| `GET` | `/api/users/:id` | Get user details |
+| `DELETE` | `/api/users/:id` | Delete a user |
+
+## Response Format
+
+All responses use JSON:
+
+```json
+{
+  "status": "ok",
+  "data": { ... },
+  "error": null
+}
+```
+
+## Error Codes
+
+| Code | Description |
+|---|---|
+| `401` | Unauthorized — missing or invalid API key |
+| `403` | Forbidden — insufficient permissions |
+| `404` | Not found |
+| `409` | Conflict — resource already exists |
+| `500` | Internal server error |

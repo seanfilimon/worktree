@@ -1,0 +1,91 @@
+---
+title: Merge Semantics
+description: Three-way merge strategy, conflict resolution, and cross-tree merge propagation.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+W0rkTree uses a **three-way merge** strategy with the common ancestor as the base. This is similar to Git's recursive merge but extended for nested trees.
+
+## Algorithm
+
+1. Find the **merge base** — the most recent common ancestor of both branches
+2. Compute diffs: `base → ours` and `base → theirs`
+3. Apply non-conflicting changes automatically
+4. Mark conflicting regions with conflict markers
+
+## Conflict Markers
+
+```
+<<<<<<< ours (frontend/feature/nav)
+  <Nav items={navItems} />
+=======
+  <Navigation links={links} />
+>>>>>>> theirs (frontend/main)
+```
+
+## Machine-Readable Conflict Metadata
+
+W0rkTree generates machine-readable conflict metadata in JSON format when resolving complex merges or when requested via the API. This structured format is designed for seamless integration with custom merge tools and IDEs.
+
+```json
+{
+  "path": "src/components/Nav.tsx",
+  "base": "a1b2c3d4",
+  "ours": {
+    "snapshot": "f5e6d7c8",
+    "branch": "feature/nav"
+  },
+  "theirs": {
+    "snapshot": "9a8b7c6d",
+    "branch": "main"
+  },
+  "regions": [
+    {
+      "startLine": 42,
+      "endLine": 48,
+      "type": "content"
+    }
+  ]
+}
+```
+
+## Binary File Handling
+
+When merging binary files (e.g., images, compiled assets), W0rkTree avoids injecting textual conflict markers, which would corrupt the file. Instead:
+
+1. If both sides modify the binary file differently, W0rkTree marks the file as conflicted in the index.
+2. It leaves the file intact (typically retaining the "ours" version in the working directory).
+3. The user must manually resolve the conflict by checking out either the "ours" version, the "theirs" version, or providing a new merged binary file.
+
+## Linked Branch Merges
+
+When branches across different trees are linked, they merge atomically:
+
+- All linked branches must be mergeable (no unresolved conflicts)
+- The merge either succeeds for all linked branches or fails entirely
+- This guarantees cross-cutting changes land as a unit
+
+## Auto-Resolution Rules
+
+| Scenario | Resolution |
+|---|---|
+| Both sides add the same content | Accept once (deduplicate) |
+| One side modifies, other deletes | Conflict |
+| Both sides modify different regions | Auto-merge |
+| Both sides modify same region | Conflict |
+| Whitespace-only changes on one side | Accept the substantive change |
+
+<Callout type="warn">
+Linked branch merges require write permissions on all involved trees. If you lack permission on any tree, the entire merge is rejected.
+</Callout>
+
+## Merge Request Integration
+
+When a merge request (MR) is created, W0rkTree pre-computes the merge result to verify if it can be cleanly merged.
+
+- **Mergeability State**: The MR status automatically reflects whether it is `Mergeable` or `Conflicted`.
+- **Pre-computed Diffs**: The diff presented in the code review interface is the exact diff that will be applied to the target branch.
+- **Atomic Merge**: When an MR is approved and merged via `wt merge-request merge`, the identical three-way merge algorithm is executed to ensure consistency.

@@ -1,0 +1,376 @@
+syntax = "proto3";
+
+// W0rkTree sync protocol — wire format for communication between
+// the local bgprocess (worktree-bg) and the remote server (worktree-server,
+// future Go impl at services/server-go/).
+//
+// Mirrors the hand-coded Rust types in
+//   crates/worktree-protocol/src/feature/sync_protocol.rs
+// which remain alongside this codegen output during the WT-PROTO-* migration.
+//
+// Conventions: see crates/worktree-protocol/proto/CONVENTIONS.md
+//   - all IDs are wrapped messages (cross-language type safety)
+//   - field tag 100-199 is reserved on every message for additive expansion
+//   - timestamps use google.protobuf.Timestamp
+//   - payload-bearing Rust enums map to proto `oneof`; unit-only Rust enums
+//     map to proto `enum` with _UNSPECIFIED = 0.
+
+package worktree.sync.v1;
+
+option go_package = "github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb";
+
+import "google/protobuf/timestamp.proto";
+
+// ============================================================
+// ID types (wrapped for cross-language type safety)
+// ============================================================
+
+// Unique identifier for a worktree.
+message TreeId {
+  string value = 1;
+
+  reserved 100 to 199;
+}
+
+// Unique identifier for a snapshot.
+message SnapshotId {
+  string value = 1;
+
+  reserved 100 to 199;
+}
+
+// Unique identifier for a branch.
+message BranchId {
+  string value = 1;
+
+  reserved 100 to 199;
+}
+
+// Unique identifier for a tenant in multi-tenant setups.
+message TenantId {
+  string value = 1;
+
+  reserved 100 to 199;
+}
+
+// Unique identifier for a user account.
+message AccountId {
+  string value = 1;
+
+  reserved 100 to 199;
+}
+
+// BLAKE3 content hash — 32 bytes.
+message ContentHash {
+  bytes value = 1;
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// Sync message-type enum (envelope discriminator)
+// ============================================================
+
+enum SyncMessageType {
+  SYNC_MESSAGE_TYPE_UNSPECIFIED = 0;
+
+  // Staged snapshot sync
+  SYNC_MESSAGE_TYPE_STAGE_UPLOAD = 1;
+  SYNC_MESSAGE_TYPE_STAGE_ACK = 2;
+
+  // Branch push/pull
+  SYNC_MESSAGE_TYPE_PUSH_REQUEST = 3;
+  SYNC_MESSAGE_TYPE_PUSH_RESPONSE = 4;
+  SYNC_MESSAGE_TYPE_PULL_REQUEST = 5;
+  SYNC_MESSAGE_TYPE_PULL_RESPONSE = 6;
+
+  // Object transfer
+  SYNC_MESSAGE_TYPE_HAVE_WANT = 7;
+  SYNC_MESSAGE_TYPE_OBJECT_TRANSFER = 8;
+
+  // Access config sync
+  SYNC_MESSAGE_TYPE_ACCESS_CONFIG_SYNC = 9;
+
+  // Tag sync
+  SYNC_MESSAGE_TYPE_TAG_SYNC = 10;
+
+  // Chunk transfer (large files)
+  SYNC_MESSAGE_TYPE_CHUNK_UPLOAD = 11;
+  SYNC_MESSAGE_TYPE_CHUNK_DOWNLOAD = 12;
+
+  // Health
+  SYNC_MESSAGE_TYPE_PING = 13;
+  SYNC_MESSAGE_TYPE_PONG = 14;
+}
+
+// ============================================================
+// Have/Want negotiation (delta sync)
+// ============================================================
+
+// Client announces which objects it has.
+message HaveMessage {
+  repeated ContentHash hashes = 1;
+
+  reserved 100 to 199;
+}
+
+// Client announces which objects it wants.
+message WantMessage {
+  repeated ContentHash hashes = 1;
+
+  reserved 100 to 199;
+}
+
+// Server responds with the set of objects to transfer.
+message ObjectTransferPlan {
+  repeated ContentHash objects_to_send = 1;
+  uint64 total_size = 2;
+
+  reserved 100 to 199;
+}
+
+// Combined have/want negotiation request — sent by client; server replies
+// with ObjectTransferPlan. The Rust side currently keeps HaveMessage and
+// WantMessage as separate types (matched here) but the gRPC RPC takes them
+// together for round-trip efficiency.
+message NegotiateRequest {
+  HaveMessage have = 1;
+  WantMessage want = 2;
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// Push protocol
+// ============================================================
+
+// Request to push a branch tip to the server.
+message PushRequest {
+  TenantId tenant_id = 1;
+  TreeId tree_id = 2;
+  BranchId branch_id = 3;
+  string branch_name = 4;
+  optional SnapshotId old_tip = 5;
+  SnapshotId new_tip = 6;
+  repeated SnapshotId snapshot_chain = 7;
+  AccountId account_id = 8;
+
+  reserved 100 to 199;
+}
+
+// Server response to a push.
+message PushResponse {
+  bool accepted = 1;
+  optional PushRejection rejection_reason = 2;
+  optional SnapshotId new_tip = 3;
+
+  reserved 100 to 199;
+}
+
+// Reasons a push may be rejected. Sum type with per-variant payload —
+// represented as a oneof per CONVENTIONS.md §3.
+message PushRejection {
+  oneof reason {
+    ConflictDetected conflict_detected = 1;
+    BranchProtection branch_protection = 2;
+    AccessDenied access_denied = 3;
+    LicenseViolation license_violation = 4;
+    CiChecksFailed ci_checks_failed = 5;
+    ReviewRequired review_required = 6;
+    QuotaExceeded quota_exceeded = 7;
+  }
+
+  // The server tip moved since the client's last pull.
+  message ConflictDetected {
+    SnapshotId server_tip = 1;
+    reserved 100 to 199;
+  }
+
+  // A branch protection rule rejected the push.
+  message BranchProtection {
+    string rule = 1;
+    reserved 100 to 199;
+  }
+
+  // Caller lacks the necessary permissions.
+  message AccessDenied {
+    string reason = 1;
+    reserved 100 to 199;
+  }
+
+  // A file in the push violates the configured license policy.
+  message LicenseViolation {
+    string path = 1;
+    string license = 2;
+    reserved 100 to 199;
+  }
+
+  // Required CI checks did not pass.
+  message CiChecksFailed {
+    repeated string checks = 1;
+    reserved 100 to 199;
+  }
+
+  // Branch protection requires more reviewers than the push has.
+  message ReviewRequired {
+    uint32 required = 1;
+    uint32 current = 2;
+    reserved 100 to 199;
+  }
+
+  // Tenant quota exceeded.
+  message QuotaExceeded {
+    string limit = 1;
+    reserved 100 to 199;
+  }
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// Pull protocol
+// ============================================================
+
+// Request to pull updates from the server.
+message PullRequest {
+  TenantId tenant_id = 1;
+  TreeId tree_id = 2;
+  BranchId branch_id = 3;
+  optional SnapshotId current_tip = 4;
+  AccountId account_id = 5;
+  optional uint32 depth = 6;
+
+  reserved 100 to 199;
+}
+
+// Server response with updates.
+message PullResponse {
+  bool has_updates = 1;
+  optional SnapshotId new_tip = 2;
+  repeated SnapshotId snapshot_chain = 3;
+  repeated ContentHash objects_to_fetch = 4;
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// Staged snapshot upload
+// ============================================================
+
+// Upload a staged snapshot to the server.
+message StageUploadRequest {
+  TenantId tenant_id = 1;
+  TreeId tree_id = 2;
+  BranchId branch_id = 3;
+  string branch_name = 4;
+  SnapshotId snapshot_id = 5;
+  repeated string files_changed = 6;
+  uint32 files_added = 7;
+  uint32 files_modified = 8;
+  uint32 files_deleted = 9;
+  optional string message = 10;
+  AccountId account_id = 11;
+
+  reserved 100 to 199;
+}
+
+// Server acknowledgment.
+message StageUploadResponse {
+  bool accepted = 1;
+  optional string error = 2;
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// Access config sync
+// ============================================================
+
+// Kind of access config being synced.
+enum AccessConfigType {
+  ACCESS_CONFIG_TYPE_UNSPECIFIED = 0;
+  ACCESS_CONFIG_TYPE_ROLES = 1;
+  ACCESS_CONFIG_TYPE_POLICIES = 2;
+  ACCESS_CONFIG_TYPE_TENANT_ACCESS = 3;
+  ACCESS_CONFIG_TYPE_BRANCH_PROTECTION = 4;
+  ACCESS_CONFIG_TYPE_LICENSE = 5;
+}
+
+// Sync access configuration changes.
+message AccessConfigSyncRequest {
+  TenantId tenant_id = 1;
+  AccessConfigType config_type = 2;
+  bytes content = 3;
+  ContentHash config_hash = 4;
+  AccountId account_id = 5;
+
+  reserved 100 to 199;
+}
+
+// Server validation response.
+message AccessConfigSyncResponse {
+  bool accepted = 1;
+  repeated string validation_errors = 2;
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// Sync state (local tracking)
+// ============================================================
+
+// Tracks the sync state between client and server.
+// Not transmitted on the wire today — kept here for parity with Rust
+// domain types, may move to a local-state .proto if it grows.
+message SyncState {
+  optional google.protobuf.Timestamp last_sync = 1;
+  optional SnapshotId local_tip = 2;
+  optional SnapshotId remote_tip = 3;
+  uint32 pending_staged = 4;
+  uint32 pending_objects = 5;
+  bool is_syncing = 6;
+  bool offline = 7;
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// Sync envelope (wire framing — kept for parity)
+// ============================================================
+
+// Envelope for sync messages. gRPC supersedes this for the bg<->server
+// transport; this type is kept for parity with the Rust domain layer
+// during the WT-PROTO migration. Once all callers move to direct gRPC
+// calls, the envelope (and crates/worktree-protocol/src/feature/wire/)
+// can be deleted.
+message SyncEnvelope {
+  SyncMessageType message_type = 1;
+  bytes payload = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  uint64 sequence = 4;
+
+  reserved 100 to 199;
+}
+
+// ============================================================
+// SyncService — the bg<->server gRPC service
+// ============================================================
+
+service SyncService {
+  // Upload a staged snapshot for team visibility.
+  rpc Stage(StageUploadRequest) returns (StageUploadResponse);
+
+  // Push a branch tip with conflict detection.
+  rpc Push(PushRequest) returns (PushResponse);
+
+  // Pull updates from the server (delta sync).
+  rpc Pull(PullRequest) returns (PullResponse);
+
+  // Negotiate which objects to transfer (have/want delta).
+  rpc Negotiate(NegotiateRequest) returns (ObjectTransferPlan);
+
+  // Sync access config changes (roles, policies, branch protection, ...).
+  rpc SyncAccessConfig(AccessConfigSyncRequest) returns (AccessConfigSyncResponse);
+
+  // Future RPCs (streaming chunk transfer, tag sync) tracked in WT-PROTO-3.
+}

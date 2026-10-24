@@ -1,0 +1,80 @@
+---
+title: "Sync Protocol"
+description: "Understand how W0rkTree synchronizes staged snapshots, pushes commits, and operates seamlessly offline."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree was built from the ground up to support massive repositories without the bottlenecks of traditional version control. To achieve this, it uses a custom, highly optimized synchronization protocol that operates over modern transport layers.
+
+This guide explains how data moves between your local machine and the W0rkTree server, how offline mode works, and the mechanics of pushing and pulling.
+
+## The Transport Layer
+
+The W0rkTree sync protocol is designed around **QUIC (HTTP/3)**. This provides several massive advantages over legacy TCP-based protocols like SSH or HTTP/1.1:
+
+- **Multiplexing without Head-of-Line Blocking**: W0rkTree can synchronize multiple independent trees simultaneously. If a large binary file is syncing in one tree, it won't block the sync of lightweight text files in another tree.
+- **0-RTT Connection Resumption**: When your network drops and reconnects (e.g., closing your laptop and opening it on a new Wi-Fi network), the sync protocol resumes instantly without expensive TLS handshakes.
+- **High Throughput**: By utilizing UDP and advanced congestion control, W0rkTree maximizes your available bandwidth, especially on high-latency connections.
+
+<Callout type="info">
+If a corporate firewall blocks UDP/QUIC traffic, the W0rkTree protocol gracefully falls back to standard HTTPS (TCP/443), ensuring you can always connect to your server.
+</Callout>
+
+## Staged Sync vs. Push
+
+To understand the sync protocol, you must understand the boundary between your local machine and the server. 
+
+As you work, the `wt worker` background process continuously creates **staged snapshots**. These snapshots are stored entirely in your local object store (`.wt/objects/`). They do not touch the network.
+
+When you are ready to share your work, you initiate a push:
+
+```bash
+wt push
+```
+
+During a push, the protocol performs the following steps:
+
+1. **Negotiation**: The client and server exchange BLAKE3 hashes of their respective tree states.
+2. **Delta Computation**: The client calculates the exact minimum set of chunks required by the server. Because W0rkTree uses chunk-level deduplication (rather than file-level), changing one line in a 100MB file only syncs a few kilobytes.
+3. **Transfer**: The compressed chunks are streamed to the server over QUIC.
+4. **Verification & Update**: The server verifies the BLAKE3 hashes and atomically updates the branch pointer.
+
+## Pulling and Selective Sync
+
+When pulling changes from the server, W0rkTree's architecture allows for **Selective Sync**. 
+
+In a traditional monorepo, you must download the entire repository's history. In W0rkTree, because the repository is divided into isolated trees, you only pull the data for the trees you actually have checked out or explicitly depend on.
+
+```bash
+wt pull
+```
+
+The pull command contacts the server, identifies updated branch pointers for your active trees, and streams only the missing chunks to your local `.wt/` directory.
+
+### Live Mirroring
+
+If you are using Git interoperability, the sync protocol can operate in a continuous background mode known as the **Live Mirror Mode**. The `wt worker` will maintain a persistent connection to the server and stream incoming pushes from your teammates in real-time, meaning your local read-only branches are always up to date before you even type `wt pull`.
+
+## First-Class Offline Mode
+
+W0rkTree is fundamentally an offline-first system. The sync protocol is designed to get out of your way when you don't have an internet connection.
+
+If you lose connectivity:
+- The `wt worker` continues to create staged snapshots locally.
+- You can continue to create branches, switch branches, and squash commits within your downloaded trees.
+- You can view your complete local history and diffs.
+
+When your connection is restored, you do not need to manually resolve transport errors. The protocol automatically detects the restored connection and you can run `wt push` or `wt pull` to achieve eventual consistency with the server.
+
+## Partial Clones and Lazy Loading
+
+For massive repositories, downloading even a single tree's full history might take too long. The sync protocol supports **Shallow History** and **Lazy Loading**.
+
+When you clone a large tree, W0rkTree only downloads the most recent snapshot (the tip of the branch). As you run commands like `wt log` or `wt diff` that require older history, the sync protocol fetches the required historical chunks transparently in the background.
+
+```bash
+wt tree add legacy-backend --depth 1
+```
+
+This allows you to start working in a multi-gigabyte tree in seconds, relying on the sync protocol to fetch the rest only when necessary.

@@ -1,0 +1,83 @@
+---
+title: "Archiving Trees"
+description: "Export point-in-time snapshots of your trees into portable archives with automated license compliance."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+While W0rkTree's sync protocol is the best way to share code with other contributors, you will often need to distribute flat, unversioned copies of your codebase to external consumers, release pages, or compliance auditors. 
+
+W0rkTree provides a built-in `archive` command to generate portable archives of any tree at any snapshot, complete with automated licensing and attribution.
+
+## Creating an Archive
+
+To create an archive of your current tree's active snapshot, run:
+
+```bash
+wt archive --output source.tar.gz
+```
+
+W0rkTree automatically infers the desired compression format from the file extension. The supported formats include:
+
+- `.tar` (Uncompressed)
+- `.tar.gz` or `.tgz` (Gzip)
+- `.tar.zst` (Zstandard - recommended for maximum performance)
+- `.zip` (Standard ZIP format)
+
+You can also explicitly specify the format if your output file doesn't have a standard extension:
+
+```bash
+wt archive --format zip --output source-bundle
+```
+
+## Archiving Specific Snapshots and Trees
+
+In a large repository, you typically don't want to archive the entire monorepo. W0rkTree allows you to archive specific nested trees, giving your consumers exactly the code they need without exposing internal tooling or neighboring projects.
+
+You can also target specific branches, tags, or snapshot hashes using the `--rev` flag:
+
+```bash
+# Archive the v2.0.0 tag of the frontend tree
+wt archive --tree frontend --rev v2.0.0 --output frontend-v2.tar.zst
+
+# Archive a specific historical snapshot
+wt archive --tree platform/api --rev abc1234 --output api-legacy.zip
+```
+
+<Callout type="info">
+Because W0rkTree uses a content-addressable object store, creating an archive from a historical snapshot is incredibly fast. W0rkTree simply streams the chunks directly from your local `.wt/objects/` database into the compressed archive without checking the files out to your working directory.
+</Callout>
+
+## License Interaction and Compliance
+
+When you distribute source code, you are legally required to include appropriate copyright notices and license texts. W0rkTree automates this compliance burden during the archiving process.
+
+When you run `wt archive`, W0rkTree inspects the tree's configuration (`.wt-tree/config.toml` or the global `.wt/config.toml`) for its assigned SPDX license. 
+
+If a license is defined, W0rkTree automatically:
+1. Injects the canonical text of the SPDX license into a `LICENSE` file at the root of the archive.
+2. Compiles a list of all contributors who authored pushed commits in that tree's history, injecting them into an `AUTHORS` or `CONTRIBUTORS` file.
+3. Scans the dependency graph for any upstream trees that this tree depends on, compiling their licenses into a `THIRDPARTY_NOTICES.txt` file.
+
+This guarantees that every artifact you distribute is strictly compliant with your organization's open-source and commercial licensing requirements.
+
+## Release Integration
+
+Archiving is typically automated as part of your CI/CD and release pipelines. When you create a new tag in W0rkTree, you can configure your pipeline to automatically generate and attach archives to the release.
+
+Here is a simplified example of how you might integrate `wt archive` into a generic CI/CD workflow:
+
+```bash
+# Step 1: Detect the newly pushed tag
+TAG_NAME=$(wt tag current)
+
+# Step 2: Generate the compliant source archive
+wt archive --tree frontend --rev $TAG_NAME --output release-$TAG_NAME.tar.zst
+
+# Step 3: Upload the artifact to your release hosting platform
+curl -X POST -F "file=@release-$TAG_NAME.tar.zst" \
+  -H "Authorization: Bearer $RELEASE_TOKEN" \
+  https://api.example.com/releases/$TAG_NAME/artifacts
+```
+
+By relying on W0rkTree's native archiving, you ensure that every release artifact perfectly matches the versioned snapshot and contains all legally required attribution.

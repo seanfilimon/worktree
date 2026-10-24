@@ -1,0 +1,107 @@
+---
+title: "Branch Protection & Merge Requests"
+description: "Configure branch protection rules, require reviews, and enforce CI gates for safe collaboration."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+In W0rkTree, branch protection ensures that critical branches—like `main` or release branches—cannot be modified directly or accidentally broken. Instead of relying on a web UI to configure these rules, W0rkTree uses a declarative, version-controlled approach.
+
+## Configuring Protection Rules
+
+Branch protection rules are defined in `protection.toml` files. You can configure them globally for the entire repository in `.wt/protection.toml` or scope them to a specific tree in `.wt-tree/protection.toml`.
+
+Here is an example of a tree-specific protection configuration:
+
+```toml
+# .wt-tree/protection.toml
+
+[branch."main"]
+# Prevent direct pushes to the branch
+allow_direct_push = false
+
+# Prevent force-pushes and history rewrites
+allow_force_push = false
+
+# Require a linear history (no merge commits)
+requires_linear_history = true
+
+[branch."release/*"]
+allow_direct_push = false
+allow_force_push = false
+```
+
+When a branch is protected with `allow_direct_push = false`, developers must use **Merge Requests** to integrate their changes.
+
+## Merge Requests
+
+W0rkTree features native Merge Requests (MRs). Because W0rkTree's architecture distinguishes between your local staged snapshots and public pushed history, MRs act as the official gateway for sharing your work.
+
+To create a merge request, push your local branch and use the CLI:
+
+```bash
+wt push origin feature/new-dashboard
+wt mr create --target main --title "Add new dashboard"
+```
+
+This creates a new MR proposing to merge `feature/new-dashboard` into `main`. The MR captures the exact state of your pushed commits and begins evaluating your tree's protection rules.
+
+## Review Requirements
+
+You can enforce peer reviews before a merge request can be merged. This is configured in the `merge_requests` section of your protection rules.
+
+```toml
+[branch."main".merge_requests]
+# Require at least two approvals from team members
+approvals_required = 2
+
+# Dismiss existing approvals when new commits are pushed
+dismiss_stale_approvals = true
+
+# Require approval from specific roles (defined in roles.toml)
+require_approval_from = ["@frontend-team", "@security-reviewers"]
+```
+
+When a developer opens an MR against `main`, W0rkTree checks these rules. The MR cannot be merged until the required approvals are met. Reviewers can approve or request changes directly via the CLI or connected integrations.
+
+```bash
+wt mr list
+wt mr review 123 --approve -m "Looks good to me."
+```
+
+## CI Gates and Status Checks
+
+Merge Requests in W0rkTree tightly integrate with your CI/CD pipelines. You can configure branch protection to block merges until all required CI checks (or "gates") have passed.
+
+```toml
+[branch."main".merge_requests]
+require_all_ci_gates_pass = true
+required_ci_gates = ["build", "test", "lint"]
+```
+
+When a downstream tree fails its CI gates, the W0rkTree server automatically blocks the merge request until all required checks are green. This guarantees that cross-tree changes and dependencies never land in a broken state.
+
+For more details on setting up CI pipelines to report these statuses, see the [CI/CD Integration](/guides/ci-cd-integration) guide.
+
+## Linked Branch Merges
+
+W0rkTree's branch protection is fully aware of **Linked Branches**. If you are developing a cross-tree feature using linked branches, the protection rules for *all* participating trees must be satisfied before the linked branch can be merged.
+
+```bash
+wt branch link status feature/unified-auth
+wt branch link merge feature/unified-auth
+```
+
+If the `backend` tree requires 2 approvals and the `frontend` tree requires CI gates to pass, the `wt branch link merge` command will enforce both conditions atomically. If any condition fails, the entire merge is aborted, ensuring your repository remains in a consistent state.
+
+## Bypassing Protection
+
+In rare emergency scenarios, repository administrators can bypass branch protection rules. This requires explicit confirmation and is permanently recorded in the repository's audit log.
+
+```bash
+wt mr merge 123 --bypass-protection --reason "Emergency hotfix for production outage"
+```
+
+<Callout type="warn">
+Bypassing protection should be used strictly for emergencies. The action is flagged in the audit log (`wt audit log`) and notifications are immediately dispatched to tree owners.
+</Callout>

@@ -1,0 +1,60 @@
+---
+title: Storage Engine
+description: Content-addressable storage, object packing, and compression in the W0rkTree server.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+The storage engine uses a **content-addressable object store** optimized for multi-tree operations. All data is securely partitioned using **per-tenant namespacing**.
+
+## Per-Tenant Namespacing
+
+To guarantee strict isolation, every object stored in the W0rkTree Server is prefixed with its owning Tenant ID. This physical partitioning ensures that a query from one tenant can never accidentally access objects from another tenant, even if they share the same underlying storage bucket or disk.
+
+- Local paths: `/var/lib/worktree/objects/<tenant_id>/<hash>`
+- Cloud paths (S3): `s3://worktree-bucket/<tenant_id>/objects/<hash>`
+
+## Content-Addressable Storage
+
+W0rkTree diverges from Git by using **chunk-level deduplication** rather than blob-level deduplication. Large files are split into chunks using a rolling hash algorithm. This means that appending a single line to a 10GB file only results in storing a few kilobytes of new data, rather than duplicating the entire 10GB file.
+
+All chunks and objects are addressed by their **BLAKE3 hash**, providing cryptographically secure verification of data integrity upon read.
+
+## Comparison with Git
+
+| Aspect | Git | W0rkTree |
+|---|---|---|
+| Object scope | Global (one DAG) | Per-tree (isolated DAGs with cross-references) |
+| Deduplication | Blob-level | Chunk-level with rolling hash |
+| Indexing | Pack files | LSM-tree backed index with bloom filters |
+| Locking | File-level locks | Lock-free concurrent reads, per-tree write locks |
+| Compression | zlib per object | zstd with dictionary training per repository |
+
+## Object Types
+
+The store manages four core object types:
+
+- **Blob** — raw file content, addressed by BLAKE3 hash
+- **Tree** — directory listing mapping names to blob/tree references
+- **Snapshot** — immutable point-in-time capture of a tree state
+- **Commit** — metadata wrapper around a snapshot with parent references
+
+## Garbage Collection Policies
+
+Unreachable objects and expired staged snapshots are cleaned up by the garbage collector. GC policies can be configured per-tenant:
+
+- **Staged Retention:** How long in-flight changes are kept before being discarded (default: 14 days).
+- **Orphan Object Retention:** How long unreachable objects are kept before physical deletion (default: 30 days).
+
+Manual GC runs can be triggered by server administrators:
+
+```bash
+wt admin gc --tenant "tenant_abc123" --dry-run
+wt admin gc --tenant "tenant_abc123" --aggressive
+```
+
+<Callout type="info">
+GC runs automatically in the background based on the tenant's configured policies. Manual runs are only needed for immediately reclaiming space after large repository deletions.
+</Callout>

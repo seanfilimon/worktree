@@ -1,0 +1,66 @@
+---
+title: Storage Model
+description: Content-addressable store, BLAKE3 hashing, chunking, pack files, and garbage collection.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+At its core, W0rkTree relies on a highly optimized, purely **content-addressable storage (CAS)** model. Every object in the system—whether a blob, tree, snapshot, or manifest—is addressed exclusively by the cryptographic hash of its contents.
+
+This immutable architecture guarantees data integrity, enables aggressive cross-tree deduplication, and simplifies synchronization.
+
+## BLAKE3 Hashing
+
+W0rkTree uses **BLAKE3** as its primary hashing algorithm, replacing the SHA-1 or SHA-256 hashes used by older version control systems.
+
+BLAKE3 provides several critical advantages:
+- **Performance**: It is significantly faster than MD5, SHA-1, SHA-2, SHA-3, and BLAKE2, easily saturating modern NVMe drives and network links.
+- **Parallelism**: It computes hashes using a Merkle tree structure internally, allowing W0rkTree to hash large files across multiple CPU cores simultaneously.
+- **Security**: It is highly resistant to length extension and collision attacks.
+
+```
+Hash Format: wt:<32-byte hex string>
+Example: wt:a3f2b1c8d4e5f6a7b8c9d0e1f2a3b4c5...
+```
+
+## Large File Chunking
+
+Unlike Git, which stores large binary files as single massive blobs, W0rkTree inherently understands large assets through **Chunking** and **Manifests**.
+
+1. When a user adds a large file (e.g., a 1GB Photoshop file or a compiled binary), W0rkTree streams the file through a rolling hash algorithm (like FastCDC).
+2. The file is sliced into variable-sized chunks (typically 1MB - 4MB).
+3. Each chunk is compressed with zstd, hashed with BLAKE3, and stored in the CAS as an independent blob object.
+4. A **Manifest** object is created, containing an ordered list of the chunk hashes.
+
+### Benefits of Chunking
+
+- **Deduplication**: If a single byte changes in a 1GB file, only the affected chunks are re-uploaded and stored. The rest of the chunks are deduplicated.
+- **Resumable Uploads**: Network transfers can fail and resume at the chunk level.
+- **Parallel Transfers**: The client can download multiple chunks of a single large file concurrently.
+
+## Pack Files
+
+While addressing individual objects by their BLAKE3 hash is elegant, storing millions of tiny files (like source code) individually on a filesystem causes severe performance degradation due to inode exhaustion and poor spatial locality.
+
+To solve this, W0rkTree aggregates objects into **Pack Files**.
+
+- A Pack File is an append-only, zstd-compressed archive containing thousands of individual objects.
+- An associated **Index File** (`.idx`) maps the BLAKE3 hash of an object to its exact byte offset and length within the Pack File.
+- The background worker and server read from Pack Files using memory-mapped I/O (`mmap`), allowing the operating system to aggressively page and cache frequently accessed objects.
+
+<Callout type="info">
+During network synchronization (`PUSH` or `PULL`), W0rkTree streams dynamically generated Pack Files directly to the client or server, minimizing TCP overhead.
+</Callout>
+
+## Garbage Collection (GC)
+
+Because W0rkTree uses an immutable CAS, objects are never modified or overwritten; new objects are simply created. Over time, especially with the continuous tracking of Staged Sync, the storage engine accumulates unreferenced objects (e.g., deleted staged snapshots, orphaned chunks).
+
+W0rkTree's background worker periodically performs **Garbage Collection (GC)** to reclaim disk space:
+
+1. **Reachability Analysis**: The GC engine traverses the object graph starting from all known root references (branches, tags, staged pointers, reflogs).
+2. **Marking**: Any object reachable from a root is marked as "live."
+3. **Sweeping**: Unreachable objects that exceed a configured grace period (e.g., 14 days) are safely deleted.
+4. **Repacking**: If Pack Files become highly fragmented (containing mostly dead objects), the GC engine creates a new dense Pack File with the surviving objects and deletes the old ones.

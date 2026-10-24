@@ -1,0 +1,57 @@
+---
+title: "Community Contributors"
+description: "Recognizing the open-source contributors who help build W0rkTree."
+name: "Community Contributors"
+role: "Open Source Contributors"
+bio: "The growing community of developers contributing to W0rkTree's open-source ecosystem."
+github: "worktree"
+---
+
+## Thank You, Contributors
+
+W0rkTree is built in the open, and every contribution — whether it's a bug fix, documentation improvement, feature implementation, or thoughtful issue report — makes the project better for everyone. We are deeply grateful to every developer who has invested their time and expertise into the W0rkTree ecosystem.
+
+Our contributors come from all over the world, bringing diverse perspectives and skills that strengthen the project far beyond what any single team could achieve alone.
+
+## How to Contribute
+
+Getting involved with W0rkTree is straightforward. Start by reading the [Contributing Guide](https://github.com/worktree/worktree/blob/main/CONTRIBUTING.md) in the main repository. It covers everything from setting up your local development environment to submitting your first pull request.
+
+Here's a quick overview of the contribution workflow:
+
+1. Fork the repository and clone it locally.
+2. Create a feature branch from `main` for your work.
+3. Make your changes, write tests, and ensure the test suite passes with `cargo test`.
+4. Open a pull request with a clear description of what you changed and why.
+5. Respond to code review feedback from the core team.
+
+All contributions go through code review before merging. We aim to provide feedback within 48 hours of submission.
+
+## Areas Where Help Is Needed
+
+Whether you're an experienced Rust developer or just getting started with open source, there are many ways to contribute:
+
+- **Core Engine** — Performance improvements, storage optimizations, and new algorithms for the VCS engine in `crates/protocol` and `crates/server`.
+- **Git Compatibility** — Expanding the bidirectional Git bridge in `crates/git` to handle more edge cases and improve translation fidelity.
+- **CLI Ergonomics** — Better error messages, new output formats, and shell completions for the `wt` command-line tool.
+- **Documentation** — Tutorials, guides, API documentation, and examples that help new users get started quickly.
+- **Testing** — Expanding test coverage, writing integration tests, and building fuzzing harnesses for critical code paths.
+- **Platform Support** — Improving the experience on Windows, Linux, and macOS, including platform-specific filesystem watcher optimizations.
+
+Look for issues labeled `good first issue` or `help wanted` on the [GitHub issue tracker](https://github.com/worktree/worktree/issues) to find tasks that are ready for community contribution.
+
+## Notable Contributions
+
+We want to highlight some of the impactful contributions from the community:
+
+- **Improved zstd dictionary training** for the storage engine, reducing repository sizes by up to 15% on large codebases.
+- **Shell completion scripts** for Bash, Zsh, Fish, and PowerShell, making the CLI more discoverable.
+- **ARM64 Linux builds** and CI infrastructure for cross-platform binary releases.
+- **Comprehensive `.wtignore` test suite** covering edge cases in glob pattern matching.
+- **Localization framework** laying the groundwork for translated CLI output and error messages.
+
+## Get in Touch
+
+- GitHub: [W0rkTree on GitHub](https://github.com/worktree/worktree)
+- Discord: [Join our community server](https://discord.gg/worktree)
+- Discussions: [GitHub Discussions](https://github.com/worktree/worktree/discussions)

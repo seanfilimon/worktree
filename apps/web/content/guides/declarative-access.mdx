@@ -1,0 +1,116 @@
+---
+title: "Declarative Access Control"
+description: "Manage repository and tree permissions through version-controlled roles and policies."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree manages permissions through a **Declarative Access Model**. Instead of relying on imperative CLI commands or a web UI to grant access, all permissions are defined in version-controlled configuration files. This "Access as Code" approach ensures that your security rules are peer-reviewed, auditable, and inherently tied to the history of your repository.
+
+## The Access Configuration Directory
+
+Access control rules are stored in `access/` directories. Depending on the scope of the rules, these directories live in one of two places:
+
+- **`.wt/access/`**: Located at the repository root. Defines global roles and repository-wide default policies.
+- **`.wt-tree/access/`**: Located at the root of individual nested trees. Defines tree-specific policies that override or extend the global defaults.
+
+Inside these directories, you will work with two primary files: `roles.toml` and `policies.toml`.
+
+## Defining Roles (`roles.toml`)
+
+Roles group individual users and service accounts into logical units (teams, groups, or automated actors). Roles are typically defined globally in `.wt/access/roles.toml` so they can be reused across all trees.
+
+```toml
+# .wt/access/roles.toml
+
+[role."@frontend-team"]
+members = ["alice@example.com", "bob@example.com"]
+
+[role."@backend-team"]
+members = ["charlie@example.com", "diana@example.com"]
+
+[role."@release-managers"]
+members = ["eve@example.com", "deploy-bot"]
+```
+
+By convention, role names begin with an `@` symbol to easily distinguish them from individual user emails in policy definitions.
+
+## Applying Policies (`policies.toml`)
+
+Policies bind roles (or individual users) to specific permissions. You can define policies globally in `.wt/access/policies.toml` or scope them to a specific tree in `.wt-tree/access/policies.toml`.
+
+```toml
+# .wt-tree/access/policies.toml (Inside the 'frontend' tree)
+
+[tree]
+# Who can read the staged snapshots and pushed history of this tree
+allow_read = ["@everyone"]
+
+# Who can push commits to this tree
+allow_write = ["@frontend-team"]
+
+# Who can modify the .wt-tree/ configuration and access rules
+allow_admin = ["alice@example.com"]
+
+[branch."main"]
+# Only release managers can merge into the main branch
+allow_push = ["@release-managers"]
+require_reviews = 2
+```
+
+<Callout type="info">
+Because policies are stored within the tree they protect, any modification to `.wt-tree/access/policies.toml` is tracked like a normal code change. It requires a commit, a push, and (if the branch is protected) a peer review. This prevents unilateral permission escalations.
+</Callout>
+
+## Scope Hierarchy
+
+W0rkTree evaluates permissions top-down through a strict scope hierarchy. When a user attempts an action, W0rkTree checks the most specific scope first. If no explicit `allow` or `deny` rule exists, it falls back to the next highest scope.
+
+1. **Tenant Level**: Organization-wide defaults configured on the W0rkTree server.
+2. **Repository Level (`.wt/access/`)**: Global rules applying to all trees in the repository.
+3. **Tree Level (`.wt-tree/access/`)**: Rules specific to an isolated workspace/tree.
+4. **Branch Level**: Restrictions on specific branches (e.g., protecting `main` or `release/*`).
+5. **Path Level (Registered Paths)**: Fine-grained control over individual directories or files.
+
+## Path Registration
+
+For highly sensitive areas of your codebase—such as billing logic, database migrations, or infrastructure-as-code—you can lock down specific file paths using **Registered Paths**.
+
+Define registered paths within your `policies.toml`:
+
+```toml
+# .wt-tree/access/policies.toml
+
+[paths."src/billing/**"]
+allow_write = ["@finance-engineering"]
+allow_read = ["@everyone"]
+
+[paths."migrations/**"]
+allow_write = ["@dba-team"]
+allow_delete = [] # An empty array means explicitly denied for everyone
+```
+
+When you edit a file, the local `wt worker` continuously validates your changes against these registered paths. If you lack the required write permissions for a registered path, the worker will refuse to create a staged snapshot for those changes, providing immediate feedback before you even attempt to push to the server.
+
+## Testing Declarative Access
+
+Because access rules can become complex in large organizations, W0rkTree provides a CLI tool to test and audit your policies locally before committing them.
+
+```bash
+wt acl check charlie@example.com --tree frontend --path "src/billing/api.ts"
+```
+
+The output provides a clear trace of the scope hierarchy, showing exactly which `policies.toml` file and which rule granted or denied access:
+
+```txt
+Evaluating access for charlie@example.com on [frontend] src/billing/api.ts
+
+1. Path Level Match: "src/billing/**" in frontend/.wt-tree/access/policies.toml
+   Rule: allow_write = ["@finance-engineering"]
+   User charlie@example.com is NOT in role @finance-engineering.
+   -> DENIED at Path Level.
+
+Result: DENIED
+```
+
+This trace makes it incredibly easy to debug permission structures and ensure your Access as Code is behaving exactly as intended.

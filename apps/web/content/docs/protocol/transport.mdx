@@ -1,0 +1,36 @@
+---
+title: Transport Layer
+description: Network transport protocols including QUIC, gRPC fallback, and connection security.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+The W0rkTree protocol is transport-agnostic at the application layer, but the reference implementation relies on a dual-transport architecture to ensure both maximum performance and maximum compatibility across different network environments.
+
+## QUIC (Primary Transport)
+
+W0rkTree uses **QUIC** (via the `quinn` crate) as its primary and preferred transport protocol. QUIC operates over UDP and provides several critical advantages specifically tailored for version control and background synchronization workloads:
+
+- **0-RTT Connection Establishment**: For servers the client has communicated with previously, W0rkTree can begin transmitting data in the very first round trip, drastically reducing the latency of short-lived CLI commands.
+- **True Multiplexing**: Unlike TCP, QUIC prevents head-of-line blocking. W0rkTree can stream multiple large object packfiles concurrently. If a single packet is dropped, only the specific stream it belongs to is delayed, rather than stalling the entire transfer.
+- **Connection Migration**: QUIC connections are identified by a unique Connection ID, rather than an IP/Port tuple. If a developer closes their laptop, walks to a coffee shop, and connects to a new Wi-Fi network, the background worker's streaming sync connection remains intact and migrates seamlessly without needing to renegotiate the session.
+
+## gRPC / HTTP/2 (Fallback Transport)
+
+Because QUIC relies on UDP, it is occasionally blocked by restrictive corporate firewalls, strict NATs, or transparent HTTP proxies. To ensure reliability, W0rkTree automatically falls back to **gRPC over HTTP/2 (TCP)** if the primary QUIC connection is rejected or times out.
+
+The fallback mechanism is completely transparent to the user. The identical binary wire format (the `b"WT01"` magic bytes, `SyncMessageEnvelope`, and zstd-compressed Bincode payloads) is simply tunneled through bidirectional gRPC streams.
+
+<Callout type="info">
+You can force the CLI or the background worker to use a specific transport by setting the `WT_TRANSPORT` environment variable (`WT_TRANSPORT=quic` or `WT_TRANSPORT=grpc`).
+</Callout>
+
+## Security (TLS 1.3)
+
+Security is mandatory in W0rkTree. All transport connections—whether QUIC or gRPC—are strictly encrypted using **TLS 1.3**.
+
+- **No Plaintext**: There is absolutely no support for unencrypted connections (e.g., no `http://` or raw TCP fallback).
+- **Certificate Validation**: The client strictly validates the server's certificate chain against the host operating system's root trust store.
+- **Mutual TLS (mTLS)**: For highly secure enterprise deployments and machine-to-machine integrations, W0rkTree supports mTLS. This requires the client to present a valid, cryptographically signed identity before the server will even accept the connection and begin the IAM protocol handshake.

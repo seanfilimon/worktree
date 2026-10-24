@@ -1,0 +1,68 @@
+---
+title: License Grants
+description: Managing commercial exceptions and cross-tenant license grants in W0rkTree.
+---
+
+# License Grants
+
+While W0rkTree uses [SPDX expressions](./spdx) to declare the default outbound license of a tree, real-world software development often requires exceptions. **License Grants** are W0rkTree's native mechanism for managing commercial licenses, dual-licensing models, and specific B2B sharing agreements directly within the version control protocol.
+
+A Grant acts as a cryptographic, server-enforced exception to the default SPDX license, issued by the owner of a tree to a specific identity or Tenant.
+
+## Why Use License Grants?
+
+In traditional Git workflows, dual-licensing (e.g., offering a project under GPLv3 for open source, but providing a proprietary license for enterprise customers) is handled completely out-of-band. The version control system has no concept of who has paid for a commercial license.
+
+W0rkTree integrates this directly into the protocol:
+
+1. **Automated Dual-Licensing:** You can publish a tree publicly under a strong copyleft license (like `AGPL-3.0-only`), preventing unauthorized commercial use.
+2. **Seamless B2B Delivery:** When an enterprise customer purchases a commercial license, you issue a W0rkTree Grant to their Tenant ID.
+3. **Frictionless Consumption:** The customer's W0rkTree Server automatically verifies the Grant, allowing them to pull, modify, and integrate your tree into their proprietary codebase without triggering the server's license compliance blockers.
+
+## Creating a Grant
+
+Grants are issued by the owners of a tree and are cryptographically signed. You can issue a grant using the W0rkTree CLI:
+
+```bash
+wt license grant create \
+  --tree "wt://acme-corp/ui-library" \
+  --grantee-tenant "tenant_abc123" \
+  --type "commercial" \
+  --expires "2025-12-31"
+```
+
+This command generates a cryptographic grant object that is distributed to the W0rkTree Server. 
+
+## Declarative Grant Management
+
+For organizations managing many licenses, Grants can also be managed declaratively alongside your access control policies. W0rkTree allows you to define standard grant templates in your `.wt-license.toml` file.
+
+```toml
+[tree]
+spdx = "AGPL-3.0-only"
+
+[[grants]]
+grantee = "tenant:customer_x"
+type = "commercial-unlimited"
+issued_at = "2024-01-01T00:00:00Z"
+expires_at = "2025-01-01T00:00:00Z"
+reference = "INVOICE-1042"
+
+[[grants]]
+grantee = "team:contractors"
+type = "internal-use-only"
+```
+
+## The Grant Lifecycle
+
+1. **Issuance:** The owning tenant issues the grant (either via CLI or declarative sync).
+2. **Distribution:** The grant is securely synchronized to the W0rkTree Server.
+3. **Acceptance (Optional):** Depending on the strictness of the receiving tenant's compliance settings, an admin on the receiving side may need to explicitly review and accept the grant before developers can utilize the code.
+4. **Enforcement:** Every time the receiving tenant attempts to sync or merge code from the licensed tree, the Server verifies that the Grant is still valid, has not expired, and covers the requested operations.
+5. **Revocation/Expiration:** If a grant expires or is manually revoked, the W0rkTree Server instantly blocks further syncs of new updates to the receiving tenant, protecting your intellectual property.
+
+## Auditing and Compliance
+
+Because Grants are native objects in the W0rkTree graph, they leave a permanent, immutable audit trail. 
+
+Organizations can instantly generate compliance reports showing exactly which external dependencies they are using, under what SPDX licenses, and which dependencies are covered by active commercial Grants.

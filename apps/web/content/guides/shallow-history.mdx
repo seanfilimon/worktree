@@ -1,0 +1,80 @@
+---
+title: "Shallow History & Lazy Loading"
+description: "Learn how to clone massive repositories instantly using shallow history and partial tree synchronization."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+When working with massive codebases that span gigabytes or terabytes of history, downloading the entire repository just to fix a typo is incredibly inefficient. W0rkTree solves this through **Shallow History** and **Lazy Loading**, allowing you to start working in seconds regardless of the repository's size.
+
+## Shallow Initialization
+
+By default, W0rkTree syncs the complete history of the trees you depend on. However, you can opt into a shallow clone by specifying a depth limit when adding a tree or cloning a repository.
+
+```bash
+wt tree add legacy-backend --depth 1
+```
+
+When you use `--depth 1`, W0rkTree only downloads the most recent snapshot (the tip of the active branch) for that tree. All older commits and their associated file chunks are left on the server. This reduces the initial sync time from hours to seconds, and minimizes disk usage in your local `.wt/objects/` directory.
+
+## Lazy History Loading
+
+A common problem with shallow clones in legacy version control systems is that they break local operations like history traversal or blaming. W0rkTree takes a different approach: **Lazy Loading**.
+
+If you have a shallow tree and you run a command that requires older history, W0rkTree's sync protocol seamlessly fetches the required data in the background.
+
+```bash
+# Even with --depth 1, this works seamlessly
+wt log --max-count 10
+```
+
+When you run `wt log`, the local W0rkTree CLI notices that the parent snapshots are missing from the local `.wt/objects/` store. It transparently requests those specific historical chunks from the server, caches them locally, and displays the log. You get the speed of a shallow clone without sacrificing local functionality.
+
+<Callout type="info">
+Lazy loading operates on a chunk level, not a file level. If a 100MB file was modified, W0rkTree only downloads the specific rolling-hash chunks that changed in that historical snapshot, saving significant bandwidth.
+</Callout>
+
+## Depth Expansion
+
+Sometimes you want to pre-fetch history before going offline, or you want to expand your shallow boundary to perform complex local merges without waiting for network requests. 
+
+You can manually expand the depth of your local history at any time:
+
+```bash
+# Fetch the last 50 snapshots
+wt fetch --tree legacy-backend --depth 50
+
+# Fetch all history to fully "unshallow" the tree
+wt fetch --tree legacy-backend --unshallow
+```
+
+Once unshallowed, your local tree contains the complete cryptographic DAG and can operate entirely offline.
+
+## Partial Tree Synchronization
+
+Shallow history limits depth (time), but W0rkTree also allows you to limit breadth (space) through **Partial Tree Sync**. 
+
+In a traditional monorepo, you must download every project even if you only work on one. In W0rkTree, you only pull the specific trees you need.
+
+```bash
+# Sync only the frontend tree and its declared dependencies
+wt pull --tree frontend
+```
+
+If the `frontend` tree depends on the `design-system` tree, W0rkTree will automatically sync the `design-system` tree as well, ensuring you always have a compiling workspace. All other trees in the repository (e.g., `backend`, `infrastructure`) remain entirely on the server.
+
+Combining partial tree sync with shallow history allows developers and CI runners to operate efficiently on a fraction of the total repository size.
+
+## CI/CD Benefits
+
+Shallow history is particularly beneficial for CI/CD pipelines. Most CI jobs only need the current snapshot to build and test the code.
+
+By configuring your CI runner to use shallow clones, you dramatically reduce pipeline execution time and bandwidth costs:
+
+```yaml
+# Example CI step
+- name: Checkout W0rkTree
+  run: wt ci checkout --depth 1 --affected-only
+```
+
+This ensures the runner downloads exactly what it needs for the current build phase—and nothing more.

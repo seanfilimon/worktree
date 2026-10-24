@@ -1,0 +1,96 @@
+---
+title: Branch Operations
+description: Create, list, switch, and merge branches using the SDK.
+---
+
+## Create a Branch
+
+```rust
+let tree = repo.tree("frontend").await?;
+let branch = tree.create_branch("feature/auth")
+    .from("main")
+    .await?;
+```
+
+## List Branches
+
+```rust
+let branches = tree.list_branches().await?;
+for branch in branches {
+    let marker = if branch.is_current() { "* " } else { "  " };
+    println!("{}{}", marker, branch.name());
+}
+```
+
+## Switch Branch
+
+```rust
+tree.switch_branch("feature/auth").await?;
+```
+
+## Merge
+
+```rust
+let result = tree.merge("feature/auth")
+    .into("main")
+    .squash(false)
+    .await?;
+
+match result {
+    MergeResult::Success(commit) => println!("Merged: {}", commit.id()),
+    MergeResult::Conflict(conflicts) => {
+        for c in conflicts {
+            println!("Conflict in: {}", c.path());
+        }
+    }
+}
+```
+
+## Delete a Branch
+
+```rust
+tree.delete_branch("feature/auth").force(false).await?;
+```
+
+## Branch Protection
+
+Configure protection rules for a branch to prevent direct pushes and require reviews:
+
+```rust
+tree.protect_branch("main")
+    .require_reviews(2)
+    .require_status_checks(vec!["ci/build", "ci/test"])
+    .allow_force_push(false)
+    .await?;
+```
+
+## Linked Branches
+
+Link branches of the same name across multiple trees to ensure they are merged atomically:
+
+```rust
+let link = repo.link_branch("feature/auth")
+    .trees(vec!["frontend", "backend"])
+    .await?;
+
+println!("Linked branch created: {}", link.id());
+```
+
+## Merge Requests
+
+Create and manage merge requests programmatically:
+
+```rust
+let mr = tree.create_merge_request("feature/auth")
+    .target("main")
+    .title("Add authentication flow")
+    .description("Implements OAuth2 login and session management.")
+    .assignees(vec!["@alice"])
+    .await?;
+
+println!("Created MR: {}", mr.id());
+
+// Approve and merge
+mr.approve().await?;
+mr.merge().squash(true).await?;
+```

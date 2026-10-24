@@ -1,0 +1,35 @@
+---
+title: Wire Format
+description: Binary serialization format for client-server communication.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+The W0rkTree wire format defines how data is serialized for transport between clients and servers. It uses a compact binary encoding optimized for streaming and incremental transfers.
+
+## Frame Format
+
+Every message is wrapped in a `SyncMessageEnvelope`:
+
+```
+┌──────────┬──────────────┬─────────┐
+│ Magic (4)│ Type         │ Payload │
+└──────────┴──────────────┴─────────┘
+```
+
+| Field | Size | Description |
+|---|---|---|
+| Magic | 4 bytes | `b"WT01"` |
+| Payload | Variable | Bincode serialized message data |
+
+## Serialization & Compression
+
+W0rkTree relies on **Bincode** for fast, compact binary serialization of all messages.
+
+Payloads are compressed using **zstd**, which provides an excellent balance between compression ratio and speed, making it ideal for streaming large snapshots and deltas over the network.
+
+<Callout type="info">
+The wire format is versioned independently. See [Protocol Versioning](/docs/protocol/versioning) for compatibility details.
+</Callout>

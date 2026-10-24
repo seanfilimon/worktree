@@ -1,0 +1,66 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node dependencies (will be installed fresh in container)
+node_modules/
+.pnpm-store/
+
+# Build outputs
+.next/
+.source/
+out/
+build/
+dist/
+
+# Testing & coverage
+coverage/
+.nyc_output/
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env*.local
+
+# IDE & editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Turbo cache
+.turbo/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Documentation & misc (not needed for web build)
+docs/
+video/
+tests/
+scripts/
+*.md
+!apps/web/content/**/*.md
+!apps/web/content/**/*.mdx
+
+# Crates not needed for web build
+crates/
+
+# Misc
+*.pem
+*.log
+.vercel/

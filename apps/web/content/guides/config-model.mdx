@@ -1,0 +1,96 @@
+---
+title: "Configuration Model"
+description: "Learn how to configure W0rkTree using the global .wt/ directory and tree-specific .wt-tree/ overrides."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree's configuration system is designed to balance centralized repository management with decentralized, team-level autonomy. It achieves this through a two-tiered configuration model: the global `.wt/` directory and the tree-specific `.wt-tree/` directory.
+
+By keeping configuration in version-controlled, human-readable files, your settings, ignore patterns, and access rules evolve alongside your code.
+
+## The Global `.wt/` Directory
+
+When you run `wt init`, W0rkTree creates a `.wt/` directory at the root of your repository. This directory serves as the control center for the entire workspace.
+
+It contains global settings that apply to all trees unless explicitly overridden:
+
+- **`.wt/config.toml`**: Global repository settings, worker defaults, and Git interop mappings.
+- **`.wt/ignore`**: Global ignore patterns (e.g., `node_modules/`, `target/`, `.env`).
+- **`.wt/access/`**: Global roles (`roles.toml`) and repository-wide access policies (`policies.toml`).
+
+### Example `.wt/config.toml`
+
+```toml
+[repository]
+name = "acme-corp-monorepo"
+default_branch = "main"
+
+[tracking]
+enabled = true
+debounce_ms = 500
+idle_timeout_ms = 2000
+
+[tracking.validation]
+max_file_size = "100MB"
+forbidden_patterns = ["\\.env$", "secret"]
+
+[git.ref-map]
+prefix = "refs/heads/"
+```
+
+## The Tree-Specific `.wt-tree/` Directory
+
+In a large organization, different teams have different needs. The frontend team might want different ignore patterns than the backend team, or the infrastructure team might need stricter auto-snapshot validation rules.
+
+W0rkTree solves this with the `.wt-tree/` directory. You can create a `.wt-tree/` directory at the root of any nested tree to define settings that apply exclusively to that tree.
+
+- **`.wt-tree/config.toml`**: Overrides for worker tracking, validation, or licensing.
+- **`.wt-tree/ignore`**: Tree-specific ignore patterns.
+- **`.wt-tree/access/`**: Fine-grained access policies and tenant grants for this specific tree.
+
+### Example `.wt-tree/config.toml`
+
+```toml
+# Inside frontend/.wt-tree/config.toml
+
+[license]
+spdx = "MIT"
+copyright = "Copyright (c) 2025 Acme Corp"
+
+[tracking.validation]
+# Override the global 100MB limit with a stricter 10MB limit for the frontend
+max_file_size = "10MB"
+```
+
+## The Ceiling Model and Inheritance
+
+When resolving configuration, W0rkTree uses a **ceiling model** with a strict inheritance path.
+
+If you are working inside the `frontend` tree and the background worker needs to know the `max_file_size` limit:
+1. It first checks `frontend/.wt-tree/config.toml`.
+2. If the setting exists, it uses it.
+3. If the setting does not exist, it falls back to the global `.wt/config.toml`.
+4. The `.wt/` directory acts as the "ceiling". W0rkTree stops looking there and will never scan outside your repository or into your user's home directory.
+
+This guarantees that a W0rkTree repository is fully self-contained and behaves identically on every developer's machine, regardless of their local environment variables or dotfiles.
+
+<Callout type="info">
+Unlike Git, which merges configuration from `/etc/gitconfig`, `~/.gitconfig`, and `.git/config`, W0rkTree configuration is strictly bound to the repository. This eliminates the "it works on my machine" problem caused by stray global configurations.
+</Callout>
+
+## Merging Ignore Patterns
+
+Ignore patterns are handled slightly differently than standard configuration values. Instead of `.wt-tree/ignore` overriding `.wt/ignore`, the rules are **merged**.
+
+When the background worker evaluates whether to create a staged snapshot for a file in the `frontend` tree, it ignores the file if it matches *either* the global `.wt/ignore` rules *or* the tree-specific `.wt-tree/ignore` rules.
+
+This allows repository administrators to globally ban files like `.DS_Store` or `.env`, while giving teams the freedom to ignore their own build artifacts.
+
+## Access Control Distribution
+
+The configuration model also underpins W0rkTree's declarative access system. 
+
+Because `.wt-tree/access/policies.toml` lives inside the tree it protects, any changes to a team's permissions are scoped to that team's history. Modifying a tree's access policy requires committing a staged snapshot and pushing it to the server. If the tree has branch protection enabled, the permission change will automatically require a peer review from the tree's owners.
+
+This ensures that access control is distributed, versioned, and deeply integrated into the development workflow.

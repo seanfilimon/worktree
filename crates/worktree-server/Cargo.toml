@@ -1,0 +1,21 @@
+[package]
+name = "worktree-server"
+version = "0.1.0"
+edition = "2021"
+description = "W0rkTree remote multi-tenant server (transitional Rust shell — slated for replacement by services/server-go/)"
+
+[[bin]]
+name = "worktree-server"
+path = "src/main.rs"
+
+[dependencies]
+worktree-protocol = { path = "../worktree-protocol" }
+worktree-git = { path = "../worktree-git" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }

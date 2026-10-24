@@ -1,0 +1,74 @@
+---
+title: Configuration
+description: Configure the W0rkTree server daemon, storage engine, and networking.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Configuration File
+
+The server reads configuration from `~/.worktree/server.toml` or the path specified by `--config`.
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 7433
+max_connections = 1000
+workers = 4
+
+[tenants]
+default_storage_quota_gb = 500
+allow_public_discovery = false
+
+[limits]
+rate_limit_rps = 1000
+max_concurrent_streams = 100
+
+[staged]
+retention_days = 14
+max_size_mb = 500
+
+[audit]
+enabled = true
+log_dir = "/var/log/worktree/audit"
+retention_days = 90
+
+[storage]
+data_dir = "/var/lib/worktree"
+cache_size_mb = 512
+compression = "zstd"
+
+[tracking]
+enabled = true
+debounce_ms = 200
+auto_snapshot = true
+ignore_patterns = ["*.tmp", "node_modules/**", "target/**"]
+
+[tracking.validation]
+max_file_size = "50MB"
+forbidden_patterns = ["\\.env$", "secret"]
+
+[git]
+enabled = true
+auto_fetch = true
+fetch_interval = 300
+
+[logging]
+level = "info"
+format = "json"
+file = "/var/log/worktree/server.log"
+```
+
+## Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `WT_SERVER_HOST` | Bind address | `127.0.0.1` |
+| `WT_SERVER_PORT` | Listen port | `7433` |
+| `WT_DATA_DIR` | Data directory | `~/.worktree/data` |
+| `WT_LOG` | Log level | `info` |
+| `WT_CACHE_SIZE` | Cache size in MB | `512` |
+
+<Callout type="info">
+Environment variables take precedence over config file values.
+</Callout>

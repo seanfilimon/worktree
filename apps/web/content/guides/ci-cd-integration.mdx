@@ -1,0 +1,114 @@
+---
+title: "CI/CD Integration"
+description: "Configure your CI/CD pipelines to leverage W0rkTree's dependency graph for intelligent build ordering."
+---
+
+Integrating W0rkTree into your CI/CD pipelines unlocks intelligent build ordering, parallel execution, and precise change detection. Instead of rebuilding everything on every push, your pipelines can query the dependency graph to determine exactly which trees changed and what needs to be rebuilt.
+
+## GitHub Actions Setup
+
+Create a workflow file at `.github/workflows/worktree-ci.yml` in your repository. The W0rkTree CLI is available as a GitHub Action that installs the binary and authenticates with your server.
+
+```yaml
+name: W0rkTree CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: worktree-dev/setup-wt@v1
+        with:
+          version: latest
+      - name: Detect affected trees
+        id: affected
+        run: |
+          wt ci affected --format=json > affected.json
+          echo "trees=$(cat affected.json)" >> $GITHUB_OUTPUT
+      - name: Build affected trees
+        run: wt ci build --affected-only
+```
+
+The `wt ci affected` command inspects the commit range for the current push or pull request and returns the list of trees with changes. Downstream trees that depend on changed trees are automatically included.
+
+## GitLab CI Configuration
+
+For GitLab CI, add a `.gitlab-ci.yml` that uses the W0rkTree Docker image as the base. The approach is similar — detect affected trees first, then build only what changed.
+
+```yaml
+stages:
+  - detect
+  - build
+  - test
+
+detect-changes:
+  stage: detect
+  image: ghcr.io/worktree-dev/wt:latest
+  script:
+    - wt ci affected --format=shell > affected.env
+  artifacts:
+    reports:
+      dotenv: affected.env
+
+build-trees:
+  stage: build
+  image: ghcr.io/worktree-dev/wt:latest
+  script:
+    - wt ci build --trees "$AFFECTED_TREES"
+  needs: [detect-changes]
+```
+
+## Build Ordering from the Dependency Graph
+
+W0rkTree's dependency graph determines the correct build order automatically. When you run `wt ci build`, the CLI performs a topological sort of the affected trees and their dependencies, ensuring that upstream trees are always built before their consumers.
+
+You can inspect the computed build order at any time:
+
+```bash
+wt ci plan --affected-only
+```
+
+This outputs a step-by-step execution plan showing which trees build in which phase and why. Use the `--verbose` flag to see the dependency edges that informed the ordering.
+
+## Parallel Builds
+
+Trees that share no dependency relationship can be built in parallel. W0rkTree exposes this parallelism through build phases. Each phase contains a set of independent trees that can safely run concurrently.
+
+```bash
+wt ci plan --parallel
+```
+
+The output groups trees into numbered phases. Phase 1 trees have no pending upstream builds, phase 2 trees depend only on phase 1, and so on. Map each phase to a parallel job group in your CI system for maximum throughput.
+
+To limit concurrency, pass the `--max-parallel` flag:
+
+```bash
+wt ci build --affected-only --max-parallel=4
+```
+
+## Status Checks and Merge Request Gates
+
+W0rkTree can report per-tree build status back to the server, acting as a CI gate for native merge requests. Enable status checks so that merge requests display a clear pass/fail indicator for every affected tree.
+
+```bash
+wt ci report --status=success --tree=frontend
+wt ci report --status=failure --tree=api --details="Test suite failed"
+```
+
+Combine this with branch protection rules to require that all affected trees pass before a merge is allowed. In your `.wt/protection.toml` configuration, define which CI gates must pass for the target branch:
+
+```toml
+[branch."main"]
+requires_linear_history = true
+
+[branch."main".merge_requests]
+approvals_required = 2
+require_all_ci_gates_pass = true
+required_ci_gates = ["build", "test", "lint"]
+```
+
+When a tree fails its CI gates, the W0rkTree server automatically blocks the merge request until all required checks are green. This interaction between CI reporting and branch protection ensures that cross-tree changes never land in a broken state.

@@ -1,0 +1,57 @@
+---
+title: Monitoring
+description: Monitor the W0rkTree server with metrics, health checks, and logging.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Health Endpoint
+
+The server exposes a health check endpoint:
+
+```bash
+curl http://localhost:7433/health
+```
+
+```json
+{
+  "status": "healthy",
+  "uptime": "4h 22m",
+  "version": "0.1.0-alpha"
+}
+```
+
+## Metrics
+
+Prometheus-compatible metrics are available at `/metrics`:
+
+- `wt_server_connections_active` — current active connections
+- `wt_server_requests_total` — total requests processed
+- `wt_server_request_duration_seconds` — request latency histogram
+- `wt_storage_objects_total` — total objects in store
+- `wt_storage_bytes_used` — disk space used
+
+## Logging
+
+Configure log level via environment variable or config:
+
+```bash
+WT_LOG=debug wt server start
+```
+
+Log levels: `trace`, `debug`, `info`, `warn`, `error`
+
+## Audit Logging
+
+In addition to standard application logging, the W0rkTree Server maintains structured audit logs for security, compliance, and multi-tenant administration. Every significant action—authentication attempts, IAM policy updates, tenant lifecycles, and access denials—is recorded immutably.
+
+Configure audit logging in your `server.toml`:
+
+```toml
+[audit]
+enabled = true
+log_dir = "/var/log/worktree/audit"
+retention_days = 90
+```
+
+Audit logs are written in JSON Lines (`.jsonl`) format, allowing them to be easily ingested into external SIEM tools (e.g., Splunk, Datadog, ELK). Each event includes the exact timestamp, the principal's identity, the target resource, the evaluated IAM policies, and the operation's outcome.

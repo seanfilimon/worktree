@@ -1,0 +1,48 @@
+---
+title: Configuration
+description: Configure the W0rkTree Admin Panel — authentication, endpoints, and security.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Configuration File
+
+The Admin Panel reads from `~/.worktree/admin.toml`:
+
+```toml
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[worktree]
+server_endpoint = "/tmp/worktree.sock"
+
+[security]
+auth_enabled = true
+api_key = "your-secret-key"
+cors_origins = ["https://admin.example.com"]
+
+[logging]
+level = "info"
+format = "json"
+```
+
+## Security
+
+<Callout type="warn">
+Always enable authentication in production. The default configuration has authentication disabled for local development.
+</Callout>
+
+### API Key Authentication
+
+Set the API key in the config file or via environment variable:
+
+```bash
+WT_ADMIN_API_KEY=your-secret-key worktree-admin
+```
+
+All API requests must include the key in the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/api/status
+```

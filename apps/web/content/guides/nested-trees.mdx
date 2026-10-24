@@ -1,0 +1,109 @@
+---
+title: "Working with Nested Trees"
+description: "Learn how to create, navigate, and manage nested trees in W0rkTree for team isolation and modular architecture."
+---
+
+Trees are the fundamental building block of W0rkTree's organizational model. By nesting trees, you can mirror your team structure, enforce isolation boundaries, and give each group an independent workspace within a shared repository. This guide walks you through creating, navigating, and managing nested trees.
+
+## Creating a Tree
+
+To create a new top-level tree, use the `wt tree create` command from anywhere inside your repository:
+
+```bash
+wt tree create platform
+```
+
+You can nest trees by specifying a path-style name. For example, to create sub-trees under `platform`:
+
+```bash
+wt tree create platform/api
+wt tree create platform/auth
+wt tree create platform/billing
+```
+
+Each of these sub-trees is fully isolated — it has its own branches, commit history, and permissions. The parent `platform` tree acts as a logical grouping and can define shared configuration that child trees inherit.
+
+## Tree Configuration (`.wt-tree/`)
+
+Every tree can maintain its own configuration directory named `.wt-tree/` at its root. This directory contains tree-specific settings that override or extend the global `.wt/` configuration at the repository root.
+
+- **`.wt-tree/config.toml`**: Overrides for auto-tracking, auto-snapshot triggers, and Git interop settings.
+- **`.wt-tree/ignore`**: Ignore patterns specific to this tree's language or framework.
+- **`.wt-tree/access/`**: Declarative access control policies for this tree.
+
+When resolving configuration, W0rkTree uses a ceiling model: it starts at the current tree's `.wt-tree/` and falls back to the repository's global `.wt/` directory.
+
+## Navigating Between Trees
+
+Switch your working context to a different tree with `wt tree switch`:
+
+```bash
+wt tree switch platform/api
+```
+
+To see which tree you are currently in, run:
+
+```bash
+wt tree current
+```
+
+You can also list all trees in the repository to get a bird's-eye view of the hierarchy:
+
+```bash
+wt tree list --tree
+```
+
+This prints a nested view showing parent-child relationships, owners, and active branch counts for each tree.
+
+## Tree Ownership and Access
+
+Every tree has one or more designated owners. Owners control who can commit, create branches, and modify permissions within that tree. Set ownership at creation time or update it later:
+
+```bash
+wt tree set-owner platform/api --add alice@example.com
+wt tree set-owner platform/api --remove bob@example.com
+```
+
+Ownership is scoped — owning `platform` does not automatically grant ownership of `platform/api`. This keeps permissions explicit and auditable.
+
+Beyond simple ownership, you can define fine-grained access policies in the `.wt-tree/access/` directory. These policies dictate which teams or users can read, write, or merge into specific branches within the tree, ensuring strict access boundaries between teams.
+
+## Independent Branches per Tree
+
+Each tree maintains its own branch namespace. A branch called `main` in `platform/api` is completely independent from `main` in `platform/auth`. Create and switch branches within the context of the current tree:
+
+```bash
+wt tree switch platform/api
+wt branch create feature/rate-limiting
+wt branch switch feature/rate-limiting
+```
+
+This isolation means teams can branch, merge, and release on their own cadence without coordinating with other trees.
+
+## Tree Licensing
+
+In a large repository, different trees might be subject to different licensing requirements. W0rkTree allows you to attach specific SPDX licenses to individual trees.
+
+```bash
+wt tree license set platform/api --spdx MIT
+wt tree license set platform/billing --spdx Proprietary
+```
+
+When you export a tree or declare cross-tree dependencies, W0rkTree's license compliance engine verifies that the licenses are compatible and ensures that correct attribution is included in the exported artifacts.
+
+## Moving Files Between Trees
+
+Sometimes code needs to migrate from one tree to another. W0rkTree provides a dedicated command that preserves history metadata during the move:
+
+```bash
+wt tree move platform/api/src/shared/utils.rs platform/shared/src/utils.rs
+```
+
+This creates a commit in both the source and destination trees — a deletion in the source and an addition in the destination — while recording a provenance link so you can trace where the file originated. If the destination tree declares a dependency on the source, W0rkTree will automatically update import references where possible.
+
+## Best Practices
+
+- **Mirror your org chart.** Create one top-level tree per team or domain, then nest sub-trees for services or packages within it.
+- **Keep trees focused.** A tree should represent a single deployable unit or library. If a tree grows too large, split it.
+- **Set ownership early.** Assigning owners at creation time prevents permission ambiguity as the team scales.
+- **Use `wt tree list --tree` regularly.** Reviewing the full hierarchy helps catch orphaned or misplaced trees before they become a problem.

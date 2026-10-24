@@ -1,0 +1,83 @@
+---
+title: Declarative Access Control
+description: Manage W0rkTree permissions and access policies using declarative configuration files.
+---
+
+# Declarative Access Control
+
+W0rkTree supports **Declarative Access Control**, allowing you to define Roles, Permissions, and Access Policies directly within your repository using human-readable configuration files. By treating access control as code, your permission model is versioned, auditable, and seamlessly distributed alongside your source code.
+
+## The `.wt-access.toml` File
+
+Declarative access rules are defined in a `.wt-access.toml` file at the root of a tree (or nested tree). When the W0rkTree Server syncs this file, it automatically evaluates and enforces the policies contained within it.
+
+Here is an example of a typical `.wt-access.toml` file:
+
+```toml
+[tree]
+default_visibility = "private"
+
+[roles.developer]
+description = "Standard developer access"
+permissions = [
+  "repo.read",
+  "repo.write",
+  "branch.create",
+  "branch.push"
+]
+
+[roles.maintainer]
+description = "Repository maintainers"
+permissions = [
+  "repo.admin",
+  "branch.protect",
+  "merge_request.approve"
+]
+
+[[policies]]
+resource = "tree:/"
+role = "maintainer"
+subjects = ["team:core-maintainers"]
+
+[[policies]]
+resource = "tree:/src/"
+role = "developer"
+subjects = ["team:frontend", "team:backend"]
+```
+
+## Attribute-Based Access Control (ABAC)
+
+In addition to traditional Role-Based Access Control (RBAC), W0rkTree's declarative configuration supports **ABAC (Attribute-Based Access Control)**. You can define conditional rules based on user attributes, environment states, or specific file metadata.
+
+```toml
+[[policies]]
+resource = "tree:/confidential/"
+role = "viewer"
+subjects = ["team:contractors"]
+
+  [policies.conditions]
+  time_of_day = "09:00-17:00"
+  ip_range = "192.168.1.0/24"
+```
+
+## How It Works
+
+1. **Authoring:** You modify the `.wt-access.toml` file in your local working directory, just like any other source file.
+2. **Commit & Sync:** Once the changes are committed and pushed to the W0rkTree Server via the Sync Protocol, the server parses the new access rules.
+3. **Evaluation:** The Server's IAM Enforcement engine applies the changes atomically. Any subsequent operations on the tree will be evaluated against the newly defined policies.
+4. **Conflict Resolution:** If conflicting rules are found between parent and child trees, W0rkTree uses a strict **least-privilege** fallback combined with explicit overrides.
+
+## Scopes and Inheritance
+
+Access policies can cascade down through nested trees. When a parent tree defines an access policy, it automatically propagates to child trees unless explicitly overridden by a `.wt-access.toml` in the child tree.
+
+To prevent a child tree from inheriting parent permissions, you can use the `isolate` flag:
+
+```toml
+[tree]
+isolate_access = true
+```
+
+## Audit and Compliance
+
+Because permissions are stored as code, every change to your access policies is tracked in the tree's cryptographic history. This makes W0rkTree ideal for highly regulated environments, as it provides a permanent, immutable audit trail of who granted what permissions, to whom, and exactly when.

@@ -1,0 +1,64 @@
+---
+title: License Compliance
+description: Commands for showing and auditing license compliance across your project dependencies.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree includes built-in license compliance tools to ensure your project's dependencies meet your organization's legal policies. Policies can be defined globally, per-tenant, or per-tree using a `license.toml` file (e.g., `.wt-tree/license.toml`).
+
+## wt license show
+
+Display a summary of all licenses detected in the current tree or project dependencies.
+
+```bash
+wt license show [--tree <name>] [--format <table|json>]
+```
+
+| Option | Description |
+|---|---|
+| `--tree <name>` | Show licenses for a specific tree |
+| `--format` | Output format (default: `table`) |
+
+**Example:**
+
+```bash
+$ wt license show
+LICENSE       COUNT   PACKAGES
+MIT           142     react, lodash, ...
+Apache-2.0    45      aws-sdk, ...
+GPL-3.0       1       legacy-util
+UNKNOWN       2       internal-tool-a, ...
+```
+
+## wt license audit
+
+Audit the project against the configured license policy to find compliance violations.
+
+```bash
+wt license audit [--tree <name>] [--strict]
+```
+
+| Option | Description |
+|---|---|
+| `--strict` | Fail the command (non-zero exit code) on any warning or unknown license |
+
+**Example:**
+
+```bash
+$ wt license audit
+Auditing licenses against .wt-tree/license.toml...
+
+❌ VIOLATION: 'legacy-util' uses forbidden license 'GPL-3.0'
+⚠️ WARNING: 'internal-tool-a' has unknown or missing license metadata
+
+Audit failed: 1 violation, 1 warning.
+```
+
+<Callout type="info">
+When `enforce_on_push = true` is set in your `license.toml`, W0rkTree will automatically run a background audit before pushing to the remote. If violations are found, the push will be blocked.
+</Callout>
+
+<Callout type="warn">
+The `wt git export --enforce-licenses` command relies on the same policy mechanism to prevent non-compliant code from being exported to external Git repositories.
+</Callout>

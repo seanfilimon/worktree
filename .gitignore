@@ -1,0 +1,55 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+*.swp
+*.swo
+
+# Node / npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Next.js
+.next/
+out/
+build/
+
+# Fumadocs generated
+.source/
+
+# Turbo
+.turbo/
+
+# Environment
+.env
+.env*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing / Coverage
+coverage/
+
+# Misc
+*.pem
+*.log
+
+# Video production assets (large files)
+/video/
+
+# TypeScript build info
+*.tsbuildinfo
+next-env.d.ts
+
+# Vercel
+.vercel

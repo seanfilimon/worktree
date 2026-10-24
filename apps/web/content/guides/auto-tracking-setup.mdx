@@ -1,0 +1,101 @@
+---
+title: "Setting Up Auto Tracking"
+description: "Configure W0rkTree's background worker to automatically track and commit your changes."
+---
+
+W0rkTree's auto-tracking system runs as a lightweight background worker that watches your working directory and automatically snapshots every change. This means you never lose work — every save is captured without you running a single command.
+
+## Starting the Worker
+
+Enable auto-tracking for your current tree with a single command:
+
+```bash
+wt worker start
+```
+
+The worker launches in the background and immediately begins monitoring your working directory. You can verify it's running with:
+
+```bash
+wt worker status
+```
+
+To stop the worker at any time, run:
+
+```bash
+wt worker stop
+```
+
+The worker uses platform-native filesystem watchers — FSEvents on macOS, inotify on Linux, and ReadDirectoryChanges on Windows — so resource usage stays minimal even on large repositories.
+
+## Configuring Auto-Snapshot Triggers
+
+When you save a file rapidly (for example, during a refactor across multiple files), the worker batches those changes together instead of creating a snapshot for every individual write. The trigger configuration controls how the worker determines when to commit an auto-snapshot.
+
+Edit your `.wt/config.toml` (or `.wt-tree/config.toml` for a specific tree) to adjust the triggers:
+
+```toml
+[tracking]
+enabled = true
+debounce_ms = 500
+idle_timeout_ms = 2000
+```
+
+The default debounce is 200 milliseconds. Increase it if you find too many micro-snapshots cluttering your history, or decrease it if you want near-instant capture. The `idle_timeout_ms` ensures that if you make a change and then stop typing, the snapshot is created after that idle period.
+
+## Setting Up Ignore Patterns
+
+Not every file belongs in version control. Configure ignore patterns to exclude build artifacts, temporary files, and dependency directories from auto-tracking:
+
+```toml
+[tracking]
+ignore_patterns = [
+  "*.tmp",
+  "*.swp",
+  "node_modules/**",
+  "target/**",
+  ".env",
+  "dist/**",
+]
+```
+
+These patterns follow standard glob syntax and are applied in addition to any rules defined in your `.wtignore` file at the repository root.
+
+## Snapshot Rules and Validation
+
+You can enforce rules on what gets snapshotted to prevent accidentally committing secrets or oversized files:
+
+```toml
+[tracking.validation]
+max_file_size = "10MB"
+forbidden_patterns = ["\\.env$", "secret", "password"]
+```
+
+When a file matches a forbidden pattern or exceeds the size limit, the worker skips it and logs a warning. Check the worker log at any time with:
+
+```bash
+wt worker log
+```
+
+## Auto-Branch Rules
+
+Auto-tracking can automatically create new branches based on directory or file patterns. This is useful when you want feature work isolated without remembering to branch manually:
+
+```toml
+[tracking.auto_branch]
+enabled = true
+pattern = "features/*"
+prefix = "auto/"
+```
+
+With this configuration, any changes made inside a `features/` directory automatically land on a branch named `auto/<directory-name>`, keeping your main branch clean.
+
+## Reviewing and Squashing Snapshots
+
+Auto-tracking generates many small snapshots over time. Before sharing your work, you'll typically want to squash them into meaningful commits:
+
+```bash
+wt log --snapshots
+wt squash --last 15 -m "Implement search component"
+```
+
+The `squash` command combines the specified snapshots into a single commit with your message, giving you a clean history to push upstream while preserving the full snapshot trail locally for recovery purposes.

@@ -1,0 +1,83 @@
+---
+title: Git Compatibility
+description: Commands for importing, exporting, and syncing with Git repositories.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## wt init --from-git
+
+Initialize a new W0rkTree repository directly from an existing Git repository or remote URL.
+
+```bash
+wt init --from-git <git-url-or-path> [--shallow]
+```
+
+This command sets up a new W0rkTree and automatically imports the Git history. Using `--shallow` will only import the latest state without the full commit history.
+
+## wt git import
+
+Import a Git repository into W0rkTree.
+
+```bash
+wt git import <git-repo-path> [--tree <name>] [--branch <pattern>]
+```
+
+**Example:**
+
+```bash
+$ wt git import ../legacy-repo --tree migrated
+✓ Importing Git repository...
+  Converted 1,247 commits across 8 branches
+✓ Import complete
+```
+
+<Callout type="info">
+The import preserves full commit history, authorship, timestamps, and tags. Git LFS files are handled automatically.
+</Callout>
+
+## wt git export
+
+Export a W0rkTree tree as a Git repository.
+
+```bash
+wt git export <tree> <output-path> [--branch <name>] [--enforce-licenses]
+```
+
+<Callout type="info">
+When exporting to Git, W0rkTree can verify license compliance and prevent export of non-compliant dependencies using the `--enforce-licenses` flag.
+</Callout>
+
+## wt git push
+
+Push changes to a linked Git remote.
+
+```bash
+wt git push [<remote>] [<branch>] [--force] [--tree <name>]
+```
+
+<Callout type="warn">
+Using `--force` will overwrite remote history. Use with extreme caution.
+</Callout>
+
+## wt git pull
+
+Pull changes from a Git remote.
+
+```bash
+wt git pull [<remote>] [<branch>] [--rebase] [--tree <name>]
+```
+
+## Live Mirror Mode
+
+W0rkTree can act as a continuous two-way mirror with a Git remote.
+
+```bash
+wt git mirror start <remote-url>
+wt git mirror stop
+wt git mirror status
+```
+
+<Callout type="info">
+Live Mirror Mode runs continuously in the background worker process, automatically translating W0rkTree snapshots to Git commits and vice versa. This is ideal for gradual migrations or collaborating with teams that still require Git access.
+</Callout>

@@ -1,0 +1,74 @@
+---
+title: "Why Not Git?"
+description: "An honest look at why Git's architecture is showing its age, and what a modern version control system should look like."
+author: "Sean Filimon"
+date: "2025-03-01"
+tags: ["opinion", "architecture"]
+summary: "Git revolutionized version control, but its flat repo model, lack of team isolation, manual staging, and missing security primitives create real friction for modern teams. Here's an honest look at Git's design flaws, and what W0rkTree does differently."
+---
+
+## Git Changed Everything — In 2005
+
+Let's be clear: Git is one of the most important tools ever built for software development. Linus Torvalds designed it to solve a specific problem — managing the Linux kernel's distributed development — and it succeeded spectacularly. But that was twenty years ago. The way we build software has fundamentally changed, and Git's core assumptions haven't kept up.
+
+Modern teams work in monorepos with hundreds of interconnected services. They need fine-grained permissions, cross-project dependency awareness, and workflows that don't require memorizing dozens of commands. Git was never designed for any of this.
+
+## The UX and Conceptual Minefield
+
+Git is often called "the Perl of VCS." There are too many ways to do the same thing, the jargon (refspecs, HEAD, index, stash) is dense, and commands are wildly inconsistent (`git checkout` historically did five different things). Error messages like `src refspec does not match any` are notoriously unhelpful.
+
+Furthermore, Git creates a sharp divide between local and remote state. "I committed but can't see my changes" is a daily complaint because users must manually push and pull to sync. 
+
+W0rkTree introduces a **continuous sync background process (worker)**. Your local tree converges with the server continuously. There's one clear way to do each operation, plain terminology (tree, snapshot, branch, sync), and human-readable error messages.
+
+## The Flat Repository Problem
+
+Git sees your repository as a single flat namespace. Every file, every directory, every team's work lives in one undifferentiated blob. This creates real problems at scale:
+
+- **No isolation between teams.** When the frontend team switches branches, every file in the repo is affected — including the backend, infrastructure, and shared libraries that haven't changed. Branch switching is an all-or-nothing operation.
+- **Submodules are a band-aid.** Git submodules attempt to solve this with linked repositories, but they introduce version pinning headaches, broken workflows for contributors, and a notoriously painful developer experience. Ask anyone who's run `git submodule update --init --recursive` after a rebase gone wrong.
+- **No native multi-project support.** Tools like Nx, Turborepo, and Lerna exist precisely because Git doesn't understand project boundaries. These tools paper over Git's limitations but add their own complexity.
+
+W0rkTree replaces the flat model with **nested trees** — hierarchical workspaces where each team or project gets its own isolated tree with independent branches, history, and permissions, all within a single repository.
+
+## Manual Staging Is Busywork
+
+Git's staging area (the index) was a clever design choice for patch-based kernel development. For modern application development, it's pure friction. Developers run `git add`, `git commit`, and `git push` hundreds of times a day, and forgetting to stage a file before committing is one of the most common mistakes in all of software development.
+
+W0rkTree completely eliminates the staging area. Our **automatic tracking worker** watches your filesystem in real time. Changes are captured as you work — no staging, no forgetting files. You get continuous, lossless history without thinking about it, and our **staged snapshot visibility** means your work-in-progress is continuously synced but kept isolated until you're ready to share it.
+
+## Destructive Mistakes and History Rewriting
+
+Git gives developers too much rope. It's trivially easy to permanently delete work with `git reset --hard`, wipe out a colleague's contributions with an accidental `--force` push, or create an unrecoverable mess through complex rebasing. 
+
+W0rkTree history is **append-only and immutable**. We don't support history rewriting or rebasing. If you make a mistake, you revert it, leaving a clear audit trail. Force pushing is impossible by design, and divergence is handled gracefully by our merge engine. W0rkTree also includes built-in secret scanning enabled by default, preventing API keys and passwords from ever making it into a shared snapshot.
+
+## Dependency Blindness
+
+Git has no concept of how your projects relate to each other. Change a shared library's API, and Git won't tell you which downstream services are affected. Merge a breaking change, and you won't know until CI fails — or worse, until production breaks.
+
+W0rkTree builds a **dependency graph** directly into the version control layer. Declare relationships between trees, and W0rkTree will surface affected downstream projects when you make changes, auto-generate TODO items for impacted teams, and enforce build ordering in CI/CD pipelines.
+
+## The Multi-Tenancy and Permissions Gap
+
+Git has no concept of identity, roles, or multi-tenancy. Its permission model is binary: you either have access to a repository or you don't. For organizations that need to restrict access to specific directories or environments, the options are limited to third-party hosting features (like GitHub/GitLab) or splitting code across multiple repositories.
+
+W0rkTree is built for **multi-tenancy**. We provide a hierarchical Declarative Access Control model from the tenant level down to individual paths. Using `.wt/config.toml`, access is explicit and policy-driven. Teams see only what they need, branch protection rules are enforced at the core engine level, and every single access is cryptographically auditable.
+
+## The Protocol and Security Gap
+
+Git's native `git://` protocol has zero authentication and zero encryption. It runs on port 9418, which is routinely blocked by corporate firewalls. To secure Git, the industry bolted on SSH and HTTPS, each with their own tradeoffs and configuration nightmares.
+
+W0rkTree uses a modern, secure-by-default transport layer powered by **QUIC and TLS 1.3** over standard port 443. It is encrypted, multiplexed, and authenticated at the protocol level. There is no anonymous mode, and security isn't an afterthought.
+
+## The License Enforcement Gap
+
+Open-source and enterprise compliance is harder than ever. Git doesn't know or care about software licenses. If a developer copies GPL-licensed code into a proprietary codebase, Git tracks the bytes but remains completely blind to the legal implications until a compliance audit catches it months later.
+
+W0rkTree implements **protocol-level license compliance**. You can declare licenses for specific paths or entire trees. The engine actively enforces compatibility, preventing developers from merging restrictive licenses into incompatible workspaces, and automating attribution requirements.
+
+## What W0rkTree Does Differently
+
+This isn't about replacing Git for the sake of it. It's about recognizing that the problems modern teams face — monorepo coordination, team isolation, continuous delivery, dependency management — deserve first-class solutions in the version control layer itself, not bolted-on tooling.
+
+W0rkTree keeps what Git got right (content-addressable storage, distributed architecture, branching as a core primitive) and rebuilds the rest for how teams actually work today. If you're spending more time fighting your version control system than using it, that's not a skill issue — it's a tooling issue.

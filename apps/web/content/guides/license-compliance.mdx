@@ -1,0 +1,90 @@
+---
+title: "License Compliance"
+description: "Manage SPDX licenses, handle cross-tree compliance, and generate attribution automatically in W0rkTree."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree treats open-source licensing and corporate compliance as first-class citizens. By integrating license metadata directly into the tree structure and dependency graph, W0rkTree automates compliance checks, prevents accidental licensing violations, and generates attribution reports with zero manual overhead.
+
+## SPDX License Assignment
+
+Every tree in a W0rkTree repository can be assigned a specific license using standard [SPDX license identifiers](https://spdx.org/licenses/). Because trees are fully isolated, you can safely mix open-source and proprietary code within the same repository.
+
+To assign a license to a tree, use the CLI:
+
+```bash
+wt tree license set frontend --spdx MIT
+wt tree license set backend/billing --spdx Proprietary
+```
+
+This command updates the `.wt-tree/config.toml` file at the root of the tree:
+
+```toml
+[license]
+spdx = "MIT"
+copyright = "Copyright (c) 2025 Acme Corp"
+```
+
+Once assigned, W0rkTree enforces compliance rules whenever code moves into or out of the tree.
+
+## License Compatibility & Grants
+
+When you declare a dependency between two trees, W0rkTree evaluates their SPDX licenses for compatibility. If a tree with an Apache-2.0 license tries to depend on a tree with a GPL-3.0 license, W0rkTree flags the potential copyleft violation before the dependency is established.
+
+```bash
+wt tree depend platform-api --on shared-gpl-lib
+# Error: License incompatibility detected.
+# Tree 'platform-api' (Apache-2.0) cannot safely depend on 'shared-gpl-lib' (GPL-3.0)
+# without inheriting copyleft restrictions.
+```
+
+### Exception Grants
+
+In enterprise environments, legal teams often grant specific exceptions for internal usage. You can override the compatibility check by creating a **License Grant** in your `.wt/access/policies.toml`:
+
+```toml
+[[license_grants]]
+from_tree = "shared-gpl-lib"
+to_tree = "platform-api"
+approved_by = "legal-team@example.com"
+reason = "Internal microservice boundary; copyleft does not trigger."
+```
+
+With the grant in place, the dependency command will succeed while leaving a clear audit trail of the legal exception.
+
+## Export Handling and Attribution
+
+When you export a W0rkTree tree to a standard Git repository (for example, to publish an open-source library to GitHub), W0rkTree automatically ensures the exported repository is fully compliant.
+
+```bash
+wt git export --tree frontend --output ./frontend-git
+```
+
+During the export process, W0rkTree performs several automated steps:
+
+1. **License Injection:** It ensures the canonical `LICENSE` file matching the SPDX identifier is present in the root directory.
+2. **Author Attribution:** It scans all commits and generates an `AUTHORS` or `CONTRIBUTORS` file based on the staged snapshots pushed to the tree.
+3. **Third-Party Notices:** If the exported tree depends on other internally tracked open-source trees, W0rkTree compiles their licenses into a `THIRDPARTY_NOTICES.txt` file.
+
+<Callout type="info">
+By automating attribution on export, your engineers never have to worry about manually tracking third-party licenses before a release. The `wt git export` command guarantees the resulting Git repository is legally sound.
+</Callout>
+
+## Auditing Compliance
+
+Legal and security teams can run repository-wide audits to verify that all trees have assigned licenses and that no incompatible dependencies exist.
+
+Run the audit command to generate a full compliance report:
+
+```bash
+wt license audit
+```
+
+For automated CI/CD pipelines, output the report as JSON:
+
+```bash
+wt license audit --format json > compliance-report.json
+```
+
+If the audit detects missing licenses or unapproved dependencies, it exits with a non-zero status code, allowing you to block merges or flag issues during the review process.

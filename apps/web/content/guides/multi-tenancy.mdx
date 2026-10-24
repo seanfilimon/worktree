@@ -1,0 +1,100 @@
+---
+title: "Multi-Tenancy & IAM"
+description: "Manage isolated environments for your teams using W0rkTree's multi-tenant architecture."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree's multi-tenant architecture allows you to host multiple isolated organizations, business units, or partner teams on a single W0rkTree server. Unlike traditional version control systems where everyone shares a single global namespace, W0rkTree provides strict physical isolation at the storage layer between tenants.
+
+## Understanding Tenants
+
+A **Tenant** in W0rkTree is the highest-level isolation boundary. Every tree belongs to exactly one tenant. 
+
+Data belonging to one tenant is cryptographically and physically separated from data in another tenant. A user in "Tenant A" cannot even query the existence of trees, staged snapshots, or branches in "Tenant B" unless an explicit cross-tenant grant has been created.
+
+### Tenant Types
+
+W0rkTree supports different tenant types to match your organization's compliance and operational requirements:
+
+- **Standard Tenants**: Logical isolation within a shared database and object store. Ideal for internal departments (e.g., `engineering`, `marketing`) that need separation of concerns but share the same infrastructure.
+- **Strict Tenants**: Dedicated storage buckets and isolated database schemas. Ideal for strict compliance requirements, subsidiaries, or external vendor collaboration.
+- **Sandbox Tenants**: Ephemeral environments with strict rate limits and quotas, perfect for automated testing or temporary contractor access.
+
+## Organization Setup
+
+When designing your W0rkTree architecture, we recommend mapping your tenants to your company's high-level billing or compliance boundaries, and using **Trees** for team-level organization.
+
+**Recommended Setup:**
+1. Create a `core-engineering` tenant for all internal product development.
+2. Inside `core-engineering`, use nested trees (`platform/api`, `frontend/web`) for individual teams.
+3. Create a separate `vendor-collaboration` tenant for outsourced work.
+
+## Creating and Managing Tenants
+
+Server administrators can provision new tenants using the W0rkTree CLI:
+
+```bash
+wt tenant create vendor-collaboration --type strict --admin alice@example.com
+```
+
+This provisions the isolated storage environment and assigns the initial tenant administrator. 
+
+To view the tenants you have access to:
+
+```bash
+wt tenant list
+```
+
+<Callout type="info">
+When interacting with the server, your CLI context is bound to a specific tenant. You can switch your active CLI context using `wt tenant switch <tenant-name>`.
+</Callout>
+
+## Visibility Modes
+
+Each tenant enforces a default **Visibility Mode** that determines how trees within that tenant are exposed to users who have authenticated with the server but are not explicitly part of the tenant's IAM roles.
+
+- **Private (Default)**: Trees are invisible. Users must be explicitly granted access via `.wt-tree/access/policies.toml` to see that a tree exists or to pull pushed commits.
+- **Internal**: Trees are discoverable by any authenticated user within the broader organization, allowing them to browse code and request access, but read/write permissions still require explicit roles.
+- **Public**: Trees are readable by anyone, including unauthenticated users (if the server allows public access).
+
+Note that **staged snapshots** remain entirely private to your local machine's background worker until explicitly pushed, regardless of the tenant's visibility mode.
+
+## Cross-Tenant Access
+
+In large enterprises, teams in different isolated tenants often need to share code. W0rkTree facilitates this through **Tenant Grants**, allowing secure, read-only code sharing without breaking isolation boundaries.
+
+If the `core-engineering` tenant wants to expose a `shared-ui` tree to the `vendor-collaboration` tenant, an administrator adds a grant to the `shared-ui` tree's declarative access policy (`.wt-tree/access/policies.toml`):
+
+```toml
+[[grants]]
+tenant_id = "vendor-collaboration"
+access = "read"
+reason = "Allow vendors to build against our standard UI components"
+```
+
+Once this grant is pushed, developers in the `vendor-collaboration` tenant can declare a cross-tenant dependency:
+
+```bash
+# Executed within a tree in the vendor-collaboration tenant
+wt tree depend my-vendor-project --on core-engineering/shared-ui
+```
+
+This allows the vendor team to pull the shared UI components and receive automated cross-tree TODOs when the upstream components change, all without ever gaining access to the rest of the `core-engineering` tenant.
+
+## Identity and Access Management (IAM)
+
+W0rkTree integrates with standard OIDC and SAML identity providers (Okta, Auth0, Google Workspace). When a user logs in, their identity provider claims are mapped to W0rkTree IAM Roles.
+
+These roles are then referenced in your declarative access configuration (`.wt/access/roles.toml`):
+
+```toml
+[role."@admins"]
+# Map an Okta group directly to a W0rkTree role
+sso_groups = ["okta:engineering-leadership"]
+
+[role."@contractors"]
+sso_groups = ["okta:external-vendors"]
+```
+
+By binding SSO groups directly to W0rkTree roles, you can manage onboarding and offboarding entirely through your existing identity provider. When a contractor is removed from your Okta directory, their access to the W0rkTree tenant is immediately revoked.

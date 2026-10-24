@@ -1,0 +1,73 @@
+---
+title: "Multi-Tenancy for Code: Why Version Control Needs Identity"
+description: "Git relies on external platforms for identity and access management. Here is why W0rkTree makes multi-tenancy a first-class protocol primitive."
+author: "Sean Filimon"
+date: "2025-10-25"
+tags: ["architecture", "iam", "multi-tenancy"]
+summary: "Git has no concept of identity or organizations; it relies entirely on hosting platforms like GitHub to bolt it on. W0rkTree makes multi-tenancy a first-class protocol primitive, enabling secure, cross-organizational collaboration natively."
+---
+
+## The Identity Disconnect
+
+If you look closely at Git's architecture, you'll notice a glaring omission: **Git has no concept of identity.** 
+
+Sure, you can set `user.name` and `user.email` in your global config, but those are just arbitrary strings attached to commits. They aren't verified, authenticated, or tied to a real identity. You can literally configure Git to commit as Linus Torvalds right now, and the Git protocol will happily accept it.
+
+Because the underlying protocol is blind to identity, the industry was forced to bolt Identity and Access Management (IAM) on top of it. We built platforms like GitHub, GitLab, and Bitbucket to wrap Git in a layer of authentication and organization management. But this creates a fundamental disconnect: your version control system doesn't actually know who is using it.
+
+This disconnect is the root cause of countless security nightmares: leaked SSH keys, spoofed commits, complex contractor onboarding, and the inability to securely share code across organizational boundaries without moving out of your repository.
+
+W0rkTree fixes this by making **Multi-Tenancy** a first-class primitive in the version control protocol.
+
+## What is a Tenant?
+
+In W0rkTree, a **Tenant** is an authenticated user or organization registered on the worktree-server. 
+
+Every tenant:
+- Has a verified **username** (slug) and **email address**, which act as primary identifiers for access control.
+- Can own their own worktrees, each with its own isolated IAM configuration.
+- Can be granted explicit access to *other* tenants' worktrees.
+
+Because the W0rkTree server and local worker natively understand tenants, every operation—from cloning a tree to pushing a snapshot—is inherently authenticated. There is no anonymous mode, and there is no spoofing.
+
+## Cross-Tenant Collaboration: Built In
+
+How do you give a contractor or a partner agency access to a Git repository today? You invite them to your GitHub organization, assign them to a team, and give that team access to a repository. All of this configuration lives in a web UI, completely disconnected from the code itself.
+
+In W0rkTree, cross-tenant access is managed entirely in your repository's configuration. Because the protocol understands identity, you can grant access directly in your `.wt/config.toml`:
+
+```toml
+# .wt/config.toml — Simple cross-tenant access grants
+
+[[tenant_access]]
+tenant = "alice-dev"                          # Grant by tenant username
+permissions = ["tree:read", "branch:read", "snapshot:read"]
+
+[[tenant_access]]
+tenant = "bob@company.com"                    # Grant by verified email
+permissions = ["tree:read", "tree:write", "snapshot:create", "branch:create"]
+
+[[tenant_access]]
+tenant = "partner-corp"                       # Grant to an entire organization tenant
+permissions = ["tree:read"]
+```
+
+These simple grants act as syntactic sugar for W0rkTree's powerful [Declarative Access Control](/articles/declarative-access-control). The server resolves them into full RBAC/ABAC policies internally. For complex scenarios, you can define explicit policies in `.wt/access/policies.toml` that restrict a partner tenant to a specific branch or even a specific directory path.
+
+## Worktree Visibility Modes
+
+Not all code needs to be locked in a vault, but managing public vs. private access in traditional VCS is notoriously rigid. W0rkTree simplifies this with native visibility modes for every worktree:
+
+- **Private (Default):** Only the owning tenant has access. Other tenants must be explicitly granted access via IAM config.
+- **Shared:** Specific external tenants are granted access. Everyone else is denied.
+- **Public:** The worktree is open-access. All authenticated tenants on the server can read the code. However, write access and branch creation still require explicit role grants, and [License Compliance](/articles/license-compliance-in-vcs) rules actively govern what code can be copied, exported, or forked.
+
+## Real-World Boundaries
+
+Modern software isn't built in a silo. You have open-source dependencies, enterprise clients, third-party auditors, and specialized contractors. 
+
+Git forces you to choose between giving someone the keys to the entire repository or creating fractured, painful submodules. W0rkTree's multi-tenant architecture, combined with its nested trees, allows you to model real-world organizational boundaries directly in your code.
+
+You can maintain a single monorepo for your product, but use tree-specific policies to grant a contractor write access *only* to the `frontend-app/` tree, or give an auditor read-only access *only* to the `src/crypto/` directory.
+
+By teaching version control about identity, W0rkTree doesn't just make your code more secure—it makes your organization dramatically more flexible.

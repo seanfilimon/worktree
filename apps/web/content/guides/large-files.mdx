@@ -1,0 +1,75 @@
+---
+title: "Large Files & Storage"
+description: "Learn how W0rkTree handles large assets with chunked storage, lazy loading, and seamless Git LFS interoperability."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Version control systems traditionally struggle with large binary files. Git requires add-ons like Git LFS, which splits your workflow, requires separate servers, and complicates CI/CD. W0rkTree solves the large file problem natively within its core storage engine.
+
+There are no extensions to install and no separate tracking commands to run. Large files are just files.
+
+## Chunked Storage & Deduplication
+
+When the W0rkTree background worker detects a new or modified file, it doesn't just hash the entire file as a single blob like Git does. Instead, it uses a rolling hash algorithm paired with BLAKE3 to split the file into smaller, content-defined chunks.
+
+This **chunk-level deduplication** provides massive efficiency gains for large binaries (like compiled game assets, SQLite databases, or machine learning models):
+
+- If you change a few bytes in the middle of a 2GB file, W0rkTree only stores and syncs the specific chunks that changed.
+- If you move or rename a large file, the underlying chunks are perfectly deduplicated.
+- Syncing (`wt push` and `wt pull`) is dramatically faster because the protocol only transfers the missing chunks.
+
+## Configuring Thresholds
+
+W0rkTree automatically applies chunking to all files, but you can configure how the worker handles extremely large files to prevent accidental commits of massive artifacts.
+
+Configure storage limits in your global `.wt/config.toml` or tree-specific `.wt-tree/config.toml`:
+
+```toml
+[storage]
+# Files larger than this use optimized streaming chunking
+large_file_threshold = "50MB"
+
+[tracking.validation]
+# The worker will refuse to stage files larger than this limit
+max_file_size = "2GB"
+```
+
+If a file exceeds the `max_file_size`, the worker skips it and logs a warning. You can view these warnings using `wt worker log`.
+
+## Lazy Loading & Partial Clones
+
+W0rkTree is designed for enormous multi-tree repositories. If you declare a dependency on a tree that contains gigabytes of high-resolution textures, you shouldn't have to wait hours to download it.
+
+W0rkTree supports **Lazy Loading** by default. When you pull a tree, W0rkTree downloads the metadata and file structure immediately, but it can defer downloading the actual chunks of large files until the file is accessed by your operating system.
+
+```bash
+# Pull the tree metadata and small files, but defer large binaries
+wt pull --lazy
+```
+
+When a tool (like a compiler or image editor) tries to read a lazily-loaded file, the W0rkTree worker intercepts the read request, fetches the required chunks from the server via the QUIC sync protocol, and streams them to the tool transparently.
+
+## Git LFS Interoperability
+
+If you are migrating from a Git repository that uses Git Large File Storage (LFS), W0rkTree handles the transition seamlessly.
+
+### Importing from Git LFS
+
+When you run `wt git import`, W0rkTree automatically detects Git LFS pointers. Instead of importing the tiny text pointer, W0rkTree downloads the actual large file from your LFS server and ingests it natively into W0rkTree's chunked storage.
+
+```bash
+wt git import https://github.com/org/repo.git
+# ✓ Detected 45 LFS objects
+# ✓ Ingesting LFS objects into native chunk storage...
+```
+
+### Exporting to Git LFS
+
+When exporting a W0rkTree tree back to Git format, W0rkTree can automatically generate Git LFS pointers for files that exceed a certain size, ensuring the exported Git repository remains lightweight.
+
+```bash
+wt git export --tree assets --lfs-threshold 50MB --output ./assets-git
+```
+
+This bidirectional compatibility means you can adopt W0rkTree's native large file handling without breaking downstream Git workflows that still rely on LFS.

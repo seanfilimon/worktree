@@ -1,0 +1,23 @@
+{
+  "title": "CLI",
+  "description": "W0rkTree CLI reference",
+  "pages": [
+    "index",
+    "---Core Commands---",
+    "repository",
+    "tree-management",
+    "version-control",
+    "staged",
+    "worker",
+    "---Collaboration & Releases---",
+    "merge-request",
+    "tags-releases",
+    "archive",
+    "git-compatibility",
+    "---Administration & Config---",
+    "tenant",
+    "access",
+    "license",
+    "environment"
+  ]
+}

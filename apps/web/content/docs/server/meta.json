@@ -1,0 +1,24 @@
+{
+  "title": "Server",
+  "description": "W0rkTree Server documentation",
+  "pages": [
+    "index",
+    "---Getting Started---",
+    "installation",
+    "configuration",
+    "---Architecture---",
+    "architecture",
+    "tenants",
+    "iam-enforcement",
+    "license-enforcement",
+    "event-pipeline",
+    "staged-snapshots",
+    "merge-requests",
+    "storage",
+    "---Operations---",
+    "api-surface",
+    "bgprocess",
+    "monitoring",
+    "deployment"
+  ]
+}

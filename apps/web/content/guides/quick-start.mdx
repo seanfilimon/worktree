@@ -1,0 +1,294 @@
+---
+title: Quick Start
+description: Get up and running with W0rkTree in under 5 minutes.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Get up and running with W0rkTree in just a few minutes. This guide walks you through installation, initializing your first repository, and the core workflow you'll use every day.
+
+<Callout type="info">
+**Prerequisites:** W0rkTree is built in Rust. You don't need the Rust toolchain to use the pre-built binaries, but if you'd like to build from source, make sure you have [Rust 1.75+](https://rustup.rs/) and Cargo installed. You'll also need Git 2.30+ if you plan to use Git compatibility features.
+</Callout>
+
+## Installation
+
+Choose your platform to get started:
+
+<Tabs items={['macOS', 'Linux', 'Windows', 'From Source']}>
+<Tab value="macOS">
+
+Install W0rkTree via Homebrew:
+
+```bash
+brew tap worktree-dev/tap
+brew install worktree
+```
+
+Or using the install script:
+
+```bash
+curl -fsSL https://get.worktree.dev | sh
+```
+
+</Tab>
+<Tab value="Linux">
+
+Install using the official install script:
+
+```bash
+curl -fsSL https://get.worktree.dev | sh
+```
+
+Or download the `.deb` package for Debian/Ubuntu:
+
+```bash
+wget https://releases.worktree.dev/latest/worktree_amd64.deb
+sudo dpkg -i worktree_amd64.deb
+```
+
+For Arch Linux:
+
+```bash
+yay -S worktree-bin
+```
+
+</Tab>
+<Tab value="Windows">
+
+Install via WinGet:
+
+```bash
+winget install worktree
+```
+
+Or using Scoop:
+
+```bash
+scoop bucket add worktree https://github.com/worktree-dev/scoop-bucket
+scoop install worktree
+```
+
+</Tab>
+<Tab value="From Source">
+
+Clone the repository and build with Cargo:
+
+```bash
+git clone https://github.com/worktree-dev/worktree.git
+cd worktree
+cargo build --release
+```
+
+The binary will be available at `target/release/wt`. Add it to your `PATH`:
+
+```bash
+cp target/release/wt ~/.local/bin/
+```
+
+</Tab>
+</Tabs>
+
+## Verify Installation
+
+After installing, confirm everything is working:
+
+```bash
+wt --version
+```
+
+Expected output:
+
+```
+W0rkTree 0.1.0 (built 2025-01-01)
+```
+
+You can also run the built-in diagnostics to check your environment:
+
+```bash
+wt doctor
+```
+
+This will verify that all required dependencies are available and your configuration is valid.
+
+## Your First Repository
+
+<Steps>
+
+### Initialize a new W0rkTree repository
+
+Create a new repository in an empty directory. W0rkTree sets up the internal storage engine, default configuration, and a root tree automatically.
+
+```bash
+wt init my-project
+cd my-project
+```
+
+You'll see output like:
+
+```
+Initialized W0rkTree repository in /home/user/my-project
+Created root tree: main
+```
+
+### Create a tree for your team
+
+Trees are the fundamental unit of isolation in W0rkTree. Each team or feature area gets its own tree with independent branches, permissions, and history.
+
+```bash
+wt tree create frontend
+```
+
+```
+Created tree 'frontend' (based on root)
+Switched to tree 'frontend'
+```
+
+### Start the background worker
+
+W0rkTree's background worker watches your filesystem and automatically creates staged snapshots of your changes. This means you never lose work — every save is captured.
+
+```bash
+wt worker start
+```
+
+```
+Worker started for tree 'frontend'
+Watching for changes...
+```
+
+<Callout type="info">
+The worker runs as a lightweight background process. It uses efficient filesystem watchers (FSEvents on macOS, inotify on Linux, ReadDirectoryChanges on Windows) to minimize resource usage. You can stop it at any time with `wt worker stop`.
+</Callout>
+
+### Make changes and check status
+
+Create some files and check what W0rkTree has detected. W0rkTree uses **staged visibility** — your local changes and snapshots remain private to your machine until you explicitly push them.
+
+```bash
+echo '<h1>Hello W0rkTree</h1>' > index.html
+wt status
+```
+
+```
+Tree: frontend
+Branch: main
+
+Staged Changes:
+  added:  index.html
+```
+
+### Commit your changes
+
+Record your changes with a descriptive message. Commits in W0rkTree are scoped to the current tree and remain as staged snapshots until pushed.
+
+```bash
+wt commit -m "Add homepage"
+```
+
+```
+[frontend/main abc1234] Add homepage
+ 1 file changed, 1 insertion(+)
+ create mode 100644 index.html
+```
+
+### View your history
+
+See the commit log for your tree:
+
+```bash
+wt log
+```
+
+```
+abc1234 (HEAD -> frontend/main) Add homepage
+  Author: You <you@example.com>
+  Date:   2025-01-15 10:30:00 UTC
+```
+
+</Steps>
+
+## Common Workflows
+
+Here are a few workflows you'll use frequently:
+
+<Tabs items={['Branching', 'Dependencies', 'Git Sync']}>
+<Tab value="Branching">
+
+Create a branch within your tree for feature work:
+
+```bash
+wt branch create feature/nav
+wt branch switch feature/nav
+
+# Make changes...
+wt commit -m "Add navigation component"
+
+# Merge back
+wt branch switch main
+wt merge feature/nav
+```
+
+</Tab>
+<Tab value="Dependencies">
+
+Declare a dependency between trees so W0rkTree can notify you of upstream changes:
+
+```bash
+wt tree depend frontend --on shared-components
+```
+
+When `shared-components` changes, W0rkTree automatically generates TODOs in the `frontend` tree so your team knows what to review.
+
+</Tab>
+<Tab value="Git Sync">
+
+W0rkTree has full Git interoperability. Import an existing Git repo or push your changes to a remote Git host:
+
+```bash
+# Import from Git
+wt git import https://github.com/org/repo.git
+
+# Push to a Git remote
+wt git push origin main
+
+# Pull latest from Git
+wt git pull origin main
+```
+
+</Tab>
+</Tabs>
+
+## Next Steps
+
+Now that you have W0rkTree running, explore the rest of the documentation to unlock its full potential:
+
+<Cards>
+  <Card
+    title="Server Architecture"
+    description="Understand the multi-tenant architecture, storage engine, and event pipeline that powers W0rkTree."
+    href="/docs/server/architecture"
+  />
+  <Card
+    title="CLI Reference"
+    description="Complete reference for every command, flag, and option available in the wt command-line tool."
+    href="/docs/cli"
+  />
+  <Card
+    title="Migration Guide"
+    description="Step-by-step instructions for migrating an existing Git repository to W0rkTree with zero data loss."
+    href="/docs/migration"
+  />
+  <Card
+    title="Server Configuration"
+    description="Customize the W0rkTree server's behavior with per-repo and global configuration options."
+    href="/docs/server/configuration"
+  />
+</Cards>
+
+<Callout type="info">
+**Need help?** Join the [W0rkTree Discord community](https://discord.gg/worktree) for support, or open an issue on [GitHub](https://github.com/worktree-dev/worktree/issues) if you run into a bug.
+</Callout>

@@ -1,0 +1,105 @@
+---
+title: "Permissions & Access Control"
+description: "Configure declarative access rules, tenant grants, and registered paths to secure your W0rkTree repository."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree secures your codebase using a **declarative access model**. Instead of running imperative commands to grant or revoke access, permissions are defined in version-controlled configuration files. This means your access rules are audited, peer-reviewed, and deployed exactly like your code.
+
+## The Declarative Access Model
+
+Access control in W0rkTree is managed entirely through the `access/` directories located at the root of your repository or within individual trees. 
+
+- **`.wt/access/`**: Global roles and policies that apply to the entire repository.
+- **`.wt-tree/access/`**: Tree-specific policies that override or extend the global repository rules.
+
+There are two primary files used to define access: `roles.toml` and `policies.toml`.
+
+### Defining Roles (`roles.toml`)
+
+Roles group users and service accounts into logical units. They are typically defined globally in `.wt/access/roles.toml`:
+
+```toml
+[role."@frontend-team"]
+members = ["alice@example.com", "bob@example.com"]
+
+[role."@release-managers"]
+members = ["carol@example.com", "deploy-bot"]
+```
+
+### Applying Policies (`policies.toml`)
+
+Policies bind roles to specific permissions. A policy file can live globally in `.wt/access/policies.toml` or be scoped to a specific tree in `.wt-tree/access/policies.toml`.
+
+```toml
+# .wt-tree/access/policies.toml for the 'frontend' tree
+
+[tree]
+allow_read = ["@everyone"]
+allow_write = ["@frontend-team"]
+allow_admin = ["alice@example.com"]
+
+[branch."main"]
+allow_push = ["@release-managers"]
+require_reviews = 2
+```
+
+<Callout type="info">
+Because policies are version-controlled, any changes to `policies.toml` must go through your standard pull request and review process, preventing unilateral permission escalations.
+</Callout>
+
+## Scope Hierarchy
+
+W0rkTree evaluates permissions top-down through a strict scope hierarchy. A policy defined at a higher level acts as the default, but can be overridden by more specific rules lower in the hierarchy.
+
+1. **Tenant Level**: Organization-wide defaults (configured via the server admin panel).
+2. **Repository Level (`.wt/access/`)**: Global rules for all trees.
+3. **Tree Level (`.wt-tree/access/`)**: Rules specific to an isolated workspace.
+4. **Branch Level**: Restrictions on specific branches (e.g., protecting `main`).
+5. **Path Level (Registered Paths)**: Fine-grained control over individual directories or files.
+
+When a user attempts an action, W0rkTree checks the most specific scope first. If no explicit allow or deny rule exists, it falls back to the next highest scope.
+
+## Registered Paths
+
+For highly sensitive areas of your codebase—such as billing logic, database migrations, or infrastructure configuration—you can lock down specific file paths using **Registered Paths**.
+
+Define registered paths within your `policies.toml`:
+
+```toml
+[paths."src/billing/**"]
+allow_write = ["@finance-engineering"]
+allow_read = ["@everyone"]
+
+[paths."migrations/**"]
+allow_write = ["@dba-team"]
+allow_delete = [] # Empty array means explicitly denied for everyone
+```
+
+When a user tries to commit a change to a registered path, the local `wt worker` validates their access against the policy. If they lack the required permissions, the commit is rejected locally before it even reaches the server.
+
+## Tenant Grants
+
+In large organizations or multi-tenant server deployments, you often need to share code across organizational boundaries without merging repositories. W0rkTree supports **Tenant Grants**, which allow you to securely expose a tree to a different tenant.
+
+To grant an external tenant read access to your `shared-ui` tree, configure a grant in your `.wt-tree/access/policies.toml`:
+
+```toml
+[[grants]]
+tenant_id = "tenant-analytics-corp"
+access = "read"
+reason = "Allow analytics team to consume shared UI components"
+```
+
+Once granted, the external tenant can declare a dependency on your tree (`wt tree depend analytics --on shared-ui`) and pull your staged snapshots, all while remaining physically isolated from your tenant's internal commit history and sensitive trees.
+
+## Testing Permissions
+
+You can test how your declarative rules evaluate using the CLI's `acl check` command. This is especially useful for verifying your policies before committing them.
+
+```bash
+wt acl check alice@example.com --tree frontend --path "src/billing/api.ts"
+```
+
+The CLI will trace the scope hierarchy and output exactly which rule in which `policies.toml` file granted or denied access, making it incredibly easy to debug complex permission structures.

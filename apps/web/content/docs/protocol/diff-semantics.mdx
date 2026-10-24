@@ -1,0 +1,69 @@
+---
+title: Diff Semantics
+description: How diffs are computed between snapshots, including rename detection and cross-tree boundaries.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+W0rkTree computes diffs by comparing Merkle tree structures. Since each node in the tree is addressed by its BLAKE3 hash, unchanged subtrees can be skipped entirely.
+
+## Algorithm
+
+1. Compare root tree hashes — if equal, no changes
+2. For differing trees, recursively compare entries
+3. Match entries by name, then by content hash for rename detection
+4. Generate a change set: `added`, `modified`, `deleted`, `renamed`
+
+## Diff Targets
+
+W0rkTree supports diffing between various targets:
+- `Working vs Staged` (default)
+- `Working vs Snapshot`
+- `Staged vs Snapshot`
+- `Snapshot vs Snapshot`
+- `Branch vs Branch`
+- `Tree vs Tree`
+
+## Diff Modes
+
+- **Standard**: Full unified diff output for text files.
+- **Stat (`--stat`)**: Summary of files changed, insertions, and deletions.
+- **Name Only (`--name-only`)**: Lists only the paths of changed files.
+- **Name Status (`--name-status`)**: Lists paths alongside their change type (A, M, D, R).
+- **Shortstat (`--shortstat`)**: Single line summary (e.g., `3 files changed, 10 insertions(+), 5 deletions(-)`).
+
+## Rename Detection
+
+W0rkTree uses a two-pass rename detection algorithm:
+
+1. **Exact match** — if a deleted file's hash matches an added file's hash, it's a rename
+2. **Similarity match** — if no exact match, compute similarity score using rolling hash chunks. Threshold: 60% similarity
+
+## Cross-Tree Diffs
+
+When diffing across tree boundaries (e.g., impact analysis for dependencies):
+
+- Only the public interface of the dependency is diffed
+- Internal changes that don't affect exported paths are excluded
+- Results include the dependency path for context
+
+## Binary Files
+
+Binary files are detected by sampling the first 8KB for null bytes. Binary diffs show only size changes, not content diffs.
+
+## Filtering
+
+You can filter diff output by:
+- **Tree**: `--tree <name>` restricts the diff to a specific tree.
+- **Path**: Providing a glob or path restricts the diff to that specific path.
+- **Change Type**: `--diff-filter=[AMDR]` filters by added, modified, deleted, or renamed.
+
+## Output Formats
+
+In addition to standard text output, W0rkTree can emit diff results as structured JSON using the `--json` flag. This is particularly useful for programmatic consumption and integration with CI/CD pipelines.
+
+<Callout type="info">
+Use `wt diff --stat` for a summary view, or `wt diff --tree <name>` to scope diffs to a specific tree.
+</Callout>

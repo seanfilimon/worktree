@@ -1,0 +1,51 @@
+---
+title: Server Architecture
+description: Deep dive into the W0rkTree server's internal design, threading model, and component structure.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+## Overview
+
+The W0rkTree server is built on a **multi-tenant, event-driven architecture** that enables teams to work independently while maintaining a unified codebase. Every design decision prioritizes: **correctness first**, **speed by default**, and **collaboration without friction**.
+
+## Threading Model
+
+The server uses `tokio` as its async runtime with a multi-threaded executor:
+
+- **Main thread** — accepts connections, manages lifecycle
+- **Worker pool** — handles client requests (configurable, default: CPU cores)
+- **Watcher thread** — dedicated thread for filesystem event collection
+- **Background tasks** — garbage collection, cache eviction, metric aggregation
+
+## Component Architecture
+
+<Cards>
+  <Card title="Client-Server Model" description="A local daemon handles auto-tracking and offline operations. The remote server manages synchronization, collaboration, and access control." />
+  <Card title="Multi-Tenant Isolation" description="Logical and physical isolation between different organizations. Every resource belongs to a specific tenant with strict boundaries." />
+  <Card title="IAM Enforcement" description="A central engine evaluating declarative RBAC/ABAC access policies on every protocol operation." />
+  <Card title="License Compliance" description="Server-side SPDX license evaluation that prevents incompatible code from being merged or synced." />
+  <Card title="Staged Snapshot Aggregation" description="Real-time aggregation of in-flight changes from connected clients for unified visibility." />
+  <Card title="Merge Request System" description="Native server-side tracking of linked branch merges, reviews, and status checks." />
+  <Card title="Event Sourcing" description="All mutations are recorded as an append-only event log. This enables time-travel debugging, audit trails, and CRDTs for real-time collaboration." />
+  <Card title="Pluggable Backends" description="The storage engine supports pluggable backends: local filesystem (default), S3-compatible object storage, and SQLite." />
+</Cards>
+
+## Data Flow
+
+### Local Operations
+
+```
+Working Directory → Filesystem Watcher → Event Engine → Snapshot Builder → Object Store → Branch Pointers
+```
+
+All local operations are **lock-free for reads** and use **per-tree write locks** for mutations.
+
+### Sync Operations
+
+```
+Object Store (local) → Delta Calculator → Compression → Wire Protocol → Server (remote) → Object Store (remote)
+```
+
+The sync protocol is **incremental** — only objects the remote doesn't have are transferred.

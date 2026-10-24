@@ -1,0 +1,18 @@
+{
+  "title": "SDK",
+  "description": "W0rkTree SDK documentation",
+  "pages": [
+    "index",
+    "---Getting Started---",
+    "installation",
+    "connecting",
+    "---API Reference---",
+    "tenant-operations",
+    "license-operations",
+    "access-operations",
+    "tree-operations",
+    "snapshot-operations",
+    "staged-operations",
+    "branch-operations"
+  ]
+}

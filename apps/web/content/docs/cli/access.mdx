@@ -1,0 +1,134 @@
+---
+title: Access Control
+description: Manage permissions, roles, and declarative access models across tenants, trees, and paths.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree provides a powerful, declarative Identity and Access Management (IAM) model. Access can be granted to users, service accounts, or roles across different scopes (global, tenant, tree, or path).
+
+## wt access grant
+
+Grant access roles to an entity (user, service account, or role) within a specific scope.
+
+```bash
+wt access grant <entity> <role> [--tenant <id>] [--tree <name>] [--path <glob>]
+```
+
+| Scope Flag | Description |
+|---|---|
+| (none) | Global scope (applies everywhere) |
+| `--tenant <id>` | Tenant scope |
+| `--tree <name>` | Tree scope |
+| `--path <glob>` | Path scope (requires `--tree`) |
+
+**Examples:**
+
+```bash
+$ wt access grant @ui-team tree.developer --tree frontend
+✓ Granted 'tree.developer' to @ui-team on tree: frontend
+```
+
+```bash
+$ wt access grant @intern path.reader --tree backend --path "src/public/**"
+✓ Granted 'path.reader' to @intern on tree: backend (path: src/public/**)
+```
+
+## wt access revoke
+
+Revoke access from an entity within a specific scope.
+
+```bash
+wt access revoke <entity> <role> [--tenant <id>] [--tree <name>] [--path <glob>]
+```
+
+<Callout type="warn">
+Revoking `tree.admin` from the last admin on a tree will prompt for confirmation. W0rkTree requires at least one administrator per tree to prevent orphan resources.
+</Callout>
+
+## wt access list
+
+List all access grants for the current context or a specific scope.
+
+```bash
+wt access list [--tenant <id>] [--tree <name>] [--format <table|json>]
+```
+
+**Example:**
+
+```bash
+$ wt access list --tree frontend
+ENTITY       ROLE             SCOPE
+@ui-team     tree.admin       tree: frontend
+@designers   tree.writer      path: src/styles/**
+@qa-team     tree.reader      tree: frontend
+```
+
+## wt access test
+
+Test if an entity has a specific permission in a given context. Useful for scripts, CI/CD, or debugging access issues.
+
+```bash
+wt access test <entity> <permission> [--tenant <id>] [--tree <name>] [--path <path>]
+```
+
+**Example:**
+
+```bash
+$ wt access test @alice tree.write --tree frontend
+✓ @alice has tree.write on frontend (granted via @ui-team role)
+```
+
+## Declarative Access (TOML)
+
+W0rkTree supports declarative access management via a `.wt-access.toml` file at the root of a tree or tenant. This allows you to version-control your access policies.
+
+**Example `.wt-access.toml`:**
+
+```toml
+[roles.frontend-devs]
+members = ["@alice", "@bob"]
+
+[[grants]]
+role = "tree.admin"
+entity = "@charlie"
+
+[[grants]]
+role = "tree.developer"
+entity = "role:frontend-devs"
+
+[[grants]]
+role = "path.reader"
+entity = "@intern"
+path = "docs/**"
+```
+
+Apply the declarative configuration:
+
+```bash
+wt access apply --file .wt-access.toml
+```
+
+<Callout type="info">
+When `wt access apply` is used, W0rkTree synchronizes the grants. Any existing manual grants not present in the TOML file will be revoked, ensuring the file remains the single source of truth.
+</Callout>
+
+## Role Management
+
+W0rkTree comes with built-in roles (`tree.admin`, `tree.developer`, `tree.reader`), but you can also define custom roles.
+
+### wt access role create
+
+Create a new custom role.
+
+```bash
+wt access role create <role-name> --permissions <perm1,perm2,...>
+```
+
+### wt access role list
+
+List available roles and their included permissions.
+
+```bash
+wt access role list
+```

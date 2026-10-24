@@ -1,0 +1,69 @@
+---
+title: "Linked Branches for Atomic Deployments"
+description: "How W0rkTree's linked branches enable multi-tree atomic merges and all-or-nothing deployments across teams."
+author: "Sean Filimon"
+date: "2025-07-15"
+tags: ["features", "linked-branches"]
+summary: "Linked branches coordinate changes across multiple trees so teams can ship together with confidence — atomic merges, CI/CD integration, and zero partial deployments."
+---
+
+## The Problem with Uncoordinated Shipping
+
+In any sufficiently large project, a single feature often spans multiple components. The frontend team updates the UI, the backend team adds new API endpoints, and the infrastructure team provisions new resources. In Git, each of these lives in a separate branch — or worse, a separate repository — with no formal connection between them.
+
+The result is predictable chaos. The frontend merges first, but the backend branch has a failing test and gets delayed. Users hit a broken experience because half the feature is live and half is not. Rollbacks are manual, error-prone, and never quite restore the exact prior state. Teams develop elaborate deployment runbooks and Slack-based coordination rituals to work around what is fundamentally a tooling gap.
+
+W0rkTree's **linked branches** eliminate this entire class of problem by making cross-tree coordination a first-class primitive in version control.
+
+## How Linked Branches Work
+
+A linked branch is a named group of branches across multiple trees that are bound together by a shared lifecycle. When you create a linked branch, you declare which trees participate and W0rkTree enforces that they move in lockstep.
+
+Creating a linked branch is straightforward:
+
+```
+w0rk branch link feature/payments \
+  --trees frontend,api-server,billing-service,infra
+```
+
+This creates a branch named `feature/payments` in each of the four specified trees and registers them as a linked set. From this point forward, W0rkTree understands that these branches represent a single logical change.
+
+Each tree's branch remains fully independent for day-to-day development. Engineers commit, push, and review within their own tree as usual. The linkage only activates at merge time, when it matters most.
+
+## Atomic Merges: All or Nothing
+
+When any participant in a linked branch initiates a merge, W0rkTree performs a **coordinated atomic merge** across all linked trees. The process works in three phases:
+
+1. **Readiness check** — W0rkTree verifies that every linked branch passes its merge criteria: CI is green, reviews are approved, and there are no unresolved dependency conflicts. If any tree is not ready, the entire merge is blocked with a clear status report.
+
+2. **Staging** — All trees are merged in a staging area simultaneously. W0rkTree validates cross-tree dependency constraints, ensuring that API contracts match between producer and consumer trees.
+
+3. **Commit** — If staging succeeds, all merges are committed atomically. The resulting merge commits share a linked commit ID, creating an auditable record that these changes were deployed together.
+
+If any tree fails during staging — a merge conflict, a broken dependency contract, a policy violation — none of the trees merge. There is no partial state. The system either moves forward completely or stays exactly where it was.
+
+## CI/CD Integration
+
+Linked branches integrate naturally with CI/CD pipelines through W0rkTree's event system. When a linked branch is created, your CI system can automatically spin up a unified test environment that includes all participating trees. When readiness checks pass, deployment pipelines trigger with the full context of every tree involved.
+
+W0rkTree exposes a `linked-branch-status` API that CI systems can query to determine the aggregate state of a linked branch. This enables deployment gates that are aware of cross-tree readiness without custom scripting:
+
+```
+w0rk branch link-status feature/payments --format json
+```
+
+The output includes per-tree CI status, review state, dependency health, and merge readiness — everything a deployment pipeline needs to make an informed go/no-go decision.
+
+## Real-World Workflow
+
+Consider a typical release cycle. A product team kicks off a feature that touches three services. The tech lead creates a linked branch spanning all three trees. Each sub-team works independently for two weeks, committing and reviewing within their own tree. When the feature is complete, one engineer runs `w0rk merge` on the linked branch.
+
+W0rkTree checks all three trees, confirms CI is passing everywhere, validates that the new API types in the backend match the frontend's expectations via the dependency graph, and merges all three simultaneously. The deployment pipeline picks up a single atomic event and rolls out all services together.
+
+No Slack threads asking "is your branch ready?" No partial deployments. No rollback runbooks. The tooling enforces the coordination that teams previously managed through process and hope.
+
+## Beyond Feature Branches
+
+Linked branches are not limited to feature work. Teams use them for coordinated hotfixes, release trains, and environment promotions. A `release/v2.4` linked branch can group stabilization work across every tree, and the final merge to `main` happens atomically across the entire system.
+
+This is what version control looks like when it understands that modern software is built by teams shipping together — not individuals committing in isolation.

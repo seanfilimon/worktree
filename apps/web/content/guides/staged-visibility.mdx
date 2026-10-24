@@ -1,0 +1,101 @@
+---
+title: "Staged Visibility"
+description: "Understand how W0rkTree keeps your work-in-progress private and secure until you are ready to share it."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+In traditional version control, uncommitted work is fragile. To back it up, you often have to commit and push, exposing your messy work-in-progress (WIP) to the rest of the team. W0rkTree solves this with **staged visibility**.
+
+Staged visibility ensures that your local changes and auto-tracked snapshots remain completely private to your machine until you explicitly choose to publish them, while still providing the safety of continuous versioning.
+
+## How Staged Snapshots Work
+
+When you run `wt worker start`, the background worker begins watching your filesystem. Every time you save a file, the worker creates a **staged snapshot**. 
+
+These snapshots are fully immutable checkpoints of your codebase, but they have a special property: they are *staged*. A staged snapshot lives exclusively in your local object store. It is not synchronized to the W0rkTree server, it does not trigger CI pipelines, and it is completely invisible to your teammates.
+
+This gives you the freedom to experiment, make mistakes, and save constantly without polluting the public commit history.
+
+## Viewing Your Staged Changes
+
+To see your current staged snapshots, use the `staged` command:
+
+```bash
+wt staged list
+```
+
+This will output a chronological list of all the private snapshots the worker has captured for your current tree.
+
+If you want to see a summary of the unpushed work across your entire local workspace, you can use:
+
+```bash
+wt status
+```
+
+This command shows you exactly what is staged, what has been committed locally, and how far ahead you are of the remote server.
+
+## Team Visibility
+
+One of the unique benefits of W0rkTree's architecture is the ability to see the aggregate state of your team without exposing individual WIP. 
+
+When you want to know what your colleagues are actively working on—to avoid merge conflicts or duplicate work—you can query the server:
+
+```bash
+wt status --team
+```
+
+Because of staged visibility, this command does *not* show the contents of your teammates' unpushed files. Instead, it securely queries the server's presence and lock metadata to show you:
+- Which branches your teammates are currently active on.
+- Which files they have write-locks on (if using pessimistic locking).
+- The general areas of the codebase experiencing high churn.
+
+Your code remains private, but your team maintains high situational awareness.
+
+## Privacy Controls
+
+Staged visibility is secure by default, but you can configure exactly what the worker is allowed to snapshot using your `.wt-tree/config.toml` or global `.wt/config.toml`.
+
+For example, you can prevent the worker from ever staging specific file types or secrets:
+
+```toml
+[tracking.validation]
+forbidden_patterns = ["\\.env$", "secret", "password", "*.key"]
+max_file_size = "50MB"
+```
+
+Files matching these patterns will never be snapshotted, keeping them completely out of your local object store. 
+
+<Callout type="info">
+Remember, even standard files that *are* snapshotted remain completely private to your local machine until you explicitly push them to the server.
+</Callout>
+
+## Moving from Staged to Public
+
+When your feature is complete and you are ready to share it with your team, you transition your staged snapshots into public history. 
+
+Typically, you don't want to push hundreds of micro-snapshots. Instead, you squash them into a cohesive commit:
+
+```bash
+wt squash --all -m "Implement new checkout flow"
+wt push
+```
+
+The `wt push` command is the boundary. It takes your local, private commits and synchronizes them with the W0rkTree server. Once pushed, the commits become part of the tree's public history, triggering dependencies, CI gates, and cross-tree TODOs.
+
+## Retention and Cleanup
+
+Because the background worker captures changes constantly, staged snapshots can accumulate quickly. W0rkTree automatically manages this local storage through retention policies.
+
+By default, W0rkTree runs a local garbage collection process that prunes unreferenced staged snapshots older than 14 days. You can adjust this retention period in your global `.wt/config.toml`:
+
+```toml
+[storage.retention]
+staged_snapshots_days = 14
+```
+
+If you ever need to manually clean up your staged snapshots to free up disk space, you can run:
+
+```bash
+wt staged prune
+```

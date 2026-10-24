@@ -1,0 +1,85 @@
+---
+title: "Ignore Patterns"
+description: "Learn how to exclude files from tracking using the W0rkTree ignore hierarchy."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Not every file in your workspace belongs in version control. Build artifacts, temporary files, and sensitive credentials should be excluded so they are never snapshotted or pushed to the W0rkTree server.
+
+W0rkTree manages this through a strict, hierarchical ignore system that integrates deeply with the local background worker.
+
+## The Ignore Hierarchy
+
+W0rkTree evaluates ignore patterns using a two-tiered hierarchy, allowing you to enforce repository-wide rules while giving individual teams control over their specific trees.
+
+### Global Rules (`.wt/ignore`)
+
+At the root of your repository, the `.wt/ignore` file defines global patterns. These rules apply to every tree in the workspace. This is the ideal place to ban universal files like `.DS_Store`, `Thumbs.db`, or top-level environment files.
+
+```text
+# .wt/ignore
+.DS_Store
+*.log
+.env
+```
+
+### Tree-Specific Rules (`.wt-tree/ignore`)
+
+Inside any nested tree, you can place a `.wt-tree/ignore` file. Patterns defined here apply *only* to that specific tree and its subdirectories. 
+
+Unlike configuration files where the tree-level overrides the global level, ignore patterns are **additive**. When the background worker decides whether to create a staged snapshot for a file in the `frontend` tree, it checks if the file matches *either* the global `.wt/ignore` rules *or* the `frontend/.wt-tree/ignore` rules.
+
+```text
+# frontend/.wt-tree/ignore
+node_modules/
+dist/
+.next/
+```
+
+## Built-in Defaults
+
+To prevent catastrophic mistakes and infinite loops, W0rkTree includes a set of built-in ignore rules that cannot be overridden. You do not need to add these to your ignore files:
+
+- `.wt/` (The internal object store and global configuration)
+- `.git/` (If you are using W0rkTree alongside Git)
+- System-level temporary files that interfere with filesystem watchers
+
+## Pattern Syntax
+
+W0rkTree ignore files use standard glob syntax, identical to what you are likely used to from Git.
+
+- `*` matches zero or more characters.
+- `?` matches a single character.
+- `**` matches directories recursively.
+- `!` negates a pattern, explicitly including a file that would otherwise be ignored.
+- A trailing slash (`/`) explicitly matches a directory.
+
+<Callout type="info">
+Because W0rkTree relies on an active filesystem watcher, highly complex or deeply nested negate (`!`) rules can occasionally impact the performance of the background worker. Keep your ignore rules as simple as possible.
+</Callout>
+
+## Validation Rules vs. Ignore Patterns
+
+While `.wt/ignore` prevents the worker from tracking files entirely, W0rkTree also offers **Validation Rules** in your `.wt/config.toml` (or `.wt-tree/config.toml`).
+
+```toml
+# .wt/config.toml
+[tracking.validation]
+max_file_size = "50MB"
+forbidden_patterns = ["*secret*", "*.pem"]
+```
+
+What is the difference? 
+- **Ignore patterns** mean the worker silently skips the file as if it doesn't exist. It is a standard operational configuration.
+- **Validation rules** mean the worker actively flags the file as a policy violation. If a file matches a validation rule, it is rejected and a warning is written to your `wt worker log`. Use validation rules for security enforcement and ignore files for standard build artifacts.
+
+## Migrating from `.gitignore`
+
+If you are migrating an existing Git repository, W0rkTree makes it seamless. 
+
+When you run the `wt git import` command, W0rkTree automatically parses your existing `.gitignore` files:
+- The root `.gitignore` is translated into `.wt/ignore`.
+- Any `.gitignore` files found deeper in the directory structure are automatically translated into `.wt-tree/ignore` files within the appropriate nested trees.
+
+If you are maintaining an active two-way sync via Live Mirror Mode (`wt git mirror start`), W0rkTree will continuously respect `.gitignore` for Git compatibility while enforcing `.wt/ignore` for W0rkTree-native operations.

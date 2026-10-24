@@ -1,0 +1,596 @@
+---
+title: Migration Guide
+description: Migrate from Git to W0rkTree seamlessly — import full history, map branches, and keep pushing to Git remotes.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+W0rkTree is designed for **zero-friction migration** from Git. You can import an existing Git repository with full history, continue pushing and pulling from Git remotes, and adopt W0rkTree's advanced features incrementally — no big-bang cutover required.
+
+<Callout type="info">
+W0rkTree preserves **all Git history** during import — commits, branches, tags, authorship, timestamps, and merge topology. Nothing is lost.
+</Callout>
+
+## Key Differences
+
+Before migrating, it helps to understand how W0rkTree's concepts map to Git's:
+
+| Concept | Git | W0rkTree |
+|---------|-----|----------|
+| **Repository model** | Single flat workspace with one `.git` directory | Nested trees, each with isolated branches and history |
+| **Branching** | Global branches shared across the entire repo | Per-tree branches scoped to their workspace |
+| **Change tracking** | Manual `git add` → `git commit` cycle | Automatic background daemon with `wt track` |
+| **Staging area** | Explicit index (`git add`) | No staging area — all changes are tracked automatically |
+| **Permissions** | Repository-level (via GitHub/GitLab) | Fine-grained at tree, branch, and path level |
+| **Dependencies** | Submodules, subtrees (bolted on) | First-class dependency graph between trees |
+| **Object hashing** | SHA-1 (160-bit) | BLAKE3 (256-bit, faster, collision-resistant) |
+| **Compression** | zlib per object | zstd with dictionary training per repository |
+| **Config files** | `.gitignore`, `.gitattributes` | `.wtignore`, `.wtconfig` |
+
+### What maps directly
+
+| Git | W0rkTree | Notes |
+|-----|----------|-------|
+| `git init` | `wt init` | Creates a repository with a root tree |
+| `git commit` | `wt commit` | Scoped to the active tree |
+| `git branch` | `wt branch` | Scoped per-tree, not global |
+| `git log` | `wt log` | Same semantics, richer output |
+| `git diff` | `wt diff` | Supports cross-tree diffs |
+| `git merge` | `wt merge` | Three-way merge with BLAKE3 acceleration |
+| `git remote` | `wt git push` / `wt git pull` | Bidirectional Git remote support |
+| `.gitignore` | `.wtignore` | Automatically converted during import |
+| Git tags | W0rkTree tags | Preserved with full metadata |
+
+---
+
+## Migration Strategies
+
+Choose the approach that best fits your team's situation:
+
+<Cards>
+  <Card title="🔄 Full Import" href="#full-import">
+    Import your entire Git repository with complete history into a single W0rkTree tree. Best for small-to-medium repos or when you want a clean starting point.
+  </Card>
+  <Card title="🌲 Monorepo Split" href="#monorepo-split">
+    Import a Git monorepo and split it into multiple W0rkTree trees — one per team or service. Best for large monorepos with distinct ownership boundaries.
+  </Card>
+  <Card title="🔀 Incremental Adoption" href="#incremental-adoption">
+    Keep using Git as your primary VCS and mirror changes into W0rkTree. Adopt W0rkTree features gradually without disrupting existing workflows.
+  </Card>
+  <Card title="📦 Submodule Migration" href="#submodule-migration">
+    Convert Git submodules into W0rkTree nested trees with proper dependency tracking. Best for repos using submodules for code sharing.
+  </Card>
+</Cards>
+
+---
+
+## Full Import
+
+The simplest migration path — import your entire Git repository into W0rkTree with a single command.
+
+<Steps>
+
+### Prerequisites
+
+Make sure you have both Git and W0rkTree installed, and that the Git repository is accessible locally or via URL:
+
+```bash
+wt --version
+git --version
+```
+
+### Run the import
+
+Import the Git repository. W0rkTree will convert all commits, branches, tags, and history:
+
+<Tabs items={['Local Repository', 'Remote URL']}>
+<Tab value="Local Repository">
+
+```bash
+wt git import /path/to/git-repo
+```
+
+Expected output:
+
+```
+✓ Scanning Git repository...
+  Found 1,247 commits across 8 branches
+  Found 34 tags
+
+✓ Converting objects...
+  SHA-1 → BLAKE3 mapping: 4,892 objects
+  Blobs: 3,201 | Trees: 1,247 | Commits: 444
+
+✓ Rebuilding history...
+  Branches: main, develop, feature/auth, feature/nav, ...
+  Tags: v1.0.0, v1.1.0, v1.2.0, ...
+
+✓ Import complete
+  Repository: ./my-project
+  Default tree: main
+  Total time: 4.2s
+```
+
+</Tab>
+<Tab value="Remote URL">
+
+```bash
+wt git import https://github.com/org/repo.git --tree imported
+```
+
+W0rkTree will clone the repository, convert it, and clean up the temporary Git clone automatically.
+
+</Tab>
+</Tabs>
+
+### Verify the import
+
+Check that your history was preserved correctly:
+
+```bash
+cd my-project
+wt log --oneline --limit 10
+```
+
+Verify branch mapping:
+
+```bash
+wt branch list --all
+```
+
+Compare commit counts to confirm nothing was lost:
+
+```bash
+# In the original Git repo:
+git rev-list --count --all
+# 1247
+
+# In the W0rkTree repo:
+wt log --count
+# 1247
+```
+
+### Set up Git remote (optional)
+
+If you want to continue pushing to and pulling from the original Git remote:
+
+```bash
+wt git remote add origin https://github.com/org/repo.git
+```
+
+Now you can sync bidirectionally:
+
+```bash
+wt git push origin main
+wt git pull origin main
+```
+
+### Enable auto-tracking
+
+Turn on W0rkTree's background daemon to start capturing changes automatically:
+
+```bash
+wt track start
+```
+
+</Steps>
+
+<Callout type="info">
+**Performance:** W0rkTree's import is fast. A repository with 10,000 commits typically imports in under 30 seconds. BLAKE3 hashing is significantly faster than SHA-1, so the conversion process is not a bottleneck.
+</Callout>
+
+---
+
+## Monorepo Split
+
+If you have a large Git monorepo with multiple teams working in different directories, you can split it into isolated W0rkTree trees during import.
+
+<Steps>
+
+### Analyze your monorepo structure
+
+Identify the directory boundaries that map to team ownership:
+
+```
+my-monorepo/
+├── frontend/        → @ui-team
+├── backend/         → @api-team
+├── infra/           → @devops
+├── shared/          → @platform
+└── docs/            → @docs-team
+```
+
+### Import with tree mapping
+
+Use the `--split` flag to map directories to W0rkTree trees:
+
+```bash
+wt git import /path/to/monorepo \
+  --split frontend:frontend \
+  --split backend:backend \
+  --split infra:infra \
+  --split shared:shared \
+  --split docs:docs
+```
+
+Expected output:
+
+```
+✓ Scanning Git repository...
+  Analyzing directory ownership for tree splitting
+
+✓ Creating trees...
+  frontend  → 312 commits (filtered)
+  backend   → 498 commits (filtered)
+  infra     → 89 commits (filtered)
+  shared    → 201 commits (filtered)
+  docs      → 147 commits (filtered)
+
+✓ Monorepo split complete
+  5 trees created with independent history
+```
+
+### Declare dependencies between trees
+
+Set up the dependency graph so teams are notified of upstream changes:
+
+```bash
+wt tree depend frontend --on shared
+wt tree depend backend --on shared
+wt tree depend docs --on backend --on frontend
+```
+
+### Assign tree ownership
+
+Grant permissions to each team:
+
+```bash
+wt permission grant @ui-team admin --tree frontend
+wt permission grant @api-team admin --tree backend
+wt permission grant @devops admin --tree infra
+wt permission grant @platform admin --tree shared
+wt permission grant @docs-team admin --tree docs
+```
+
+</Steps>
+
+<Callout type="warn">
+When splitting a monorepo, commit history is **filtered per tree** — each tree only contains commits that touched files within its directory boundary. Cross-directory commits are duplicated into each affected tree with appropriate filtering.
+</Callout>
+
+---
+
+## Incremental Adoption
+
+Not ready for a full migration? Use W0rkTree alongside Git by mirroring changes. This lets your team experiment with W0rkTree features while keeping Git as the source of truth.
+
+<Steps>
+
+### Import with mirror mode
+
+Set up a live mirror that stays in sync with your Git remote:
+
+```bash
+wt git import https://github.com/org/repo.git --mirror
+```
+
+### Configure automatic sync
+
+Set up periodic sync to pull changes from Git automatically:
+
+```bash
+wt git mirror start --interval 5m
+```
+
+The mirror daemon will:
+
+- Pull new commits from the Git remote every 5 minutes
+- Convert them to W0rkTree format automatically
+- Preserve all branch and tag updates
+
+### Use W0rkTree features locally
+
+While the mirror keeps your history in sync, you can start using W0rkTree features:
+
+```bash
+# Create local trees for team isolation
+wt tree create frontend
+
+# Enable auto-tracking
+wt track start
+
+# Use W0rkTree's richer diff and log tools
+wt diff --stat
+wt log --oneline
+```
+
+### Gradually shift workflows
+
+As your team gets comfortable, you can start committing through W0rkTree and pushing back to Git:
+
+```bash
+wt commit -m "Feature implemented via W0rkTree"
+wt git push origin main
+```
+
+When you're ready, disable the mirror and make W0rkTree your primary VCS.
+
+</Steps>
+
+---
+
+## Submodule Migration
+
+Git submodules are notoriously difficult to manage. W0rkTree's nested tree model replaces submodules with a first-class, dependency-aware alternative.
+
+<Steps>
+
+### Import the parent repository
+
+```bash
+wt git import /path/to/parent-repo --recurse-submodules
+```
+
+W0rkTree detects `.gitmodules` and automatically converts each submodule into a nested tree:
+
+```
+✓ Scanning Git repository...
+  Detected 3 submodules:
+    libs/shared      → git@github.com:org/shared.git
+    libs/auth        → git@github.com:org/auth.git
+    vendor/protobuf  → git@github.com:org/protobuf.git
+
+✓ Converting submodules to nested trees...
+  libs/shared      → tree: shared (487 commits)
+  libs/auth        → tree: auth (203 commits)
+  vendor/protobuf  → tree: protobuf (1,102 commits)
+
+✓ Setting up dependency graph...
+  parent depends on: shared, auth, protobuf
+
+✓ Import complete
+  4 trees created (1 root + 3 from submodules)
+```
+
+### Verify the tree structure
+
+```bash
+wt tree list
+```
+
+```
+NAME         PARENT    BRANCHES   LAST ACTIVITY
+main         —         3          just now
+shared       main      2          just now
+auth         main      1          just now
+protobuf     main      1          just now
+```
+
+### Update dependencies
+
+Unlike Git submodules which pin to a specific commit hash, W0rkTree trees can track branches:
+
+```bash
+# Pin to a branch (auto-update on sync)
+wt tree depend main --on shared@main
+
+# Pin to a specific snapshot (manual update)
+wt tree depend main --on shared@wt:a3f2b1c8
+```
+
+</Steps>
+
+<Callout type="info">
+After migration, you no longer need `git submodule update --init --recursive` or any of the other submodule ceremony. W0rkTree handles dependency resolution natively.
+</Callout>
+
+---
+
+## Configuration Migration
+
+### `.wt/` Config Migration
+
+When migrating to W0rkTree, your Git configurations (`.gitignore`, `.gitattributes`) are mapped to the `.wt/` directory. The `wt git import` command automatically handles the translation of basic ignore patterns into `.wt/ignore` and applies them globally or per-tree via `.wt-tree/`.
+
+W0rkTree automatically converts most Git configuration during import, but some settings require manual attention.
+
+### Automatic conversions
+
+| Git File | W0rkTree Equivalent | Handled Automatically |
+|----------|--------------------|-----------------------|
+| `.gitignore` | `.wtignore` | ✅ Yes |
+| `.gitattributes` | `.wtconfig [attributes]` | ✅ Yes |
+| `.gitmodules` | Nested trees + dependency graph | ✅ Yes (with `--recurse-submodules`) |
+| `.git/config` (remotes) | `.wt/remotes.toml` | ✅ Yes |
+| `.git/hooks/` | `.wt/hooks/` | ⚠️ Partial — scripts are copied but may need path updates |
+
+### Manual migration checklist
+
+After import, review these items:
+
+- [ ] **CI/CD pipelines** — Update `git` commands to `wt` equivalents in your CI scripts
+- [ ] **Editor integrations** — Install the W0rkTree VS Code extension or configure your editor
+- [ ] **Git hooks** — Review `.wt/hooks/` and update any absolute paths or Git-specific logic
+- [ ] **Branch protection rules** — Re-create as W0rkTree permissions with `wt permission grant`
+- [ ] **CODEOWNERS** — Convert to tree ownership with `wt tree create --owner`
+- [ ] **Git LFS** — Large files are stored inline in W0rkTree's object store (no separate LFS needed)
+
+### CI/CD command mapping
+
+If your CI pipelines use Git commands, here's a quick reference for updating them:
+
+```bash
+# Before (Git)
+git clone https://github.com/org/repo.git
+git checkout feature-branch
+git log --oneline -10
+
+# After (W0rkTree)
+wt clone https://wt.example.com/org/repo
+wt branch switch feature-branch
+wt log --oneline --limit 10
+```
+
+<Tabs items={['GitHub Actions', 'GitLab CI', 'Jenkins']}>
+<Tab value="GitHub Actions">
+
+```yaml
+# .github/workflows/build.yml
+steps:
+  - name: Checkout
+    run: |
+      curl -fsSL https://get.worktree.dev | sh
+      wt clone ${{ secrets.WT_REPO_URL }} .
+      wt branch switch ${{ github.head_ref }}
+
+  - name: Build
+    run: npm run build
+
+  - name: Test
+    run: npm test
+```
+
+</Tab>
+<Tab value="GitLab CI">
+
+```yaml
+# .gitlab-ci.yml
+before_script:
+  - curl -fsSL https://get.worktree.dev | sh
+  - wt clone $WT_REPO_URL .
+  - wt branch switch $CI_COMMIT_REF_NAME
+
+build:
+  script:
+    - npm run build
+
+test:
+  script:
+    - npm test
+```
+
+</Tab>
+<Tab value="Jenkins">
+
+```groovy
+// Jenkinsfile
+pipeline {
+    agent any
+    stages {
+        stage('Checkout') {
+            steps {
+                sh 'curl -fsSL https://get.worktree.dev | sh'
+                sh "wt clone ${env.WT_REPO_URL} ."
+                sh "wt branch switch ${env.BRANCH_NAME}"
+            }
+        }
+        stage('Build') {
+            steps {
+                sh 'npm run build'
+            }
+        }
+    }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Tenant Setup
+
+If you are migrating a large organization, you will want to set up multi-tenancy. W0rkTree supports isolating teams and projects into distinct tenants.
+
+1. Initialize your root W0rkTree repository.
+2. Use `wt tenant create` to provision isolated environments for your teams.
+3. Map your existing Git teams or sub-organizations to these tenants.
+4. Configure access policies within `.wt/access/` to ensure secure boundaries between tenants.
+
+## License Compliance on Export
+
+If your workflow requires exporting W0rkTree history back to a Git format (e.g., for open-source releases or compliance), W0rkTree ensures that all SPDX license assignments and author metadata are preserved. 
+
+During `wt git export`, the system performs an automated license audit, attaching any required attribution and compliance metadata to the generated Git commits.
+
+## Rollback Plan
+
+If you need to go back to Git after trying W0rkTree, you can export your repository at any time:
+
+```bash
+wt git export main ./git-backup
+cd ./git-backup
+git log --oneline  # Full history preserved
+```
+
+<Callout type="info">
+W0rkTree's Git export preserves all commit metadata — hashes will differ (BLAKE3 → SHA-1 reconversion), but authorship, timestamps, messages, and file content are identical. You can verify with `git diff` against your original repository.
+</Callout>
+
+The export supports multiple modes:
+
+| Mode | Command | Description |
+|------|---------|-------------|
+| **Full** | `wt git export main ./out` | Complete history with all branches and tags |
+| **Squashed** | `wt git export main ./out --squash` | Single commit with current state |
+| **Shallow** | `wt git export main ./out --depth 50` | Last N commits only |
+| **Single branch** | `wt git export main ./out --branch release` | Export one branch only |
+
+---
+
+## Troubleshooting
+
+Common issues during migration and how to resolve them:
+
+### Import fails with "object too large"
+
+By default, W0rkTree warns on files larger than 100 MB. Increase the limit or skip large files:
+
+```bash
+wt git import /path/to/repo --max-file-size 500MB
+# or
+wt git import /path/to/repo --skip-large-files
+```
+
+### Branch names contain invalid characters
+
+W0rkTree branch names follow the same rules as Git, but tree-scoped branches use `/` as the tree separator. If your Git branches already contain `/` (e.g., `feature/auth`), they are handled correctly — the tree name is prefixed automatically.
+
+### Merge history looks different
+
+W0rkTree preserves merge topology, but the visual representation in `wt log` may look different from `git log --graph` because W0rkTree renders trees separately. Use `--all-trees` to see a unified view:
+
+```bash
+wt log --graph --all-trees
+```
+
+### Permission denied during import
+
+Make sure you have read access to the Git repository and write access to the target directory:
+
+```bash
+# For SSH remotes, verify your key is loaded
+ssh-add -l
+
+# For HTTPS remotes, check credential storage
+git credential fill <<< "protocol=https
+host=github.com"
+```
+
+<Callout type="warn">
+If your Git repository uses LFS, make sure `git-lfs` is installed and configured before running the import. W0rkTree will automatically download and inline LFS objects during conversion.
+</Callout>
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Architecture" description="Understand the multi-tenant architecture that powers your migrated repository." href="/docs/architecture" />
+  <Card title="CLI Reference" description="Learn every W0rkTree command available for managing your new repository." href="/docs/cli" />
+  <Card title="Versioning" description="Understand W0rkTree's version scheme, release channels, and upgrade process." href="/docs/versioning" />
+  <Card title="Quick Start" description="Review the fundamentals if you're new to W0rkTree's workflow." href="/docs/quick-start" />
+</Cards>

@@ -1,0 +1,59 @@
+---
+title: Maintenance
+description: Garbage collection, backup, and recovery procedures for W0rkTree servers.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps } from 'fumadocs-ui/components/steps';
+
+## Garbage Collection
+
+Remove unreachable objects to reclaim disk space:
+
+```bash
+# Via CLI
+wt server gc --dry-run    # Preview what would be removed
+wt server gc              # Run GC
+wt server gc --aggressive # Full repack + GC
+
+# Via API
+curl -X POST http://localhost:8080/api/server/gc
+```
+
+## Backup
+
+<Steps>
+### Create a backup
+
+```bash
+wt backup create --output /backups/worktree-$(date +%Y%m%d).tar.zst
+```
+
+### Verify the backup
+
+```bash
+wt backup verify /backups/worktree-20250115.tar.zst
+```
+
+### Restore from backup
+
+```bash
+wt backup restore /backups/worktree-20250115.tar.zst --target /var/lib/worktree
+```
+</Steps>
+
+<Callout type="warn">
+Always stop the server before restoring from a backup to avoid data corruption.
+</Callout>
+
+## Scheduled Maintenance
+
+Recommended maintenance schedule:
+
+| Task | Frequency | Command |
+|---|---|---|
+| Garbage collection | Weekly | `wt server gc` |
+| Full backup | Daily | `wt backup create` |
+| Aggressive repack | Monthly | `wt server gc --aggressive` |
+| Log rotation | Daily | Configure via logrotate |
+| Health check | Every 5 minutes | `curl /api/health` |

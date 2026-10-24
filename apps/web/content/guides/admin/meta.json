@@ -1,0 +1,14 @@
+{
+  "title": "Admin Panel",
+  "description": "W0rkTree Admin Panel documentation",
+  "pages": [
+    "index",
+    "---Setup---",
+    "installation",
+    "configuration",
+    "---Features---",
+    "api-reference",
+    "monitoring",
+    "maintenance"
+  ]
+}

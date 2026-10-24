@@ -1,0 +1,94 @@
+---
+title: "Declarative Access Control: Terraform for Your Codebase"
+description: "Why version control needs policy-as-code, and how W0rkTree brings Terraform-style explicit access control to your repositories."
+author: "Sean Filimon"
+date: "2025-10-22"
+tags: ["security", "iam", "features"]
+summary: "Git's permission model is binary, and bolt-on platform features are brittle. W0rkTree introduces Declarative Access Control: explicit, glob-free policy-as-code that lives inside your repository and enforces security at the engine level."
+---
+
+## The Problem with Git's "All or Nothing" Permissions
+
+Git's permission model is inherently binary: you either have access to clone a repository, or you don't. Once you have access, you can read every file, view every branch, and (unless blocked by an external server) push to any reference. 
+
+To work around this, the industry relies on third-party hosting platforms to provide branch protection and path-level restrictions. But this creates a dangerous disconnect:
+1. **Permissions live outside the code:** You manage infrastructure-as-code and configuration-as-code, but your repository access is still managed by clicking buttons in a web UI.
+2. **Globs are fragile:** Path restrictions usually rely on glob patterns (e.g., `src/**/*.rs`). If a developer renames a directory or restructures the project, the glob might silently break, leaving sensitive code unprotected.
+3. **No team autonomy:** In a monorepo, the frontend team shouldn't need a global administrator to grant a new contractor access to the `frontend/` directory.
+
+W0rkTree fixes this natively with **Declarative Access Control**.
+
+## Infrastructure-as-Code for Version Control
+
+W0rkTree manages permissions the way Terraform manages infrastructure: explicitly, declaratively, and inside the repository itself.
+
+Every W0rkTree repository (and every nested tree within it) contains a `.wt/access/` directory containing `policies.toml` and `roles.toml`. These files define exactly who can do what. Because these policies are tracked in the repository, any changes to your security posture must go through standard code review, generate diffs, and leave an immutable audit trail.
+
+### Explicit Registration: Death to Globs
+
+One of W0rkTree's most defining security choices is the complete rejection of glob patterns for access control. 
+
+Globs are dangerous because their behavior changes based on file system state. Instead, W0rkTree requires **explicit path registration**. You declare the exact files and directories you want to protect in your `config.toml`, and then reference those registered paths in your policies.
+
+Here is how you lock down a production configuration file:
+
+```toml
+# .wt/config.toml
+# Step 1: Explicitly register the path
+
+[[registered_path]]
+path = "config/production.toml"
+description = "Production configuration — restricted write access"
+```
+
+```toml
+# .wt/access/policies.toml
+# Step 2: Apply policies to the registered path
+
+[[policy]]
+name = "lock-production-config"
+effect = "deny"
+subjects = [{ all_authenticated = true }]
+scope = { path = "config/production.toml" }
+permissions = ["tree:write"]
+
+[[policy]]
+name = "ops-lead-production-config"
+effect = "allow"
+subjects = [{ account = "ops-lead@company.com" }]
+scope = { path = "config/production.toml" }
+permissions = ["tree:write"]
+```
+
+If a developer tries to modify `config/production.toml` without the proper role, the W0rkTree server engine rejects the push at the protocol level.
+
+## The Scope Hierarchy
+
+Because W0rkTree supports [Nested Trees](/articles/nested-trees-explained), our access control is inherently hierarchical:
+
+**Tenant → Worktree (Root) → Tree → Branch → Registered Path**
+
+Policies trickle down. A policy defined in the root `.wt/access/policies.toml` acts as a **Permission Ceiling**. If the global administrators dictate that contractors cannot delete branches, a specific project team cannot override that rule to give a contractor deletion rights. *Deny always beats Allow at the same scope level.*
+
+However, teams *can* manage their own granular access within their isolated workspaces. The backend team can use `.wt-tree/access/policies.toml` inside their specific subtree to grant a new hire write access to the `auth-service`, completely independently from the frontend team. 
+
+## Real-World Multi-Tenancy
+
+Because W0rkTree natively understands Identity and Access Management (IAM), policies aren't just limited to local users. You can grant access across organizational boundaries using our Tenant Model.
+
+Need to give a partner company read-only access to a specific branch? You just write a policy:
+
+```toml
+[[policy]]
+name = "partner-company-readonly"
+effect = "allow"
+subjects = [{ tenant = "partner-corp" }]
+scope = { branch = "feature/partner-integration" }
+permissions = ["tree:read", "snapshot:read"]
+```
+
+## Security at the Engine Level
+
+W0rkTree's Declarative Access Control is evaluated by the core server engine on every single operation. It cannot be bypassed by CLI flags, and it doesn't rely on Git hooks that developers can skip.
+
+By bringing IAM directly into the version control protocol, W0rkTree ensures that your repository's security posture is versioned, auditable, explicit, and bulletproof.

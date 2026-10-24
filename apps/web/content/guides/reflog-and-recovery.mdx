@@ -1,0 +1,127 @@
+---
+title: "Reflog & Recovery"
+description: "Learn how to use the reflog to undo mistakes, recover deleted branches, and restore lost work in W0rkTree."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree is designed to be highly forgiving. Thanks to the background worker continuously creating staged snapshots, combined with a robust reference log (reflog), permanently losing work is incredibly difficult. 
+
+This guide covers how to undo mistakes, navigate your local history, and recover deleted branches or lost changes.
+
+## Understanding the Reflog
+
+Whenever a branch pointer is updated—whether by a commit, a merge, a rebase, or a reset—W0rkTree records the previous state in the **reflog**. The reflog is a chronological, local-only ledger of every movement your references have made.
+
+To view your reflog for the current tree, run:
+
+```bash
+wt reflog
+```
+
+The output looks like this:
+
+```txt
+abc1234 HEAD@{0}: commit: Implement new checkout flow
+def5678 HEAD@{1}: reset: moving to def5678
+9ab3456 HEAD@{2}: merge feature/auth: Fast-forward
+def5678 HEAD@{3}: branch switch: from main to feature/checkout
+```
+
+Each entry shows the snapshot hash, the reflog syntax (`HEAD@{n}`), and the action that caused the pointer to move. `HEAD@{0}` is where you are right now, `HEAD@{1}` is where you were one action ago, and so on.
+
+## Recovery Workflows
+
+### Recovering from a Bad Reset
+
+If you perform a `wt reset --hard` and realize you just wiped out commits you actually needed, you can use the reflog to travel back in time.
+
+1. Run `wt reflog` to find the snapshot hash before the reset occurred.
+2. Reset your branch back to that hash:
+
+```bash
+wt reset --hard HEAD@{1}
+```
+
+Because W0rkTree objects are immutable and the reflog retains the reference, your "lost" commits are instantly restored.
+
+### Rescuing a Deleted Branch
+
+If you accidentally delete a branch using `wt branch delete feature/auth`, it is not immediately gone from your local object store. You can easily bring it back.
+
+1. Search the reflog to find the last known hash for that branch:
+
+```bash
+wt reflog | grep "feature/auth"
+```
+
+2. Recreate the branch pointing at that specific snapshot:
+
+```bash
+wt branch create feature/auth 9ab3456
+```
+
+### Recovering Uncommitted Work
+
+Unlike traditional version control where uncommitted working directory changes are fragile, W0rkTree's background worker continuously captures your work as **staged snapshots**. 
+
+If you accidentally delete a file or mess up your working directory *before* creating a formal commit, you can query the worker's staged snapshot history:
+
+```bash
+wt staged list
+```
+
+Find the staged snapshot from right before your mistake, and restore your working directory to it:
+
+```bash
+wt restore --source <staged-snapshot-hash> -- path/to/file.ts
+```
+
+<Callout type="info">
+Staged snapshots act as a continuous safety net. Even if you haven't run `wt commit` all day, the worker has been saving your progress in the background.
+</Callout>
+
+## Undoing Commits: Revert vs. Reset
+
+When you need to undo a formal commit, you must choose between `revert` and `reset`. The choice depends entirely on whether the commit has been **pushed** to the server.
+
+### Safe Undo: `wt revert`
+
+If the commit has already been pushed and shared with your team, you should never rewrite history. Instead, use `wt revert`.
+
+```bash
+wt revert abc1234
+```
+
+This command creates a *new* commit that applies the exact inverse of the changes made in `abc1234`. It preserves the public history while safely rolling back the feature.
+
+### Local Undo: `wt reset`
+
+If the commit is still local (i.e., it exists only in your staged history and hasn't been pushed), you can safely rewrite history using `wt reset`.
+
+- **`wt reset --soft HEAD~1`**: Moves the branch pointer back one commit, but leaves all the changes in your working directory and staging area. Use this if you want to amend the commit message or add more files.
+- **`wt reset --hard HEAD~1`**: Moves the branch pointer back and forcefully overwrites your working directory to match. 
+
+<Callout type="warn">
+Only use `wt reset --hard` if you are absolutely sure you want to discard your current working directory state. (Though, as mentioned above, the reflog and staged snapshots can usually bail you out if you make a mistake!)
+</Callout>
+
+## Garbage Collection
+
+Because the reflog and staged snapshots retain references to otherwise "orphaned" objects, your local `.wt/objects/` directory will grow over time. 
+
+W0rkTree automatically runs a garbage collection (GC) process in the background to clean up objects that are no longer reachable from any branch, tag, or active reflog entry.
+
+By default, reflog entries expire after **30 days**, and unreferenced staged snapshots expire after **14 days**. You can configure these retention periods in your global `.wt/config.toml`:
+
+```toml
+[storage.retention]
+reflog_days = 30
+staged_snapshots_days = 14
+```
+
+If you urgently need to free up disk space, you can force an immediate prune of expired objects:
+
+```bash
+wt gc --prune=now
+```

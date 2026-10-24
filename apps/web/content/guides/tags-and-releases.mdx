@@ -1,0 +1,100 @@
+---
+title: "Tags & Releases"
+description: "Create lightweight and annotated tags, publish releases, and manage changelogs in W0rkTree."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+In W0rkTree, tags and releases are strictly scoped to **trees**. Unlike traditional monorepos where a single tag applies globally to the entire repository—often creating confusion about which services were actually updated—W0rkTree allows each team to tag and release their trees independently.
+
+## Tag Types
+
+W0rkTree supports two types of tags, similar to Git, but optimized for tree-scoped object graphs.
+
+### Lightweight Tags
+
+A lightweight tag is simply a named pointer to a specific commit. It is ideal for temporary bookmarks or local milestones.
+
+```bash
+wt tag create v1.2.0-rc1
+```
+
+### Annotated Tags
+
+Annotated tags are full objects in the W0rkTree storage engine. They contain a tagging message, the tagger's identity, a timestamp, and can be cryptographically signed.
+
+```bash
+wt tag create v1.2.0 -m "Release version 1.2.0" --sign
+```
+
+<Callout type="info">
+By default, tags are created as **staged** objects on your local machine. They are not visible to the rest of the team until you explicitly run `wt push --tags`.
+</Callout>
+
+## Managing Tags
+
+You can list all tags for your current tree using the `list` command:
+
+```bash
+wt tag list
+```
+
+To see tags across all trees in your workspace, you can use the global flag:
+
+```bash
+wt tag list --all-trees
+```
+
+If you need to move a tag (for example, floating a `latest` tag), use the force flag:
+
+```bash
+wt tag create latest --force
+```
+
+## Creating Releases
+
+A **Release** in W0rkTree builds on top of an annotated tag by adding release notes, compiled artifacts, and status metadata.
+
+To create a release from an existing tag:
+
+```bash
+wt release create v1.2.0 --title "The Performance Update" --notes ./release-notes.md
+```
+
+### Attaching Artifacts
+
+You can attach build artifacts directly to a release. These artifacts are stored in the W0rkTree server's object store and distributed globally via the sync protocol.
+
+```bash
+wt release upload v1.2.0 ./target/release/frontend-bundle.tar.gz
+```
+
+Because W0rkTree's underlying transport uses QUIC, artifact downloads are highly concurrent and extremely fast, even for multi-gigabyte binaries.
+
+## Automated Changelogs
+
+W0rkTree can automatically generate comprehensive changelogs by analyzing the commit history between two tags. Because W0rkTree understands the **dependency graph** between trees, its changelogs can be deeply context-aware.
+
+```bash
+wt changelog generate v1.1.0..v1.2.0
+```
+
+This command parses commit messages and groups them by type (e.g., Features, Fixes, Breaking Changes). 
+
+If your tree depends on an upstream tree (e.g., `frontend` depends on `api`), you can include upstream changes that impacted this release:
+
+```bash
+wt changelog generate v1.1.0..v1.2.0 --include-dependencies
+```
+
+This ensures that when the frontend team publishes their release notes, they automatically include any breaking API changes that were merged into the `api` tree during that release window.
+
+## Tagging Linked Branches
+
+When working with **Linked Branches** that span multiple trees, you can create a synchronized tag across all participating trees simultaneously.
+
+```bash
+wt branch link tag v2.0.0-beta feature/unified-auth -m "Beta release of unified auth"
+```
+
+This command guarantees that `v2.0.0-beta` points to the exact atomic commits in the `frontend`, `backend`, and `infrastructure` trees that were merged together, providing a perfect snapshot for multi-service deployment.

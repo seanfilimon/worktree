@@ -1,0 +1,250 @@
+---
+title: Architecture
+description: Understanding W0rkTree's multi-tenant architecture and core design principles.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Cards, Card } from 'fumadocs-ui/components/card';
+
+## Overview
+
+W0rkTree is built on a **multi-tenant, event-driven architecture** that enables teams to work independently while maintaining a unified codebase. Every design decision prioritizes three goals: **correctness first**, **speed by default**, and **collaboration without friction**.
+
+The system is composed of modular Rust crates, each responsible for a distinct layer of the stack — from low-level storage and protocol definitions to high-level CLI and admin tooling. This separation allows each layer to be tested, optimized, and evolved independently.
+
+<Callout type="info">
+  **Design Philosophy** — W0rkTree follows a "shared-nothing within trees" model. Each tree operates as an isolated unit with its own branch history, permissions, and object graph. Cross-tree coordination happens exclusively through the dependency graph and linked branches, never through shared mutable state.
+</Callout>
+
+## Core Concepts
+
+### Two-Runtime Model
+
+W0rkTree operates using a **two-runtime model**: a lightweight background process (`wt worker`) that runs locally on your machine, and a centralized server (`worktree-server`) that manages synchronization and collaboration.
+
+- The **background process** handles local file watching, auto-snapshotting, and maintaining your staged, private workspace.
+- The **server runtime** handles multi-tenant isolation, access control, and routing of pushes, pulls, and cross-tree dependencies.
+
+### Staged vs. Pushed History
+
+W0rkTree distinguishes strictly between local, staged changes and public, pushed history.
+
+- **Staged Snapshots:** As you work, the background process continuously creates private snapshots of your filesystem. These are "staged" locally and completely invisible to the rest of your team.
+- **Pushed Commits:** Only when you explicitly push a snapshot does it become part of the shared, public history on the server. This allows you to experiment freely and squash your messy local history into clean commits before sharing.
+
+### Configuration (`.wt/` vs `.wt-tree/`)
+
+Configuration in W0rkTree is split between global repository settings and tree-specific overrides:
+
+- **`.wt/` Directory:** Located at the root of the repository, this contains global configuration, default ignore patterns, and top-level access policies.
+- **`.wt-tree/` Directory:** Each nested tree can contain its own `.wt-tree/` directory. This allows teams to override global settings, define tree-specific ignore patterns, and configure their own auto-tracking behaviors without affecting other teams.
+
+### Trees
+
+Trees are the fundamental unit of organization in W0rkTree. Each tree represents an **isolated workspace** with its own branches, permissions, and history. Unlike Git's monorepo model where everyone shares one history, trees give each team a self-contained universe within the larger repository.
+
+A tree includes:
+
+- **Its own branch set** — branches are scoped to a tree and cannot collide with other trees
+- **Independent history** — commits within a tree are isolated until explicitly linked
+- **Ownership metadata** — every tree has designated owners and contributor lists
+- **Path-level permissions** — fine-grained access control down to individual files
+
+Trees can be nested, allowing complex organizational hierarchies. A `platform` tree might contain sub-trees for `platform/api`, `platform/auth`, and `platform/billing`, each with their own team and permissions.
+
+### Dependency Graph
+
+W0rkTree maintains an **explicit, versioned dependency graph** between trees. When tree `frontend` declares a dependency on tree `api`, the system tracks this relationship and reacts when upstream changes land.
+
+Key behaviors of the dependency graph:
+
+- **Automatic TODO generation** — when `api` merges a breaking change, `frontend` automatically receives a TODO item describing the upstream delta
+- **Impact analysis** — before merging, contributors can see which downstream trees will be affected
+- **Cascade notifications** — tree owners are notified when upstream dependencies change
+- **Version pinning** — trees can pin to a specific snapshot of their dependency, opting into updates on their own schedule
+
+### Linked Branches
+
+Linked branches enable **atomic multi-tree deployments**. When branches across different trees are linked, they merge together or not at all — guaranteeing that cross-cutting changes land as a unit.
+
+This solves the classic monorepo problem where an API change and a frontend update must deploy simultaneously but are owned by different teams.
+
+### Storage Engine
+
+The storage engine is built in Rust for maximum performance, using a **content-addressable object store** similar to Git's model but optimized for multi-tree operations.
+
+Key differences from Git's storage:
+
+| Aspect | Git | W0rkTree |
+|--------|-----|----------|
+| Object scope | Global (one DAG) | Per-tree (isolated DAGs with cross-references) |
+| Deduplication | Blob-level | Chunk-level with rolling hash |
+| Indexing | Pack files | LSM-tree backed index with bloom filters |
+| Locking | File-level locks | Lock-free concurrent reads, per-tree write locks |
+| Compression | zlib per object | zstd with dictionary training per repository |
+
+## Crate Structure
+
+W0rkTree is organized as a Cargo workspace with six core crates. Each crate has a focused responsibility and well-defined API boundaries.
+
+| Crate | Path | Role |
+|-------|------|------|
+| **worktree-protocol** | `crates/protocol` | Core data types, serialization formats, and wire protocol definitions. Defines the canonical representation of trees, commits, objects, and events. Zero external dependencies beyond `serde`. |
+| **worktree-server** | `crates/server` | Multi-tenant server runtime. Handles repository hosting, authentication, synchronization, and webhook dispatch. Built on `tokio` and `axum`. |
+| **worktree-git** | `crates/git` | Bidirectional Git compatibility layer. Translates between W0rkTree's object model and Git's pack format. Powers `wt git import`, `wt git export`, `wt git push`, and `wt git pull`. |
+| **worktree-cli** | `crates/cli` | Command-line interface. Parses arguments, orchestrates operations, and renders output. Thin layer over `worktree-sdk`. |
+| **worktree-sdk** | `crates/sdk` | High-level Rust SDK for embedding W0rkTree in other applications. Provides ergonomic APIs for all repository operations. Used by both `worktree-cli` and `worktree-admin`. |
+| **worktree-admin** | `crates/admin` | Administrative tooling for server operators. Manages users, organizations, quotas, and server configuration. Includes a TUI dashboard. |
+
+The dependency flow between crates is strictly layered:
+
+```
+worktree-cli ──► worktree-sdk ──► worktree-protocol
+worktree-admin ─┘                  worktree-server ──► worktree-protocol
+                                   worktree-git ──► worktree-protocol
+```
+
+## Event Pipeline
+
+W0rkTree's auto-tracking system is powered by an **event-driven pipeline** that transforms raw filesystem changes into versioned snapshots without manual intervention.
+
+### Pipeline Stages
+
+The pipeline flows through four stages:
+
+**Stage 1: Filesystem Watcher**
+
+A platform-native file watcher (powered by `notify` on all platforms) monitors the working directory for changes. Events are debounced and deduplicated before entering the pipeline.
+
+- Uses `inotify` on Linux, `FSEvents` on macOS, and `ReadDirectoryChanges` on Windows
+- Applies `.wtignore` rules to filter irrelevant paths
+- Batches rapid successive changes into a single event (configurable debounce window, default 200ms)
+
+**Stage 2: Event Engine**
+
+The event engine receives batched filesystem events and classifies them:
+
+- **Content changes** — file modifications, creations, deletions
+- **Structural changes** — directory renames, moves, permission changes
+- **Dependency triggers** — changes to files referenced by other trees
+
+Each event is enriched with metadata: timestamp, affected tree, and change category.
+
+**Stage 3: Snapshot Builder**
+
+The snapshot builder constructs a new tree state from the classified events:
+
+- Computes content hashes for changed files using BLAKE3
+- Updates the tree's Merkle DAG incrementally (only changed paths are rehashed)
+- Generates a minimal diff against the previous snapshot
+- Checks snapshot against any configured validation rules (max file size, forbidden patterns, etc.)
+
+**Stage 4: Auto-Snapshot Commit**
+
+If the snapshot passes validation, it is committed to the local object store:
+
+- Creates a new commit object referencing the snapshot
+- Updates the current branch pointer
+- Writes to the event log for sync purposes
+- Triggers any registered post-commit hooks
+
+<Callout type="info">
+  Auto-snapshots create **staged snapshots** that are **lightweight and local** — they don't push to a remote server or notify other users. Think of them as continuous local checkpoints. You can squash, amend, or discard them before pushing to share with your team.
+</Callout>
+
+### Pipeline Configuration
+
+The event pipeline is configurable per-tree via `.wtconfig`:
+
+```toml
+[tracking]
+enabled = true
+debounce_ms = 200
+auto_snapshot = true
+ignore_patterns = ["*.tmp", "node_modules/**", "target/**"]
+
+[tracking.validation]
+max_file_size = "50MB"
+forbidden_patterns = ["\.env$", "secret"]
+```
+
+## Data Flow
+
+Understanding how objects move through the system helps explain W0rkTree's performance characteristics and consistency guarantees.
+
+### Local Operations
+
+For local operations (commit, branch, diff), data flows entirely within the local object store:
+
+```
+Working Directory
+       │
+       ▼
+  Filesystem Watcher ──► Event Engine ──► Snapshot Builder
+                                                │
+                                                ▼
+                                         Object Store (local)
+                                                │
+                                                ▼
+                                         Branch Pointers
+```
+
+All local operations are **lock-free for reads** and use **per-tree write locks** for mutations. This means multiple trees can commit simultaneously without contention.
+
+### Sync Operations
+
+When pushing changes to a remote server, the data flow extends:
+
+```
+Object Store (local)
+       │
+       ▼
+  Delta Calculator ──► Compression ──► Wire Protocol
+       │                                     │
+       ▼                                     ▼
+  Pack Builder                         Server (remote)
+                                             │
+                                             ▼
+                                       Object Store (remote)
+                                             │
+                                             ▼
+                                       Dependency Graph Update
+                                             │
+                                             ▼
+                                       Notification Dispatch
+```
+
+The sync protocol is **incremental** — only objects the remote doesn't have are transferred. The delta calculator uses the same Merkle tree structure to efficiently compute the minimal set of objects to send.
+
+### Git Bridge Operations
+
+When interacting with Git repositories via `worktree-git`, data flows through a translation layer:
+
+```
+W0rkTree Object Store
+       │
+       ▼
+  Object Translator ──► Git Pack Builder ──► Git Remote
+       │
+       ▼
+  Reference Mapper (W0rkTree branches ↔ Git refs)
+```
+
+The Git bridge maintains a **bidirectional mapping** between W0rkTree's tree-scoped branches and Git's flat ref namespace. By default, a tree named `frontend` with branch `main` maps to the Git ref `refs/heads/frontend/main`.
+
+## System Design
+
+<Cards>
+  <Card title="Two-Runtime Model" href="/docs/server/architecture">
+    A local background worker handles auto-tracking and offline operations. The remote server manages synchronization, collaboration, and access control. All operations work offline with eventual consistency on reconnect.
+  </Card>
+  <Card title="Multi-Tenant Isolation" href="/docs/server/architecture">
+    Each tree is a tenant with strict isolation boundaries. The server enforces that tree operations cannot read or write data belonging to another tree unless explicitly permitted through the dependency graph.
+  </Card>
+  <Card title="Event Sourcing" href="/docs/server/event-pipeline">
+    All mutations are recorded as an append-only event log. This enables powerful features like time-travel debugging, audit trails, and conflict-free replicated data types (CRDTs) for real-time collaboration.
+  </Card>
+  <Card title="Pluggable Backends" href="/docs/server/storage">
+    The storage engine supports pluggable backends. The default backend uses the local filesystem, but S3-compatible object storage and SQLite backends are available for specialized deployment scenarios.
+  </Card>
+</Cards>

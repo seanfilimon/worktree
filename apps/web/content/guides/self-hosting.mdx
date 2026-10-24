@@ -1,0 +1,149 @@
+---
+title: "Self-Hosting W0rkTree Server"
+description: "Deploy the W0rkTree server on your own infrastructure with Docker, systemd, or Kubernetes."
+---
+
+## Prerequisites
+
+Before deploying the W0rkTree server, ensure your host meets the minimum requirements. You need at least 2 CPU cores, 4 GB of RAM, and 20 GB of disk space for a small team deployment. The server binary runs on Linux (x86_64 or aarch64), and you will need TLS certificates for production use.
+
+Download the latest server release from the [releases page](https://github.com/worktree-dev/worktree/releases) or pull the official Docker image:
+
+```bash
+# Download the binary
+curl -fsSL https://releases.worktree.dev/latest/worktree-server-linux-amd64 -o /usr/local/bin/worktree-server
+chmod +x /usr/local/bin/worktree-server
+
+# Or pull the Docker image
+docker pull ghcr.io/worktree-dev/worktree-server:latest
+```
+
+## Docker Deployment
+
+Docker is the fastest way to get a self-hosted W0rkTree server running. Create a `docker-compose.yml` file with the server and a persistent volume for repository data:
+
+```yaml
+version: "3.9"
+services:
+  worktree:
+    image: ghcr.io/worktree-dev/worktree-server:latest
+    ports:
+      - "4840:4840"
+    volumes:
+      - wt-data:/var/lib/worktree
+      - ./config.toml:/etc/worktree/config.toml:ro
+    environment:
+      - WT_DATA_DIR=/var/lib/worktree
+      - WT_LOG_LEVEL=info
+    restart: unless-stopped
+
+volumes:
+  wt-data:
+```
+
+Start the server with `docker compose up -d` and verify it is healthy by visiting `http://localhost:4840/health`.
+
+## Systemd Service
+
+For bare-metal deployments, create a systemd unit file at `/etc/systemd/system/worktree-server.service`:
+
+```ini
+[Unit]
+Description=W0rkTree Server
+After=network.target
+
+[Service]
+Type=simple
+User=worktree
+ExecStart=/usr/local/bin/worktree-server --config /etc/worktree/config.toml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now worktree-server
+```
+
+## Kubernetes with Helm
+
+For production-scale deployments, use the official Helm chart to deploy W0rkTree into your Kubernetes cluster:
+
+```bash
+helm repo add worktree https://charts.worktree.dev
+helm repo update
+helm install worktree worktree/worktree-server \
+  --namespace worktree --create-namespace \
+  --set persistence.size=100Gi \
+  --set ingress.enabled=true \
+  --set ingress.host=wt.example.com
+```
+
+The Helm chart provisions a StatefulSet with persistent volume claims, a ClusterIP service, and an optional Ingress resource. Review the chart values with `helm show values worktree/worktree-server` to customize replica count, resource limits, and storage classes.
+
+## Configuration
+
+The server reads configuration from `config.toml`. Key settings include the listen address, data directory, authentication backend, and TLS paths:
+
+```toml
+[server]
+listen = "0.0.0.0:4840"
+data_dir = "/var/lib/worktree"
+
+[auth]
+provider = "builtin"       # or "oidc" for SSO
+registration = "invite"    # "open" or "invite"
+
+[tls]
+enabled = true
+cert_file = "/etc/worktree/tls/cert.pem"
+key_file = "/etc/worktree/tls/key.pem"
+```
+
+For TLS, you can use certificates from Let's Encrypt via `certbot` or provide your organization's internal CA certificates. Always enable TLS in production to protect repository data in transit.
+
+## Multi-Tenancy & Isolation
+
+W0rkTree's server natively supports multi-tenancy, allowing you to host multiple isolated organizations or business units on a single instance. 
+
+To enable multi-tenancy, configure the tenant model in your `config.toml`:
+
+```toml
+[tenants]
+enabled = true
+default_tier = "standard"
+isolation_mode = "strict"
+```
+
+When `isolation_mode` is set to `"strict"`, W0rkTree enforces hard physical isolation between tenants at the storage layer, ensuring that object data and access policies from one tenant can never leak into another. You can provision new tenants using the `worktree-admin` CLI or via the admin API.
+
+## Rate Limits
+
+To protect your server from abuse or runaway CI pipelines, configure rate limits. These can be defined globally or overridden per-tenant to ensure fair resource allocation.
+
+```toml
+[server.rate_limits]
+enabled = true
+requests_per_second = 100
+burst_size = 50
+
+[tenants.tiers.enterprise.rate_limits]
+requests_per_second = 500
+burst_size = 200
+```
+
+## Backups
+
+Schedule regular backups of the data directory to avoid data loss. The server supports online snapshots, so you do not need to stop the service:
+
+```bash
+worktree-server backup --data-dir /var/lib/worktree --output /backups/wt-$(date +%F).tar.zst
+```
+
+Automate this with a cron job or Kubernetes CronJob and store backups in an offsite location such as S3 or GCS. Test your restore process periodically by running `worktree-server restore --input /backups/wt-2025-01-15.tar.zst --data-dir /tmp/wt-restore` and verifying repository integrity.

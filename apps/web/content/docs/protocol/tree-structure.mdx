@@ -1,0 +1,61 @@
+---
+title: Tree Structure
+description: Nested tree model — independent histories, path resolution, and cross-tree references.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+Trees are the fundamental unit of organization. Unlike Git's single-DAG model, W0rkTree organizes code into **isolated trees** — each with its own branches, history, and permissions.
+
+## Nesting
+
+Trees can be nested to create organizational hierarchies:
+
+```
+platform/
+├── api/          (tree: platform/api)
+├── auth/         (tree: platform/auth)
+└── billing/      (tree: platform/billing)
+```
+
+Each sub-tree operates independently while existing within the larger repository.
+
+## Tree Configuration (`.wt-tree/`)
+
+Every tree can define its own self-contained configuration by placing a `.wt-tree/` directory at its root. This establishes the tree as an independent governance boundary within the larger tenant.
+
+### Tree Access Control
+
+Access control can be declared at the tree level using `.wt-tree/access.toml`. This allows tree owners to define roles and grant permissions (e.g., `tree.admin`, `tree.developer`) scoped exclusively to their tree, overriding or extending tenant-level policies.
+
+### Tree Licensing
+
+License compliance policies are enforced per-tree via `.wt-tree/license.toml`. This configuration dictates which licenses are permitted, forbidden, or require review for any dependencies introduced into the tree, ensuring legal compliance at the component level.
+
+## Path Resolution
+
+When resolving a path that crosses tree boundaries, W0rkTree uses a **mount-point model**:
+
+1. Look up the file in the current tree
+2. If the path crosses into a dependency, resolve against the pinned version of that tree
+3. Cross-tree references are always read-only unless the user has write permissions on the target tree
+
+## Dependency Graph
+
+Trees declare explicit dependencies on other trees:
+
+```bash
+wt tree depend frontend --on shared-components
+```
+
+The dependency graph enables:
+- **Automatic TODO generation** when upstream changes land
+- **Impact analysis** before merging
+- **Cascade notifications** to tree owners
+- **Version pinning** to specific snapshots
+
+<Callout type="info">
+The dependency graph is acyclic — circular dependencies are rejected at declaration time.
+</Callout>

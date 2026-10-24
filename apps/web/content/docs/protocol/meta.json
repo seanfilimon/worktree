@@ -1,0 +1,23 @@
+{
+  "title": "Protocol",
+  "description": "W0rkTree Protocol specification",
+  "pages": [
+    "index",
+    "---Architecture---",
+    "sync-protocol",
+    "staged-visibility-protocol",
+    "iam-protocol",
+    "---Data Model---",
+    "object-model",
+    "snapshot-format",
+    "tree-structure",
+    "storage-model",
+    "---Semantics---",
+    "diff-semantics",
+    "merge-semantics",
+    "---Network---",
+    "wire-format",
+    "transport",
+    "versioning"
+  ]
+}

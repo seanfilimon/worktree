@@ -1,0 +1,26 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # Package name `worktree.sync.v1` is opinionated;
+    # don't require PACKAGE_DIRECTORY_MATCH (would force
+    # us to nest files under a worktree/sync/v1/ subdir
+    # which adds zero value for a flat proto directory).
+    - PACKAGE_DIRECTORY_MATCH
+
+    # RPC_REQUEST_STANDARD_NAME / RPC_RESPONSE_STANDARD_NAME enforce
+    # `<RpcName>Request` / `<RpcName>Response` naming for gRPC. We
+    # deliberately keep proto message names matching the Rust domain
+    # types in crates/worktree-protocol/src/feature/sync_protocol.rs
+    # during the WT-PROTO migration so the two tracks (codegen'd wire
+    # types + hand-coded domain types) stay greppable as the same
+    # entity. After WT-PROTO-2 lands conversion impls and the domain
+    # types deprecate, we can revisit and align names.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

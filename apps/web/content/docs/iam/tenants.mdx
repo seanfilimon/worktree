@@ -1,0 +1,69 @@
+---
+title: Multi-Tenancy
+description: Understanding W0rkTree's native multi-tenant architecture and isolation guarantees.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree is built from the ground up to support native **multi-tenancy**. This means a single W0rkTree server or cluster can host independent, isolated organizations (tenants) securely, with no risk of cross-tenant data leakage.
+
+Multi-tenancy is crucial for SaaS providers building on top of W0rkTree, as well as large enterprises that need strict isolation between distinct subsidiaries or departments while sharing the same underlying infrastructure.
+
+## Tenant Model
+
+In W0rkTree, a **Tenant** represents an isolated workspace. Every object, user, tree, and configuration in W0rkTree belongs to a specific tenant.
+
+### Isolation Guarantees
+
+W0rkTree provides strong logical isolation by default, with options for physical isolation:
+
+1.  **Namespace Isolation:** All storage paths and database keys are prefixed with a unique Tenant ID. It is impossible for a query in one tenant to accidentally return records from another.
+2.  **Network Isolation:** The sync protocol requires a valid Tenant ID and authentication token for the specific tenant during the initial handshake.
+3.  **Authentication Isolation:** Identity providers (OAuth, SAML) are configured on a per-tenant basis.
+4.  **Physical Isolation (Optional):** For extreme compliance requirements, tenants can be configured to use dedicated storage buckets or database shards.
+
+## Tenant Lifecycle
+
+Tenants are managed by Server Administrators. The lifecycle of a tenant includes:
+
+### Creation
+
+When a tenant is created, the system initializes its root namespace, default policies, and admin user.
+
+```bash
+wt admin tenant create --name "Acme Corp" --admin acme-admin@example.com
+```
+
+### Configuration
+
+Each tenant has its own configuration block covering:
+
+-   **Authentication:** Allowed identity providers, SSO settings.
+-   **Resource Limits:** Storage quotas, rate limits (requests per second), maximum concurrent connections.
+-   **Retention Policies:** How long staged snapshots are kept before being garbage collected.
+-   **Default Policies:** Default IAM roles and license compliance rules.
+
+### Suspension & Deletion
+
+Tenants can be suspended (temporarily blocking all access) or permanently deleted.
+
+<Callout type="warning">
+  Deleting a tenant is a destructive operation that permanently removes all associated trees, branches, snapshots, and user data. It cannot be undone.
+</Callout>
+
+```bash
+wt admin tenant suspend <tenant-id>
+wt admin tenant delete <tenant-id>
+```
+
+## Cross-Tenant Access
+
+By default, strict isolation prevents any access between tenants. However, W0rkTree supports secure **Cross-Tenant Sharing** for specific use cases (e.g., an agency collaborating with a client, or a vendor sharing a read-only library).
+
+Cross-tenant access requires explicit **Grants**:
+
+1.  The owning tenant creates a `Grant`, specifying the target tree, the allowed access level (e.g., Read-Only), and the destination Tenant ID.
+2.  The destination tenant must explicitly `Accept` the grant.
+3.  Once accepted, the granted tree appears in the destination tenant's workspace as a **Linked Tree**.
+
+Linked trees are subject to the IAM policies of the destination tenant, but the maximum effective permission can never exceed what was specified in the original Grant.

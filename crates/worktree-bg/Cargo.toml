@@ -1,0 +1,25 @@
+[package]
+name = "worktree-bg"
+version = "0.1.0"
+edition = "2021"
+description = "W0rkTree local background daemon (bgprocess) — runs on each developer machine"
+
+[[bin]]
+name = "worktree-bg"
+path = "src/main.rs"
+
+# Dependencies are pre-declared in anticipation of WT-EXTRACT-2.
+# Until modules are populated, `cargo check` will warn about unused deps.
+# That's expected — these are placeholders matching the current worktree-server crate.
+[dependencies]
+worktree-protocol = { path = "../worktree-protocol" }
+worktree-git = { path = "../worktree-git" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "1"
+notify = "7"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }

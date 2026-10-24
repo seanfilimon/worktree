@@ -1,0 +1,53 @@
+---
+title: Staged Visibility Protocol
+description: Real-time streaming protocol for uncommitted changes, including data models, transport streaming, and retention policies.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+The Staged Visibility Protocol is the engine behind W0rkTree's flagship feature: the ability to see uncommitted, work-in-progress changes across a team in real-time. This protocol governs how the local background worker securely streams lightweight deltas to the server, and how other clients subscribe to these updates to gain immediate visibility into team progress.
+
+## Staged Snapshot Data Model
+
+Unlike permanent commits, staged changes are ephemeral, highly mutable, and user-specific. The server models staged visibility as a rapidly updating pointer associated with a specific user, tree, and base snapshot.
+
+```json
+{
+  "type": "staged_update",
+  "user": "user:alice",
+  "tree": "frontend",
+  "branch": "feature/nav",
+  "base_snapshot": "wt:a3f2b1c8...",
+  "staged_tree_root": "wt:e7d1f2a4...",
+  "timestamp": "2025-01-15T10:32:15Z",
+  "status": "active"
+}
+```
+
+When a developer saves a file, their local background worker creates a new local `staged_tree_root` and pushes only the minimal delta to the server. The server updates the `staged_update` pointer, effectively overwriting the previous staged state for that developer's branch.
+
+## Streaming Transport
+
+The continuous transmission of staged snapshots is handled over a bidirectional multiplexed stream, utilizing W0rkTree's primary QUIC transport or gRPC fallback. For web-based clients (like the W0rkTree web dashboard), this data is bridged seamlessly via **WebSockets**.
+
+### 1. Publishing (Client → Server)
+
+The background worker maintains a persistent stream to the server. It uses a debounced file system watcher to detect local changes. Upon a save event, it computes a fast BLAKE3 tree delta and pushes a `STAGED_SYNC` wire frame containing only the new blob chunks and tree nodes.
+
+### 2. Subscribing (Server → Client)
+
+Clients (like the `wt staged` CLI command or the web UI) can subscribe to presence and staged change events for a specific tree or tenant. The server broadcasts lightweight notification frames (`STAGED_EVENT`) to all subscribed clients whenever a user's staged pointer is updated.
+
+<Callout type="info">
+To conserve network bandwidth and preserve privacy, the server broadcasts only *metadata* (e.g., "+45 lines, -12 lines in 3 files") to subscribers by default. The actual file contents (blobs) are only transferred if a client explicitly requests to view the diff via `wt staged diff`.
+</Callout>
+
+## Retention & Lifecycle
+
+Staged snapshots are explicitly designed to prevent bloating the permanent repository history. They follow a strict lifecycle governed by the server's retention policies:
+
+- **Promotion**: When a user explicitly runs `wt snapshot` or `wt commit`, the server converts the current staged tree root into a permanent snapshot object. The temporary staged pointer is then immediately cleared and broadcasted as resolved.
+- **Discarding**: If a user runs `wt staged clear` or reverts their working directory, the local worker signals the server to drop the staged pointer, clearing the uncommitted work from the team's view.
+- **Timeout & Eviction**: Staged changes are meant for active work. If a user goes offline and their staged pointer is not updated for a configured retention period (default: 30 days), the server's Garbage Collector (GC) will automatically expire the pointer and clean up the unreferenced staged objects.

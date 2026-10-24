@@ -1,0 +1,82 @@
+---
+title: License Operations
+description: Check license compliance, manage SPDX assignments, and issue grants using the SDK.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree includes a built-in license compliance engine. The SDK allows you to programmatically assign licenses, verify compliance, generate Bill of Materials (SBOM) reports, and issue cross-tenant commercial grants.
+
+## Checking Licenses
+
+You can check the resolved SPDX license for any path within a tree. The SDK automatically evaluates path-specific overrides and tree defaults.
+
+```rust
+use worktree_sdk::Repository;
+
+let repo = Repository::open(".").await?;
+let tree = repo.tree("backend").await?;
+
+let license = tree.licensing().check_path("src/main.rs").await?;
+println!("Resolved License: {}", license.spdx_id()); // e.g., "MIT"
+```
+
+## Assigning Licenses
+
+Manage a tree's default license and path-specific exceptions programmatically. This modifies the `.wt-tree/config.toml` and `.wt-license.toml` files and prepares them to be committed.
+
+```rust
+let mut licensing = tree.licensing().await?;
+
+// Set the default license for the entire tree
+licensing.set_default("Apache-2.0");
+
+// Override the license for specific paths using globs
+licensing.assign_path("vendor/**", "MIT");
+licensing.assign_path("scripts/proprietary.sh", "LicenseRef-Acme-Internal");
+
+// Save the configuration
+licensing.save().await?;
+tree.commit().message("Update license assignments").await?;
+```
+
+## Compliance Reports (SBOM)
+
+Generate deterministic compliance reports and Software Bill of Materials (SBOM) for an entire tree or repository.
+
+```rust
+let report = tree.licensing().generate_report().await?;
+
+if !report.is_compliant() {
+    println!("Warning: License violations detected!");
+    for violation in report.violations() {
+        println!("Path: {} uses incompatible license {}", violation.path(), violation.license());
+    }
+} else {
+    // Export the SBOM as SPDX JSON
+    let sbom_json = report.to_spdx_json()?;
+    std::fs::write("sbom.json", sbom_json)?;
+}
+```
+
+<Callout type="info">
+The SDK's compliance engine evaluates licenses using the same strict ruleset as the W0rkTree Server. Running a report locally guarantees it will pass server-side enforcement.
+</Callout>
+
+## Issuing License Grants
+
+License Grants allow you to create exceptions to standard open-source rules, which is essential for dual-licensing or commercial B2B software delivery.
+
+```rust
+let grant = tree.licensing().create_grant()
+    .grantee("tenant_abc123")
+    .grant_type("commercial-unlimited")
+    .reference("INVOICE-9921")
+    .valid_for_days(365)
+    .issue()
+    .await?;
+
+println!("Issued commercial grant: {}", grant.id());
+```
+
+Once issued, the target tenant will be able to synchronize and merge the tree without triggering their own inbound license compliance blockers.

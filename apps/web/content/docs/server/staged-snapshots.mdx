@@ -1,0 +1,56 @@
+---
+title: Server Staged Snapshots
+description: How the W0rkTree server handles, aggregates, and streams in-flight staged snapshots.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+In traditional version control, "staging" is a purely local concept. Your teammates have no visibility into what you are working on until you explicitly commit and push your changes. W0rkTree fundamentally changes this paradigm with **Staged Snapshots**.
+
+From the server's perspective, a staged snapshot is a volatile, temporary representation of a user's uncommitted working directory. The W0rkTree Server is responsible for ingesting, storing, and streaming these snapshots to collaborators in real-time.
+
+## Ingestion and Storage
+
+As developers work locally, their background daemon (`bgprocess`) automatically generates lightweight snapshots of their working directory. These snapshots are periodically pushed to the central W0rkTree Server using the Sync Protocol.
+
+When the server receives a staged snapshot:
+
+1. **IAM Verification:** The server verifies that the user has `staged:write` permissions for the target branch.
+2. **Delta Resolution:** The server resolves the incoming delta against the client's last known state, writing any new BLAKE3-hashed chunks to the tenant's object store.
+3. **Pointer Update:** Instead of updating a permanent branch reference, the server updates a volatile **Staged Pointer** associated with the user and the branch.
+
+<Callout type="info">
+  Staged snapshots do not alter the permanent, cryptographic history of a tree. They are parallel, mutable pointers that sit "on top" of the current branch head.
+</Callout>
+
+## Real-Time Aggregation & Streaming
+
+The true power of staged snapshots is unlocked when multiple developers are collaborating on the same branch or tree.
+
+The W0rkTree Server acts as a real-time message broker for staged state:
+
+1. **Subscriptions:** Clients can subscribe to the staged state of a specific branch. For example, an IDE plugin or the W0rkTree web interface might request a real-time stream of all activity on `feature/auth`.
+2. **Aggregation:** If Alice and Bob are both working on `feature/auth`, the server aggregates their individual staged pointers into a unified view. It identifies potential merge conflicts *before* either user has committed their code.
+3. **Broadcasting:** When Alice makes a change, the server instantly streams a notification to Bob's client via gRPC or WebSockets, highlighting the modified files.
+
+## Garbage Collection and Retention
+
+Because staged snapshots are generated automatically and continuously, they can quickly consume storage if left unchecked. The server employs aggressive, policy-driven garbage collection for staged objects.
+
+### Lifecycle of a Staged Snapshot
+
+1. **Active:** The snapshot is the current representation of a user's uncommitted work.
+2. **Committed (Promoted):** When the user formally commits their work, the permanent commit references the same BLAKE3 chunks. The staged pointer is cleared, but the underlying data is preserved because it is now part of the permanent DAG.
+3. **Discarded / Orphaned:** If the user discards their local changes, or switches branches without committing, the staged pointer is deleted. The underlying chunks become "orphaned".
+
+### Retention Policies
+
+Server administrators can configure how long orphaned staged objects are kept before the Garbage Collector permanently deletes them. This is configured per-tenant in `server.toml`:
+
+```toml
+[staged]
+retention_days = 14
+max_size_mb = 500
+```
+
+By default, the server retains orphaned staged objects for 14 days. This provides a safety net, allowing users to recover accidentally discarded uncommitted work by querying the server's event log.

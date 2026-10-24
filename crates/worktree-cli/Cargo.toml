@@ -1,0 +1,21 @@
+[package]
+name = "worktree-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI client for the Worktree version control system"
+
+[[bin]]
+name = "wt"
+path = "src/main.rs"
+
+[dependencies]
+worktree-sdk = { path = "../worktree-sdk" }
+worktree-protocol = { path = "../worktree-protocol" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+colored = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+chrono = "0.4"
+toml = "0.8"
+walkdir = "2"

@@ -1,0 +1,71 @@
+---
+title: IAM Protocol
+description: Protocol-level details for Identity and Access Management (IAM), including scope resolution, policy evaluation, and ABAC conditions.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree implements a robust, deeply integrated Identity and Access Management (IAM) protocol. Access checks are performed at the protocol level for every synchronization frame, API request, and state transition, ensuring secure multi-tenancy and granular access control.
+
+## Scope Resolution
+
+W0rkTree's IAM model operates on a strict hierarchical scope resolution system. Permissions granted at a higher scope automatically inherit downwards unless explicitly denied.
+
+The scope hierarchy consists of four levels:
+
+1. **Global**: System-wide access (e.g., server administrators).
+2. **Tenant**: Organization-wide resources. Grants apply to all trees within the tenant.
+3. **Tree**: Project-level resources. Grants apply to all branches and paths within a specific tree.
+4. **Path**: Directory or file-level resources. Grants apply to specific glob patterns within a tree.
+
+When resolving access, the protocol engine traverses up the hierarchy. For example, to write to a file (`path`), the engine checks for `tree.write` at the Path level, then Tree level, then Tenant level, and finally Global level.
+
+## Policy Model
+
+W0rkTree relies on Role-Based Access Control (RBAC) combined with Declarative Policies.
+
+- **Permissions**: Atomic actions that can be performed (e.g., `tree.read`, `tree.write`, `tenant.create_tree`).
+- **Roles**: Named collections of permissions (e.g., `tree.admin`, `tree.developer`, `path.reader`).
+- **Entities**: Users, Service Accounts, or Groups.
+- **Grants**: The binding of an Entity to a Role within a specific Scope.
+
+<Callout type="info">
+The protocol treats declarative configuration files (like `.wt-access.toml` and `.wt-tree/access.toml`) as the canonical source of truth. When changes to these files are pushed and merged, the server instantly re-evaluates and updates its internal access graph.
+</Callout>
+
+## IAM Evaluation Engine
+
+Every incoming protocol request goes through the IAM Evaluation Engine before execution:
+
+1. **Authentication**: The transport layer extracts the user's identity via token or session authentication.
+2. **Action Mapping**: The requested operation (e.g., `PUSH` frame) is mapped to required permissions (e.g., `tree.write`).
+3. **Scope Context**: The engine identifies the target resources (e.g., Tenant `acme`, Tree `frontend`).
+4. **Grant Resolution**: The engine queries the access graph to see if the authenticated entity (or any group it belongs to) holds a role with the required permissions at the target scope or a parent scope.
+5. **Deny Overrides**: Explicit `deny` rules always take precedence over `allow` grants.
+
+## ABAC Conditions
+
+Beyond standard RBAC, the W0rkTree protocol supports Attribute-Based Access Control (ABAC) conditions. Grants can be constrained by environmental or contextual attributes, which are evaluated dynamically at the time of the request.
+
+Supported conditions include:
+
+- **Network / IP Allowlisting**: `condition.ip_cidr = "192.168.1.0/24"`
+- **Authentication Context**: `condition.mfa_present = true`
+- **Time Constraints**: `condition.time_window = "09:00-17:00 UTC"`
+- **Commit Signatures**: `condition.require_signed_commits = true`
+
+### Example Evaluated Grant
+
+```json
+{
+  "entity": "user:alice",
+  "role": "tree.admin",
+  "scope": "tree:backend",
+  "conditions": {
+    "mfa_present": true,
+    "ip_cidr": ["10.0.0.0/8"]
+  }
+}
+```
+
+If Alice attempts to forcefully delete a branch in the `backend` tree, the IAM protocol will verify her identity, confirm her `tree.admin` role mapping, ensure her session used MFA, and validate her IP address before allowing the `REF_UPDATE` frame to proceed.

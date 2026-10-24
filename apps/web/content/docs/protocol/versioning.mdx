@@ -1,0 +1,46 @@
+---
+title: Protocol Versioning
+description: How the W0rkTree wire protocol is versioned and how clients negotiate with servers.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Version Format
+
+The W0rkTree protocol version is indicated by a 4-byte magic string at the start of every message envelope (e.g., `SyncMessageEnvelope`).
+
+```
+b"WT01"
+```
+
+- **`WT`** — Protocol identifier.
+- **`01`** — Two-digit protocol version number.
+
+Breaking changes to the wire format, serialization (`Bincode`), or compression (`zstd`) algorithms will increment this version number (e.g., `b"WT02"`).
+
+## Handshake Negotiation
+
+During connection setup, client and server exchange their supported versions via their initial envelopes. If a server receives a magic byte sequence it does not understand (e.g., `b"WT02"` on a `v01` server), the connection is rejected with a `VERSION_MISMATCH` or `UNSUPPORTED_PROTOCOL` error.
+
+## Compatibility Guarantees
+
+| Guarantee | Scope |
+|---|---|
+| Forward compatibility | Servers accept older minor versions within the same major |
+| Backward compatibility | Clients degrade gracefully with lower minor versions |
+| Version discovery | `wt protocol version` prints the supported range |
+| Deprecation window | Old major versions supported for 12+ months after new major ships |
+
+## Compatibility Matrix
+
+| CLI Version | Server Version | Protocol | Status |
+|---|---|---|---|
+| `0.1.x` | `0.1.x` | `WT01` | ✅ Compatible |
+| `0.2.x` | `0.2.x` | `WT01` | ✅ Compatible |
+| `0.3.x` | `0.3.x` | `WT01` | ✅ Compatible |
+| `1.0.x` | `1.0.x` | `WT01` | ✅ Compatible |
+| `1.0.x` | `0.x` | `WT00` | ❌ Incompatible |
+
+<Callout type="warn">
+During the `0.x` series, keep CLI and server versions in sync. Cross-version compatibility is best-effort until `1.0.0`.
+</Callout>

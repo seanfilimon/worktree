@@ -1,0 +1,83 @@
+---
+title: "Protocol-Level License Compliance: Stopping Code Theft at the Source"
+description: "Why honor-system software licenses are failing modern organizations, and how W0rkTree enforces license compliance directly at the protocol level."
+author: "Sean Filimon"
+date: "2025-10-30"
+tags: ["security", "licensing", "features"]
+summary: "In Git, license compliance relies entirely on the honor system. W0rkTree introduces protocol-level license enforcement, preventing unauthorized code export, copying, and redistribution before it ever leaves your repository."
+---
+
+## The Honor System is Broken
+
+In traditional version control systems like Git, software licensing is treated as a legal formality, not a technical constraint. 
+
+You place a `LICENSE` file in the root of your repository and hope that anyone who clones the code respects it. If you maintain an open-source framework with a proprietary enterprise module, there is absolutely nothing in the Git protocol that prevents a user from downloading the proprietary code, copying it, and using it in a competing product. 
+
+For organizations collaborating across boundaries—working with contractors, partner agencies, or open-source contributors—this creates massive liability. You are forced to choose between locking down your codebase entirely or relying on the honor system and hoping an audit catches code exfiltration months after the fact.
+
+W0rkTree takes a fundamentally different approach: **License compliance must be enforced by the system itself.**
+
+## Protocol-Level Enforcement
+
+Because W0rkTree natively supports multi-tenancy and granular access control, it introduces a first-class **License Compliance** engine that operates directly at the protocol level.
+
+Licenses are declared explicitly in your `.wt/config.toml` or tree-specific `.wt-tree/config.toml`. You can assign a default license to your entire workspace, and then override it for specific registered paths.
+
+```toml
+[worktree]
+name = "my-project"
+visibility = "public" # All authenticated tenants can read by default
+
+[license]
+default = "MIT"
+spdx_strict = true
+
+[[license.path]]
+path = "services/billing-engine"
+license = "proprietary" # Cannot be exported, copied, or forked
+
+[[license.path]]
+path = "vendor/third-party-sdk"
+license = "Apache-2.0"
+attribution_required = true
+```
+
+When a user interacts with the W0rkTree server, the engine actively evaluates these licenses. If a tenant tries to run `wt git export`, fork the repository, or sync proprietary code into their own external worktree, the W0rkTree server will physically block the operation unless they have an explicit license grant.
+
+## The License Grant Model
+
+What happens when you *do* want to share proprietary code with a specific partner or contractor?
+
+W0rkTree provides a targeted **License Grant** model. Rather than changing the license of the code itself, you grant specific tenants elevated rights to interact with the proprietary paths.
+
+```toml
+[[license.grant]]
+path = "services/billing-engine"
+tenant = "partner-corp"
+grant = "read-only" # Can read within this worktree, but cannot copy/export/fork
+
+[[license.grant]]
+path = "services/billing-engine"
+tenant = "contractor@dev.io"
+grant = "modify" # Can read and modify within this worktree, but cannot export
+```
+
+These grants allow you to securely invite external collaborators into your monorepo. They can view the code they need to do their jobs, but the protocol physically prevents them from taking that code with them when they leave.
+
+## Dual Enforcement: IAM + Licensing
+
+W0rkTree's security model is built on defense-in-depth. To ensure absolute security, License Compliance sits *above* Identity and Access Management (IAM) in the enforcement stack.
+
+Every operation is evaluated twice:
+1. **IAM Check:** Does this user's role grant them `tree:read` access to this specific path?
+2. **License Check:** Does this file's license permit this specific operation (like exporting or forking) for this user, considering their license grants?
+
+**Both checks must pass.** This means a contractor can have full `tree:read` and `tree:write` IAM permissions to do their daily work, but if the file is marked `license = "proprietary"`, they still cannot export it to Git or clone it to an external server. IAM controls what you can do *inside* the repository; Licensing controls what you can take *out* of it.
+
+## Automating Compliance
+
+By bringing license enforcement into the version control protocol, W0rkTree eliminates the need for manual license audits and bolt-on scanning tools. 
+
+The server automatically generates `LICENSE` files on Git export, enforces attribution requirements (like Apache 2.0 `NOTICE` files), and provides cryptographic audit logs of exactly who accessed what code under which license grant.
+
+Version control should protect your intellectual property, not just track its changes. With W0rkTree, your code's license is finally more than just a text file.

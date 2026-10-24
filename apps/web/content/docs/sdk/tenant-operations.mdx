@@ -1,0 +1,98 @@
+---
+title: Tenant Operations
+description: Manage isolated tenants, quotas, and lifecycles programmatically using the SDK.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+W0rkTree is natively multi-tenant. The SDK provides an administrative API to create, configure, and manage these isolated workspaces. 
+
+<Callout type="warning">
+Tenant operations require administrative privileges. You must connect to the server using an Admin API key or a user account with the global `tenant:manage` permission.
+</Callout>
+
+## Creating a Tenant
+
+To provision a new isolated workspace for a customer or department:
+
+```rust
+use worktree_sdk::admin::{TenantTier, TenantOptions};
+
+let tenant = client.admin().create_tenant("Acme Corp")
+    .admin_email("admin@acme.com")
+    .tier(TenantTier::Enterprise)
+    .options(TenantOptions {
+        isolated_storage: true,
+        region: "us-east-1".to_string(),
+    })
+    .await?;
+
+println!("Created tenant with ID: {}", tenant.id());
+```
+
+## Listing Tenants
+
+Retrieve a list of all tenants on the server. This is paginated by default.
+
+```rust
+let mut stream = client.admin().list_tenants().limit(50).await?;
+
+while let Some(tenant) = stream.next().await? {
+    println!("{} ({}) - Status: {}", tenant.name(), tenant.id(), tenant.status());
+}
+```
+
+## Configuring Tenant Quotas and Limits
+
+Each tenant can have distinct resource limits enforced by the server.
+
+```rust
+let mut config = client.admin().tenant_config("tenant_abc123").await?;
+
+// Set storage quota to 500 GB
+config.set_storage_quota_gb(500);
+
+// Limit concurrent connections
+config.set_max_concurrent_connections(100);
+
+// Configure staged snapshot retention
+config.set_staged_retention_days(7);
+
+config.save().await?;
+```
+
+## Suspending and Deleting
+
+You can suspend a tenant to immediately block all network traffic, syncs, and authentication attempts without destroying their data.
+
+```rust
+// Suspend the tenant
+client.admin().suspend_tenant("tenant_abc123")
+    .reason("Billing overdue")
+    .await?;
+
+// Reactivate later
+client.admin().reactivate_tenant("tenant_abc123").await?;
+```
+
+To permanently destroy a tenant and all associated data, trees, and history:
+
+```rust
+// This action is irreversible
+client.admin().delete_tenant("tenant_abc123").force(true).await?;
+```
+
+## Visibility Modes
+
+Tenants can configure how their public or shared trees are discovered by other tenants on the same server.
+
+```rust
+use worktree_sdk::admin::VisibilityMode;
+
+let mut config = client.admin().tenant_config("tenant_abc123").await?;
+
+// Allow other tenants to find this tenant in the global directory
+config.set_directory_visibility(VisibilityMode::Public);
+
+config.save().await?;
+```

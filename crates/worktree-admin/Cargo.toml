@@ -1,0 +1,68 @@
+[package]
+name = "worktree-admin"
+version = "0.1.0"
+edition = "2021"
+description = "Worktree Admin Panel - Yew WebAssembly Frontend with Tailwind CSS"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "worktree-admin-server"
+path = "src/main.rs"
+required-features = ["ssr"]
+
+[features]
+default = []
+ssr = ["axum", "tokio", "tower", "tower-http", "tracing", "tracing-subscriber"]
+
+[dependencies]
+# Yew framework
+yew = { version = "0.21", features = ["csr"] }
+yew-router = "0.18"
+yew-hooks = "0.3"
+
+# WebAssembly
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "HtmlInputElement",
+    "HtmlSelectElement",
+    "Storage",
+    "Window",
+    "Document",
+    "Element",
+    "console",
+] }
+js-sys = "0.3"
+gloo = { version = "0.11", features = ["futures", "net", "storage", "timers"] }
+gloo-net = { version = "0.5", features = ["http"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async
+futures = "0.3"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde", "js"] }
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+log = "0.4"
+wasm-logger = "0.2"
+
+# Server dependencies (for dev server only)
+axum = { version = "0.7", features = ["macros"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

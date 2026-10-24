@@ -1,0 +1,504 @@
+---
+title: Versioning
+description: Understand W0rkTree's version scheme, release channels, compatibility guarantees, and upgrade process.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+## Version Scheme
+
+W0rkTree follows [Semantic Versioning (SemVer)](https://semver.org/) for all releases. Every version number takes the form:
+
+```txt
+MAJOR.MINOR.PATCH[-PRERELEASE]
+```
+
+| Component | Meaning | Example |
+|-----------|---------|---------|
+| **MAJOR** | Breaking changes to the CLI, protocol, or public API. Existing workflows may require updates. | `1.0.0` → `2.0.0` |
+| **MINOR** | New features added in a backwards-compatible manner. Safe to upgrade without changes. | `1.0.0` → `1.1.0` |
+| **PATCH** | Bug fixes and security patches. No new features, no breaking changes. | `1.0.0` → `1.0.1` |
+| **PRERELEASE** | Optional suffix indicating stability tier — `alpha`, `beta`, or `rc` (release candidate). | `0.3.0-beta.1` |
+
+### Pre-release identifiers
+
+Pre-release versions use dot-separated identifiers appended with a hyphen:
+
+```txt
+0.2.0-alpha.1    # Early development, expect rough edges
+0.4.0-beta.1     # Feature-complete for the milestone, testing phase
+0.7.0-rc.1       # Release candidate, production-quality but pending final validation
+```
+
+Pre-release versions are **never** considered stable. They sort lower than their corresponding release — `0.4.0-beta.1` is older than `0.4.0`.
+
+---
+
+## Current Version
+
+```txt
+0.1.0-alpha
+```
+
+W0rkTree is in **active pre-release development**. The `0.x` series signals that:
+
+- The public API, CLI interface, and protocol are **not yet stable**
+- **Breaking changes may occur** between any two minor versions
+- Data format migrations will be provided, but are **best-effort**
+- Production use is **not recommended** yet
+
+<Callout type="warn">
+During the `0.x` series, minor version bumps (e.g. `0.2.0` → `0.3.0`) may include breaking changes. Pin your version in CI pipelines and review changelogs before upgrading.
+</Callout>
+
+Once W0rkTree reaches **`1.0.0`**, full SemVer guarantees take effect — breaking changes will only land in major version bumps.
+
+---
+
+## Release Channels
+
+W0rkTree publishes builds through three release channels. Choose the one that matches your risk tolerance.
+
+| Channel | Cadence | Stability | Use case |
+|---------|---------|-----------|----------|
+| **Stable** | Every 6–8 weeks | Production-ready | Teams, CI/CD, daily use |
+| **Beta** | Every 2 weeks | Feature-complete, may have rough edges | Early adopters, testing new features |
+| **Nightly** | Every commit to `main` | Bleeding-edge, may break | Contributors, experimentation |
+
+### Installing a channel
+
+<Tabs items={['macOS', 'Linux', 'Windows']}>
+<Tab value="macOS">
+```bash
+# Stable
+brew install worktree
+
+# Beta
+brew install worktree --beta
+
+# Nightly
+curl -fsSL https://nightly.worktree.dev | sh
+```
+</Tab>
+<Tab value="Linux">
+```bash
+# Stable
+curl -fsSL https://get.worktree.dev | sh
+
+# Beta
+curl -fsSL https://get.worktree.dev | sh -s -- --channel beta
+
+# Nightly
+curl -fsSL https://nightly.worktree.dev | sh
+```
+</Tab>
+<Tab value="Windows">
+```powershell
+# Stable
+winget install worktree
+
+# Beta
+winget install worktree.beta
+
+# Nightly
+irm https://nightly.worktree.dev/install.ps1 | iex
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+You can switch channels at any time. Running an install command for a different channel will replace your current binary. Your repositories and data are channel-independent.
+</Callout>
+
+---
+
+## Version History
+
+A timeline of planned and shipped releases, aligned with the [Roadmap](/docs/roadmap) phases.
+
+### `0.1.0-alpha.1` — Foundation
+
+> **Phase 0 · Weeks 1–4**
+
+The first public build. Establishes the core protocol layer and basic local operations.
+
+- Core protocol types and content-addressable object format
+- BLAKE3 hashing for all objects (blobs, trees, snapshots)
+- `wt init` — initialize a new W0rkTree repository
+- `wt status` — display working tree status
+- On-disk storage engine with pack files
+
+### `0.1.0-alpha.2` — Single-tree operations
+
+> **Phase 1 · Weeks 5–10**
+
+Complete single-tree workflow — from tracking changes to merging branches.
+
+- Snapshot creation and restoration
+- Branch creation, switching, and deletion
+- Tree diffing with BLAKE3-accelerated comparisons
+- Basic three-way merge with conflict markers
+- `wt commit`, `wt branch`, `wt diff`, `wt merge`
+
+### `0.1.0-alpha.3` — Git import
+
+> **Phase 2 · Weeks 11–15**
+
+Bring existing Git repositories into W0rkTree without losing history.
+
+- `wt git import` — full history conversion
+- SHA-1 → BLAKE3 object ID mapping table
+- `.gitignore` → `.wtignore` automatic conversion
+- Ref mapping (branches, tags, HEAD)
+
+### `0.2.0-alpha.1` — Server & auto-tracking
+
+> **Phase 3 · Weeks 16–20**
+
+Background worker that watches your filesystem and captures changes automatically.
+
+- `worktree-server` worker with filesystem watcher
+- Event engine with debounced change detection
+- Auto-snapshot on save (configurable intervals)
+- gRPC API for programmatic control
+- `wt worker start` / `wt worker stop`
+
+### `0.3.0-alpha.1` — Nested trees
+
+> **Phase 4 · Weeks 21–26**
+
+The flagship feature — isolated sub-trees with independent history within a single repository.
+
+- `wt tree add <name>` — create a nested tree
+- Independent branching and history per tree
+- Super-snapshots that record the state of all trees atomically
+- Dependency graph between trees with automatic TODO generation
+- `wt tree list`, `wt tree remove`, `wt tree link`
+
+### `0.4.0-beta.1` — Git export & remote bridge
+
+> **Phase 5 · Weeks 27–32**
+
+Push and pull to any Git remote — GitHub, GitLab, Bitbucket, self-hosted.
+
+- `wt git export` — convert W0rkTree history back to Git
+- Bidirectional `push` / `pull` against Git remotes
+- SSH and HTTP transport support
+- Credential management and keychain integration
+
+### `0.5.0-beta.1` — Access control
+
+> **Phase 6 · Weeks 33–38**
+
+Fine-grained permissions for teams and organizations.
+
+- Identity model with users, teams, and service accounts
+- Permission grants at tree, branch, and path levels
+- Policy enforcement engine (allow / deny rules)
+- `wt acl grant`, `wt acl revoke`, `wt acl check`
+
+### `0.6.0-beta.1` — Native sync
+
+> **Phase 7 · Weeks 39–44**
+
+Worktree-to-Worktree synchronization without a Git intermediary.
+
+- QUIC-based transport for low-latency sync
+- Selective sync — pull only the trees and paths you need
+- Delta compression for bandwidth efficiency
+- Conflict-free replicated data types (CRDTs) for metadata
+
+### `0.7.0-rc.1` — Live mirror & intelligence
+
+> **Phase 8 · Weeks 45–52**
+
+Real-time Git mirroring and intelligent automation.
+
+- Bidirectional live mirror to Git remotes
+- Auto-branch creation from issue tracker events
+- Merge queue with configurable policies
+- Telemetry dashboard for repository health
+
+### `0.8.0-rc.1` — SDK & ecosystem
+
+> **Phase 9 · Weeks 53–58**
+
+Stable programmatic API and editor integrations.
+
+- `worktree-sdk` with stable public API (Rust crate)
+- VS Code extension with tree visualization
+- CI/CD plugins for GitHub Actions, GitLab CI, Jenkins
+- Language bindings (Python, TypeScript) via FFI
+
+### `1.0.0` — Stable release
+
+> **Target · Week 62+**
+
+The first production-ready release with full SemVer guarantees.
+
+- All features from `0.x` stabilized and battle-tested
+- Migration tooling from every pre-release version
+- Comprehensive documentation and tutorials
+- Long-term support commitment
+
+<Callout type="info">
+Dates and scope are subject to change. Follow the [changelog](https://github.com/worktree-dev/worktree/releases) for real-time updates.
+</Callout>
+
+---
+
+## Crate Versioning
+
+W0rkTree is built as a Rust monorepo. All workspace crates share a **synchronized version number** — when one crate bumps, they all bump together. This eliminates version matrix confusion and ensures internal compatibility.
+
+```toml
+# Root Cargo.toml
+[workspace.package]
+version = "0.1.0"
+```
+
+| Crate | Description |
+|-------|-------------|
+| `worktree-protocol` | Core data structures, object format, wire protocol |
+| `worktree-server` | Background worker, filesystem watcher, event engine |
+| `worktree-git` | Git compatibility layer, import/export, remote bridge |
+| `worktree-cli` | Command-line interface (`wt` binary) |
+| `worktree-sdk` | Rust SDK for programmatic access |
+| `worktree-admin` | Admin panel and management tools |
+
+<Callout type="info">
+Synchronized versioning means you can always check a single version number to know exactly which code is running across the entire stack. If `wt --version` reports `0.3.0-alpha.1`, every crate in the workspace is at `0.3.0-alpha.1`.
+</Callout>
+
+---
+
+## Protocol Versioning
+
+The W0rkTree wire protocol is versioned **independently** from the crate/CLI version. This allows the protocol to evolve at its own pace and enables older clients to communicate with newer servers (and vice versa).
+
+### Protocol version format
+
+```txt
+WT/<major>.<minor>
+```
+
+- **Major** — Incompatible changes to the wire format. Clients and servers must share the same major version.
+- **Minor** — Backwards-compatible additions (new message types, optional fields). A server at `WT/1.2` can serve clients at `WT/1.0`.
+
+### Handshake negotiation
+
+During connection setup, the client and server exchange supported protocol versions:
+
+```txt
+Client → Server:  HELLO WT/1.0,WT/1.1
+Server → Client:  HELLO WT/1.1
+```
+
+The server selects the highest mutually supported version. If no overlap exists, the connection is rejected with a `VERSION_MISMATCH` error.
+
+### Guarantees
+
+| Guarantee | Scope |
+|-----------|-------|
+| **Forward compatibility** | Servers accept older minor versions within the same major version |
+| **Backward compatibility** | Clients gracefully degrade when the server offers a lower minor version |
+| **Version discovery** | `wt protocol version` prints the supported range |
+| **Deprecation window** | Old major versions are supported for at least **12 months** after a new major version ships |
+
+---
+
+## Compatibility Matrix
+
+Use this table to verify that your CLI, server, and protocol versions are compatible.
+
+| CLI Version | Server Version | Protocol | Status |
+|-------------|---------------|----------|--------|
+| `0.1.x` | `0.1.x` | `WT/0.1` | ✅ Compatible |
+| `0.2.x` | `0.2.x` | `WT/0.1` | ✅ Compatible |
+| `0.2.x` | `0.1.x` | `WT/0.1` | ⚠️ Degraded — server missing auto-track features |
+| `0.3.x` | `0.3.x` | `WT/0.2` | ✅ Compatible |
+| `0.3.x` | `0.2.x` | `WT/0.1` | ⚠️ Degraded — nested tree commands unavailable |
+| `0.4.x+` | `0.4.x+` | `WT/0.2` | ✅ Compatible |
+| `1.0.x` | `1.0.x` | `WT/1.0` | ✅ Compatible — first stable release |
+| `1.0.x` | `0.x` | `WT/0.x` | ❌ Incompatible — major protocol change |
+
+<Callout type="warn">
+During the `0.x` series, always keep your CLI and server versions in sync. Cross-version compatibility is best-effort and not guaranteed until `1.0.0`.
+</Callout>
+
+---
+
+## Upgrade Guide
+
+<Steps>
+
+### Check your current version
+
+```bash
+wt --version
+# worktree 0.1.0-alpha.1 (blake3: 1.5, protocol: WT/0.1)
+```
+
+### Review the changelog
+
+Before upgrading, check for breaking changes:
+
+```bash
+wt changelog --from 0.1.0 --to 0.2.0
+```
+
+Or visit the [releases page](https://github.com/worktree-dev/worktree/releases).
+
+### Upgrade
+
+<Tabs items={['macOS', 'Linux', 'Windows']}>
+<Tab value="macOS">
+```bash
+brew update && brew upgrade worktree
+```
+</Tab>
+<Tab value="Linux">
+```bash
+curl -fsSL https://get.worktree.dev | sh
+```
+</Tab>
+<Tab value="Windows">
+```powershell
+winget upgrade worktree
+```
+</Tab>
+</Tabs>
+
+### Verify the upgrade
+
+```bash
+wt --version
+wt doctor
+```
+
+The `wt doctor` command runs a self-diagnostic that checks binary integrity, storage health, and protocol compatibility with any connected servers.
+
+### Migrate data (if needed)
+
+Some minor version bumps during the `0.x` series require a data migration. W0rkTree will detect this automatically:
+
+```bash
+wt migrate
+# Migrating repository from 0.1.0 to 0.2.0...
+# ✓ Object store upgraded
+# ✓ Index format updated
+# ✓ Config schema migrated
+# Migration complete.
+```
+
+<Callout type="error">
+Always back up your repository before running migrations during the `0.x` pre-release series. Use `wt backup create` or simply copy the `.wt/` directory.
+</Callout>
+
+</Steps>
+
+---
+
+## Deprecation Policy
+
+W0rkTree follows a structured deprecation process to give you time to adapt before features are removed.
+
+### Timeline
+
+| Phase | Duration | What happens |
+|-------|----------|--------------|
+| **Deprecated** | At least 1 minor version | Feature works but emits a warning |
+| **Removed** | Next minor version (or next major after `1.0`) | Feature is gone; usage produces an error |
+
+### How deprecations appear
+
+**In CLI output:**
+
+```bash
+$ wt snapshot create
+[deprecated] `wt snapshot create` is deprecated. Use `wt commit` instead.
+Snapshot created: abc123
+```
+
+**In configuration files:**
+
+```toml
+# .wt/config.toml
+[tracking]
+# [deprecated] `poll_interval` is deprecated.
+# Use `watch.debounce_ms` instead. Will be removed in 0.4.0.
+poll_interval = 500
+```
+
+**In Rust SDK code:**
+
+```rust
+#[deprecated(since = "0.3.0", note = "Use `Repository::commit()` instead")]
+pub fn create_snapshot(&self) -> Result<SnapshotId> {
+    self.commit(CommitOptions::default())
+}
+```
+
+### Staying informed
+
+- **Release notes** list all new deprecations under a dedicated "Deprecated" section
+- `wt doctor` reports any deprecated configuration or usage patterns
+- The `--strict` flag turns deprecation warnings into hard errors — useful for CI:
+
+```bash
+wt --strict status
+# Error: deprecated config key `poll_interval` in .wt/config.toml
+```
+
+---
+
+## Long-Term Support (LTS)
+
+<Callout type="info">
+LTS designations begin with the `1.0.0` stable release. All `0.x` versions are pre-release and do not receive long-term support.
+</Callout>
+
+### LTS policy (starting at `1.0`)
+
+Once W0rkTree reaches stable, the following LTS policy takes effect:
+
+| Rule | Detail |
+|------|--------|
+| **LTS versions** | Every **even** minor version in the `1.x` series (`1.0`, `1.2`, `1.4`, …) |
+| **Support window** | **18 months** of security patches and critical bug fixes from release date |
+| **Non-LTS versions** | Odd minor versions (`1.1`, `1.3`, `1.5`, …) receive patches until the next minor release only |
+| **End-of-life (EOL)** | After the support window closes, no further patches are issued |
+
+### Example timeline
+
+```txt
+1.0.0 (LTS)  ────── 18 months of patches ──────▶  EOL
+1.1.0         ── patches until 1.2.0 ──▶  EOL
+1.2.0 (LTS)  ────── 18 months of patches ──────▶  EOL
+1.3.0         ── patches until 1.4.0 ──▶  EOL
+1.4.0 (LTS)  ────── 18 months of patches ──────▶  EOL
+```
+
+### What's included in LTS patches
+
+- **Security fixes** — CVEs and vulnerability patches
+- **Critical bug fixes** — data loss, corruption, or crash scenarios
+- **Compatibility updates** — OS and dependency updates required to keep building
+
+### What's NOT included
+
+- New features (land in the next minor version)
+- Performance improvements (unless tied to a critical bug)
+- Deprecation removals (only happen in non-LTS minor bumps or major bumps)
+
+### Checking your LTS status
+
+```bash
+wt --version --verbose
+# worktree 1.2.3 (LTS)
+# Support until: 2027-06-15
+# Protocol: WT/1.1
+# BLAKE3: 1.5.0
+```

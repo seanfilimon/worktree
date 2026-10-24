@@ -1,0 +1,42 @@
+---
+title: Installation
+description: Install and set up the W0rkTree Admin Panel.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+## Install
+
+<Tabs items={['Binary', 'From Source', 'Docker']}>
+<Tab value="Binary">
+```bash
+curl -fsSL https://get.worktree.dev/admin | sh
+```
+</Tab>
+<Tab value="From Source">
+```bash
+cd crates/worktree-admin
+cargo build --release
+```
+The binary will be at `target/release/worktree-admin`.
+</Tab>
+<Tab value="Docker">
+```bash
+docker pull worktree/admin:latest
+docker run -d -p 8080:8080 worktree/admin:latest
+```
+</Tab>
+</Tabs>
+
+## Start the Panel
+
+```bash
+worktree-admin --server-endpoint /tmp/worktree.sock --port 8080
+```
+
+Then open `http://localhost:8080` in your browser.
+
+<Callout type="info">
+The Admin Panel connects to the W0rkTree server via Unix socket or TCP. Make sure the server is running first.
+</Callout>

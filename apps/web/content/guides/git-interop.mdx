@@ -1,0 +1,80 @@
+---
+title: "Git Interoperability"
+description: "Import Git repositories, export to Git, and use the remote bridge for seamless two-way sync."
+---
+
+W0rkTree is designed to coexist with Git, not replace it overnight. Whether you are migrating an existing codebase or maintaining a two-way sync with a Git remote, the `worktree-git` bridge gives you full interoperability without data loss.
+
+## Importing a Git Repository
+
+The fastest way to bring an existing Git project into W0rkTree is the `wt git import` command. It translates Git history, branches, and tags into W0rkTree's native object model while preserving every commit.
+
+```bash
+wt git import https://github.com/your-org/your-repo.git
+```
+
+By default the importer maps the Git `main` branch to a root tree called `main`. You can control the mapping with the `--tree` flag:
+
+```bash
+wt git import https://github.com/your-org/your-repo.git --tree backend
+```
+
+After the import finishes, run `wt log` to verify that your full commit history is intact. Tags are stored under the imported tree and can be listed with `wt tag list`.
+
+## Exporting to Git
+
+If you need to publish a W0rkTree tree as a standalone Git repository, use the export command. This builds a Git-compatible pack file from the selected tree and writes it to a local directory.
+
+```bash
+wt git export --tree frontend --output ./frontend-git
+```
+
+The resulting directory is a standard Git repository that you can push to any Git host. Commit hashes will differ because W0rkTree uses BLAKE3 internally, but commit messages, authors, and timestamps are preserved one-to-one.
+
+### License Compliance Interaction
+
+If your organization relies on W0rkTree's licensing features, `wt git export` automatically performs a license compliance check. Any required SPDX license headers, attribution metadata, or compliance logs are injected into the exported Git commits to ensure downstream consumers remain compliant.
+
+## Pushing and Pulling to Git Remotes
+
+For ongoing synchronization you can register a Git remote and push or pull just like you would with Git itself.
+
+```bash
+wt remote add origin https://github.com/your-org/your-repo.git
+wt git push origin main
+wt git pull origin main
+```
+
+The remote bridge translates W0rkTree branch references into Git refs automatically. A tree called `frontend` with branch `feature/nav` maps to the Git ref `refs/heads/frontend/feature/nav`. You can customize this mapping in `.wt/config.toml` under the `[git.ref-map]` section.
+
+## Live Mirror Mode
+
+When you need continuous two-way sync — for example, during a gradual migration — enable live mirror mode. The background worker watches for new commits on both sides and synchronizes them automatically.
+
+```bash
+wt git mirror start origin --interval 30s
+```
+
+Mirror mode polls the Git remote at the configured interval, pulls any new commits, and pushes local changes back. Conflicts are flagged in `wt status` and must be resolved manually before the next sync cycle. Stop the mirror at any time with `wt git mirror stop origin`.
+
+## Credential Management
+
+W0rkTree reuses your existing Git credential helpers so you do not need to configure authentication twice. It reads from `~/.gitconfig` and respects the `GIT_ASKPASS` and `SSH_AUTH_SOCK` environment variables.
+
+If you prefer to store credentials separately, add them to `.wt/credentials.toml`:
+
+```toml
+[remote.origin]
+url = "https://github.com/your-org/your-repo.git"
+username = "deploy-bot"
+token_env = "WORKTREE_GIT_TOKEN"
+```
+
+Setting `token_env` tells W0rkTree to read the token from an environment variable rather than storing it on disk, which is the recommended approach for CI environments and shared machines.
+
+## Tips for a Smooth Migration
+
+- Run `wt git import --dry-run` first to preview what will be created without writing anything.
+- Use `wt diff --git-compat` to generate diffs in unified diff format that existing code-review tools understand.
+- If your Git repository uses submodules, import each submodule as its own tree and declare dependencies between them with `wt tree depend`.
+- Keep the Git remote registered even after migration so team members can transition at their own pace.

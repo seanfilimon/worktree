@@ -1,0 +1,66 @@
+---
+title: Repository Commands
+description: Commands for creating and managing W0rkTrees.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## wt init
+
+Initialize a new W0rkTree.
+
+```bash
+wt init [directory] [--template <name>] [--bare] [--from-git <url>] [--shallow]
+```
+
+| Option | Description |
+|---|---|
+| `directory` | Target directory (defaults to `.`) |
+| `--template <name>` | Use a project template (`monorepo`, `single`, `library`) |
+| `--bare` | Create a bare worktree without a working tree |
+| `--from-git <url>` | Initialize from an existing Git repository |
+| `--shallow` | Only import the latest state without the full history |
+
+**Example:**
+
+```bash
+$ wt init my-project --template monorepo
+✓ Initialized W0rkTree in ./my-project
+✓ Applied template: monorepo
+✓ Created default tree: main
+```
+
+## wt status
+
+Show the working tree status.
+
+```bash
+wt status [--tree <name>] [--short]
+```
+
+**Example:**
+
+```bash
+$ wt status
+On tree: frontend (branch: feature/nav)
+
+Changes tracked automatically:
+  modified:  src/components/Nav.tsx
+  added:     src/components/MobileMenu.tsx
+```
+
+## wt clone
+
+Clone a remote W0rkTree.
+
+```bash
+wt clone <url> [directory] [--tree <name>]
+```
+
+**Example:**
+
+```bash
+$ wt clone https://wt.example.com/org/project my-project
+✓ Cloning into ./my-project...
+✓ Received 4 trees, 23 branches, 1,847 objects
+```

@@ -1,0 +1,106 @@
+---
+title: Introduction
+description: Welcome to W0rkTree documentation - the next-generation version control system.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+## What is W0rkTree?
+
+**W0rkTree** is a next-generation version control system built from the ground up in Rust. It reimagines how teams collaborate on code by introducing a **two-runtime architecture (bgprocess + server)**, **nested trees**, **staged snapshot visibility**, **multi-tenancy**, **declarative access**, and **license compliance** — all without sacrificing the speed and reliability modern engineering teams demand.
+
+Unlike traditional version control systems that treat a repository as a single flat workspace, W0rkTree organizes code into **isolated trees** — independent workspaces that can have their own branches, permissions, and history while still living within a unified codebase. This means frontend, backend, infrastructure, and platform teams can all work independently without stepping on each other's toes.
+
+<Callout type="info">
+  W0rkTree is currently in **alpha**. APIs and commands may change between releases. We welcome feedback and contributions as we work toward a stable v1.0 release.
+</Callout>
+
+## Key Features
+
+<Cards>
+  <Card title="🌲 Tree Isolation" href="/docs/server/architecture">
+    Independent trees for each team with focused ownership. Each tree has its own branches, history, and permissions — no more monorepo merge conflicts across unrelated code.
+  </Card>
+  <Card title="👀 Staged Visibility" href="/docs/protocol/staged-visibility-protocol">
+    View changes in real-time as they happen across your team. Staged snapshots provide visibility into work-in-progress without waiting for commits.
+  </Card>
+  <Card title="🏢 Multi-Tenancy" href="/docs/iam/tenants">
+    Protocol-native multi-tenancy allows logical and physical isolation of data, perfect for enterprise deployments and SaaS platforms.
+  </Card>
+  <Card title="🔐 Declarative Access" href="/docs/iam/declarative-access">
+    Manage access control with declarative TOML files. Define RBAC and ABAC policies that are enforced by the server on every operation.
+  </Card>
+  <Card title="⚖️ License Compliance" href="/docs/licensing">
+    Server-enforced per-path SPDX licensing. Prevent accidental incorporation of incompatible licenses into your codebase automatically.
+  </Card>
+  <Card title="🔗 Dependency Graph" href="/docs/protocol/tree-structure">
+    Explicit dependencies between trees with automatic TODO generation. When an upstream tree changes, dependent trees are notified instantly.
+  </Card>
+  <Card title="🔀 Linked Branches" href="/docs/protocol/merge-semantics">
+    Synchronized merging across trees for atomic deployments. Ship coordinated changes across multiple teams with a single merge operation.
+  </Card>
+  <Card title="⚡ Auto Tracking" href="/docs/server/event-pipeline">
+    A background daemon watches your filesystem and commits changes automatically. Never lose work again — every meaningful change is captured.
+  </Card>
+</Cards>
+
+## Why W0rkTree?
+
+If you're already using Git, you might wonder what W0rkTree brings to the table. Here's how they compare:
+
+| Capability | Git | W0rkTree |
+|---|---|---|
+| **Repository model** | Single flat workspace | Nested isolated trees |
+| **Change tracking** | Manual `git add` / `git commit` | Automatic background daemon |
+| **In-flight visibility** | None | Staged snapshots |
+| **Multi-tenancy** | None (platform-level) | Protocol-native |
+| **Access control** | None (platform-level) | Declarative TOML, RBAC + ABAC |
+| **License enforcement**| None | Per-path SPDX, server-enforced |
+| **Large files** | Requires LFS | Native chunked storage |
+| **History safety** | Rebase, force push | Append-only, no rewrite |
+| **Team isolation** | Requires conventions (CODEOWNERS, paths) | First-class tree permissions |
+| **Cross-team coordination** | Manual merge choreography | Linked branches with atomic merges |
+| **Dependency management** | External tools (submodules, monorepo tools) | Built-in dependency graph with TODO generation |
+| **Project management** | External tools (Jira, Linear, etc.) | Integrated PM with task attribution |
+| **Performance** | C, shell scripts | Pure Rust, content-addressable store |
+| **Git compatibility** | Native | Full import/export, push/pull support |
+
+W0rkTree isn't a Git replacement — it's a **Git evolution**. You can import existing Git repositories, continue to push and pull from Git remotes, and migrate at your own pace.
+
+## Explore the Documentation
+
+<Cards>
+  <Card title="🚀 Quick Start" href="/guides/quick-start">
+    Get up and running with W0rkTree in under 5 minutes. Install, initialize, and make your first commit.
+  </Card>
+  <Card title="🔄 Migration Guide" href="/guides/migration">
+    Step-by-step instructions for migrating existing Git repositories to W0rkTree without losing history.
+  </Card>
+  <Card title="📦 Versioning" href="/guides/versioning">
+    Understand W0rkTree's version scheme, release channels, and compatibility guarantees.
+  </Card>
+</Cards>
+
+## Component Documentation
+
+<Cards>
+  <Card title="🖥️ W0rkTree Server" href="/docs/server">
+    The central server handling syncing, multi-tenancy, IAM, and license enforcement.
+  </Card>
+  <Card title="📡 W0rkTree Protocol" href="/docs/protocol">
+    Core data model, object formats, wire protocol, and operation semantics.
+  </Card>
+  <Card title="💻 W0rkTree CLI" href="/docs/cli">
+    Complete command-line interface reference for the `wt` tool.
+  </Card>
+  <Card title="🔧 W0rkTree SDK" href="/docs/sdk">
+    Rust SDK for building custom integrations, editor plugins, and automation tools.
+  </Card>
+  <Card title="🛡️ W0rkTree IAM" href="/docs/iam">
+    Identity, Access Management, multi-tenancy, and declarative access control.
+  </Card>
+  <Card title="⚖️ W0rkTree Licensing" href="/docs/licensing">
+    License compliance engine and SPDX management.
+  </Card>
+</Cards>

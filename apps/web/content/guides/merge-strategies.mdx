@@ -1,0 +1,110 @@
+---
+title: "Merge Strategies"
+description: "Learn how W0rkTree handles three-way merges, conflict markers, and resolution workflows."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Merging is a fundamental part of any version control system. Because W0rkTree isolates history into independent trees, merges happen at the tree level. When you merge branches within a tree—or sync changes from the server—W0rkTree employs a robust three-way merge algorithm optimized for modern development workflows.
+
+This guide explains how W0rkTree handles merges, how to read its enhanced conflict markers, and how to use the resolution CLI.
+
+## The Three-Way Merge
+
+When you merge one branch into another, W0rkTree performs a **three-way merge**. It looks at three specific snapshots:
+
+1. **Local (HEAD)**: The current state of your active branch.
+2. **Incoming (Theirs)**: The state of the branch you are merging in.
+3. **Merge Base**: The most recent common ancestor snapshot between the two branches.
+
+By comparing the Local and Incoming snapshots against the Base, W0rkTree can automatically determine what changed and safely combine the modifications. If a file was changed in both Local and Incoming in overlapping ways, W0rkTree pauses the merge and flags a **conflict**.
+
+## Enhanced Conflict Markers
+
+When a conflict occurs, W0rkTree leaves standard conflict markers in your file, but enhances them with **machine-readable metadata**. This allows editors, IDEs, and custom scripts to provide rich conflict resolution interfaces.
+
+A conflicted file in W0rkTree looks like this:
+
+```txt
+<<<<<<< HEAD (local) [snapshot: abc1234, author: alice@example.com]
+function calculateTax(amount) {
+  return amount * 1.05;
+}
+||||||| BASE [snapshot: def5678]
+function calculateTax(amount) {
+  return amount;
+}
+======= (incoming) [snapshot: ghi9012, author: bob@example.com]
+function calculateTax(amount, rate) {
+  return amount * (1 + rate);
+}
+>>>>>>> feature/tax-rates
+```
+
+### Machine-Readable Metadata
+
+Notice the bracketed metadata (`[snapshot: ..., author: ...]`) next to the standard `<<<<<<<`, `|||||||`, and `>>>>>>>` markers. 
+
+W0rkTree injects this metadata to give context directly within the file. Tooling can parse this to tell you exactly *who* made the incoming change and *which snapshot* introduced it, eliminating the need to run separate `blame` or `log` commands while you are trying to resolve the conflict.
+
+## The Resolution CLI
+
+W0rkTree provides a dedicated set of CLI commands for navigating and resolving conflicts.
+
+When a merge stops due to conflicts, your tree enters a merging state. You can view the conflicted files by checking the status:
+
+```bash
+wt status
+```
+
+This will list files under an `Unmerged paths:` or `Conflicted:` section.
+
+### Resolving Conflicts
+
+You have several ways to resolve a conflicted file using the `wt resolve` command.
+
+**Accepting a specific side:**
+If you know you want to completely discard one side's changes in favor of the other, use the `--ours` or `--theirs` flags:
+
+```bash
+wt resolve --ours src/tax.js
+# or
+wt resolve --theirs src/tax.js
+```
+
+**Manual Resolution:**
+If you need to combine the changes (e.g., keeping the new `rate` parameter but adjusting the logic), open the file in your editor, manually fix the code, and remove the conflict markers. Once the file is correct, mark it as resolved:
+
+```bash
+wt resolve --mark src/tax.js
+```
+
+<Callout type="info">
+If you use a visual merge tool, you can configure W0rkTree to launch it automatically via `wt mergetool`. W0rkTree integrates out-of-the-box with popular tools like VS Code, KDiff3, and Meld.
+</Callout>
+
+### Completing the Merge
+
+Once you have resolved all conflicted files, you can finalize the merge operation:
+
+```bash
+wt merge --continue
+```
+
+This will automatically create a staged snapshot representing the merge commit and clear the merging state.
+
+### Aborting a Merge
+
+If a merge is too complex or was started by mistake, you can abort it at any time before running `--continue`:
+
+```bash
+wt merge --abort
+```
+
+This command restores your working directory and tree state to exactly how it was before you initiated the merge, discarding any partial resolutions.
+
+## Cross-Tree Merging
+
+Because W0rkTree isolates branches to specific trees, you cannot directly merge a branch from the `frontend` tree into the `backend` tree. 
+
+If you need to coordinate changes across multiple trees, you should use **Linked Branches**. Linked branches allow you to group tree-specific branches together and merge them atomically. See the [Linked Branches](/guides/linked-branches) guide for more details on managing multi-tree features.

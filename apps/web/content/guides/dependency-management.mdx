@@ -1,0 +1,95 @@
+---
+title: "Managing Cross-Tree Dependencies"
+description: "Set up, visualize, and resolve cross-tree dependencies in your W0rkTree repository."
+---
+
+W0rkTree's dependency graph lets you declare explicit relationships between trees so that changes in one automatically surface in another. This guide walks you through declaring dependencies, inspecting the graph, and keeping everything in sync as your codebase evolves.
+
+## Declaring a Dependency
+
+To declare that one tree depends on another, use the `wt tree depend` command from within the consuming tree. For example, if your `frontend` tree relies on types exported by the `api` tree:
+
+```bash
+wt tree switch frontend
+wt tree depend frontend --on api
+```
+
+W0rkTree records this relationship in the repository's dependency graph and begins tracking changes in `api` that may affect `frontend`. You can declare as many upstream dependencies as you need — there is no limit.
+
+To remove a dependency you no longer need:
+
+```bash
+wt tree undepend frontend --on api
+```
+
+## Viewing the Dependency Graph
+
+Once you have several trees with declared relationships, you can visualize the full graph:
+
+```bash
+wt graph show
+```
+
+This prints an ASCII representation of every tree and its upstream and downstream connections. For a machine-readable format suitable for CI tooling, pass `--format json`:
+
+```bash
+wt graph show --format json > deps.json
+```
+
+You can also inspect a single tree's direct dependencies and dependents:
+
+```bash
+wt graph show --tree frontend
+```
+
+## Handling Upstream Changes
+
+When an upstream tree merges a change, W0rkTree automatically generates a TODO item in every downstream tree. These TODOs describe the upstream delta — which files changed, what kind of change occurred, and a link to the upstream commit.
+
+Review pending TODOs at any time:
+
+```bash
+wt todo list
+```
+
+Each TODO includes enough context for your team to decide whether the upstream change requires action. Once you have addressed or reviewed the change, mark the TODO as resolved:
+
+```bash
+wt todo resolve <todo-id>
+```
+
+## Pinning to a Specific Version
+
+By default, a dependency tracks the latest commit on the upstream tree's main branch. If you need stability — for example during a release freeze — you can pin to a specific snapshot:
+
+```bash
+wt tree depend frontend --on api --pin abc1234
+```
+
+While pinned, your tree will not receive new TODOs for upstream changes. When you are ready to catch up, unpin and W0rkTree will generate TODOs for everything you missed:
+
+```bash
+wt tree depend frontend --on api --unpin
+```
+
+## Detecting Circular Dependencies
+
+W0rkTree validates the dependency graph on every mutation. If adding a dependency would create a cycle, the command fails immediately with a clear error message showing the cycle path. This guarantees the graph remains a directed acyclic graph (DAG) at all times, which is essential for deterministic build ordering in CI pipelines.
+
+## Linked Branches
+
+When you are developing a feature that requires synchronized changes across multiple dependent trees, you can use **linked branches**. Linked branches allow you to tie a branch in the `frontend` tree to a branch in the `api` tree so they can be worked on and merged together atomically.
+
+```bash
+# From your frontend feature branch
+wt branch link feature/new-endpoint --tree api --branch feature/new-endpoint
+```
+
+Once linked, W0rkTree understands that these branches represent a single logical change. **Cross-tree TODO generation** becomes branch-aware: as you commit to the `api` branch, TODOs are generated specifically for your linked `frontend` branch rather than the main branch. This allows you to resolve integration issues before merging the cross-tree feature into production.
+
+## Best Practices
+
+- **Keep dependencies narrow.** Declare dependencies only between trees that genuinely share contracts — API schemas, shared libraries, or configuration.
+- **Review TODOs promptly.** Unresolved TODOs accumulate quickly in active repositories. Assign a team member to triage them weekly.
+- **Use pinning sparingly.** Pinning provides stability but delays integration. The longer you stay pinned, the larger the catch-up delta becomes.
+- **Combine with linked branches.** For coordinated cross-tree features, pair dependencies with linked branches so that related changes merge atomically.
