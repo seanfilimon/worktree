@@ -1,64 +1,56 @@
-FROM node:20-alpine AS base
+# syntax=docker/dockerfile:1.7
+#
+# W0rkTree marketing + docs site (Next.js standalone output).
+# Build from the repository root (npm workspaces):
+#
+#   docker build -f apps/web/Dockerfile -t worktree-web .
 
-# Install dependencies only when needed
-FROM base AS deps
+ARG NODE_VERSION=24
+
+FROM node:${NODE_VERSION}-alpine AS base
 RUN apk add --no-cache libc6-compat
-WORKDIR /app
-
-# Copy root package files for workspace
-COPY package.json package-lock.json ./
-COPY apps/web/package.json ./apps/web/
-
-# Install all dependencies (including workspace)
-RUN npm ci --legacy-peer-deps
-
-# Rebuild the source code only when needed
-FROM base AS builder
-WORKDIR /app
-
-# Copy node_modules from deps stage
-COPY --from=deps /app/node_modules ./node_modules
-
-# Copy all source files needed for the build
-COPY package.json package-lock.json ./
-COPY apps/web ./apps/web
-
-# Set working directory to web app
-WORKDIR /app/apps/web
-
-# Generate fumadocs MDX files
-RUN npx fumadocs-mdx
-
-# Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NODE_ENV=production
-RUN npm run build
 
-# Production image, copy all the files and run next
+# npm workspace manifests only: keeps the `npm ci` layer cached until a
+# package.json or the lockfile changes.
+FROM base AS manifests
+WORKDIR /src
+COPY apps ./apps
+RUN find apps -mindepth 2 -maxdepth 2 ! -name package.json -exec rm -rf {} +
+
+# Install dependencies (hoisted root node_modules + any nested workspace ones).
+FROM base AS deps
+WORKDIR /app
+COPY package.json package-lock.json .npmrc ./
+COPY --from=manifests /src/apps ./apps
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund --workspace=apps/web --include-workspace-root
+
+# Build the site.
+FROM deps AS builder
+WORKDIR /app
+COPY apps/web ./apps/web
+ENV NODE_ENV=production
+RUN npm run build --workspace=apps/web
+
+# Production image. In a workspace, Next traces from the repo root, so the
+# standalone server lives at apps/web/server.js inside .next/standalone.
 FROM base AS runner
 WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=8080 \
+    HOSTNAME=0.0.0.0
 
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-ENV PORT=8080
-ENV HOSTNAME="0.0.0.0"
+RUN addgroup -S -g 1001 nodejs && adduser -S -D -H -u 1001 -G nodejs nextjs
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
-# Copy public assets
-COPY --from=builder /app/apps/web/public ./public
-
-# Set correct permissions for prerender cache
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
-# Copy standalone build output
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
 
 USER nextjs
-
 EXPOSE 8080
 
-CMD ["node", "server.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
+
+CMD ["node", "apps/web/server.js"]

@@ -1,0 +1,38 @@
+# Local stack: W0rkTree server (+ bundled admin panel) and the docs site.
+#
+#   WT_ADMIN_PASSWORD=change-me docker compose up --build
+#
+#   server / admin : http://localhost:7420  (admin panel at /admin/)
+#   web            : http://localhost:3000
+name: worktree
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      args:
+        VERSION: ${WT_VERSION:-dev}
+    image: worktree-server:${WT_VERSION:-dev}
+    restart: unless-stopped
+    ports:
+      - "${WT_PORT:-7420}:7420"
+    environment:
+      WT_ADMIN_USER: ${WT_ADMIN_USER:-admin}
+      WT_ADMIN_PASSWORD: ${WT_ADMIN_PASSWORD:?set WT_ADMIN_PASSWORD to bootstrap the admin account}
+      WT_ALLOW_REGISTRATION: ${WT_ALLOW_REGISTRATION:-true}
+      WT_CORS_ORIGINS: ${WT_CORS_ORIGINS:-}
+    volumes:
+      - wt-data:/data
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: worktree-web:${WT_VERSION:-dev}
+    restart: unless-stopped
+    ports:
+      - "${WT_WEB_PORT:-3000}:8080"
+
+volumes:
+  wt-data:

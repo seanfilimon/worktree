@@ -1,9 +1,20 @@
 # Rust
-/target
+# Cargo.lock is intentionally NOT ignored: this workspace ships binaries
+# (wt, worktree-bg), so the lockfile must be committed for reproducible builds.
+target/
 **/*.rs.bk
-Cargo.lock
 *.swp
 *.swo
+
+# Go
+services/server-go/worktree-server
+services/server-go/worktree-server.exe
+*.test
+*.out
+
+# W0rkTree runtime data (server data dir, bbolt databases)
+wt-data/
+*.db
 
 # Node / npm
 node_modules/
@@ -16,11 +27,19 @@ yarn-error.log*
 out/
 build/
 
+# Vite (admin panel)
+apps/admin/dist/
+dist/
+
 # Fumadocs generated
 .source/
 
 # Turbo
 .turbo/
+.turbo
+
+# Release / install staging
+/release/
 
 # Environment
 .env
@@ -29,8 +48,6 @@ build/
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
 *~
 
 # OS
@@ -43,6 +60,9 @@ coverage/
 # Misc
 *.pem
 *.log
+
+# Claude Code agent worktrees
+.claude/worktrees/
 
 # Video production assets (large files)
 /video/

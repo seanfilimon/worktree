@@ -1,66 +1,70 @@
-# Rust build artifacts
-target/
-**/*.rs.bk
-Cargo.lock
+# Build context for Dockerfile.server and apps/web/Dockerfile (both use the
+# repository root as context). Patterns are anchored at the context root, so
+# nested artifacts need a **/ prefix.
 
-# Node dependencies (will be installed fresh in container)
-node_modules/
-.pnpm-store/
-
-# Build outputs
-.next/
-.source/
-out/
-build/
-dist/
-
-# Testing & coverage
-coverage/
-.nyc_output/
-
-# Debug logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Environment files
-.env
-.env*.local
-
-# IDE & editors
+# VCS / CI / tooling
+.git
+.github/
+.claude/
+.turbo/
+**/.turbo
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
 
-# OS files
-.DS_Store
-Thumbs.db
+# Rust (not needed by any image)
+target/
+**/target
+crates/
+Cargo.lock
+**/*.rs.bk
 
-# Git
-.git/
-.gitignore
+# Dependencies (installed fresh in the image)
+**/node_modules
+.pnpm-store/
 
-# Turbo cache
-.turbo/
+# Build outputs (rebuilt in the image)
+**/.next
+**/.source
+**/dist
+**/out
+**/build
+**/*.tsbuildinfo
+**/next-env.d.ts
+services/server-go/worktree-server
+services/server-go/worktree-server.exe
 
-# TypeScript build info
-*.tsbuildinfo
+# Runtime data
+**/wt-data
+**/*.db
 
-# Documentation & misc (not needed for web build)
+# Testing & coverage
+**/coverage
+**/.nyc_output
+tests/
+
+# Logs
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/*.log
+
+# Environment / secrets
+**/.env
+**/.env*.local
+**/*.pem
+
+# Editors & OS files
+**/*.swp
+**/*.swo
+**/*~
+**/.DS_Store
+**/Thumbs.db
+
+# Docs & misc not needed by images
 docs/
 video/
-tests/
 scripts/
-*.md
+**/*.md
 !apps/web/content/**/*.md
 !apps/web/content/**/*.mdx
-
-# Crates not needed for web build
-crates/
-
-# Misc
-*.pem
-*.log
 .vercel/
