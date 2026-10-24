@@ -819,7 +819,7 @@ mod tests {
         let c2 = MergeConflict::modify_delete("b.txt", hash_bytes(b"b"), 1);
         let c3 = MergeConflict::add_add("c.txt", hash_bytes(b"c1"), 2, hash_bytes(b"c2"), 2);
 
-        let conflicts = vec![c1, c2, c3];
+        let conflicts = [c1, c2, c3];
         assert_eq!(conflicts.len(), 3);
 
         let content_conflicts: Vec<_> = conflicts

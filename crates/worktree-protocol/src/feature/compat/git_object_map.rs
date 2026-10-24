@@ -137,10 +137,27 @@ impl ObjectMappingIndex {
     }
 
     /// Insert a mapping into the index.
+    ///
+    /// Replacing an existing mapping (same Worktree hash or same Git SHA)
+    /// also removes the replaced mapping's entry in the other direction, so
+    /// both lookups always agree.
     pub fn insert(&mut self, mapping: ObjectMapping) {
-        self.by_git_sha
-            .insert(mapping.git_sha.clone(), mapping.clone());
-        self.by_worktree_hash.insert(mapping.worktree_hash, mapping);
+        if let Some(old) = self
+            .by_git_sha
+            .insert(mapping.git_sha.clone(), mapping.clone())
+        {
+            if old.worktree_hash != mapping.worktree_hash {
+                self.by_worktree_hash.remove(&old.worktree_hash);
+            }
+        }
+        if let Some(old) = self
+            .by_worktree_hash
+            .insert(mapping.worktree_hash, mapping.clone())
+        {
+            if old.git_sha != mapping.git_sha {
+                self.by_git_sha.remove(&old.git_sha);
+            }
+        }
     }
 
     /// Look up a mapping by its Worktree content hash.
@@ -602,6 +619,26 @@ mod tests {
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_git_sha("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert!(deserialized.contains_git_sha("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+    }
+
+    #[test]
+    fn test_index_replace_keeps_directions_consistent() {
+        // Regression: replacing a mapping left a stale reverse entry.
+        let mut index = ObjectMappingIndex::new();
+        let h1 = hash_bytes(b"one");
+        let h2 = hash_bytes(b"two");
+        let sha_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let sha_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        index.insert(ObjectMapping::new(h1, sha_a, GitObjectKind::Blob, 3));
+        index.insert(ObjectMapping::new(h1, sha_b, GitObjectKind::Blob, 3));
+        assert!(!index.contains_git_sha(sha_a));
+        assert_eq!(index.get_by_worktree_hash(&h1).unwrap().git_sha, sha_b);
+
+        index.insert(ObjectMapping::new(h2, sha_b, GitObjectKind::Blob, 3));
+        assert!(!index.contains_worktree_hash(&h1));
+        assert_eq!(index.get_by_git_sha(sha_b).unwrap().worktree_hash, h2);
+        assert_eq!(index.len(), 1);
     }
 
     #[test]

@@ -33,16 +33,12 @@ pub struct TreeSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum BranchStrategy {
+    #[default]
     FeatureBranch,
     TrunkBased,
     ReleaseTrain,
-}
-
-impl Default for BranchStrategy {
-    fn default() -> Self {
-        BranchStrategy::FeatureBranch
-    }
 }
 
 fn default_branch_strategy() -> BranchStrategy {

@@ -21,15 +21,11 @@ pub struct ChunkManifest {
 /// Algorithm used for chunking
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ChunkAlgorithm {
+    #[default]
     FastCdc,
     FixedSize,
-}
-
-impl Default for ChunkAlgorithm {
-    fn default() -> Self {
-        ChunkAlgorithm::FastCdc
-    }
 }
 
 /// Configuration for large file handling

@@ -32,15 +32,9 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, WireError> {
 /// Returns [`WireError::EncodeError`] if bincode serialization fails.
 pub fn encode_with_flags<T: Serialize>(value: &T, flags: WireFlags) -> Result<Vec<u8>, WireError> {
     let payload = bincode::serialize(value).map_err(|e| WireError::EncodeError(e.to_string()))?;
-
-    let header = WireFormat::with_flags(payload.len() as u32, flags);
-    let header_bytes = header.encode_header();
-
-    let mut message = Vec::with_capacity(header_bytes.len() + payload.len());
-    message.extend_from_slice(&header_bytes);
-    message.extend_from_slice(&payload);
-
-    Ok(message)
+    // Delegates so payloads over 4 GiB are rejected instead of getting a
+    // silently truncated length in the header.
+    encode_raw_with_flags(&payload, flags)
 }
 
 /// Encode a serializable value with an additional 4-byte little-endian length

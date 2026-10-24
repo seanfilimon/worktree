@@ -5,17 +5,13 @@ use serde::{Deserialize, Serialize};
 /// Status of a staged snapshot
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum StagedStatus {
+    #[default]
     Staged,
     Pushed,
     Cleared,
     Expired,
-}
-
-impl Default for StagedStatus {
-    fn default() -> Self {
-        StagedStatus::Staged
-    }
 }
 
 /// A staged snapshot visible to team members but not yet in branch history

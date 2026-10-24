@@ -20,11 +20,12 @@ use crate::object::delta::Delta;
 ///
 /// Different strategies produce different results when the same path has been
 /// modified on both sides of the merge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum MergeStrategy {
     /// Standard three-way merge. Applies changes from both sides relative to
     /// the common ancestor. Conflicts are reported when both sides modify the
     /// same path in incompatible ways.
+    #[default]
     ThreeWay,
 
     /// "Ours" strategy — when there is a conflict, always keep the version
@@ -74,12 +75,6 @@ impl MergeStrategy {
             MergeStrategy::FastForward => "fast-forward",
             MergeStrategy::Union => "union",
         }
-    }
-}
-
-impl Default for MergeStrategy {
-    fn default() -> Self {
-        MergeStrategy::ThreeWay
     }
 }
 

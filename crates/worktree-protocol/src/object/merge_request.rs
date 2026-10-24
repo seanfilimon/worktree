@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 /// Status of a merge request
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MergeRequestStatus {
+    #[default]
     Open,
     InReview,
     Approved,
@@ -14,27 +16,17 @@ pub enum MergeRequestStatus {
     Closed,
 }
 
-impl Default for MergeRequestStatus {
-    fn default() -> Self {
-        MergeRequestStatus::Open
-    }
-}
-
 /// CI check status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CiStatus {
+    #[default]
     Pending,
     Running,
     Passed,
     Failed,
     Skipped,
-}
-
-impl Default for CiStatus {
-    fn default() -> Self {
-        CiStatus::Pending
-    }
 }
 
 /// A review on a merge request
@@ -91,6 +83,9 @@ pub struct MergeRequest {
 }
 
 impl MergeRequest {
+    // Public constructor used across crates; bundling the arguments into a
+    // struct would be a breaking API change.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         tree_id: TreeId,

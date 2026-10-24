@@ -123,6 +123,28 @@ impl Permission {
         }
     }
 
+    /// Whether holding `self` grants `other`.
+    ///
+    /// * every permission implies itself;
+    /// * `GlobalAdmin` implies everything;
+    /// * `TenantAdmin` implies everything except `GlobalAdmin`;
+    /// * `TreeAdmin` implies every tree-level permission.
+    pub fn implies(&self, other: &Permission) -> bool {
+        match self {
+            _ if self == other => true,
+            Permission::GlobalAdmin => true,
+            Permission::TenantAdmin => *other != Permission::GlobalAdmin,
+            Permission::TreeAdmin => matches!(
+                other,
+                Permission::TreeRead
+                    | Permission::TreeWrite
+                    | Permission::TreeCreate
+                    | Permission::TreeDelete
+            ),
+            _ => false,
+        }
+    }
+
     /// Returns only tree-related permissions.
     pub fn tree_permissions() -> Vec<Permission> {
         vec![
@@ -254,5 +276,22 @@ mod tests {
             let back: Permission = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(*p, back);
         }
+    }
+
+    #[test]
+    fn implies_hierarchy() {
+        for p in Permission::all() {
+            assert!(p.implies(p));
+            assert!(Permission::GlobalAdmin.implies(p));
+            assert_eq!(
+                Permission::TenantAdmin.implies(p),
+                *p != Permission::GlobalAdmin
+            );
+        }
+        assert!(Permission::TreeAdmin.implies(&Permission::TreeWrite));
+        assert!(!Permission::TreeAdmin.implies(&Permission::BranchMerge));
+        assert!(!Permission::TreeAdmin.implies(&Permission::TenantAdmin));
+        assert!(!Permission::TreeRead.implies(&Permission::TreeWrite));
+        assert!(!Permission::PolicyManage.implies(&Permission::RoleManage));
     }
 }

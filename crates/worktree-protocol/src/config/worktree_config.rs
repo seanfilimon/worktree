@@ -49,7 +49,9 @@ impl Default for WorktreeSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Visibility {
+    #[default]
     Private,
     Shared,
     Public,
@@ -57,12 +59,6 @@ pub enum Visibility {
 
 fn default_visibility() -> Visibility {
     Visibility::Private
-}
-
-impl Default for Visibility {
-    fn default() -> Self {
-        Visibility::Private
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,17 +86,13 @@ impl Default for SyncSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ConflictStrategy {
+    #[default]
     Auto,
     Manual,
     Ours,
     Theirs,
-}
-
-impl Default for ConflictStrategy {
-    fn default() -> Self {
-        ConflictStrategy::Auto
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,7 +240,7 @@ pub struct TenantAccessGrant {
     pub expires: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BranchProtectionRule {
     pub pattern: String,
     #[serde(default)]
@@ -265,21 +257,6 @@ pub struct BranchProtectionRule {
     pub required_ci_checks: Vec<String>,
     #[serde(default)]
     pub require_snapshot_signature: bool,
-}
-
-impl Default for BranchProtectionRule {
-    fn default() -> Self {
-        Self {
-            pattern: String::new(),
-            no_direct_push: false,
-            require_merge_review: false,
-            required_reviewers: 0,
-            no_delete: false,
-            require_ci_pass: false,
-            required_ci_checks: Vec::new(),
-            require_snapshot_signature: false,
-        }
-    }
 }
 
 impl WorktreeConfig {

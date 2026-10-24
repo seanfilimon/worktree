@@ -6,16 +6,12 @@ use serde::{Deserialize, Serialize};
 /// Release status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ReleaseStatus {
+    #[default]
     Draft,
     Published,
     Archived,
-}
-
-impl Default for ReleaseStatus {
-    fn default() -> Self {
-        ReleaseStatus::Draft
-    }
 }
 
 /// A release artifact

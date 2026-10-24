@@ -183,11 +183,13 @@ mod tests {
     fn test_ceiling_model_large_files() {
         let root = WorktreeConfig::new("proj");
         // Tree tries to set a HIGHER threshold — ceiling model prevents it
-        let mut tree = TreeLevelConfig::default();
-        tree.large_files = Some(TreeLargeFilesSection {
-            threshold_bytes: Some(100 * 1024 * 1024), // 100MB > root's 10MB
-            chunk_size_bytes: None,
-        });
+        let tree = TreeLevelConfig {
+            large_files: Some(TreeLargeFilesSection {
+                threshold_bytes: Some(100 * 1024 * 1024), // 100MB > root's 10MB
+                chunk_size_bytes: None,
+            }),
+            ..Default::default()
+        };
         let resolved = ResolvedConfig::resolve(&root, Some(&tree));
         // Should be clamped to root's 10MB
         assert_eq!(resolved.large_file_threshold, 10 * 1024 * 1024);

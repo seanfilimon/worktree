@@ -151,22 +151,19 @@ impl BranchProtection {
 
     /// Returns `true` if the given subject is allowed to push.
     ///
-    /// If `restrict_push` is empty, any subject is allowed.
+    /// If `restrict_push` is empty, any subject is allowed. Wildcard entries
+    /// are honoured: `Public` admits anyone and `AllAuthenticated` admits any
+    /// non-anonymous subject.
     pub fn can_push(&self, subject: &TreeAccessSubject) -> bool {
-        if self.restrict_push.is_empty() {
-            return true;
-        }
-        self.restrict_push.contains(subject)
+        subject_allowed(&self.restrict_push, subject)
     }
 
     /// Returns `true` if the given subject is allowed to merge.
     ///
-    /// If `restrict_merge` is empty, any subject is allowed.
+    /// If `restrict_merge` is empty, any subject is allowed. Wildcards are
+    /// honoured as for [`Self::can_push`].
     pub fn can_merge(&self, subject: &TreeAccessSubject) -> bool {
-        if self.restrict_merge.is_empty() {
-            return true;
-        }
-        self.restrict_merge.contains(subject)
+        subject_allowed(&self.restrict_merge, subject)
     }
 
     /// Builder method: set `require_snapshot_review`.
@@ -204,6 +201,16 @@ impl BranchProtection {
         self.restrict_merge = subjects;
         self
     }
+}
+
+/// Whether `subject` is admitted by an allow-list (empty = unrestricted).
+fn subject_allowed(list: &[TreeAccessSubject], subject: &TreeAccessSubject) -> bool {
+    list.is_empty()
+        || list.iter().any(|allowed| match allowed {
+            TreeAccessSubject::Public => true,
+            TreeAccessSubject::AllAuthenticated => *subject != TreeAccessSubject::Public,
+            other => other == subject,
+        })
 }
 
 impl Default for BranchProtection {
@@ -344,6 +351,25 @@ impl Default for BranchAccessList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_protection_lists_honour_wildcard_subjects() {
+        // Regression: only exact equality was checked, so AllAuthenticated /
+        // Public entries never admitted anyone.
+        let account = TreeAccessSubject::Account(AccountId::new());
+        let p = BranchProtection::new(BranchId::new(), TreeId::new())
+            .with_restrict_push(vec![TreeAccessSubject::AllAuthenticated])
+            .with_restrict_merge(vec![TreeAccessSubject::Public]);
+        assert!(p.can_push(&account));
+        assert!(!p.can_push(&TreeAccessSubject::Public));
+        assert!(p.can_merge(&account));
+        assert!(p.can_merge(&TreeAccessSubject::Public));
+
+        let only_team = BranchProtection::new(BranchId::new(), TreeId::new())
+            .with_restrict_push(vec![TreeAccessSubject::Team(TeamId::new())]);
+        assert!(!only_team.can_push(&account));
+        assert!(only_team.can_merge(&account)); // merge list empty → unrestricted
+    }
 
     fn make_allow_rule(
         tenant_id: TenantId,

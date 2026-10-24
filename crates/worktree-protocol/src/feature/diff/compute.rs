@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::core::hash::ContentHash;
-use crate::object::delta::{Delta, DeltaKind};
+use crate::object::delta::Delta;
 use crate::object::manifest::{EntryKind, Manifest, ManifestEntry};
 
 /// Configuration for diff computation.
@@ -59,13 +59,16 @@ pub fn compute_diff(old: &Manifest, new: &Manifest, options: &DiffOptions) -> Ve
                     || old_entry.executable != new_entry.executable
                     || old_entry.kind != new_entry.kind
                 {
-                    deltas.push(Delta::modify(
-                        old_entry.path.clone(),
-                        old_entry.hash,
-                        new_entry.hash,
-                        old_entry.size,
-                        new_entry.size,
-                    ));
+                    deltas.push(
+                        Delta::modify(
+                            old_entry.path.clone(),
+                            old_entry.hash,
+                            new_entry.hash,
+                            old_entry.size,
+                            new_entry.size,
+                        )
+                        .with_entry_meta(new_entry.kind, new_entry.executable),
+                    );
                 }
             }
             None => {
@@ -111,12 +114,15 @@ pub fn compute_diff(old: &Manifest, new: &Manifest, options: &DiffOptions) -> Ve
                         .position(|d| !consumed_deleted.contains(&d.path))
                     {
                         let del_entry = del_list[pos];
-                        deltas.push(Delta::rename(
-                            del_entry.path.clone(),
-                            add_entry.path.clone(),
-                            add_entry.hash,
-                            add_entry.size,
-                        ));
+                        deltas.push(
+                            Delta::rename(
+                                del_entry.path.clone(),
+                                add_entry.path.clone(),
+                                add_entry.hash,
+                                add_entry.size,
+                            )
+                            .with_entry_meta(add_entry.kind, add_entry.executable),
+                        );
                         consumed_deleted.insert(del_entry.path.clone());
                         matched_added.insert(add_entry.path.clone());
                     }
@@ -154,12 +160,15 @@ pub fn compute_diff(old: &Manifest, new: &Manifest, options: &DiffOptions) -> Ve
                     continue;
                 }
                 if let Some(source) = old_hashes.get(&add_entry.hash) {
-                    deltas.push(Delta::copy(
-                        source.path.clone(),
-                        add_entry.path.clone(),
-                        add_entry.hash,
-                        add_entry.size,
-                    ));
+                    deltas.push(
+                        Delta::copy(
+                            source.path.clone(),
+                            add_entry.path.clone(),
+                            add_entry.hash,
+                            add_entry.size,
+                        )
+                        .with_entry_meta(add_entry.kind, add_entry.executable),
+                    );
                     matched_added.insert(add_entry.path.clone());
                 }
             }
@@ -175,7 +184,10 @@ pub fn compute_diff(old: &Manifest, new: &Manifest, options: &DiffOptions) -> Ve
         // 5. Emit remaining adds (not matched by renames or copies).
         for entry in &added {
             if !matched_added.contains(&entry.path) {
-                deltas.push(Delta::add(entry.path.clone(), entry.hash, entry.size));
+                deltas.push(
+                    Delta::add(entry.path.clone(), entry.hash, entry.size)
+                        .with_entry_meta(entry.kind, entry.executable),
+                );
             }
         }
     } else {
@@ -184,7 +196,10 @@ pub fn compute_diff(old: &Manifest, new: &Manifest, options: &DiffOptions) -> Ve
             deltas.push(Delta::delete(entry.path.clone(), entry.hash, entry.size));
         }
         for entry in &added {
-            deltas.push(Delta::add(entry.path.clone(), entry.hash, entry.size));
+            deltas.push(
+                Delta::add(entry.path.clone(), entry.hash, entry.size)
+                    .with_entry_meta(entry.kind, entry.executable),
+            );
         }
     }
 
@@ -204,7 +219,8 @@ mod tests {
     use super::*;
     use crate::core::hash::hash_bytes;
     use crate::core::id::TreeId;
-    use crate::object::manifest::{EntryKind, Manifest, ManifestEntry};
+    use crate::object::delta::DeltaKind;
+    use crate::object::manifest::{Manifest, ManifestEntry};
 
     fn make_manifest(entries: Vec<ManifestEntry>) -> Manifest {
         let tree_id = TreeId::new();

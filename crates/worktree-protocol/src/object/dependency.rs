@@ -23,17 +23,13 @@ pub struct TreeDependency {
 /// Status of a branch dependency
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DependencyStatus {
+    #[default]
     Active,
     Completed,
     Blocked,
     Stale,
-}
-
-impl Default for DependencyStatus {
-    fn default() -> Self {
-        DependencyStatus::Active
-    }
 }
 
 /// A dependency between branches
@@ -137,17 +133,13 @@ impl LinkedBranchGroup {
 /// Priority level for a snapshot dependency
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum DependencyPriority {
     Low,
+    #[default]
     Medium,
     High,
     Critical,
-}
-
-impl Default for DependencyPriority {
-    fn default() -> Self {
-        DependencyPriority::Medium
-    }
 }
 
 /// A dependency declared at the snapshot level
@@ -171,18 +163,14 @@ pub struct SnapshotDependency {
 /// State of a TODO item
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TodoState {
+    #[default]
     Open,
     Claimed,
     InProgress,
     Completed,
     Cancelled,
-}
-
-impl Default for TodoState {
-    fn default() -> Self {
-        TodoState::Open
-    }
 }
 
 /// Origin of a TODO
