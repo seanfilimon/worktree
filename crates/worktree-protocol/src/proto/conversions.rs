@@ -340,6 +340,7 @@ impl From<dom::PushRequest> for wire::PushRequest {
             new_tip: Some(d.new_tip.into()),
             snapshot_chain: d.snapshot_chain.into_iter().map(Into::into).collect(),
             account_id: Some(d.account_id.into()),
+            snapshots: Vec::new(),
         }
     }
 }
@@ -400,6 +401,7 @@ impl From<dom::PullResponse> for wire::PullResponse {
             new_tip: d.new_tip.map(Into::into),
             snapshot_chain: d.snapshot_chain.into_iter().map(Into::into).collect(),
             objects_to_fetch: d.objects_to_fetch.into_iter().map(Into::into).collect(),
+            snapshots: Vec::new(),
         }
     }
 }

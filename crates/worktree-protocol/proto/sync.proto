@@ -154,6 +154,10 @@ message PushRequest {
   SnapshotId new_tip = 6;
   repeated SnapshotId snapshot_chain = 7;
   AccountId account_id = 8;
+  // Full records for every snapshot in `snapshot_chain` (oldest first).
+  // Manifests and blobs they reference must already be uploaded via
+  // UploadObjects before Push is called.
+  repeated SnapshotRecord snapshots = 9;
 
   reserved 100 to 199;
 }
@@ -249,6 +253,8 @@ message PullResponse {
   optional SnapshotId new_tip = 2;
   repeated SnapshotId snapshot_chain = 3;
   repeated ContentHash objects_to_fetch = 4;
+  // Full records for every snapshot in `snapshot_chain` (oldest first).
+  repeated SnapshotRecord snapshots = 5;
 
   reserved 100 to 199;
 }
@@ -372,5 +378,204 @@ service SyncService {
   // Sync access config changes (roles, policies, branch protection, ...).
   rpc SyncAccessConfig(AccessConfigSyncRequest) returns (AccessConfigSyncResponse);
 
-  // Future RPCs (streaming chunk transfer, tag sync) tracked in WT-PROTO-3.
+  // Upload content-addressed objects (manifests, blobs). Server verifies
+  // BLAKE3(data) == hash for every object and dedups.
+  rpc UploadObjects(stream ObjectData) returns (UploadObjectsResponse);
+
+  // Download the requested objects. Unknown hashes are skipped.
+  rpc DownloadObjects(WantMessage) returns (stream ObjectData);
+
+  // Resolve a tree by tenant slug + name, optionally creating it.
+  rpc ResolveTree(ResolveTreeRequest) returns (TreeInfo);
+
+  // List branches (and their tips) of a tree.
+  rpc ListBranches(ListBranchesRequest) returns (ListBranchesResponse);
+
+  // List staged (WIP) snapshots visible to the caller.
+  rpc ListStaged(ListStagedRequest) returns (ListStagedResponse);
+
+  // Push / list tags of a tree.
+  rpc PushTag(PushTagRequest) returns (PushTagResponse);
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse);
+
+  // Liveness + identity probe ("who am I").
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// ============================================================
+// Content-addressed objects (WT-PROTO-3)
+//
+// Object hash = BLAKE3 of the exact `data` bytes (32 bytes).
+//   - BLOB:     raw file content
+//   - MANIFEST: protobuf-encoded ManifestRecord
+// Snapshots are NOT stored as objects; they travel as SnapshotRecord.
+// ============================================================
+
+enum ObjectKind {
+  OBJECT_KIND_UNSPECIFIED = 0;
+  OBJECT_KIND_BLOB = 1;
+  OBJECT_KIND_MANIFEST = 2;
+}
+
+message ObjectData {
+  ContentHash hash = 1;
+  ObjectKind kind = 2;
+  bytes data = 3;
+
+  reserved 100 to 199;
+}
+
+message UploadObjectsResponse {
+  uint32 received = 1;
+  uint32 stored = 2;     // newly stored (not already present)
+  repeated ContentHash rejected = 3; // hash mismatch
+
+  reserved 100 to 199;
+}
+
+// One file in a manifest. Paths are '/'-separated, relative to the tree root,
+// sorted lexicographically, unique.
+message ManifestEntry {
+  string path = 1;
+  ContentHash blob_hash = 2;
+  uint64 size = 3;
+  bool executable = 4;
+
+  reserved 100 to 199;
+}
+
+message ManifestRecord {
+  repeated ManifestEntry entries = 1;
+
+  reserved 100 to 199;
+}
+
+message SnapshotRecord {
+  SnapshotId id = 1;
+  TreeId tree_id = 2;
+  string branch_name = 3;
+  repeated SnapshotId parents = 4;
+  ContentHash manifest_hash = 5;
+  string author = 6;          // account username or "name <email>"
+  string message = 7;
+  google.protobuf.Timestamp created_at = 8;
+  bool auto_generated = 9;
+
+  reserved 100 to 199;
+}
+
+message ResolveTreeRequest {
+  string tenant_slug = 1;
+  string tree_name = 2;
+  bool create_if_missing = 3;
+
+  reserved 100 to 199;
+}
+
+message TreeInfo {
+  TreeId tree_id = 1;
+  TenantId tenant_id = 2;
+  string tenant_slug = 3;
+  string name = 4;
+  string default_branch = 5;
+  bool created = 6;
+
+  reserved 100 to 199;
+}
+
+message ListBranchesRequest {
+  TreeId tree_id = 1;
+
+  reserved 100 to 199;
+}
+
+message BranchInfo {
+  string name = 1;
+  optional SnapshotId tip = 2;
+  bool protected = 3;
+  google.protobuf.Timestamp updated_at = 4;
+
+  reserved 100 to 199;
+}
+
+message ListBranchesResponse {
+  repeated BranchInfo branches = 1;
+
+  reserved 100 to 199;
+}
+
+message ListStagedRequest {
+  TreeId tree_id = 1;
+  optional string branch_name = 2;
+
+  reserved 100 to 199;
+}
+
+message StagedInfo {
+  SnapshotId snapshot_id = 1;
+  string author = 2;
+  string branch_name = 3;
+  repeated string files_changed = 4;
+  uint32 files_added = 5;
+  uint32 files_modified = 6;
+  uint32 files_deleted = 7;
+  optional string message = 8;
+  google.protobuf.Timestamp staged_at = 9;
+
+  reserved 100 to 199;
+}
+
+message ListStagedResponse {
+  repeated StagedInfo staged = 1;
+
+  reserved 100 to 199;
+}
+
+message TagRecord {
+  string name = 1;
+  SnapshotId target = 2;
+  optional string message = 3;
+  string tagger = 4;
+  google.protobuf.Timestamp created_at = 5;
+
+  reserved 100 to 199;
+}
+
+message PushTagRequest {
+  TreeId tree_id = 1;
+  TagRecord tag = 2;
+
+  reserved 100 to 199;
+}
+
+message PushTagResponse {
+  bool accepted = 1;
+  optional string error = 2;
+
+  reserved 100 to 199;
+}
+
+message ListTagsRequest {
+  TreeId tree_id = 1;
+
+  reserved 100 to 199;
+}
+
+message ListTagsResponse {
+  repeated TagRecord tags = 1;
+
+  reserved 100 to 199;
+}
+
+message PingRequest {
+  reserved 100 to 199;
+}
+
+message PingResponse {
+  string server_version = 1;
+  optional AccountId account_id = 2;  // set when the bearer token is valid
+  optional string username = 3;
+  optional string tenant_slug = 4;
+
+  reserved 100 to 199;
 }
