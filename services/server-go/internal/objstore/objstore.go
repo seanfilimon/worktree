@@ -45,6 +45,27 @@ type Store interface {
 	Delete(ctx context.Context, h hash.Hash) error
 }
 
+// StatStore is an optional interface implemented by stores that can report
+// aggregate usage (e.g. for the admin stats endpoint). Callers should
+// type-assert a [Store] to StatStore and degrade gracefully if it is not
+// implemented.
+type StatStore interface {
+	// Stats returns the number of stored objects and their total size in
+	// bytes. The result is a point-in-time approximation when writes run
+	// concurrently.
+	Stats(ctx context.Context) (count, bytes int64, err error)
+}
+
+// ListStore is an optional interface implemented by stores that can
+// enumerate their contents (e.g. for garbage collection or integrity
+// checks).
+type ListStore interface {
+	// List calls fn once for every stored object, in ascending hash
+	// order. If fn returns an error, iteration stops and List returns
+	// that error unchanged.
+	List(ctx context.Context, fn func(hash.Hash) error) error
+}
+
 // ErrNotFound is returned by Get when no object exists for the given
 // hash. Callers should match with errors.Is.
 var ErrNotFound = errors.New("objstore: object not found")
