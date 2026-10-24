@@ -1,0 +1,22 @@
+[package]
+name = "worktree-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "End-to-end test suite: drives the real `wt`, `worktree-bg` and Go server binaries"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+
+[dependencies]
+serde_json = "1"
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+flate2 = "1"
+tar = "0.4"
