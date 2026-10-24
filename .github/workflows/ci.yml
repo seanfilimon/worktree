@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CI: true
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+
+  go:
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: services/server-go
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/server-go/go.mod
+          cache-dependency-path: services/server-go/go.sum
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test (race)
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
+      - name: go test
+        if: runner.os != 'Linux'
+        run: go test -count=1 ./...
+
+  go-lint:
+    name: go (golangci-lint, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/server-go/go.mod
+          cache-dependency-path: services/server-go/go.sum
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          working-directory: services/server-go
+
+  proto:
+    name: proto drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/server-go/go.mod
+          cache-dependency-path: services/server-go/go.sum
+      - name: Fetch vendored protoc (protoc-bin-vendored crate)
+        run: cargo fetch
+      - name: Install protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+      - name: Regenerate Go bindings
+        run: bash scripts/gen-proto.sh
+      - name: Check for drift
+        run: |
+          if [ -n "$(git status --porcelain -- services/server-go/internal/proto)" ]; then
+            echo "::error::services/server-go/internal/proto is out of date; run 'bash scripts/gen-proto.sh' and commit."
+            git status --porcelain -- services/server-go/internal/proto
+            git --no-pager diff -- services/server-go/internal/proto
+            exit 1
+          fi
+
+  web:
+    name: web (apps/web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: build
+        run: npm run build --workspace=apps/web
+      - name: lint
+        # Advisory: apps/web's `lint` script still calls `next lint`, which
+        # Next.js 16 removed. Make this blocking once it runs `eslint .`.
+        continue-on-error: true
+        run: npm run lint --workspace=apps/web
+
+  admin:
+    name: admin (apps/admin)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: lint
+        run: npm run lint --workspace=apps/admin --if-present
+      - name: typecheck
+        run: npm run typecheck --workspace=apps/admin --if-present
+      - name: test
+        run: npm run test --workspace=apps/admin --if-present
+      - name: build
+        run: npm run build --workspace=apps/admin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admin-dist
+          path: apps/admin/dist
+          retention-days: 3
+
+  e2e:
+    name: e2e
+    needs: [rust, go, admin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/server-go/go.mod
+          cache-dependency-path: services/server-go/go.sum
+      - uses: actions/download-artifact@v5
+        with:
+          name: admin-dist
+          path: apps/admin/dist
+      - name: Build Rust binaries
+        run: cargo build --workspace --bins
+      - name: Build Go server
+        working-directory: services/server-go
+        run: go build -trimpath -o "$GITHUB_WORKSPACE/target/go/worktree-server" .
+      - name: Run end-to-end suite
+        run: bash scripts/e2e.sh

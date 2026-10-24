@@ -1,0 +1,196 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  admin:
+    name: admin panel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build --workspace=apps/admin
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="worktree-admin-${version}"
+          mkdir -p dist
+          tar -C apps/admin/dist -czf "dist/${name}.tar.gz" .
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-admin
+          path: dist/*
+          if-no-files-found: error
+
+  binaries:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds use 22.04 runners for a broadly compatible glibc baseline.
+          - { target: x86_64-unknown-linux-gnu,  os: ubuntu-22.04,     goos: linux,   goarch: amd64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, goos: linux,   goarch: arm64 }
+          - { target: x86_64-apple-darwin,       os: macos-15-intel,   goos: darwin,  goarch: amd64 }
+          - { target: aarch64-apple-darwin,      os: macos-latest,     goos: darwin,  goarch: arm64 }
+          - { target: x86_64-pc-windows-msvc,    os: windows-latest,   goos: windows, goarch: amd64 }
+          # Cross-compiled with the ARM64 MSVC toolset preinstalled on windows-latest.
+          - { target: aarch64-pc-windows-msvc,   os: windows-latest,   goos: windows, goarch: arm64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/server-go/go.mod
+          cache-dependency-path: services/server-go/go.sum
+
+      - name: Build wt + worktree-bg
+        run: |
+          locked=""; [ -f Cargo.lock ] && locked="--locked"
+          cargo build --release $locked --target "${{ matrix.target }}" -p worktree-cli -p worktree-bg
+
+      - name: Build worktree-server
+        working-directory: services/server-go
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          ext=""; [ "${{ matrix.goos }}" = windows ] && ext=".exe"
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME#v} -X main.commit=${GITHUB_SHA}" \
+            -o "$GITHUB_WORKSPACE/target/go/worktree-server${ext}" .
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          target="${{ matrix.target }}"
+          name="worktree-${version}-${target}"
+          ext=""; [ "${{ matrix.goos }}" = windows ] && ext=".exe"
+          stage="stage/${name}"
+          mkdir -p "$stage" dist
+          for bin in wt worktree-bg; do
+            cp "target/${target}/release/${bin}${ext}" "$stage/"
+          done
+          cp "target/go/worktree-server${ext}" "$stage/"
+          cp LICENSE README.md "$stage/"
+          if [ "${{ matrix.goos }}" = windows ]; then
+            archive="${name}.zip"
+            (cd stage && 7z a -tzip -bso0 "../dist/${archive}" "${name}")
+          else
+            archive="${name}.tar.gz"
+            tar -C stage -czf "dist/${archive}" "${name}"
+          fi
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "${archive}.sha256"
+          else
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          fi
+          cat "${archive}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: GitHub release
+    needs: [admin, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Aggregate checksums
+        working-directory: dist
+        run: cat ./*.sha256 | sort -k2 > SHA256SUMS && cat SHA256SUMS
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            prerelease=""
+            case "$tag" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$tag" --verify-tag --title "$tag" --generate-notes $prerelease
+          fi
+          gh release upload "$tag" dist/* --clobber
+
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/worktree-server
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+          flavor: |
+            latest=auto
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
