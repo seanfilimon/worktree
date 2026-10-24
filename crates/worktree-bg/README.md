@@ -1,23 +1,47 @@
 # worktree-bg
 
-**Local daemon** for the W0rkTree VCS. Runs on every developer's machine.
+**Local background daemon** for W0rkTree. Runs on each developer machine,
+watches registered worktrees and takes auto-snapshots (see
+`docs/ENGINEERING_PLAN.md` §6).
 
-This is **not** the remote server — that's `worktree-server`, slated to be
-reimplemented in Go (see the current `crates/worktree-server/` for the
-Rust shell that will be stripped down in WT-EXTRACT-3).
+## Usage
 
-## Role
+```
+worktree-bg run [--foreground]     # serve until Ctrl-C / SIGTERM / IPC Shutdown
+worktree-bg service [--platform systemd|launchd|windows]
+                                   # print a login-service definition
+```
 
-Watches the local filesystem, hashes content with BLAKE3, builds local
-snapshots, and syncs them to the remote `worktree-server`. Owns all `.wt/`
-and `.wt-tree/` local state.
+Normally started and controlled through `wt daemon …`. `run` does not
+detach; `--foreground` additionally logs to stderr. Log level comes from
+`WT_LOG` (tracing `EnvFilter` syntax, default `info`).
 
-## Spec
+## Per-user state (`$WT_HOME`, default `~/.wt`)
 
-`../worktree-protocol/specs/bgprocess/BgProcess.md`
+| File      | Purpose |
+|-----------|---------|
+| `bg.json` | `{pid, port, version}` — written on startup, removed on clean shutdown |
+| `bg.toml` | `watched = ["<root>", …]` — persisted on watch / unwatch |
+| `bg.log`  | daemon log (rotated to `bg.log.old` at startup past 10 MiB) |
 
-## Status
+A second `run` against the same `$WT_HOME` exits immediately if the daemon
+in `bg.json` answers `Status`; a stale `bg.json` is replaced.
 
-Skeleton only. Module structure is committed but no implementation yet.
-Code moves from the current `worktree-server` crate into this one happen
-in WT-EXTRACT-2.
+## How it works
+
+* **IPC** — `worktree_sdk::ipc`: one JSON line each way over TCP on
+  `127.0.0.1:<port>`.
+* **Watching** — one recursive `notify` watcher per worktree. Events under
+  `.wt/` and `.wt-tree/`, reads, and paths matched by
+  `Repository::is_ignored` are dropped on the watcher thread; edits to
+  `.wt/config.toml`, `.wt/ignore` or `.wtignore` reload the settings.
+* **Debouncing** — per the worktree's `[auto_snapshot]` section: a snapshot
+  is due `inactivity_secs` after the last change, or immediately once
+  `max_changed_files` distinct paths changed. Paused worktrees keep counting
+  changes but do not snapshot.
+* **Snapshot pass** — every tree with changes gets
+  `Repository::snapshot(auto_generated = true, "auto: N files changed")`;
+  trees with a merge in progress are skipped. If `[sync].auto_stage` is set,
+  the configured remote exists and a credential is saved, each snapshotted
+  tree is staged with `remote::stage`. Failures are reported as
+  `last_error` in `Status`, never fatal.
