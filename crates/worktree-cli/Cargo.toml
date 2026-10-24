@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 worktree-sdk = { path = "../worktree-sdk" }
 worktree-protocol = { path = "../worktree-protocol" }
+worktree-git = { path = "../worktree-git" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 colored = "2"

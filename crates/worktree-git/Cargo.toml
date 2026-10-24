@@ -6,6 +6,7 @@ description = "Git compatibility layer for Worktree — import, export, and remo
 
 [dependencies]
 worktree-protocol = { path = "../worktree-protocol" }
+worktree-sdk = { path = "../worktree-sdk" }
 git2 = "0.19"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
