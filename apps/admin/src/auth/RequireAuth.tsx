@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router";
-import { Spinner } from "@/components/ui/Spinner";
-import { ErrorState } from "@/components/ui/States";
+import { Spinner } from "@/components/legacy/Spinner";
+import { ErrorState } from "@/components/legacy/States";
 import { Wordmark } from "@/components/Wordmark";
 import { useAuth } from "./context";
 
@@ -15,7 +15,7 @@ export function RequireAuth() {
   }
   if (me.isPending) {
     return (
-      <div role="status" className="flex h-full flex-col items-center justify-center gap-3 text-muted">
+      <div role="status" className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
         <Wordmark className="text-lg" />
         <span className="flex items-center gap-2 text-sm">
           <Spinner /> Loading session…
@@ -40,7 +40,7 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
     return (
       <div role="alert" className="flex flex-col items-center gap-2 py-16 text-center">
         <p className="font-medium">Server admin access required</p>
-        <p className="text-[13px] text-muted">Ask a server administrator to grant your account admin rights.</p>
+        <p className="text-[13px] text-muted-foreground">Ask a server administrator to grant your account admin rights.</p>
       </div>
     );
   }

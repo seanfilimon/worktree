@@ -6,13 +6,13 @@ import type { Account, UpdateAccountRequest } from "@/api/types";
 import { RequireAdmin } from "@/auth/RequireAuth";
 import { useAuth } from "@/auth/context";
 import { PageHeader } from "@/components/PageHeader";
-import { Badge } from "@/components/ui/Badge";
-import { Section } from "@/components/ui/Card";
-import { TextField } from "@/components/ui/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Switch } from "@/components/ui/Switch";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Section } from "@/components/legacy/Card";
+import { TextField } from "@/components/legacy/Field";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Switch } from "@/components/legacy/Switch";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { useToast } from "@/toast/store";
 
 function AccountsTable() {
@@ -75,11 +75,11 @@ function AccountsTable() {
                         disabled
                       </Badge>
                     )}
-                    {a.display_name && <p className="text-xs text-muted">{a.display_name}</p>}
+                    {a.display_name && <p className="text-xs text-muted-foreground">{a.display_name}</p>}
                   </Td>
-                  <Td className="text-muted">{a.email}</Td>
+                  <Td className="text-muted-foreground">{a.email}</Td>
                   <Td>
-                    <RelativeTime value={a.created_at} className="text-muted" />
+                    <RelativeTime value={a.created_at} className="text-muted-foreground" />
                   </Td>
                   <Td>
                     <Switch

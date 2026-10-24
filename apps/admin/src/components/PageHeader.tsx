@@ -26,7 +26,7 @@ export function PageHeader({ title, documentTitle, breadcrumbs = [], description
     <header className="mb-5 flex flex-col gap-2">
       {breadcrumbs.length > 0 && (
         <nav aria-label="Breadcrumb">
-          <ol className="flex flex-wrap items-center gap-1 text-[13px] text-muted">
+          <ol className="flex flex-wrap items-center gap-1 text-[13px] text-muted-foreground">
             {breadcrumbs.map((c, i) => {
               const last = i === breadcrumbs.length - 1;
               return (
@@ -50,7 +50,7 @@ export function PageHeader({ title, documentTitle, breadcrumbs = [], description
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <h1 className="truncate text-xl font-semibold tracking-tight">{title}</h1>
-          {description && <div className="mt-1 text-[13px] text-muted">{description}</div>}
+          {description && <div className="mt-1 text-[13px] text-muted-foreground">{description}</div>}
         </div>
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
       </div>

@@ -5,12 +5,12 @@ import { useApi } from "@/api/context";
 import { useBlob, useBranches, useSnapshot } from "@/api/queries";
 import type { SnapshotFile } from "@/api/types";
 import { Icon } from "@/components/icons";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Card } from "@/components/ui/Card";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Button } from "@/components/legacy/Button";
+import { Card } from "@/components/legacy/Card";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { baseName, decodeText, downloadBytes, listDirectory, normalizeDir, parentDir, splitLines } from "@/lib/files";
 import { firstLine, formatBytes, shortId } from "@/lib/format";
 import { filesPath } from "@/lib/paths";
@@ -26,7 +26,7 @@ function PathCrumbs({ path, link }: { path: string; link: (dir: string) => strin
     <nav aria-label="File path" className="min-w-0">
       <ol className="flex flex-wrap items-center gap-1 font-mono text-[13px]">
         <li>
-          <Link to={link("")} className="text-accent hover:underline">
+          <Link to={link("")} className="text-foreground hover:underline">
             root
           </Link>
         </li>
@@ -39,7 +39,7 @@ function PathCrumbs({ path, link }: { path: string; link: (dir: string) => strin
               {last ? (
                 <span aria-current="page">{p}</span>
               ) : (
-                <Link to={link(dir)} className="text-accent hover:underline">
+                <Link to={link(dir)} className="text-foreground hover:underline">
                   {p}
                 </Link>
               )}
@@ -107,8 +107,8 @@ function FileViewer({ snapshot, file }: { snapshot: string; file: SnapshotFile }
         <div className="flex min-w-0 items-center gap-2">
           <Icon name="file" className="text-subtle" />
           <h2 className="truncate font-mono text-sm font-medium">{baseName(file.path)}</h2>
-          <span className="shrink-0 text-xs whitespace-nowrap text-muted">{formatBytes(file.size)}</span>
-          {text !== null && <span className="shrink-0 text-xs whitespace-nowrap text-muted">· {lines.length} lines</span>}
+          <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">{formatBytes(file.size)}</span>
+          {text !== null && <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">· {lines.length} lines</span>}
           {file.executable && <Badge tone="warning">executable</Badge>}
         </div>
         {downloadButton}
@@ -140,12 +140,12 @@ export function FilesTab() {
     <div className="mb-3 flex flex-wrap items-center gap-3">
       <BranchSelect tenant={tenant} tree={tree} value={branchParam} onChange={(b) => setParams({ branch: b })} />
       {pinned && (
-        <Link to={filesPath(tenant, tree)} className="text-[13px] text-accent hover:underline">
+        <Link to={filesPath(tenant, tree)} className="text-[13px] text-foreground hover:underline">
           Show branch tip
         </Link>
       )}
       {detail.data && (
-        <p className="min-w-0 truncate text-[13px] text-muted">
+        <p className="min-w-0 truncate text-[13px] text-muted-foreground">
           <span className="font-mono text-fg" title={detail.data.snapshot.id}>
             {shortId(detail.data.snapshot.id)}
           </span>{" "}
@@ -192,7 +192,7 @@ export function FilesTab() {
         ) : (
           <Card>
             <EmptyState title="File not found in this snapshot" action={
-                <Link to={link({ path: parentDir(filePath) })} className="text-accent hover:underline">
+                <Link to={link({ path: parentDir(filePath) })} className="text-foreground hover:underline">
                   Back to folder
                 </Link>
               } />
@@ -216,7 +216,7 @@ export function FilesTab() {
               {dir && (
                 <Tr>
                   <Td colSpan={3}>
-                    <Link to={link({ path: parentDir(dir) })} className="font-mono text-muted hover:text-fg" aria-label="Parent folder">
+                    <Link to={link({ path: parentDir(dir) })} className="font-mono text-muted-foreground hover:text-fg" aria-label="Parent folder">
                       ..
                     </Link>
                   </Td>
@@ -226,11 +226,11 @@ export function FilesTab() {
                 <Tr key={d.path}>
                   <Td>
                     <Link to={link({ path: d.path })} className="flex items-center gap-2 font-mono hover:underline">
-                      <Icon name="folder" className="text-accent" />
+                      <Icon name="folder" className="text-foreground" />
                       {d.name}/
                     </Link>
                   </Td>
-                  <Td className="text-right text-muted tabular-nums">
+                  <Td className="text-right text-muted-foreground tabular-nums">
                     {d.fileCount} {d.fileCount === 1 ? "file" : "files"}
                   </Td>
                   <Td className="hidden sm:table-cell" />
@@ -245,7 +245,7 @@ export function FilesTab() {
                       {f.executable && <Badge tone="warning">x</Badge>}
                     </Link>
                   </Td>
-                  <Td className="text-right text-muted tabular-nums">{formatBytes(f.size)}</Td>
+                  <Td className="text-right text-muted-foreground tabular-nums">{formatBytes(f.size)}</Td>
                   <Td className="hidden font-mono text-xs text-subtle sm:table-cell" title={f.hash}>
                     {f.hash.slice(0, 12)}
                   </Td>

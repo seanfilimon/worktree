@@ -1,4 +1,2 @@
-/** Joins truthy class names. */
-export function cn(...parts: (string | false | null | undefined)[]): string {
-  return parts.filter(Boolean).join(" ");
-}
+/** Re-export so existing imports keep working. */
+export { cn } from "./utils";

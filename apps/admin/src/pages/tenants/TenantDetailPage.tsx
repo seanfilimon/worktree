@@ -7,14 +7,14 @@ import { ROLES, type Member, type Role } from "@/api/types";
 import { canManage, useAuth } from "@/auth/context";
 import { PageHeader } from "@/components/PageHeader";
 import { TreeTable } from "@/components/TreeTable";
-import { Badge } from "@/components/ui/Badge";
-import { ButtonLink, Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { ConfirmButton } from "@/components/ui/ConfirmButton";
-import { SelectField, TextField } from "@/components/ui/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { ButtonLink, Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { ConfirmButton } from "@/components/legacy/ConfirmButton";
+import { SelectField, TextField } from "@/components/legacy/Field";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { useToast } from "@/toast/store";
 
 function RoleSelect({ value, onChange, label, disabled }: { value: Role; onChange: (r: Role) => void; label: string; disabled?: boolean }) {
@@ -68,9 +68,9 @@ function MembersSection({ tenant, editable }: { tenant: string; editable: boolea
         <Td>
           <span className="font-medium">{m.account.username}</span>
           {self && <Badge className="ml-1.5">you</Badge>}
-          {m.account.display_name && <p className="text-xs text-muted">{m.account.display_name}</p>}
+          {m.account.display_name && <p className="text-xs text-muted-foreground">{m.account.display_name}</p>}
         </Td>
-        <Td className="text-muted">{m.account.email}</Td>
+        <Td className="text-muted-foreground">{m.account.email}</Td>
         <Td>
           {editable ? (
             <RoleSelect

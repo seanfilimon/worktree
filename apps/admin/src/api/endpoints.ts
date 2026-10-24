@@ -7,6 +7,18 @@ import type {
   AuthResponse,
   Branch,
   BranchProtection,
+  ChangePasswordRequest,
+  CompareResult,
+  CreateAccountRequest,
+  CreateBranchRequest,
+  CreateTagRequest,
+  FileHistoryEntry,
+  SearchResults,
+  ServerEvent,
+  StagedBranchActivity,
+  SystemInfo,
+  TreeStats,
+  UpdateTenantRequest,
   CreatedToken,
   CreateMergeRequestRequest,
   CreateTenantRequest,
@@ -64,12 +76,16 @@ export function createApi(client: ApiClient) {
       createToken: (body: CreateTokenRequest) =>
         client.request<CreatedToken>(`${V1}/auth/tokens`, { method: "POST", body }),
       revokeToken: (id: string) => client.request<void>(`${V1}/auth/tokens/${seg(id)}`, { method: "DELETE" }),
+      changePassword: (body: ChangePasswordRequest) =>
+        client.request<void>(`${V1}/auth/password`, { method: "POST", body }),
     },
 
     tenants: {
       list: () => list(client.request<Tenant[] | null>(`${V1}/tenants`)),
       create: (body: CreateTenantRequest) => client.request<Tenant>(`${V1}/tenants`, { method: "POST", body }),
       get: (tenant: string) => client.request<Tenant>(`${V1}/tenants/${seg(tenant)}`),
+      update: (tenant: string, body: UpdateTenantRequest) =>
+        client.request<Tenant>(`${V1}/tenants/${seg(tenant)}`, { method: "PATCH", body }),
       members: (tenant: string) => list(client.request<Member[] | null>(`${V1}/tenants/${seg(tenant)}/members`)),
       setMember: (tenant: string, username: string, role: Role) =>
         client.request<Member>(`${V1}/tenants/${seg(tenant)}/members/${seg(username)}`, {
@@ -117,6 +133,24 @@ export function createApi(client: ApiClient) {
         client.request<LicenseRule>(`${tree(tenant, name)}/licenses`, { method: "PUT", body }),
       deleteLicense: (tenant: string, name: string, pathGlob: string) =>
         client.request<void>(`${tree(tenant, name)}/licenses`, { method: "DELETE", query: { path_glob: pathGlob } }),
+      createBranch: (tenant: string, name: string, body: CreateBranchRequest) =>
+        client.request<Branch>(`${tree(tenant, name)}/branches`, { method: "POST", body }),
+      deleteBranch: (tenant: string, name: string, branch: string) =>
+        client.request<void>(`${tree(tenant, name)}/branches/${encodePath(branch)}`, { method: "DELETE" }),
+      createTag: (tenant: string, name: string, body: CreateTagRequest) =>
+        client.request<Tag>(`${tree(tenant, name)}/tags`, { method: "POST", body }),
+      deleteTag: (tenant: string, name: string, tag: string) =>
+        client.request<void>(`${tree(tenant, name)}/tags/${seg(tag)}`, { method: "DELETE" }),
+      /** Diff between two revisions; `from` defaults to `to`'s first parent. */
+      compare: (tenant: string, name: string, q: { to: string; from?: string; context?: number }) =>
+        client.request<CompareResult>(`${tree(tenant, name)}/compare`, { query: { ...q } }),
+      /** Snapshots that changed `path`, newest first. */
+      fileHistory: (tenant: string, name: string, q: { path: string; branch?: string; limit?: number }) =>
+        list(client.request<FileHistoryEntry[] | null>(`${tree(tenant, name)}/history`, { query: { ...q } })),
+      stats: (tenant: string, name: string, q: { branch?: string; days?: number } = {}) =>
+        client.request<TreeStats>(`${tree(tenant, name)}/stats`, { query: { ...q } }),
+      stagedSummary: (tenant: string, name: string) =>
+        list(client.request<StagedBranchActivity[] | null>(`${tree(tenant, name)}/staged/summary`)),
     },
 
     mergeRequests: {
@@ -134,6 +168,14 @@ export function createApi(client: ApiClient) {
         client.request<MergeRequest>(`${tree(tenant, name)}/merge-requests/${n}/close`, { method: "POST" }),
     },
 
+    events: {
+      /** Recently published events (server ring buffer), oldest first. */
+      recent: (q: { tenant?: string; tree?: string; limit?: number } = {}) =>
+        list(client.request<ServerEvent[] | null>(`${V1}/events/recent`, { query: { ...q } })),
+    },
+
+    search: (q: string, limit = 20) => client.request<SearchResults>(`${V1}/search`, { query: { q, limit } }),
+
     audit: {
       list: (q: AuditQuery = {}) => list(client.request<AuditEvent[] | null>(`${V1}/audit`, { query: { ...q } })),
     },
@@ -143,6 +185,11 @@ export function createApi(client: ApiClient) {
       accounts: () => list(client.request<Account[] | null>(`${V1}/admin/accounts`)),
       updateAccount: (username: string, body: UpdateAccountRequest) =>
         client.request<Account>(`${V1}/admin/accounts/${seg(username)}`, { method: "PATCH", body }),
+      createAccount: (body: CreateAccountRequest) =>
+        client.request<Account>(`${V1}/admin/accounts`, { method: "POST", body }),
+      setPassword: (username: string, password: string) =>
+        client.request<void>(`${V1}/admin/accounts/${seg(username)}/password`, { method: "POST", body: { password } }),
+      system: () => client.request<SystemInfo>(`${V1}/admin/system`),
     },
   };
 }

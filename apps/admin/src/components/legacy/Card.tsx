@@ -22,7 +22,7 @@ export function Section({ title, description, actions, children, className, flus
       <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">{title}</h2>
-          {description && <p className="mt-0.5 text-[13px] text-muted">{description}</p>}
+          {description && <p className="mt-0.5 text-[13px] text-muted-foreground">{description}</p>}
         </div>
         {actions && <div className="flex items-center gap-2">{actions}</div>}
       </div>

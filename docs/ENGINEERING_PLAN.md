@@ -229,3 +229,62 @@ cd apps/admin && npm run build && npm test
 cd apps/web && npm run build
 bash scripts/e2e.sh        # starts Go server, drives wt end-to-end
 ```
+
+## 11. v0.3 admin expansion
+
+### 11.1 New REST endpoints
+
+All under `/api/v1`, same envelope/auth/error rules as §7. `REV` = snapshot
+id (full or unique prefix ≥ 4), branch name or tag name of the tree.
+`{tree}` below = `/api/v1/trees/{tenant}/{tree}`. Owner in brackets.
+
+```
+[go-insights]
+GET  {tree}/compare?to=REV&from=REV&context=3   -> CompareResult       (tree:read; from defaults to to's first parent; no parent -> from null, all files added)
+GET  {tree}/history?path=P&branch=B&limit=50     -> [FileHistoryEntry]  (tree:read; snapshots on branch's history that changed P, newest first)
+GET  {tree}/stats?branch=B&days=30              -> TreeStats           (tree:read; days 1..365)
+GET  {tree}/staged/summary                      -> [StagedBranchActivity] (tree:read; staged.Service.Summary)
+GET  /events/recent?tenant=&tree=&limit=50       -> [Event] oldest first (same authz/scoping as GET /events; bus Recent)
+
+[go-manage]
+POST   {tree}/branches        {name, from?}                -> 201 Branch   (branch:create; from = REV, default default-branch tip; 409 exists; publishes branch.created; audit branch.create)
+DELETE {tree}/branches/{name...}                           -> 204          (review.CheckDeleteBranch; audit branch.delete)
+POST   {tree}/tags            {name, target, message?}     -> 201 Tag      (tree:write; target = REV; 409 exists; publishes tag.pushed)
+DELETE {tree}/tags/{name}                                  -> 204          (tree:admin)
+PATCH  /tenants/{tenant}      {name?, plan?}               -> Tenant       (tenant:admin; plan requires server admin)
+POST   /auth/password         {current_password, new_password} -> 204      (self; revokes the caller's other session tokens)
+POST   /admin/accounts        {username,email,password,is_admin} -> 201 Account (server admin; bypasses allow_registration)
+POST   /admin/accounts/{username}/password {password}      -> 204          (server admin; revokes that account's tokens)
+GET    /admin/system                                       -> SystemInfo   (server admin)
+GET    /search?q=&limit=20                                 -> SearchResults (signed in; case-insensitive substring on tenant slug/name, tree name/description, branch name, account username/email; only what the caller can read; accounts for server admins only)
+```
+
+JSON shapes are the TypeScript interfaces at the end of
+`apps/admin/src/api/types.ts` (FileDiff, CompareResult, FileHistoryEntry,
+TreeStats, StagedBranchActivity, SystemInfo, SearchResults) — field names
+there are authoritative. Diff rules: text files only (binary = NUL in first
+8 KiB or invalid UTF-8); a side > 1 MiB → `too_large: true`, no patch;
+patches are unified diffs with `--- a/P` / `+++ b/P` headers (`/dev/null` for
+added/deleted). CompareResult.files sorted by path. Languages in TreeStats are
+detected by file extension (top 10 by bytes, rest "Other").
+
+### 11.2 Admin panel design rules
+
+* **Monochrome only.** Black, white and neutral greys (`src/index.css` tokens).
+  No hue anywhere — not for success/error/warning, not in charts. Express state
+  with weight, inversion (filled vs outline badges), icons (lucide-react),
+  borders, strike-through and labels.
+* **shadcn/ui everywhere.** Use `@/components/ui/*` (Button, Card, Badge,
+  Table, Tabs, Dialog, AlertDialog, DropdownMenu, Sheet, Sidebar, Command,
+  Tooltip, Skeleton, Select, Input, Textarea, Switch, Checkbox, Chart,
+  Breadcrumb, ScrollArea, Sonner...). Add missing primitives with
+  `npx shadcn@latest add <name>` (never edit existing generated files beyond
+  trivial fixes; never re-add/overwrite existing ones). Icons: `lucide-react`.
+  Class merging: `cn` from `@/lib/utils`.
+* `src/components/legacy/*` is deprecated; pages being rebuilt must stop using
+  it. It is deleted at integration.
+* Toasts: keep the `useToast()` hook API in `src/toast/` stable (backed by
+  Sonner after the shell rebuild).
+* Dense, professional, keyboard friendly; Inter + JetBrains Mono; tables with
+  sticky headers; empty states, skeletons; responsive to 375 px.
+* Tests: vitest + Testing Library; each page keeps or gains coverage.

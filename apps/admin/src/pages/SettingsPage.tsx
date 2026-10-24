@@ -6,14 +6,14 @@ import type { CreatedToken } from "@/api/types";
 import { useAuth } from "@/auth/context";
 import { Icon } from "@/components/icons";
 import { PageHeader } from "@/components/PageHeader";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { ConfirmButton } from "@/components/ui/ConfirmButton";
-import { SelectField, TextField } from "@/components/ui/Field";
-import { Alert, EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { ConfirmButton } from "@/components/legacy/ConfirmButton";
+import { SelectField, TextField } from "@/components/legacy/Field";
+import { Alert, EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { cn } from "@/lib/cn";
 import { THEME_PREFERENCES, useTheme } from "@/theme/theme";
 import { useToast } from "@/toast/store";
@@ -142,10 +142,10 @@ function TokensSection() {
                     )}
                   </Td>
                   <Td>
-                    <RelativeTime value={t.created_at} className="text-muted" />
+                    <RelativeTime value={t.created_at} className="text-muted-foreground" />
                   </Td>
-                  <Td>{t.last_used_at ? <RelativeTime value={t.last_used_at} className="text-muted" /> : <span className="text-subtle">never</span>}</Td>
-                  <Td>{t.expires_at ? <RelativeTime value={t.expires_at} className="text-muted" /> : <span className="text-subtle">never</span>}</Td>
+                  <Td>{t.last_used_at ? <RelativeTime value={t.last_used_at} className="text-muted-foreground" /> : <span className="text-subtle">never</span>}</Td>
+                  <Td>{t.expires_at ? <RelativeTime value={t.expires_at} className="text-muted-foreground" /> : <span className="text-subtle">never</span>}</Td>
                   <Td className="text-right">
                     <ConfirmButton confirmLabel="Revoke" onConfirm={() => revoke.mutate(t.id)} aria-label={`Revoke ${t.name}`}>
                       Revoke
@@ -173,7 +173,7 @@ function ThemeSection() {
               key={p}
               className={cn(
                 "cursor-pointer rounded px-3 py-1 text-sm font-medium capitalize has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-ring",
-                preference === p ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
+                preference === p ? "bg-surface-2 text-fg" : "text-muted-foreground hover:text-fg",
               )}
             >
               <input type="radio" name="theme" value={p} checked={preference === p} onChange={() => setPreference(p)} className="sr-only" />
@@ -193,13 +193,13 @@ function ProfileSection() {
   return (
     <Section title="Profile">
       <dl className="grid gap-x-6 gap-y-2 text-[13px] sm:grid-cols-[max-content_1fr]">
-        <dt className="text-muted">Username</dt>
+        <dt className="text-muted-foreground">Username</dt>
         <dd className="font-mono">{account.username}</dd>
-        <dt className="text-muted">Email</dt>
+        <dt className="text-muted-foreground">Email</dt>
         <dd>{account.email}</dd>
-        <dt className="text-muted">Role</dt>
+        <dt className="text-muted-foreground">Role</dt>
         <dd>{account.is_admin ? <Badge tone="accent">server admin</Badge> : "member"}</dd>
-        <dt className="text-muted">Tenants</dt>
+        <dt className="text-muted-foreground">Tenants</dt>
         <dd className="flex flex-wrap gap-1">
           {memberships.length === 0
             ? "—"

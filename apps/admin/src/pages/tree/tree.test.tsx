@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, within, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { FakeEventSource } from "@/test/fakeEventSource";
 import * as fx from "@/test/fixtures";
@@ -8,10 +8,14 @@ import { renderApp, treeRoutes } from "@/test/renderApp";
 const T = "/api/v1/trees/acme/web";
 
 describe("tree detail", () => {
-  it("redirects to the branches tab and shows protected / default badges", async () => {
+  it("redirects the tree root to the overview tab", async () => {
     const { router } = renderApp({ route: "/trees/acme/web", api: treeRoutes() });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/trees/acme/web/overview"));
+  });
+
+  it("shows protected / default badges on the branches tab", async () => {
+    renderApp({ route: "/trees/acme/web/branches", api: treeRoutes() });
     const table = await screen.findByRole("table", { name: "Branches" });
-    expect(router.state.location.pathname).toBe("/trees/acme/web/branches");
 
     const rows = within(table).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("main");

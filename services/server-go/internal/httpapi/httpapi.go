@@ -170,6 +170,10 @@ func (a *api) routes() {
 	a.handle("GET /api/v1/admin/accounts", a.handleAdminListAccounts)
 	a.handle("PATCH /api/v1/admin/accounts/{username}", a.handleAdminPatchAccount)
 
+	// v0.3 admin expansion (docs/ENGINEERING_PLAN.md §11).
+	a.registerInsightRoutes(tree)
+	a.registerManageRoutes(tree)
+
 	// Unknown API paths answer with the JSON envelope (404 or 405).
 	a.handle("/api/", a.handleAPINotFound)
 

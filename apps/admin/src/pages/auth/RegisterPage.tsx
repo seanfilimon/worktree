@@ -4,9 +4,9 @@ import { Link, Navigate, useNavigate } from "react-router";
 import { errorMessage, isApiError } from "@/api/client";
 import { useApi } from "@/api/context";
 import { useAuth } from "@/auth/context";
-import { Button } from "@/components/ui/Button";
-import { TextField } from "@/components/ui/Field";
-import { Alert } from "@/components/ui/States";
+import { Button } from "@/components/legacy/Button";
+import { TextField } from "@/components/legacy/Field";
+import { Alert } from "@/components/legacy/States";
 import { AuthShell } from "./AuthShell";
 
 const USERNAME_RE = /^[a-z0-9][a-z0-9-]{0,38}$/;
@@ -52,7 +52,7 @@ export function RegisterPage() {
       footer={
         <>
           Already registered?{" "}
-          <Link to="/login" className="font-medium text-accent hover:underline">
+          <Link to="/login" className="font-medium text-foreground hover:underline">
             Sign in
           </Link>
         </>

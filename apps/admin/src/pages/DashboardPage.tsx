@@ -7,9 +7,9 @@ import { useServerEvents } from "@/api/useServerEvents";
 import { useAuth } from "@/auth/context";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { PageHeader } from "@/components/PageHeader";
-import { Card, Section } from "@/components/ui/Card";
-import { EmptyState, ErrorState, Skeleton, SkeletonRows } from "@/components/ui/States";
-import { RelativeTime } from "@/components/ui/Time";
+import { Card, Section } from "@/components/legacy/Card";
+import { EmptyState, ErrorState, Skeleton, SkeletonRows } from "@/components/legacy/States";
+import { RelativeTime } from "@/components/legacy/Time";
 import { describeEvent } from "@/lib/describeEvent";
 import { formatBytes, formatDuration, formatNumber } from "@/lib/format";
 
@@ -32,7 +32,7 @@ function StatsGrid({ stats, loading }: { stats: ServerStats | undefined; loading
       {STAT_CARDS.map(({ key, label, format = formatNumber }) => (
         <li key={key}>
           <Card className="px-4 py-3">
-            <p className="text-xs font-medium tracking-wide text-muted uppercase">{label}</p>
+            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{label}</p>
             {loading || !stats ? (
               <Skeleton className="mt-1.5 h-7 w-16" />
             ) : (
@@ -67,7 +67,7 @@ function ActivityFeed({ items }: { items: FeedItem[] }) {
             <span className="w-28 shrink-0 truncate font-mono text-xs text-subtle">{event.type}</span>
             <span className="min-w-0 flex-1">
               <span className="font-medium">{event.actor || "system"}</span> {action}
-              {target && <span className="text-muted"> — {target}</span>}
+              {target && <span className="text-muted-foreground"> — {target}</span>}
             </span>
             <RelativeTime value={event.at} className="shrink-0 text-xs text-subtle" />
           </li>
@@ -89,7 +89,7 @@ function RecentPushes() {
           <span className="min-w-0 flex-1 truncate">
             <span className="font-medium">{e.actor}</span> pushed{" "}
             <span className="font-mono">{e.details?.branch ?? e.resource_id}</span>
-            {e.details?.tree && <span className="text-muted"> to {e.details.tree}</span>}
+            {e.details?.tree && <span className="text-muted-foreground"> to {e.details.tree}</span>}
           </span>
           <RelativeTime value={e.at} className="shrink-0 text-xs text-subtle" />
         </li>
@@ -144,7 +144,7 @@ export function DashboardPage() {
             <StatsGrid stats={stats.data} loading={stats.isPending} />
           )
         ) : (
-          <Card className="px-4 py-3 text-[13px] text-muted">
+          <Card className="px-4 py-3 text-[13px] text-muted-foreground">
             You are a member of <span className="font-medium text-fg">{memberships.length}</span>{" "}
             {memberships.length === 1 ? "tenant" : "tenants"}. Server-wide statistics are visible to server administrators.
           </Card>

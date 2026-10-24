@@ -1,6 +1,6 @@
 import { PageHeader } from "@/components/PageHeader";
-import { ButtonLink } from "@/components/ui/Button";
-import { EmptyState } from "@/components/ui/States";
+import { ButtonLink } from "@/components/legacy/Button";
+import { EmptyState } from "@/components/legacy/States";
 
 export function NotFoundPage() {
   return (

@@ -316,3 +316,146 @@ export interface AuditQuery {
   action?: string;
   limit?: number;
 }
+
+// ---- v0.3 admin expansion (docs/ENGINEERING_PLAN.md §11) ----
+
+export type FileChangeStatus = "added" | "modified" | "deleted";
+
+export interface FileDiff {
+  path: string;
+  status: FileChangeStatus;
+  old_hash?: string;
+  new_hash?: string;
+  old_size: number;
+  new_size: number;
+  binary: boolean;
+  /** Patch omitted because a side exceeds the diff size limit. */
+  too_large: boolean;
+  additions: number;
+  deletions: number;
+  /** Unified diff text (absent for binary / too-large files). */
+  patch?: string;
+}
+
+export interface CompareResult {
+  /** Null when `to` is a root snapshot compared with nothing. */
+  from: Snapshot | null;
+  to: Snapshot;
+  /** Merge base of from and to, when they diverge. */
+  merge_base?: string;
+  /** Snapshots reachable from `to` but not from `from`, newest first (max 250). */
+  snapshots: Snapshot[];
+  files: FileDiff[];
+  stats: { files: number; additions: number; deletions: number };
+}
+
+export interface FileHistoryEntry {
+  snapshot: Snapshot;
+  change: FileChangeStatus;
+}
+
+export interface Contributor {
+  author: string;
+  snapshots: number;
+  last_at: ISODateString;
+}
+
+export interface ActivityDay {
+  /** YYYY-MM-DD (UTC). */
+  date: string;
+  snapshots: number;
+}
+
+export interface LanguageShare {
+  language: string;
+  files: number;
+  bytes: number;
+}
+
+export interface TreeStats {
+  branch: string;
+  snapshot_count: number;
+  contributors: Contributor[];
+  /** One entry per day for the requested window, oldest first (zeros included). */
+  activity: ActivityDay[];
+  file_count: number;
+  total_bytes: number;
+  languages: LanguageShare[];
+}
+
+export interface StagedAuthorActivity {
+  author: string;
+  account_id: string;
+  files: number;
+  staged_at: ISODateString;
+}
+
+export interface StagedFileOverlap {
+  path: string;
+  authors: string[];
+  branches: string[];
+}
+
+export interface StagedBranchActivity {
+  branch: string;
+  authors: StagedAuthorActivity[];
+  files_changed: number;
+  latest_at: ISODateString;
+  /** Files staged by more than one author: potential conflicts. */
+  overlaps: StagedFileOverlap[];
+}
+
+export interface CreateBranchRequest {
+  name: string;
+  /** Revision: snapshot id, branch or tag name. Default: default branch tip. */
+  from?: string;
+}
+
+export interface CreateTagRequest {
+  name: string;
+  /** Revision: snapshot id, branch or tag name. */
+  target: string;
+  message?: string;
+}
+
+export interface UpdateTenantRequest {
+  name?: string;
+  /** Server admins only. */
+  plan?: TenantPlan;
+}
+
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+export interface CreateAccountRequest {
+  username: string;
+  email: string;
+  password: string;
+  is_admin: boolean;
+}
+
+export interface SystemInfo {
+  version: string;
+  go_version: string;
+  os: string;
+  arch: string;
+  started_at: ISODateString;
+  uptime_seconds: number;
+  allow_registration: boolean;
+  data_dir: string;
+  num_cpu: number;
+  num_goroutine: number;
+  memory: { alloc_bytes: number; sys_bytes: number; heap_inuse_bytes: number; gc_runs: number };
+  storage: { objects: number; object_bytes: number; meta_db_bytes: number };
+  event_bus: { published: number; delivered: number; dropped: number; subscribers: number };
+}
+
+export interface SearchResults {
+  tenants: Tenant[];
+  trees: { tree: Tree; tenant_slug: string }[];
+  branches: { tenant_slug: string; tree: string; branch: Branch }[];
+  /** Server admins only (empty otherwise). */
+  accounts: Account[];
+}

@@ -1,9 +1,9 @@
 import { Link, useSearchParams } from "react-router";
 import { useSnapshots } from "@/api/queries";
-import { Badge } from "@/components/ui/Badge";
-import { Section } from "@/components/ui/Card";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Section } from "@/components/legacy/Card";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { RelativeTime } from "@/components/legacy/Time";
 import { firstLine, shortId } from "@/lib/format";
 import { filesPath } from "@/lib/paths";
 import { BranchSelect } from "./BranchSelect";
@@ -51,7 +51,7 @@ export function HistoryTab() {
                     )}
                     {parents.length > 1 && <Badge tone="accent">merge</Badge>}
                   </p>
-                  <p className="mt-0.5 text-xs text-muted">
+                  <p className="mt-0.5 text-xs text-muted-foreground">
                     <span className="font-medium text-fg">{s.author}</span> snapshotted <RelativeTime value={s.created_at} />
                     {s.pushed_at && (
                       <>
@@ -63,7 +63,7 @@ export function HistoryTab() {
                 </div>
                 <Link
                   to={filesPath(tenant, tree, { snapshot: s.id })}
-                  className="shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-xs text-accent hover:bg-surface-2"
+                  className="shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-xs text-foreground hover:bg-surface-2"
                   title={`Browse files at ${s.id}`}
                   aria-label={`Browse files at snapshot ${shortId(s.id)}`}
                 >

@@ -3,7 +3,7 @@ import { NavLink, Outlet } from "react-router";
 import { useAuth } from "@/auth/context";
 import { cn } from "@/lib/cn";
 import { Icon, type IconName } from "./icons";
-import { Badge } from "./ui/Badge";
+import { Badge } from "./legacy/Badge";
 import { Wordmark } from "./Wordmark";
 
 interface NavItem {
@@ -41,7 +41,7 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
                 className={({ isActive }) =>
                   cn(
                     "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
-                    isActive ? "bg-accent-soft text-accent" : "text-muted hover:bg-surface-2 hover:text-fg",
+                    isActive ? "bg-accent-soft text-foreground" : "text-muted-foreground hover:bg-surface-2 hover:text-fg",
                   )
                 }
               >
@@ -58,7 +58,7 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{account?.display_name || account?.username}</p>
-          <p className="flex items-center gap-1 truncate text-xs text-muted">
+          <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
             @{account?.username}
             {isAdmin && <Badge tone="accent">admin</Badge>}
           </p>
@@ -66,7 +66,7 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
         <button
           type="button"
           onClick={() => void signOut()}
-          className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-surface-2 hover:text-fg"
           aria-label="Sign out"
           title="Sign out"
         >
@@ -118,7 +118,7 @@ export function AppLayout() {
             onClick={() => setOpen(true)}
             aria-label="Open navigation"
             aria-expanded={open}
-            className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg"
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-surface-2 hover:text-fg"
           >
             <Icon name="menu" />
           </button>

@@ -2,13 +2,13 @@ import { useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import { useAudit, useTenants } from "@/api/queries";
 import { PageHeader } from "@/components/PageHeader";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { SelectField, TextField } from "@/components/ui/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { SelectField, TextField } from "@/components/legacy/Field";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 
 const LIMITS = [50, 100, 200, 500];
 const COMMON_ACTIONS = [
@@ -66,7 +66,7 @@ export function AuditPage() {
       <Section
         title="Events"
         flush
-        actions={audit.isFetching && !audit.isPending ? <span className="text-xs text-muted">Refreshing…</span> : undefined}
+        actions={audit.isFetching && !audit.isPending ? <span className="text-xs text-muted-foreground">Refreshing…</span> : undefined}
       >
         <form onSubmit={onSubmit} aria-label="Audit filters" className="flex flex-wrap items-end gap-3 border-b border-border p-4">
           <SelectField label="Tenant" value={tenant} onChange={(e) => apply({ tenant: e.target.value })} fieldClassName="w-48">
@@ -132,14 +132,14 @@ export function AuditPage() {
               {audit.data.map((e) => (
                 <Tr key={e.id}>
                   <Td className="whitespace-nowrap">
-                    <RelativeTime value={e.at} className="text-muted" />
+                    <RelativeTime value={e.at} className="text-muted-foreground" />
                   </Td>
                   <Td className="font-medium">{e.actor}</Td>
                   <Td>
                     <Badge tone={actionTone(e.action)}>{e.action}</Badge>
                   </Td>
                   <Td className="font-mono text-xs">
-                    <span className="text-muted">{e.resource_type}</span>
+                    <span className="text-muted-foreground">{e.resource_type}</span>
                     {e.resource_id && <> {e.resource_id}</>}
                   </Td>
                   <Td className="max-w-sm">
@@ -147,7 +147,7 @@ export function AuditPage() {
                       <dl className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
                         {Object.entries(e.details).map(([k, v]) => (
                           <div key={k} className="flex gap-1">
-                            <dt className="text-muted">{k}</dt>
+                            <dt className="text-muted-foreground">{k}</dt>
                             <dd className="font-mono break-all">{v}</dd>
                           </div>
                         ))}
@@ -156,7 +156,7 @@ export function AuditPage() {
                       <span className="text-subtle">—</span>
                     )}
                   </Td>
-                  <Td className="font-mono text-xs text-muted">{e.remote_addr || "—"}</Td>
+                  <Td className="font-mono text-xs text-muted-foreground">{e.remote_addr || "—"}</Td>
                 </Tr>
               ))}
             </tbody>

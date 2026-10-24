@@ -1,9 +1,9 @@
 import { Link } from "react-router";
 import { useTags } from "@/api/queries";
-import { Section } from "@/components/ui/Card";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Section } from "@/components/legacy/Card";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { firstLine, shortId } from "@/lib/format";
 import { filesPath } from "@/lib/paths";
 import { useTreeContext } from "./context";
@@ -38,14 +38,14 @@ export function TagsTab() {
                 <Tr key={t.name}>
                   <Td className="font-mono font-medium">{t.name}</Td>
                   <Td>
-                    <Link to={filesPath(tenant, tree, { snapshot: t.target })} className="font-mono text-accent hover:underline" title={t.target}>
+                    <Link to={filesPath(tenant, tree, { snapshot: t.target })} className="font-mono text-foreground hover:underline" title={t.target}>
                       {shortId(t.target)}
                     </Link>
                   </Td>
                   <Td className="max-w-xs truncate">{firstLine(t.message) || <span className="text-subtle">—</span>}</Td>
                   <Td>{t.tagger}</Td>
                   <Td>
-                    <RelativeTime value={t.created_at} className="text-muted" />
+                    <RelativeTime value={t.created_at} className="text-muted-foreground" />
                   </Td>
                 </Tr>
               ))}

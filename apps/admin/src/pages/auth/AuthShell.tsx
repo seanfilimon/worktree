@@ -12,13 +12,13 @@ export function AuthShell({ title, children, footer }: { title: string; children
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center">
           <Wordmark className="text-2xl" />
-          <p className="mt-1 text-[13px] text-muted">Server administration</p>
+          <p className="mt-1 text-[13px] text-muted-foreground">Server administration</p>
         </div>
         <div className="rounded-lg border border-border bg-surface p-6 shadow-card">
           <h1 className="mb-4 text-base font-semibold">{title}</h1>
           {children}
         </div>
-        {footer && <div className="mt-4 text-center text-[13px] text-muted">{footer}</div>}
+        {footer && <div className="mt-4 text-center text-[13px] text-muted-foreground">{footer}</div>}
       </div>
     </main>
   );

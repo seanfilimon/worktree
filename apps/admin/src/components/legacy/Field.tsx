@@ -3,7 +3,7 @@ import { cn } from "@/lib/cn";
 
 const controlClass = cn(
   "w-full rounded-md border border-border-strong bg-surface px-2.5 text-sm text-fg placeholder:text-subtle",
-  "focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring",
+  "focus:border-foreground focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring",
   "disabled:cursor-not-allowed disabled:opacity-60 aria-[invalid=true]:border-danger",
 );
 
@@ -30,7 +30,7 @@ export function Field({ label, hint, error, className, hideLabel = false, childr
       </label>
       {children({ id, describedBy, invalid: Boolean(error) })}
       {hint && (
-        <p id={hintId} className="text-xs text-muted">
+        <p id={hintId} className="text-xs text-muted-foreground">
           {hint}
         </p>
       )}
@@ -105,7 +105,7 @@ export function Checkbox({ label, hint, className, ...rest }: InputHTMLAttribute
           {label}
         </label>
         {hint && (
-          <p id={`${id}-hint`} className="text-xs text-muted">
+          <p id={`${id}-hint`} className="text-xs text-muted-foreground">
             {hint}
           </p>
         )}

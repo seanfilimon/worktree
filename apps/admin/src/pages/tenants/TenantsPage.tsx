@@ -5,13 +5,13 @@ import { useApi } from "@/api/context";
 import { keys, useTenants } from "@/api/queries";
 import { useAuth } from "@/auth/context";
 import { PageHeader } from "@/components/PageHeader";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { TextField } from "@/components/ui/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { TextField } from "@/components/legacy/Field";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { useToast } from "@/toast/store";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -121,7 +121,7 @@ export function TenantsPage() {
                 {tenants.data.map((t) => (
                   <Tr key={t.id}>
                     <Td>
-                      <Link to={`/tenants/${encodeURIComponent(t.slug)}`} className="font-mono font-medium text-accent hover:underline">
+                      <Link to={`/tenants/${encodeURIComponent(t.slug)}`} className="font-mono font-medium text-foreground hover:underline">
                         {t.slug}
                       </Link>
                     </Td>
@@ -132,7 +132,7 @@ export function TenantsPage() {
                     <Td className="capitalize">{t.plan}</Td>
                     <Td>{roleIn(t.id) ?? <span className="text-subtle">—</span>}</Td>
                     <Td>
-                      <RelativeTime value={t.created_at} className="text-muted" />
+                      <RelativeTime value={t.created_at} className="text-muted-foreground" />
                     </Td>
                   </Tr>
                 ))}

@@ -24,6 +24,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.dataset.theme = resolved;
+    document.documentElement.classList.toggle("dark", resolved === "dark");
   }, [resolved]);
 
   const setPreference = useCallback((pref: ThemePreference) => {

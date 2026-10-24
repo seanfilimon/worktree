@@ -1,9 +1,9 @@
 import { Link } from "react-router";
 import type { TreeSummary } from "@/api/types";
 import { treePath } from "@/lib/paths";
-import { StateBadge } from "./ui/Badge";
-import { Table, Td, Th, Tr } from "./ui/Table";
-import { RelativeTime } from "./ui/Time";
+import { StateBadge } from "./legacy/Badge";
+import { Table, Td, Th, Tr } from "./legacy/Table";
+import { RelativeTime } from "./legacy/Time";
 
 export interface TreeRow {
   tenant: string;
@@ -30,10 +30,10 @@ export function TreeTable({ rows }: { rows: TreeRow[] }) {
           <Tr key={s.tree.id}>
             <Td>
               <Link to={treePath(tenant, s.tree.name)} className="font-mono font-medium hover:underline">
-                <span className="text-muted">{tenant}/</span>
-                <span className="text-accent">{s.tree.name}</span>
+                <span className="text-muted-foreground">{tenant}/</span>
+                <span className="text-foreground">{s.tree.name}</span>
               </Link>
-              {s.tree.description && <p className="max-w-sm truncate text-xs text-muted">{s.tree.description}</p>}
+              {s.tree.description && <p className="max-w-sm truncate text-xs text-muted-foreground">{s.tree.description}</p>}
             </Td>
             <Td>
               <StateBadge value={s.tree.visibility} />
@@ -44,7 +44,7 @@ export function TreeTable({ rows }: { rows: TreeRow[] }) {
             <Td className="text-right tabular-nums">{s.staged_count}</Td>
             <Td className="text-right tabular-nums">{s.open_mr_count}</Td>
             <Td>
-              <RelativeTime value={s.tree.updated_at} className="text-muted" />
+              <RelativeTime value={s.tree.updated_at} className="text-muted-foreground" />
             </Td>
           </Tr>
         ))}

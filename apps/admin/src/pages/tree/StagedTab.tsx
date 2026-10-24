@@ -3,10 +3,10 @@ import { Link, useSearchParams } from "react-router";
 import { useStaged } from "@/api/queries";
 import type { StagedSnapshot } from "@/api/types";
 import { LiveIndicator } from "@/components/LiveIndicator";
-import { Badge } from "@/components/ui/Badge";
-import { Card, Section } from "@/components/ui/Card";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Card, Section } from "@/components/legacy/Card";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { RelativeTime } from "@/components/legacy/Time";
 import { firstLine, shortId } from "@/lib/format";
 import { filesPath } from "@/lib/paths";
 import { BranchSelect } from "./BranchSelect";
@@ -28,28 +28,28 @@ function StagedCard({ s }: { s: StagedSnapshot }) {
           <div className="min-w-0">
             <p className="flex flex-wrap items-center gap-2">
               <span className="font-semibold">{s.author}</span>
-              <span className="text-muted">on</span>
+              <span className="text-muted-foreground">on</span>
               <Badge tone="info">{s.branch_name}</Badge>
             </p>
             {s.message && <p className="mt-1 truncate text-[13px]">{firstLine(s.message)}</p>}
           </div>
-          <div className="text-right text-xs text-muted">
+          <div className="text-right text-xs text-muted-foreground">
             <p>
               staged <RelativeTime value={s.staged_at} />
             </p>
-            <Link to={filesPath(tenant, tree, { snapshot: s.snapshot_id })} className="font-mono text-accent hover:underline">
+            <Link to={filesPath(tenant, tree, { snapshot: s.snapshot_id })} className="font-mono text-foreground hover:underline">
               {shortId(s.snapshot_id)}
             </Link>
           </div>
         </div>
         <p className="mt-3 flex gap-3 font-mono text-xs" aria-label="Change summary">
-          <span className="text-accent">+{s.files_added} added</span>
+          <span className="text-foreground">+{s.files_added} added</span>
           <span className="text-warning">~{s.files_modified} modified</span>
           <span className="text-danger">-{s.files_deleted} deleted</span>
         </p>
         {files.length > 0 && (
           <>
-            <ul id={listId} aria-label={`Files changed by ${s.author}`} className="mt-2 flex flex-col gap-0.5 font-mono text-xs text-muted">
+            <ul id={listId} aria-label={`Files changed by ${s.author}`} className="mt-2 flex flex-col gap-0.5 font-mono text-xs text-muted-foreground">
               {shown.map((f) => (
                 <li key={f} className="truncate">
                   {f}
@@ -62,7 +62,7 @@ function StagedCard({ s }: { s: StagedSnapshot }) {
                 onClick={() => setExpanded((v) => !v)}
                 aria-expanded={expanded}
                 aria-controls={listId}
-                className="mt-1 text-xs font-medium text-accent hover:underline"
+                className="mt-1 text-xs font-medium text-foreground hover:underline"
               >
                 {expanded ? "Show fewer" : `Show all ${files.length} files`}
               </button>

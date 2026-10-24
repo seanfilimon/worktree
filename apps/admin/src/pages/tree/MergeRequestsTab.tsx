@@ -4,13 +4,13 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 import { useApi } from "@/api/context";
 import { useBranches, useMergeRequests } from "@/api/queries";
 import { MR_STATES, type MergeRequestState } from "@/api/types";
-import { StateBadge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { SelectField, TextAreaField, TextField } from "@/components/ui/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { StateBadge } from "@/components/legacy/Badge";
+import { Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { SelectField, TextAreaField, TextField } from "@/components/legacy/Field";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { cn } from "@/lib/cn";
 import { mergeRequestPath } from "@/lib/paths";
 import { useTreeContext } from "./context";
@@ -114,7 +114,7 @@ export function MergeRequestsTab() {
                   onClick={() => setParams({ state: f.value || "all" }, { replace: true })}
                   className={cn(
                     "rounded px-2 py-0.5 text-xs font-medium",
-                    state === f.value ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
+                    state === f.value ? "bg-surface-2 text-fg" : "text-muted-foreground hover:text-fg",
                   )}
                 >
                   {f.label}
@@ -151,10 +151,10 @@ export function MergeRequestsTab() {
                 <Tr key={mr.id}>
                   <Td>
                     <Link to={mergeRequestPath(tenant, tree, mr.number)} className="font-medium hover:underline">
-                      <span className="mr-1.5 font-mono text-muted">!{mr.number}</span>
+                      <span className="mr-1.5 font-mono text-muted-foreground">!{mr.number}</span>
                       {mr.title}
                     </Link>
-                    <p className="text-xs text-muted">
+                    <p className="text-xs text-muted-foreground">
                       by {mr.author} · opened <RelativeTime value={mr.created_at} />
                     </p>
                   </Td>
@@ -166,7 +166,7 @@ export function MergeRequestsTab() {
                   </Td>
                   <Td className="text-right tabular-nums">{mr.approvals?.length ?? 0}</Td>
                   <Td>
-                    <RelativeTime value={mr.updated_at} className="text-muted" />
+                    <RelativeTime value={mr.updated_at} className="text-muted-foreground" />
                   </Td>
                 </Tr>
               ))}

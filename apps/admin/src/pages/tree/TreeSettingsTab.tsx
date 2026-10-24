@@ -4,11 +4,11 @@ import { useNavigate } from "react-router";
 import { useApi } from "@/api/context";
 import { keys, useBranches } from "@/api/queries";
 import { VISIBILITIES, type Visibility } from "@/api/types";
-import { Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { ConfirmButton } from "@/components/ui/ConfirmButton";
-import { SelectField, TextField } from "@/components/ui/Field";
-import { Alert } from "@/components/ui/States";
+import { Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { ConfirmButton } from "@/components/legacy/ConfirmButton";
+import { SelectField, TextField } from "@/components/legacy/Field";
+import { Alert } from "@/components/legacy/States";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
 

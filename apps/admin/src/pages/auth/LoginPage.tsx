@@ -5,9 +5,9 @@ import { errorMessage, isApiError } from "@/api/client";
 import { useApi } from "@/api/context";
 import { useHealth } from "@/api/queries";
 import { useAuth } from "@/auth/context";
-import { Button } from "@/components/ui/Button";
-import { TextField } from "@/components/ui/Field";
-import { Alert } from "@/components/ui/States";
+import { Button } from "@/components/legacy/Button";
+import { TextField } from "@/components/legacy/Field";
+import { Alert } from "@/components/legacy/States";
 import { AuthShell } from "./AuthShell";
 
 /** Only follow same-app relative redirects. */
@@ -51,7 +51,7 @@ export function LoginPage() {
         allowRegistration && (
           <>
             No account?{" "}
-            <Link to="/register" className="font-medium text-accent hover:underline">
+            <Link to="/register" className="font-medium text-foreground hover:underline">
               Create one
             </Link>
           </>

@@ -8,15 +8,19 @@ import { RegisterPage } from "@/pages/auth/RegisterPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { SystemPage } from "@/pages/SystemPage";
 import { TenantDetailPage } from "@/pages/tenants/TenantDetailPage";
 import { TenantsPage } from "@/pages/tenants/TenantsPage";
 import { BranchesTab } from "@/pages/tree/BranchesTab";
+import { CompareView } from "@/pages/tree/CompareView";
 import { FilesTab } from "@/pages/tree/FilesTab";
 import { HistoryTab } from "@/pages/tree/HistoryTab";
 import { LicensesTab } from "@/pages/tree/LicensesTab";
 import { MergeRequestDetail } from "@/pages/tree/MergeRequestDetail";
 import { MergeRequestsTab } from "@/pages/tree/MergeRequestsTab";
+import { OverviewTab } from "@/pages/tree/OverviewTab";
 import { ProtectionsTab } from "@/pages/tree/ProtectionsTab";
+import { SnapshotDetail } from "@/pages/tree/SnapshotDetail";
 import { StagedTab } from "@/pages/tree/StagedTab";
 import { TagsTab } from "@/pages/tree/TagsTab";
 import { TreeLayout } from "@/pages/tree/TreeLayout";
@@ -40,9 +44,12 @@ export const routes: RouteObject[] = [
             path: "trees/:tenant/:tree",
             element: <TreeLayout />,
             children: [
-              { index: true, element: <Navigate to="branches" replace /> },
+              { index: true, element: <Navigate to="overview" replace /> },
+              { path: "overview", element: <OverviewTab /> },
               { path: "branches", element: <BranchesTab /> },
               { path: "history", element: <HistoryTab /> },
+              { path: "snapshots/:id", element: <SnapshotDetail /> },
+              { path: "compare", element: <CompareView /> },
               { path: "files", element: <FilesTab /> },
               { path: "staged", element: <StagedTab /> },
               { path: "tags", element: <TagsTab /> },
@@ -55,6 +62,7 @@ export const routes: RouteObject[] = [
           },
           { path: "audit", element: <AuditPage /> },
           { path: "accounts", element: <AccountsPage /> },
+          { path: "system", element: <SystemPage /> },
           { path: "settings", element: <SettingsPage /> },
           { path: "*", element: <NotFoundPage /> },
         ],

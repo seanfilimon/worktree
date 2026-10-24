@@ -4,12 +4,12 @@ import { useApi } from "@/api/context";
 import { keys, useMergeRequest, useProtections } from "@/api/queries";
 import type { MergeRequest } from "@/api/types";
 import { useAuth } from "@/auth/context";
-import { StateBadge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Card, Section } from "@/components/ui/Card";
-import { ConfirmButton } from "@/components/ui/ConfirmButton";
-import { Alert, EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { RelativeTime } from "@/components/ui/Time";
+import { StateBadge } from "@/components/legacy/Badge";
+import { Button } from "@/components/legacy/Button";
+import { Card, Section } from "@/components/legacy/Card";
+import { ConfirmButton } from "@/components/legacy/ConfirmButton";
+import { Alert, EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { RelativeTime } from "@/components/legacy/Time";
 import { pathMatch } from "@/lib/glob";
 import { shortId } from "@/lib/format";
 import { describeMergeError } from "@/lib/mergeErrors";
@@ -59,15 +59,15 @@ export function MergeRequestDetail() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <Link to={treePath(tenant, tree, "merge-requests")} className="text-[13px] text-muted hover:text-fg hover:underline">
+        <Link to={treePath(tenant, tree, "merge-requests")} className="text-[13px] text-muted-foreground hover:text-fg hover:underline">
           ← All merge requests
         </Link>
         <h2 className="mt-2 flex flex-wrap items-center gap-2 text-lg font-semibold">
-          <span className="font-mono text-muted">!{m.number}</span>
+          <span className="font-mono text-muted-foreground">!{m.number}</span>
           {m.title}
           <StateBadge value={m.state} />
         </h2>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-[13px] text-muted-foreground">
           <span className="font-medium text-fg">{m.author}</span> wants to merge{" "}
           <code className="rounded bg-surface-2 px-1 font-mono text-fg">{m.source_branch}</code> into{" "}
           <code className="rounded bg-surface-2 px-1 font-mono text-fg">{m.target_branch}</code> · opened <RelativeTime value={m.created_at} />
@@ -93,7 +93,7 @@ export function MergeRequestDetail() {
             <>
               {" "}
               to{" "}
-              <Link to={filesPath(tenant, tree, { snapshot: m.merged_snapshot })} className="font-mono text-accent hover:underline">
+              <Link to={filesPath(tenant, tree, { snapshot: m.merged_snapshot })} className="font-mono text-foreground hover:underline">
                 {shortId(m.merged_snapshot)}
               </Link>
             </>
@@ -118,7 +118,7 @@ export function MergeRequestDetail() {
               {required > 0 ? ` of ${required} required` : ""} {approvals.length === 1 && required === 0 ? "approval" : "approvals"}
             </p>
             {rule && (
-              <p className="mt-1 text-xs text-muted">
+              <p className="mt-1 text-xs text-muted-foreground">
                 Protected by <span className="font-mono">{rule.pattern}</span>
                 {rule.no_direct_push && " · no direct push"}
               </p>
@@ -128,7 +128,7 @@ export function MergeRequestDetail() {
                 {approvals.map((a) => (
                   <li key={a.account_id} className="flex items-center justify-between gap-2">
                     <span className="font-medium">{a.username}</span>
-                    <RelativeTime value={a.at} className="text-xs text-muted" />
+                    <RelativeTime value={a.at} className="text-xs text-muted-foreground" />
                   </li>
                 ))}
               </ul>

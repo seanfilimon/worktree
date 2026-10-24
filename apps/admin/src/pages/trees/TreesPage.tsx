@@ -6,10 +6,10 @@ import { keys, useTenants } from "@/api/queries";
 import { VISIBILITIES, type Tenant, type Visibility } from "@/api/types";
 import { PageHeader } from "@/components/PageHeader";
 import { TreeTable, type TreeRow } from "@/components/TreeTable";
-import { Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { SelectField, TextField } from "@/components/ui/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
+import { Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { SelectField, TextField } from "@/components/legacy/Field";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
 import { treePath } from "@/lib/paths";
 import { useToast } from "@/toast/store";
 

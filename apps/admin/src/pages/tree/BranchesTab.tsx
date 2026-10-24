@@ -1,11 +1,11 @@
 import { Link } from "react-router";
 import { useBranches } from "@/api/queries";
 import { Icon } from "@/components/icons";
-import { Badge } from "@/components/ui/Badge";
-import { Section } from "@/components/ui/Card";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
-import { RelativeTime } from "@/components/ui/Time";
+import { Badge } from "@/components/legacy/Badge";
+import { Section } from "@/components/legacy/Card";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
+import { RelativeTime } from "@/components/legacy/Time";
 import { shortId } from "@/lib/format";
 import { filesPath, treePath } from "@/lib/paths";
 import { useTreeContext } from "./context";
@@ -56,7 +56,7 @@ export function BranchesTab() {
                   </Td>
                   <Td>
                     {b.tip ? (
-                      <Link to={filesPath(tenant, tree, { snapshot: b.tip })} className="font-mono text-accent hover:underline" title={b.tip}>
+                      <Link to={filesPath(tenant, tree, { snapshot: b.tip })} className="font-mono text-foreground hover:underline" title={b.tip}>
                         {shortId(b.tip)}
                       </Link>
                     ) : (
@@ -64,15 +64,15 @@ export function BranchesTab() {
                     )}
                   </Td>
                   <Td>
-                    <RelativeTime value={b.updated_at} className="text-muted" />
+                    <RelativeTime value={b.updated_at} className="text-muted-foreground" />
                   </Td>
                   <Td>
-                    <RelativeTime value={b.created_at} className="text-muted" />
+                    <RelativeTime value={b.created_at} className="text-muted-foreground" />
                   </Td>
                   <Td className="text-right">
                     <Link
                       to={`${treePath(tenant, tree, "history")}?branch=${encodeURIComponent(b.name)}`}
-                      className="text-[13px] text-muted hover:text-fg hover:underline"
+                      className="text-[13px] text-muted-foreground hover:text-fg hover:underline"
                     >
                       History
                     </Link>

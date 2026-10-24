@@ -3,13 +3,13 @@ import { useState, type FormEvent } from "react";
 import { useApi } from "@/api/context";
 import { keys, useProtections } from "@/api/queries";
 import type { BranchProtection } from "@/api/types";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Section } from "@/components/ui/Card";
-import { ConfirmButton } from "@/components/ui/ConfirmButton";
-import { Checkbox, TextField } from "@/components/ui/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-import { Table, Td, Th, Tr } from "@/components/ui/Table";
+import { Badge } from "@/components/legacy/Badge";
+import { Button } from "@/components/legacy/Button";
+import { Section } from "@/components/legacy/Card";
+import { ConfirmButton } from "@/components/legacy/ConfirmButton";
+import { Checkbox, TextField } from "@/components/legacy/Field";
+import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
+import { Table, Td, Th, Tr } from "@/components/legacy/Table";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
 
@@ -191,7 +191,7 @@ export function ProtectionsTab() {
                     </span>
                   </Td>
                   <Td className="text-right tabular-nums">{p.required_approvals}</Td>
-                  <Td className="text-muted">{(p.allowed_pushers ?? []).join(", ") || "role-based"}</Td>
+                  <Td className="text-muted-foreground">{(p.allowed_pushers ?? []).join(", ") || "role-based"}</Td>
                   <Td className="text-right whitespace-nowrap">
                     {canManage && (
                       <>

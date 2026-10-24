@@ -5,8 +5,8 @@ import type { ServerEvent } from "@/api/types";
 import { useServerEvents } from "@/api/useServerEvents";
 import { canMaintain, useAuth } from "@/auth/context";
 import { PageHeader } from "@/components/PageHeader";
-import { StateBadge } from "@/components/ui/Badge";
-import { ErrorState, Skeleton } from "@/components/ui/States";
+import { StateBadge } from "@/components/legacy/Badge";
+import { ErrorState, Skeleton } from "@/components/legacy/States";
 import { cn } from "@/lib/cn";
 import { treePath } from "@/lib/paths";
 import type { TreeContext } from "./context";
@@ -76,7 +76,7 @@ export function TreeLayout() {
       <PageHeader
         title={
           <span className="font-mono">
-            <span className="text-muted">{tenant}/</span>
+            <span className="text-muted-foreground">{tenant}/</span>
             {tree}
           </span>
         }
@@ -105,13 +105,13 @@ export function TreeLayout() {
                 className={({ isActive }) =>
                   cn(
                     "-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm font-medium whitespace-nowrap transition-colors",
-                    isActive ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg",
+                    isActive ? "border-foreground text-fg" : "border-transparent text-muted-foreground hover:text-fg",
                   )
                 }
               >
                 {t.label}
                 {t.count && s && s[t.count] > 0 && (
-                  <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted tabular-nums">{s[t.count]}</span>
+                  <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted-foreground tabular-nums">{s[t.count]}</span>
                 )}
               </NavLink>
             </li>

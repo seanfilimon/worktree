@@ -19,7 +19,7 @@ export function Switch({ checked, onChange, label, disabled = false }: SwitchPro
       onClick={() => onChange(!checked)}
       className={cn(
         "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-        checked ? "border-accent bg-accent" : "border-border-strong bg-surface-2",
+        checked ? "border-foreground bg-primary" : "border-border-strong bg-surface-2",
       )}
     >
       <span

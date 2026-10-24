@@ -4,7 +4,7 @@ import { useToast, type ToastKind } from "./store";
 
 const KIND_STYLES: Record<ToastKind, string> = {
   error: "border-danger/40 before:bg-danger",
-  success: "border-accent/40 before:bg-accent",
+  success: "border-foreground/40 before:bg-primary",
   info: "border-info/40 before:bg-info",
 };
 
@@ -30,7 +30,7 @@ export function Toaster() {
           )}
         >
           <p className="font-medium">{t.title}</p>
-          {t.message && <p className="mt-0.5 text-[13px] break-words text-muted">{t.message}</p>}
+          {t.message && <p className="mt-0.5 text-[13px] break-words text-muted-foreground">{t.message}</p>}
           <button
             type="button"
             onClick={() => store.dismiss(t.id)}

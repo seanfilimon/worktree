@@ -25,6 +25,14 @@ export const keys = {
   licenses: (t: string, n: string) => ["tree", t, n, "licenses"] as const,
   mergeRequests: (t: string, n: string, state: string) => ["tree", t, n, "mrs", state] as const,
   mergeRequest: (t: string, n: string, num: number) => ["tree", t, n, "mr", num] as const,
+  compare: (t: string, n: string, from: string, to: string) => ["tree", t, n, "compare", from, to] as const,
+  fileHistory: (t: string, n: string, branch: string, path: string) =>
+    ["tree", t, n, "file-history", branch, path] as const,
+  treeStats: (t: string, n: string, branch: string, days: number) => ["tree", t, n, "stats", branch, days] as const,
+  stagedSummary: (t: string, n: string) => ["tree", t, n, "staged-summary"] as const,
+  recentEvents: (q: { tenant?: string; tree?: string; limit?: number }) => ["events", "recent", q] as const,
+  search: (q: string) => ["search", q] as const,
+  system: ["admin", "system"] as const,
 };
 
 export function useHealth() {
@@ -156,4 +164,64 @@ export function useMergeRequest(tenant: string, tree: string, n: number) {
     queryFn: () => api.mergeRequests.get(tenant, tree, n),
     enabled: Number.isInteger(n) && n > 0,
   });
+}
+
+// ---- v0.3 admin expansion ----
+
+export function useCompare(tenant: string, tree: string, to: string, from?: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.compare(tenant, tree, from ?? "", to),
+    queryFn: () => api.trees.compare(tenant, tree, { to, from: from || undefined }),
+    enabled: to !== "",
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useFileHistory(tenant: string, tree: string, path: string, branch: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.fileHistory(tenant, tree, branch, path),
+    queryFn: () => api.trees.fileHistory(tenant, tree, { path, branch: branch || undefined, limit: 100 }),
+    enabled: path !== "",
+  });
+}
+
+export function useTreeStats(tenant: string, tree: string, branch: string, days = 30) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.treeStats(tenant, tree, branch, days),
+    queryFn: () => api.trees.stats(tenant, tree, { branch: branch || undefined, days }),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useStagedSummary(tenant: string, tree: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.stagedSummary(tenant, tree),
+    queryFn: () => api.trees.stagedSummary(tenant, tree),
+  });
+}
+
+export function useRecentEvents(q: { tenant?: string; tree?: string; limit?: number } = {}) {
+  const api = useApi();
+  return useQuery({ queryKey: keys.recentEvents(q), queryFn: () => api.events.recent(q) });
+}
+
+export function useSearch(q: string) {
+  const api = useApi();
+  const term = q.trim();
+  return useQuery({
+    queryKey: keys.search(term),
+    queryFn: () => api.search(term),
+    enabled: term.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: 10_000,
+  });
+}
+
+export function useSystemInfo(enabled: boolean) {
+  const api = useApi();
+  return useQuery({ queryKey: keys.system, queryFn: api.admin.system, enabled, refetchInterval: 10_000 });
 }

@@ -37,6 +37,21 @@ export default tseslint.config(
     },
   },
   {
+    // Vendored shadcn/ui primitives (`npx shadcn add`): kept close to
+    // upstream so they can be re-synced, so the strict app rules don't apply.
+    files: ["src/components/ui/**", "src/hooks/use-mobile.ts"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+      "react-hooks/purity": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "@typescript-eslint/restrict-template-expressions": "off",
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unnecessary-type-assertion": "off",
+    },
+  },
+  {
     files: ["*.config.{js,ts}"],
     languageOptions: { globals: globals.node },
   },
