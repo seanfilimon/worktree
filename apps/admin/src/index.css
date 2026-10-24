@@ -1,0 +1,128 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Design tokens. Components only reference these via the theme below. */
+:root {
+  color-scheme: light;
+  --wt-bg: #f6f7f9;
+  --wt-surface: #ffffff;
+  --wt-surface-2: #f1f3f6;
+  --wt-border: #e2e5ea;
+  --wt-border-strong: #c9ced6;
+  --wt-fg: #14171c;
+  --wt-muted: #5d6573;
+  --wt-subtle: #8a92a0;
+  --wt-accent: #1f8a5b;
+  --wt-accent-fg: #ffffff;
+  --wt-accent-soft: #e3f4ec;
+  --wt-danger: #c2352b;
+  --wt-danger-soft: #fdecea;
+  --wt-warning: #a36207;
+  --wt-warning-soft: #fdf3e1;
+  --wt-info: #2563c9;
+  --wt-info-soft: #e7effc;
+  --wt-ring: #1f8a5b;
+  --wt-shadow: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 3px rgb(16 24 40 / 0.08);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --wt-bg: #0d1014;
+  --wt-surface: #14181e;
+  --wt-surface-2: #1b2028;
+  --wt-border: #262c36;
+  --wt-border-strong: #353d4a;
+  --wt-fg: #e7eaef;
+  --wt-muted: #9aa3b2;
+  --wt-subtle: #6b7484;
+  --wt-accent: #3ccf8e;
+  --wt-accent-fg: #06130d;
+  --wt-accent-soft: #11291e;
+  --wt-danger: #f2685d;
+  --wt-danger-soft: #2c1513;
+  --wt-warning: #f0b14a;
+  --wt-warning-soft: #2b2110;
+  --wt-info: #6ea0f7;
+  --wt-info-soft: #131f33;
+  --wt-ring: #3ccf8e;
+  --wt-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+}
+
+@theme inline {
+  --color-bg: var(--wt-bg);
+  --color-surface: var(--wt-surface);
+  --color-surface-2: var(--wt-surface-2);
+  --color-border: var(--wt-border);
+  --color-border-strong: var(--wt-border-strong);
+  --color-fg: var(--wt-fg);
+  --color-muted: var(--wt-muted);
+  --color-subtle: var(--wt-subtle);
+  --color-accent: var(--wt-accent);
+  --color-accent-fg: var(--wt-accent-fg);
+  --color-accent-soft: var(--wt-accent-soft);
+  --color-danger: var(--wt-danger);
+  --color-danger-soft: var(--wt-danger-soft);
+  --color-warning: var(--wt-warning);
+  --color-warning-soft: var(--wt-warning-soft);
+  --color-info: var(--wt-info);
+  --color-info-soft: var(--wt-info-soft);
+  --color-ring: var(--wt-ring);
+  --shadow-card: var(--wt-shadow);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  }
+}
+
+@layer utilities {
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-2) 0%,
+      color-mix(in srgb, var(--color-surface-2) 60%, var(--color-border)) 50%,
+      var(--color-surface-2) 100%
+    );
+    background-size: 200% 100%;
+    animation: wt-shimmer 1.4s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton {
+      animation: none;
+    }
+  }
+}
+
+@keyframes wt-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
