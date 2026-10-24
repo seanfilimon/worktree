@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::core::hash::ContentHash;
+use crate::object::manifest::EntryKind;
 
 /// The kind of change a delta represents.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,9 +45,27 @@ pub struct Delta {
 
     /// The size of the content after the change, if applicable.
     pub new_size: Option<u64>,
+
+    /// Entry kind after the change. `None` keeps the existing kind (or
+    /// `File` for an add).
+    #[serde(default)]
+    pub new_kind: Option<EntryKind>,
+
+    /// Executable flag after the change. `None` keeps the existing flag (or
+    /// `false` for an add).
+    #[serde(default)]
+    pub new_executable: Option<bool>,
 }
 
 impl Delta {
+    /// Record the resulting entry kind and executable flag, so that applying
+    /// the delta reproduces mode-only and kind-only changes exactly.
+    pub fn with_entry_meta(mut self, kind: EntryKind, executable: bool) -> Self {
+        self.new_kind = Some(kind);
+        self.new_executable = Some(executable);
+        self
+    }
+
     /// Create a new delta with the given path, kind, and optional hashes.
     pub fn new(
         path: PathBuf,
@@ -61,6 +80,8 @@ impl Delta {
             new_hash,
             old_size: None,
             new_size: None,
+            new_kind: None,
+            new_executable: None,
         }
     }
 
@@ -73,6 +94,8 @@ impl Delta {
             new_hash: Some(new_hash),
             old_size: None,
             new_size: Some(new_size),
+            new_kind: None,
+            new_executable: None,
         }
     }
 
@@ -91,6 +114,8 @@ impl Delta {
             new_hash: Some(new_hash),
             old_size: Some(old_size),
             new_size: Some(new_size),
+            new_kind: None,
+            new_executable: None,
         }
     }
 
@@ -103,6 +128,8 @@ impl Delta {
             new_hash: None,
             old_size: Some(old_size),
             new_size: None,
+            new_kind: None,
+            new_executable: None,
         }
     }
 
@@ -115,13 +142,13 @@ impl Delta {
     ) -> Self {
         Self {
             path: to.into(),
-            kind: DeltaKind::Rename {
-                from: from.into(),
-            },
+            kind: DeltaKind::Rename { from: from.into() },
             old_hash: Some(hash),
             new_hash: Some(hash),
             old_size: Some(size),
             new_size: Some(size),
+            new_kind: None,
+            new_executable: None,
         }
     }
 
@@ -134,13 +161,13 @@ impl Delta {
     ) -> Self {
         Self {
             path: to.into(),
-            kind: DeltaKind::Copy {
-                from: from.into(),
-            },
+            kind: DeltaKind::Copy { from: from.into() },
             old_hash: None,
             new_hash: Some(hash),
             old_size: None,
             new_size: Some(size),
+            new_kind: None,
+            new_executable: None,
         }
     }
 

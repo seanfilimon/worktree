@@ -1,21 +1,17 @@
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
-use crate::core::id::{AccountId, TreeId};
 use crate::core::hash::ContentHash;
+use crate::core::id::{AccountId, TreeId};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Release status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ReleaseStatus {
+    #[default]
     Draft,
     Published,
     Archived,
-}
-
-impl Default for ReleaseStatus {
-    fn default() -> Self {
-        ReleaseStatus::Draft
-    }
 }
 
 /// A release artifact
@@ -43,7 +39,13 @@ pub struct Release {
 }
 
 impl Release {
-    pub fn new(tag_name: &str, tree_id: TreeId, title: &str, notes: &str, author: AccountId) -> Self {
+    pub fn new(
+        tag_name: &str,
+        tree_id: TreeId,
+        title: &str,
+        notes: &str,
+        author: AccountId,
+    ) -> Self {
         Self {
             tag_name: tag_name.to_string(),
             tree_id,
@@ -70,9 +72,15 @@ impl Release {
         self.status = ReleaseStatus::Archived;
     }
 
-    pub fn is_draft(&self) -> bool { self.status == ReleaseStatus::Draft }
-    pub fn is_published(&self) -> bool { self.status == ReleaseStatus::Published }
-    pub fn is_archived(&self) -> bool { self.status == ReleaseStatus::Archived }
+    pub fn is_draft(&self) -> bool {
+        self.status == ReleaseStatus::Draft
+    }
+    pub fn is_published(&self) -> bool {
+        self.status == ReleaseStatus::Published
+    }
+    pub fn is_archived(&self) -> bool {
+        self.status == ReleaseStatus::Archived
+    }
 }
 
 #[cfg(test)]
@@ -81,7 +89,13 @@ mod tests {
 
     #[test]
     fn test_release_lifecycle() {
-        let mut release = Release::new("v1.0", TreeId::new(), "Version 1.0", "First release", AccountId::new());
+        let mut release = Release::new(
+            "v1.0",
+            TreeId::new(),
+            "Version 1.0",
+            "First release",
+            AccountId::new(),
+        );
         assert!(release.is_draft());
         assert!(release.published_at.is_none());
 

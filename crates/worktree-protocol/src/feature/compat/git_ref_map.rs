@@ -275,11 +275,7 @@ impl fmt::Display for RefMapping {
                 bid, self.snapshot_id, self.git_ref
             )
         } else {
-            write!(
-                f,
-                "snapshot:{} <-> {}",
-                self.snapshot_id, self.git_ref
-            )
+            write!(f, "snapshot:{} <-> {}", self.snapshot_id, self.git_ref)
         }
     }
 }
@@ -311,14 +307,52 @@ impl RefMappingIndex {
     }
 
     /// Insert a ref mapping into the index.
+    ///
+    /// Re-inserting an existing ref path replaces the old mapping, including
+    /// its branch/snapshot secondary entries.
     pub fn insert(&mut self, mapping: RefMapping) {
-        self.by_ref_path
-            .insert(mapping.git_ref.ref_path.clone(), mapping.clone());
+        if let Some(old) = self
+            .by_ref_path
+            .insert(mapping.git_ref.ref_path.clone(), mapping.clone())
+        {
+            self.unlink_secondary(&old);
+        }
         if let Some(bid) = mapping.branch_id {
             self.by_branch_id.insert(bid, mapping.clone());
         }
-        self.by_snapshot_id
-            .insert(mapping.snapshot_id, mapping);
+        self.by_snapshot_id.insert(mapping.snapshot_id, mapping);
+    }
+
+    /// Drop the branch/snapshot entries that belong to `old` (and only if
+    /// they still point at `old`'s ref path). If another ref still targets
+    /// the same snapshot, the snapshot lookup falls back to it.
+    fn unlink_secondary(&mut self, old: &RefMapping) {
+        let path = &old.git_ref.ref_path;
+        if let Some(bid) = old.branch_id {
+            if self
+                .by_branch_id
+                .get(&bid)
+                .is_some_and(|m| &m.git_ref.ref_path == path)
+            {
+                self.by_branch_id.remove(&bid);
+            }
+        }
+        if self
+            .by_snapshot_id
+            .get(&old.snapshot_id)
+            .is_some_and(|m| &m.git_ref.ref_path == path)
+        {
+            self.by_snapshot_id.remove(&old.snapshot_id);
+            if let Some(other) = self
+                .by_ref_path
+                .values()
+                .filter(|m| m.snapshot_id == old.snapshot_id && &m.git_ref.ref_path != path)
+                .min_by(|a, b| a.git_ref.ref_path.cmp(&b.git_ref.ref_path))
+                .cloned()
+            {
+                self.by_snapshot_id.insert(old.snapshot_id, other);
+            }
+        }
     }
 
     /// Look up a mapping by its Git ref path.
@@ -338,25 +372,19 @@ impl RefMappingIndex {
 
     /// Remove a mapping by its Git ref path.
     pub fn remove_by_ref_path(&mut self, ref_path: &str) -> Option<RefMapping> {
-        if let Some(mapping) = self.by_ref_path.remove(ref_path) {
-            if let Some(bid) = mapping.branch_id {
-                self.by_branch_id.remove(&bid);
-            }
-            self.by_snapshot_id.remove(&mapping.snapshot_id);
-            Some(mapping)
-        } else {
-            None
-        }
+        let mapping = self.by_ref_path.remove(ref_path)?;
+        self.unlink_secondary(&mapping);
+        Some(mapping)
     }
 
     /// Remove a mapping by its Worktree branch ID.
     pub fn remove_by_branch_id(&mut self, branch_id: &BranchId) -> Option<RefMapping> {
-        if let Some(mapping) = self.by_branch_id.remove(branch_id) {
-            self.by_ref_path.remove(&mapping.git_ref.ref_path);
-            self.by_snapshot_id.remove(&mapping.snapshot_id);
-            Some(mapping)
-        } else {
-            None
+        let ref_path = self.by_branch_id.get(branch_id)?.git_ref.ref_path.clone();
+        match self.remove_by_ref_path(&ref_path) {
+            Some(mapping) => Some(mapping),
+            // Index out of sync (cannot happen via the public API); still
+            // honour the removal request.
+            None => self.by_branch_id.remove(branch_id),
         }
     }
 
@@ -446,10 +474,7 @@ mod tests {
             GitRefKind::from_ref_path("refs/heads/feature/login"),
             GitRefKind::Branch
         );
-        assert_eq!(
-            GitRefKind::from_ref_path("refs/tags/v1.0"),
-            GitRefKind::Tag
-        );
+        assert_eq!(GitRefKind::from_ref_path("refs/tags/v1.0"), GitRefKind::Tag);
         assert_eq!(
             GitRefKind::from_ref_path("refs/remotes/origin/main"),
             GitRefKind::Remote
@@ -459,10 +484,7 @@ mod tests {
             GitRefKind::from_ref_path("refs/notes/commits"),
             GitRefKind::Note
         );
-        assert_eq!(
-            GitRefKind::from_ref_path("refs/stash"),
-            GitRefKind::Other
-        );
+        assert_eq!(GitRefKind::from_ref_path("refs/stash"), GitRefKind::Other);
         assert_eq!(
             GitRefKind::from_ref_path("something/else"),
             GitRefKind::Other
@@ -539,10 +561,7 @@ mod tests {
             GitRef::new("refs/remotes/origin/main", SAMPLE_SHA).kind,
             GitRefKind::Remote
         );
-        assert_eq!(
-            GitRef::new("HEAD", SAMPLE_SHA).kind,
-            GitRefKind::Symbolic
-        );
+        assert_eq!(GitRef::new("HEAD", SAMPLE_SHA).kind, GitRefKind::Symbolic);
         assert_eq!(
             GitRef::new("refs/stash", SAMPLE_SHA).kind,
             GitRefKind::Other
@@ -589,10 +608,7 @@ mod tests {
             GitRef::new("refs/remotes/origin/main", SAMPLE_SHA).short_name(),
             "origin/main"
         );
-        assert_eq!(
-            GitRef::new("HEAD", SAMPLE_SHA).short_name(),
-            "HEAD"
-        );
+        assert_eq!(GitRef::new("HEAD", SAMPLE_SHA).short_name(), "HEAD");
         assert_eq!(
             GitRef::new("refs/notes/commits", SAMPLE_SHA).short_name(),
             "commits"
@@ -603,13 +619,11 @@ mod tests {
     fn test_git_ref_is_valid_target_sha() {
         assert!(GitRef::new("refs/heads/main", SAMPLE_SHA).is_valid_target_sha());
         assert!(!GitRef::new("refs/heads/main", "short").is_valid_target_sha());
-        assert!(
-            !GitRef::new(
-                "refs/heads/main",
-                "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
-            )
-            .is_valid_target_sha()
-        );
+        assert!(!GitRef::new(
+            "refs/heads/main",
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        )
+        .is_valid_target_sha());
     }
 
     #[test]
@@ -910,10 +924,7 @@ mod tests {
         ));
 
         let sid2 = SnapshotId::new();
-        index.insert(RefMapping::for_snapshot(
-            sid2,
-            GitRef::tag("b", SAMPLE_SHA),
-        ));
+        index.insert(RefMapping::for_snapshot(sid2, GitRef::tag("b", SAMPLE_SHA)));
 
         let all: Vec<_> = index.iter().collect();
         assert_eq!(all.len(), 2);
@@ -1004,13 +1015,74 @@ mod tests {
         ));
 
         let json = serde_json::to_string(&index).expect("serialize");
-        let deserialized: RefMappingIndex =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: RefMappingIndex = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_ref_path("refs/heads/main"));
         assert!(deserialized.contains_ref_path("refs/tags/v1.0"));
         assert!(deserialized.contains_branch_id(&bid));
+    }
+
+    #[test]
+    fn test_index_shared_snapshot_survives_removal_of_one_ref() {
+        // Regression: removing one ref dropped the snapshot lookup even when
+        // another ref still pointed at the same snapshot.
+        let mut index = RefMappingIndex::new();
+        let sid = SnapshotId::new();
+        index.insert(RefMapping::for_snapshot(sid, GitRef::tag("v1", SAMPLE_SHA)));
+        index.insert(RefMapping::for_snapshot(sid, GitRef::tag("v2", SAMPLE_SHA)));
+
+        index.remove_by_ref_path("refs/tags/v2");
+        let found = index.get_by_snapshot_id(&sid).expect("still mapped by v1");
+        assert_eq!(found.git_ref.ref_path, "refs/tags/v1");
+
+        index.remove_by_ref_path("refs/tags/v1");
+        assert!(index.get_by_snapshot_id(&sid).is_none());
+        assert!(index.is_empty());
+    }
+
+    #[test]
+    fn test_index_reinsert_ref_path_drops_stale_secondaries() {
+        // Regression: re-pointing a ref left the old branch/snapshot entries.
+        let mut index = RefMappingIndex::new();
+        let (bid, sid) = (BranchId::new(), SnapshotId::new());
+        index.insert(RefMapping::for_branch(
+            bid,
+            sid,
+            GitRef::branch("main", SAMPLE_SHA),
+        ));
+        let sid2 = SnapshotId::new();
+        index.insert(RefMapping::for_snapshot(
+            sid2,
+            GitRef::branch("main", SAMPLE_SHA2),
+        ));
+
+        assert_eq!(index.len(), 1);
+        assert!(index.get_by_snapshot_id(&sid).is_none());
+        assert!(index.get_by_branch_id(&bid).is_none());
+        assert_eq!(
+            index.get_by_snapshot_id(&sid2).unwrap().git_ref.target_sha,
+            SAMPLE_SHA2
+        );
+    }
+
+    #[test]
+    fn test_index_remove_by_branch_id_keeps_other_refs_snapshot() {
+        let mut index = RefMappingIndex::new();
+        let (bid, sid) = (BranchId::new(), SnapshotId::new());
+        index.insert(RefMapping::for_snapshot(sid, GitRef::tag("v1", SAMPLE_SHA)));
+        index.insert(RefMapping::for_branch(
+            bid,
+            sid,
+            GitRef::branch("main", SAMPLE_SHA),
+        ));
+        let removed = index.remove_by_branch_id(&bid).unwrap();
+        assert_eq!(removed.git_ref.ref_path, "refs/heads/main");
+        assert!(!index.contains_branch_id(&bid));
+        assert_eq!(
+            index.get_by_snapshot_id(&sid).unwrap().git_ref.ref_path,
+            "refs/tags/v1"
+        );
     }
 
     #[test]

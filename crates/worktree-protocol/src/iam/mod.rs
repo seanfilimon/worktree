@@ -14,11 +14,11 @@
 //! - **engine** — Central access decision engine combining RBAC + ABAC
 
 pub mod account;
-pub mod tenant;
-pub mod team;
-pub mod role;
+pub mod engine;
 pub mod permission;
 pub mod policy;
+pub mod role;
 pub mod scope;
 pub mod session;
-pub mod engine;
+pub mod team;
+pub mod tenant;

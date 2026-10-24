@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::core::hash::{hash_bytes, ContentHash};
+use crate::core::hash::ContentHash;
 use crate::core::id::TreeId;
 
 /// The kind of entry in a manifest (file or directory).

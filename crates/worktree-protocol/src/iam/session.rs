@@ -129,12 +129,18 @@ impl Session {
     /// Refresh the session, extending its expiry by `duration` from now.
     ///
     /// This only works if the session is currently active (not revoked or
-    /// expired by status). Returns `true` if the refresh succeeded.
+    /// expired by status or by time). A session past `expires_at` is marked
+    /// expired instead of being revived. Returns `true` if the refresh
+    /// succeeded.
     pub fn refresh(&mut self, duration: Duration) -> bool {
         if self.status != SessionStatus::Active {
             return false;
         }
         let now = Utc::now();
+        if now >= self.expires_at {
+            self.status = SessionStatus::Expired;
+            return false;
+        }
         self.expires_at = now + duration;
         self.last_active_at = now;
         true
@@ -145,7 +151,7 @@ impl Session {
     /// Also checks if the session has expired by time and updates the
     /// status accordingly. Returns `true` if the session is still active.
     pub fn touch(&mut self) -> bool {
-        if self.status == SessionStatus::Revoked {
+        if self.status != SessionStatus::Active {
             return false;
         }
         let now = Utc::now();
@@ -318,12 +324,7 @@ mod tests {
     fn test_session_ids_linked() {
         let account_id = AccountId::new();
         let tenant_id = TenantId::new();
-        let session = Session::new(
-            account_id,
-            tenant_id,
-            "tok".to_string(),
-            Duration::hours(1),
-        );
+        let session = Session::new(account_id, tenant_id, "tok".to_string(), Duration::hours(1));
         assert_eq!(session.account_id, account_id);
         assert_eq!(session.tenant_id, tenant_id);
     }
@@ -338,5 +339,24 @@ mod tests {
         assert_eq!(deserialized.tenant_id, session.tenant_id);
         assert_eq!(deserialized.token, session.token);
         assert_eq!(deserialized.status, session.status);
+    }
+
+    #[test]
+    fn test_refresh_does_not_revive_time_expired_session() {
+        // Regression: refresh only checked the status field, so a stale
+        // token past `expires_at` could be extended indefinitely.
+        let mut session = make_session(Duration::hours(1));
+        session.expires_at = Utc::now() - Duration::seconds(1);
+        assert!(!session.refresh(Duration::hours(1)));
+        assert_eq!(session.status, SessionStatus::Expired);
+        assert!(!session.is_active());
+    }
+
+    #[test]
+    fn test_touch_rejects_status_expired_session() {
+        let mut session = make_session(Duration::hours(1));
+        session.mark_expired();
+        assert!(!session.touch());
+        assert_eq!(session.status, SessionStatus::Expired);
     }
 }

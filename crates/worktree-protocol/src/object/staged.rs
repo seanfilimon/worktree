@@ -1,21 +1,17 @@
-use serde::{Deserialize, Serialize};
+use crate::core::id::{AccountId, BranchId, SnapshotId, TreeId};
 use chrono::{DateTime, Utc};
-use crate::core::id::{SnapshotId, TreeId, BranchId, AccountId};
+use serde::{Deserialize, Serialize};
 
 /// Status of a staged snapshot
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum StagedStatus {
+    #[default]
     Staged,
     Pushed,
     Cleared,
     Expired,
-}
-
-impl Default for StagedStatus {
-    fn default() -> Self {
-        StagedStatus::Staged
-    }
 }
 
 /// A staged snapshot visible to team members but not yet in branch history
@@ -83,8 +79,12 @@ impl StagedSnapshot {
         self.status = StagedStatus::Expired;
     }
 
-    pub fn is_staged(&self) -> bool { self.status == StagedStatus::Staged }
-    pub fn is_pushed(&self) -> bool { self.status == StagedStatus::Pushed }
+    pub fn is_staged(&self) -> bool {
+        self.status == StagedStatus::Staged
+    }
+    pub fn is_pushed(&self) -> bool {
+        self.status == StagedStatus::Pushed
+    }
 
     pub fn total_changes(&self) -> u32 {
         self.files_added + self.files_modified + self.files_deleted
@@ -108,26 +108,41 @@ pub struct StagedIndex {
 }
 
 impl StagedIndex {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn add(&mut self, snapshot: StagedSnapshot) {
         self.snapshots.push(snapshot);
     }
 
     pub fn by_user(&self, user: &AccountId) -> Vec<&StagedSnapshot> {
-        self.snapshots.iter().filter(|s| s.user == *user && s.is_staged()).collect()
+        self.snapshots
+            .iter()
+            .filter(|s| s.user == *user && s.is_staged())
+            .collect()
     }
 
     pub fn by_tree(&self, tree_id: &TreeId) -> Vec<&StagedSnapshot> {
-        self.snapshots.iter().filter(|s| s.tree_id == *tree_id && s.is_staged()).collect()
+        self.snapshots
+            .iter()
+            .filter(|s| s.tree_id == *tree_id && s.is_staged())
+            .collect()
     }
 
     pub fn by_branch(&self, branch_id: &BranchId) -> Vec<&StagedSnapshot> {
-        self.snapshots.iter().filter(|s| s.branch_id == *branch_id && s.is_staged()).collect()
+        self.snapshots
+            .iter()
+            .filter(|s| s.branch_id == *branch_id && s.is_staged())
+            .collect()
     }
 
     /// Check for potential conflicts with staged changes from other users
-    pub fn check_conflicts(&self, user: &AccountId, files: &[String]) -> Vec<StagedConflictWarning> {
+    pub fn check_conflicts(
+        &self,
+        user: &AccountId,
+        files: &[String],
+    ) -> Vec<StagedConflictWarning> {
         let mut warnings = Vec::new();
         for snapshot in &self.snapshots {
             if snapshot.user == *user || !snapshot.is_staged() {
@@ -151,12 +166,10 @@ impl StagedIndex {
     /// Remove expired and cleared snapshots
     pub fn gc(&mut self, retention_days: u32) {
         let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
-        self.snapshots.retain(|s| {
-            match s.status {
-                StagedStatus::Pushed => true,
-                StagedStatus::Staged => s.timestamp > cutoff,
-                StagedStatus::Cleared | StagedStatus::Expired => false,
-            }
+        self.snapshots.retain(|s| match s.status {
+            StagedStatus::Pushed => true,
+            StagedStatus::Staged => s.timestamp > cutoff,
+            StagedStatus::Cleared | StagedStatus::Expired => false,
         });
     }
 }
@@ -168,7 +181,10 @@ mod tests {
     #[test]
     fn test_staged_snapshot_lifecycle() {
         let mut ss = StagedSnapshot::new(
-            AccountId::new(), TreeId::new(), BranchId::new(), "feature/x",
+            AccountId::new(),
+            TreeId::new(),
+            BranchId::new(),
+            "feature/x",
             vec!["src/main.rs".to_string()],
         );
         assert!(ss.is_staged());
@@ -185,7 +201,10 @@ mod tests {
 
         let mut index = StagedIndex::new();
         index.add(StagedSnapshot::new(
-            user1, tree, branch, "main",
+            user1,
+            tree,
+            branch,
+            "main",
             vec!["shared.rs".to_string(), "other.rs".to_string()],
         ));
 

@@ -63,19 +63,14 @@ impl ConflictKind {
 
     /// Returns `true` if this conflict involves content differences.
     pub fn is_content_based(&self) -> bool {
-        matches!(
-            self,
-            ConflictKind::ContentConflict | ConflictKind::AddAdd
-        )
+        matches!(self, ConflictKind::ContentConflict | ConflictKind::AddAdd)
     }
 
     /// Returns `true` if this conflict involves a deletion on one side.
     pub fn involves_deletion(&self) -> bool {
         matches!(
             self,
-            ConflictKind::ModifyDelete
-                | ConflictKind::DeleteModify
-                | ConflictKind::RenameDelete
+            ConflictKind::ModifyDelete | ConflictKind::DeleteModify | ConflictKind::RenameDelete
         )
     }
 
@@ -83,9 +78,7 @@ impl ConflictKind {
     pub fn involves_rename(&self) -> bool {
         matches!(
             self,
-            ConflictKind::RenameRename
-                | ConflictKind::RenameModify
-                | ConflictKind::RenameDelete
+            ConflictKind::RenameRename | ConflictKind::RenameModify | ConflictKind::RenameDelete
         )
     }
 }
@@ -375,7 +368,10 @@ mod tests {
 
     #[test]
     fn test_conflict_kind_display() {
-        assert_eq!(ConflictKind::ContentConflict.to_string(), "content-conflict");
+        assert_eq!(
+            ConflictKind::ContentConflict.to_string(),
+            "content-conflict"
+        );
         assert_eq!(ConflictKind::ModifyDelete.to_string(), "modify-delete");
         assert_eq!(ConflictKind::DeleteModify.to_string(), "delete-modify");
         assert_eq!(ConflictKind::AddAdd.to_string(), "add-add");
@@ -451,8 +447,7 @@ mod tests {
         ];
         for kind in &kinds {
             let json = serde_json::to_string(kind).expect("serialize");
-            let deserialized: ConflictKind =
-                serde_json::from_str(&json).expect("deserialize");
+            let deserialized: ConflictKind = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(*kind, deserialized);
         }
     }
@@ -501,15 +496,14 @@ mod tests {
     #[test]
     fn test_conflict_side_with_rename() {
         let hash = hash_bytes(b"renamed");
-        let side = ConflictSide::with_rename(
-            Some(hash),
-            Some(7),
-            PathBuf::from("old_name.rs"),
-        );
+        let side = ConflictSide::with_rename(Some(hash), Some(7), PathBuf::from("old_name.rs"));
 
         assert!(side.is_present());
         assert!(side.is_renamed());
-        assert_eq!(side.original_path.as_deref(), Some(std::path::Path::new("old_name.rs")));
+        assert_eq!(
+            side.original_path.as_deref(),
+            Some(std::path::Path::new("old_name.rs"))
+        );
     }
 
     #[test]
@@ -529,11 +523,7 @@ mod tests {
     #[test]
     fn test_conflict_side_display_renamed() {
         let hash = hash_bytes(b"renamed display");
-        let side = ConflictSide::with_rename(
-            Some(hash),
-            Some(15),
-            PathBuf::from("original.txt"),
-        );
+        let side = ConflictSide::with_rename(Some(hash), Some(15), PathBuf::from("original.txt"));
         let display = side.to_string();
         assert!(display.contains(&hash.to_string()));
         assert!(display.contains("renamed from"));
@@ -543,11 +533,7 @@ mod tests {
     #[test]
     fn test_conflict_side_serde_roundtrip() {
         let hash = hash_bytes(b"serde side");
-        let side = ConflictSide::with_rename(
-            Some(hash),
-            Some(10),
-            PathBuf::from("old.rs"),
-        );
+        let side = ConflictSide::with_rename(Some(hash), Some(10), PathBuf::from("old.rs"));
 
         let json = serde_json::to_string(&side).expect("serialize");
         let deserialized: ConflictSide = serde_json::from_str(&json).expect("deserialize");
@@ -820,36 +806,20 @@ mod tests {
 
     #[test]
     fn test_merge_conflict_clone_and_equality() {
-        let conflict = MergeConflict::content_conflict(
-            "file.txt",
-            hash_bytes(b"a"),
-            1,
-            hash_bytes(b"b"),
-            1,
-        );
+        let conflict =
+            MergeConflict::content_conflict("file.txt", hash_bytes(b"a"), 1, hash_bytes(b"b"), 1);
         let cloned = conflict.clone();
         assert_eq!(conflict, cloned);
     }
 
     #[test]
     fn test_multiple_conflicts() {
-        let c1 = MergeConflict::content_conflict(
-            "a.txt",
-            hash_bytes(b"a1"),
-            2,
-            hash_bytes(b"a2"),
-            2,
-        );
+        let c1 =
+            MergeConflict::content_conflict("a.txt", hash_bytes(b"a1"), 2, hash_bytes(b"a2"), 2);
         let c2 = MergeConflict::modify_delete("b.txt", hash_bytes(b"b"), 1);
-        let c3 = MergeConflict::add_add(
-            "c.txt",
-            hash_bytes(b"c1"),
-            2,
-            hash_bytes(b"c2"),
-            2,
-        );
+        let c3 = MergeConflict::add_add("c.txt", hash_bytes(b"c1"), 2, hash_bytes(b"c2"), 2);
 
-        let conflicts = vec![c1, c2, c3];
+        let conflicts = [c1, c2, c3];
         assert_eq!(conflicts.len(), 3);
 
         let content_conflicts: Vec<_> = conflicts

@@ -33,16 +33,12 @@ pub struct TreeSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum BranchStrategy {
+    #[default]
     FeatureBranch,
     TrunkBased,
     ReleaseTrain,
-}
-
-impl Default for BranchStrategy {
-    fn default() -> Self {
-        BranchStrategy::FeatureBranch
-    }
 }
 
 fn default_branch_strategy() -> BranchStrategy {
@@ -118,7 +114,10 @@ mod tests {
     fn test_tree_config_new() {
         let cfg = TreeLevelConfig::new("backend");
         assert_eq!(cfg.tree.as_ref().unwrap().name, "backend");
-        assert_eq!(cfg.tree.as_ref().unwrap().branch_strategy, BranchStrategy::FeatureBranch);
+        assert_eq!(
+            cfg.tree.as_ref().unwrap().branch_strategy,
+            BranchStrategy::FeatureBranch
+        );
     }
 
     #[test]

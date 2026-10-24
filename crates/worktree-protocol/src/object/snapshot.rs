@@ -144,12 +144,7 @@ mod tests {
 
     #[test]
     fn test_auto_generated_snapshot() {
-        let snap = Snapshot::new_auto(
-            TreeId::new(),
-            hash_bytes(b"auto"),
-            vec![],
-            AccountId::new(),
-        );
+        let snap = Snapshot::new_auto(TreeId::new(), hash_bytes(b"auto"), vec![], AccountId::new());
         assert!(snap.auto_generated);
         assert_eq!(snap.message, "auto-generated snapshot");
     }

@@ -86,19 +86,14 @@ impl Resource {
     ///   to the enclosing tree scope)
     pub fn to_scope(&self) -> Scope {
         match self {
-            Resource::Tree {
-                tenant_id,
-                tree_id,
-            } => Scope::Tree(*tenant_id, *tree_id),
+            Resource::Tree { tenant_id, tree_id } => Scope::Tree(*tenant_id, *tree_id),
             Resource::Branch {
                 tenant_id,
                 tree_id,
                 branch_id,
             } => Scope::Branch(*tenant_id, *tree_id, *branch_id),
             Resource::Subtree {
-                tenant_id,
-                tree_id,
-                ..
+                tenant_id, tree_id, ..
             } => Scope::Tree(*tenant_id, *tree_id),
         }
     }
@@ -107,10 +102,7 @@ impl Resource {
 impl fmt::Display for Resource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Resource::Tree {
-                tenant_id,
-                tree_id,
-            } => write!(f, "tree:{}:{}", tenant_id, tree_id),
+            Resource::Tree { tenant_id, tree_id } => write!(f, "tree:{}:{}", tenant_id, tree_id),
             Resource::Branch {
                 tenant_id,
                 tree_id,

@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-use crate::wire::format::{WireFlags, WireFormat, WireError};
+use crate::wire::format::{WireError, WireFlags, WireFormat};
 
 /// Encode a serializable value into a wire-format message.
 ///
@@ -32,15 +32,9 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, WireError> {
 /// Returns [`WireError::EncodeError`] if bincode serialization fails.
 pub fn encode_with_flags<T: Serialize>(value: &T, flags: WireFlags) -> Result<Vec<u8>, WireError> {
     let payload = bincode::serialize(value).map_err(|e| WireError::EncodeError(e.to_string()))?;
-
-    let header = WireFormat::with_flags(payload.len() as u32, flags);
-    let header_bytes = header.encode_header();
-
-    let mut message = Vec::with_capacity(header_bytes.len() + payload.len());
-    message.extend_from_slice(&header_bytes);
-    message.extend_from_slice(&payload);
-
-    Ok(message)
+    // Delegates so payloads over 4 GiB are rejected instead of getting a
+    // silently truncated length in the header.
+    encode_raw_with_flags(&payload, flags)
 }
 
 /// Encode a serializable value with an additional 4-byte little-endian length
@@ -151,7 +145,7 @@ pub fn encode_raw_length_prefixed(payload: &[u8]) -> Result<Vec<u8>, WireError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::format::{HEADER_SIZE, MAGIC, CURRENT_VERSION};
+    use crate::wire::format::{CURRENT_VERSION, HEADER_SIZE, MAGIC};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,8 +242,7 @@ mod tests {
         assert!(framed.len() >= 4 + HEADER_SIZE);
 
         // The first 4 bytes are the LE u32 length of the rest.
-        let prefix_len =
-            u32::from_le_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
+        let prefix_len = u32::from_le_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
         assert_eq!(prefix_len, framed.len() - 4);
     }
 
@@ -262,8 +255,7 @@ mod tests {
         let inner = &framed[4..];
         assert_eq!(&inner[0..4], &MAGIC);
 
-        let payload_len =
-            u32::from_le_bytes([inner[8], inner[9], inner[10], inner[11]]) as usize;
+        let payload_len = u32::from_le_bytes([inner[8], inner[9], inner[10], inner[11]]) as usize;
         let payload = &inner[HEADER_SIZE..HEADER_SIZE + payload_len];
         let decoded: TestMessage = bincode::deserialize(payload).expect("deserialize");
         assert_eq!(decoded, msg);
@@ -309,8 +301,7 @@ mod tests {
     fn test_encode_raw_empty_payload() {
         let encoded = encode_raw(b"").expect("encode_raw");
 
-        let payload_len =
-            u32::from_le_bytes([encoded[8], encoded[9], encoded[10], encoded[11]]);
+        let payload_len = u32::from_le_bytes([encoded[8], encoded[9], encoded[10], encoded[11]]);
         assert_eq!(payload_len, 0);
         assert_eq!(encoded.len(), HEADER_SIZE);
     }
@@ -322,8 +313,7 @@ mod tests {
         let payload = b"stream framed";
         let framed = encode_raw_length_prefixed(payload).expect("encode");
 
-        let prefix_len =
-            u32::from_le_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
+        let prefix_len = u32::from_le_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
         assert_eq!(prefix_len, framed.len() - 4);
 
         let inner = &framed[4..];

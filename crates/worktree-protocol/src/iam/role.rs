@@ -44,7 +44,11 @@ pub struct Role {
 
 impl Role {
     /// Create a new custom role with the given name and no permissions.
-    pub fn new(tenant_id: TenantId, name: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        tenant_id: TenantId,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             id: RoleId::new(),
             tenant_id,
@@ -80,11 +84,18 @@ impl Role {
     // Built-in role constructors
     // -----------------------------------------------------------------------
 
-    /// **Owner** — full tenant admin plus every permission in the system.
+    /// **Owner** — full tenant admin: every permission except `GlobalAdmin`.
     ///
     /// This is the highest-privilege built-in role within a tenant.
+    /// `GlobalAdmin` is deliberately excluded: it is honoured across *all*
+    /// tenants, so granting it to every tenant owner would let any owner
+    /// access every other tenant.
     pub fn owner(tenant_id: TenantId) -> Self {
-        let permissions: HashSet<Permission> = Permission::all().iter().copied().collect();
+        let permissions: HashSet<Permission> = Permission::all()
+            .iter()
+            .copied()
+            .filter(|p| *p != Permission::GlobalAdmin)
+            .collect();
         Self {
             id: RoleId::new(),
             tenant_id,
@@ -130,7 +141,9 @@ impl Role {
             id: RoleId::new(),
             tenant_id,
             name: "Admin".into(),
-            description: "Organizational administrator — manages trees, branches, accounts, and teams.".into(),
+            description:
+                "Organizational administrator — manages trees, branches, accounts, and teams."
+                    .into(),
             kind: RoleKind::BuiltIn,
             permissions: perms.into_iter().collect(),
             created_at: Utc::now(),
@@ -184,7 +197,8 @@ impl Role {
             id: RoleId::new(),
             tenant_id,
             name: "Developer".into(),
-            description: "Can read/write trees, create branches, create snapshots, and sync.".into(),
+            description: "Can read/write trees, create branches, create snapshots, and sync."
+                .into(),
             kind: RoleKind::BuiltIn,
             permissions: perms.into_iter().collect(),
             created_at: Utc::now(),
@@ -250,11 +264,14 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn owner_has_all_permissions() {
+    fn owner_has_all_tenant_permissions() {
         let role = Role::owner(tenant());
         assert!(role.is_builtin());
         assert_eq!(role.name, "Owner");
         for perm in Permission::all() {
+            if *perm == Permission::GlobalAdmin {
+                continue;
+            }
             assert!(
                 role.has_permission(perm),
                 "Owner missing permission: {:?}",
@@ -264,9 +281,10 @@ mod tests {
     }
 
     #[test]
-    fn owner_includes_global_admin() {
+    fn owner_is_tenant_admin_but_not_global_admin() {
+        // GlobalAdmin is cross-tenant; a tenant owner must not hold it.
         let role = Role::owner(tenant());
-        assert!(role.has_permission(&Permission::GlobalAdmin));
+        assert!(!role.has_permission(&Permission::GlobalAdmin));
         assert!(role.has_permission(&Permission::TenantAdmin));
     }
 

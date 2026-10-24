@@ -53,7 +53,9 @@ pub fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, WireErro
 ///
 /// Returns a [`WireError`] if the length prefix is missing, the message is
 /// truncated, or deserialization fails.
-pub fn decode_length_prefixed<T: DeserializeOwned>(data: &[u8]) -> Result<(WireFormat, T), WireError> {
+pub fn decode_length_prefixed<T: DeserializeOwned>(
+    data: &[u8],
+) -> Result<(WireFormat, T), WireError> {
     if data.len() < 4 {
         return Err(WireError::TruncatedHeader(data.len()));
     }
@@ -135,11 +137,16 @@ pub fn peek_header_length_prefixed(data: &[u8]) -> Result<WireFormat, WireError>
     }
 
     let msg_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    if data.len() < 4 + HEADER_SIZE.min(msg_len) {
+    // The frame must be large enough to hold a header, and the header must
+    // be read from within the frame (not from bytes that follow it).
+    if msg_len < HEADER_SIZE {
+        return Err(WireError::TruncatedHeader(msg_len));
+    }
+    if data.len() < 4 + HEADER_SIZE {
         return Err(WireError::TruncatedHeader(data.len() - 4));
     }
 
-    WireFormat::decode_header(&data[4..])
+    WireFormat::decode_header(&data[4..4 + HEADER_SIZE])
 }
 
 #[cfg(test)]
@@ -248,8 +255,7 @@ mod tests {
     fn test_decode_length_prefixed_roundtrip() {
         let msg = sample_message();
         let encoded = encode_length_prefixed(&msg).expect("encode");
-        let (header, decoded): (_, TestMessage) =
-            decode_length_prefixed(&encoded).expect("decode");
+        let (header, decoded): (_, TestMessage) = decode_length_prefixed(&encoded).expect("decode");
 
         assert_eq!(header.version, CURRENT_VERSION);
         assert_eq!(decoded, msg);
@@ -482,8 +488,7 @@ mod tests {
         // Verify the magic bytes are after the length prefix
         assert_eq!(&encoded[4..8], &MAGIC);
 
-        let (header, decoded): (_, TestMessage) =
-            decode_length_prefixed(&encoded).expect("decode");
+        let (header, decoded): (_, TestMessage) = decode_length_prefixed(&encoded).expect("decode");
         assert_eq!(header.version, CURRENT_VERSION);
         assert_eq!(decoded, msg);
     }
@@ -497,5 +502,26 @@ mod tests {
 
         let (_, decoded): (_, TestMessage) = decode(&encoded).expect("decode");
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn test_peek_lp_rejects_frame_shorter_than_header() {
+        // Regression: the header was read past the end of a frame whose
+        // declared length was smaller than a header.
+        let inner = encode(&42u64).expect("encode");
+        let mut data = 5u32.to_le_bytes().to_vec();
+        data.extend_from_slice(&inner);
+        assert!(decode_length_prefixed::<u64>(&data).is_err());
+        assert!(peek_header_length_prefixed(&data).is_err());
+    }
+
+    #[test]
+    fn test_peek_lp_matches_decode() {
+        let encoded = encode_length_prefixed(&7u32).expect("encode");
+        let peeked = peek_header_length_prefixed(&encoded).expect("peek");
+        let (header, value): (_, u32) = decode_length_prefixed(&encoded).expect("decode");
+        assert_eq!(peeked, header);
+        assert_eq!(value, 7);
+        assert!(peek_header_length_prefixed(&encoded[..4 + HEADER_SIZE - 1]).is_err());
     }
 }

@@ -8,7 +8,7 @@
 //! [`super::git_object_map`] module. It focuses purely on hash-to-hash
 //! correspondence without carrying object kind or size metadata.
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
@@ -23,8 +23,61 @@ use crate::core::hash::ContentHash;
 ///
 /// This is the raw binary representation of Git's SHA-1 object identifier.
 /// It can be converted to/from the standard 40-character lowercase hex string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Serde: human-readable formats (JSON, TOML) use the 40-character hex
+/// string — which also makes `GitHash` usable as a JSON map key — while
+/// binary formats (bincode) use the raw 20 bytes. Deserializing from a
+/// human-readable format also accepts the legacy array-of-bytes form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GitHash([u8; 20]);
+
+impl Serialize for GitHash {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_hex())
+        } else {
+            // Byte-identical to the previous `#[derive(Serialize)]` encoding.
+            serializer.serialize_newtype_struct("GitHash", &self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GitHash {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct HumanVisitor;
+
+        impl<'de> de::Visitor<'de> for HumanVisitor {
+            type Value = GitHash;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a 40-character hex SHA-1 string or 20 bytes")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<GitHash, E> {
+                GitHash::from_hex(v).map_err(E::custom)
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<GitHash, A::Error> {
+                let mut bytes = [0u8; 20];
+                for (i, byte) in bytes.iter_mut().enumerate() {
+                    *byte = seq
+                        .next_element()?
+                        .ok_or_else(|| de::Error::invalid_length(i, &self))?;
+                }
+                if seq.next_element::<u8>()?.is_some() {
+                    return Err(de::Error::invalid_length(21, &self));
+                }
+                Ok(GitHash(bytes))
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(HumanVisitor)
+        } else {
+            <[u8; 20]>::deserialize(deserializer).map(GitHash)
+        }
+    }
+}
 
 impl GitHash {
     /// The zero hash (all bytes zero).
@@ -42,11 +95,7 @@ impl GitHash {
 
     /// Encode the hash as a lowercase 40-character hexadecimal string.
     pub fn to_hex(&self) -> String {
-        let mut s = String::with_capacity(40);
-        for byte in &self.0 {
-            s.push_str(&format!("{:02x}", byte));
-        }
-        s
+        self.to_string()
     }
 
     /// Parse a 40-character hex string into a `GitHash`.
@@ -105,11 +154,8 @@ impl FromStr for GitHash {
             return Err(GitHashParseError::InvalidLength(s.len()));
         }
         let mut bytes = [0u8; 20];
-        for i in 0..20 {
-            let hex_byte = &s[i * 2..i * 2 + 2];
-            bytes[i] = u8::from_str_radix(hex_byte, 16)
-                .map_err(|_| GitHashParseError::InvalidHex)?;
-        }
+        crate::core::hash::decode_hex_into(s.as_bytes(), &mut bytes)
+            .ok_or(GitHashParseError::InvalidHex)?;
         Ok(GitHash(bytes))
     }
 }
@@ -268,10 +314,17 @@ impl HashIndex for InMemoryHashIndex {
     }
 
     fn insert(&mut self, mapping: HashMapping) -> bool {
-        let is_new = !self.blake3_to_sha1.contains_key(&mapping.blake3);
-        self.blake3_to_sha1.insert(mapping.blake3, mapping.sha1);
-        self.sha1_to_blake3.insert(mapping.sha1, mapping.blake3);
-        is_new
+        // Keep both directions consistent: overwriting either side must
+        // drop the stale reverse entry of the mapping it replaces.
+        let old_sha1 = self.blake3_to_sha1.insert(mapping.blake3, mapping.sha1);
+        if let Some(old_sha1) = old_sha1.filter(|s| *s != mapping.sha1) {
+            self.sha1_to_blake3.remove(&old_sha1);
+        }
+        let old_blake3 = self.sha1_to_blake3.insert(mapping.sha1, mapping.blake3);
+        if let Some(old_blake3) = old_blake3.filter(|b| *b != mapping.blake3) {
+            self.blake3_to_sha1.remove(&old_blake3);
+        }
+        old_sha1.is_none()
     }
 
     fn remove_by_blake3(&mut self, blake3: &ContentHash) -> Option<HashMapping> {
@@ -415,7 +468,7 @@ mod tests {
         let h = sample_git_hash();
         let copy = h;
         assert_eq!(h, copy);
-        let clone = h.clone();
+        let clone = h;
         assert_eq!(h, clone);
     }
 
@@ -668,6 +721,63 @@ mod tests {
     }
 
     #[test]
+    fn test_index_overwrite_drops_stale_reverse_entries() {
+        // Regression: overwriting a mapping left the old reverse entry in
+        // place, so the two directions disagreed.
+        let mut index = InMemoryHashIndex::new();
+        let blake3 = hash_bytes(b"content");
+        let sha1_a = sample_git_hash();
+        let sha1_b = sample_git_hash_2();
+
+        index.insert(HashMapping::new(blake3, sha1_a));
+        index.insert(HashMapping::new(blake3, sha1_b));
+        assert_eq!(index.get_blake3(&sha1_a), None);
+        assert_eq!(index.get_blake3(&sha1_b), Some(blake3));
+        assert_eq!(index.len(), 1);
+
+        // Same in the other direction: re-point sha1_b at a new blake3.
+        let other = hash_bytes(b"other");
+        assert!(index.insert(HashMapping::new(other, sha1_b)));
+        assert_eq!(index.get_sha1(&blake3), None);
+        assert_eq!(index.get_sha1(&other), Some(sha1_b));
+        assert_eq!(index.len(), 1);
+        assert_eq!(index.all_mappings(), vec![HashMapping::new(other, sha1_b)]);
+    }
+
+    #[test]
+    fn test_git_hash_serde_formats() {
+        let h = sample_git_hash();
+        let json = serde_json::to_string(&h).unwrap();
+        assert_eq!(json, format!("\"{}\"", h.to_hex()));
+        assert_eq!(serde_json::from_str::<GitHash>(&json).unwrap(), h);
+
+        // Legacy JSON array form is still accepted.
+        let legacy = serde_json::to_string(h.as_bytes()).unwrap();
+        assert_eq!(serde_json::from_str::<GitHash>(&legacy).unwrap(), h);
+        assert!(serde_json::from_str::<GitHash>("[1,2,3]").is_err());
+        assert!(serde_json::from_str::<GitHash>("\"abcd\"").is_err());
+
+        // Bincode stays the raw 20 bytes (no length prefix).
+        let bin = bincode::serialize(&h).unwrap();
+        assert_eq!(bin, h.as_bytes().to_vec());
+        assert_eq!(bincode::deserialize::<GitHash>(&bin).unwrap(), h);
+    }
+
+    #[test]
+    fn test_git_hash_rejects_sign_and_multibyte() {
+        assert_eq!(
+            "+a".repeat(20).parse::<GitHash>(),
+            Err(GitHashParseError::InvalidHex)
+        );
+        let multibyte = format!("a{}b", "\u{e9}".repeat(19));
+        assert_eq!(multibyte.len(), 40);
+        assert_eq!(
+            multibyte.parse::<GitHash>(),
+            Err(GitHashParseError::InvalidHex)
+        );
+    }
+
+    #[test]
     fn test_index_from_mappings() {
         let m1 = sample_mapping();
         let m2 = sample_mapping_2();
@@ -765,8 +875,7 @@ mod tests {
         index.insert(sample_mapping_2());
 
         let json = serde_json::to_string(&index).expect("serialize");
-        let deserialized: InMemoryHashIndex =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: InMemoryHashIndex = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_blake3(&sample_mapping().blake3));
@@ -779,8 +888,7 @@ mod tests {
         index.insert(sample_mapping());
 
         let encoded = bincode::serialize(&index).expect("serialize");
-        let decoded: InMemoryHashIndex =
-            bincode::deserialize(&encoded).expect("deserialize");
+        let decoded: InMemoryHashIndex = bincode::deserialize(&encoded).expect("deserialize");
 
         assert_eq!(decoded.len(), 1);
         let m = sample_mapping();

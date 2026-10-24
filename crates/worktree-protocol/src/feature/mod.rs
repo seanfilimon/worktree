@@ -12,13 +12,13 @@
 //! - **large_file** — Large file storage and chunked transfer
 //! - **sync_protocol** — Synchronisation protocol: push, pull, negotiation
 
-pub mod diff;
-pub mod merge;
-pub mod wire;
-pub mod compat;
-pub mod ignore;
-pub mod licensing;
-pub mod large_file;
-pub mod sync_protocol;
 pub mod archive;
 pub mod audit;
+pub mod compat;
+pub mod diff;
+pub mod ignore;
+pub mod large_file;
+pub mod licensing;
+pub mod merge;
+pub mod sync_protocol;
+pub mod wire;

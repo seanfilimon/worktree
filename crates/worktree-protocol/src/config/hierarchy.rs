@@ -1,5 +1,5 @@
-use super::worktree_config::*;
 use super::tree_config::*;
+use super::worktree_config::*;
 
 /// Resolved configuration for a specific tree, after merging root + tree-level configs.
 #[derive(Debug, Clone)]
@@ -39,7 +39,10 @@ impl ResolvedConfig {
         if let Some(tc) = tree_config {
             for tree_rule in &tc.branch_protection {
                 // Find matching root rule or add new (additive is always allowed)
-                if let Some(root_rule) = branch_protection.iter_mut().find(|r| r.pattern == tree_rule.pattern) {
+                if let Some(root_rule) = branch_protection
+                    .iter_mut()
+                    .find(|r| r.pattern == tree_rule.pattern)
+                {
                     // Ceiling model: tree can only make rules stricter
                     merge_protection_rule(root_rule, tree_rule);
                 } else {
@@ -55,24 +58,27 @@ impl ResolvedConfig {
         }
 
         // Large file threshold: tree can be more restrictive (lower)
-        let large_file_threshold = if let Some(tree_threshold) = tree_lf.and_then(|lf| lf.threshold_bytes) {
-            tree_threshold.min(root.large_files.threshold_bytes)
-        } else {
-            root.large_files.threshold_bytes
-        };
+        let large_file_threshold =
+            if let Some(tree_threshold) = tree_lf.and_then(|lf| lf.threshold_bytes) {
+                tree_threshold.min(root.large_files.threshold_bytes)
+            } else {
+                root.large_files.threshold_bytes
+            };
 
-        let large_file_chunk_size = if let Some(tree_chunk) = tree_lf.and_then(|lf| lf.chunk_size_bytes) {
-            tree_chunk.min(root.large_files.chunk_size_bytes)
-        } else {
-            root.large_files.chunk_size_bytes
-        };
+        let large_file_chunk_size =
+            if let Some(tree_chunk) = tree_lf.and_then(|lf| lf.chunk_size_bytes) {
+                tree_chunk.min(root.large_files.chunk_size_bytes)
+            } else {
+                root.large_files.chunk_size_bytes
+            };
 
         // Reflog: tree can have shorter retention (ceiling model)
-        let reflog_retention_days = if let Some(tree_ret) = tree_reflog.and_then(|r| r.retention_days) {
-            tree_ret.min(root.reflog.retention_days)
-        } else {
-            root.reflog.retention_days
-        };
+        let reflog_retention_days =
+            if let Some(tree_ret) = tree_reflog.and_then(|r| r.retention_days) {
+                tree_ret.min(root.reflog.retention_days)
+            } else {
+                root.reflog.retention_days
+            };
 
         let reflog_max_entries = if let Some(tree_max) = tree_reflog.and_then(|r| r.max_entries) {
             tree_max.min(root.reflog.max_entries)
@@ -81,7 +87,9 @@ impl ResolvedConfig {
         };
 
         Self {
-            name: tree.map(|t| t.name.clone()).unwrap_or_else(|| root.worktree.name.clone()),
+            name: tree
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| root.worktree.name.clone()),
             server: root.worktree.server.clone(),
             tenant: root.worktree.tenant.clone(),
             visibility: root.worktree.visibility.clone(), // Cannot be overridden by tree
@@ -89,12 +97,16 @@ impl ResolvedConfig {
                 .and_then(|a| a.enabled)
                 .unwrap_or(root.auto_snapshot.enabled)
                 && root.auto_snapshot.enabled,
-            auto_snapshot_timeout_secs: if let Some(tree_timeout) = tree_auto.and_then(|a| a.inactivity_timeout_secs) {
+            auto_snapshot_timeout_secs: if let Some(tree_timeout) =
+                tree_auto.and_then(|a| a.inactivity_timeout_secs)
+            {
                 tree_timeout.min(root.auto_snapshot.inactivity_timeout_secs)
             } else {
                 root.auto_snapshot.inactivity_timeout_secs
             },
-            auto_snapshot_max_files: if let Some(tree_max) = tree_auto.and_then(|a| a.max_changed_files) {
+            auto_snapshot_max_files: if let Some(tree_max) =
+                tree_auto.and_then(|a| a.max_changed_files)
+            {
                 tree_max.min(root.auto_snapshot.max_changed_files)
             } else {
                 root.auto_snapshot.max_changed_files
@@ -123,7 +135,8 @@ fn merge_protection_rule(root: &mut BranchProtectionRule, tree: &BranchProtectio
     root.required_reviewers = root.required_reviewers.max(tree.required_reviewers);
     root.no_delete = root.no_delete || tree.no_delete;
     root.require_ci_pass = root.require_ci_pass || tree.require_ci_pass;
-    root.require_snapshot_signature = root.require_snapshot_signature || tree.require_snapshot_signature;
+    root.require_snapshot_signature =
+        root.require_snapshot_signature || tree.require_snapshot_signature;
     // Merge CI checks (additive)
     for check in &tree.required_ci_checks {
         if !root.required_ci_checks.contains(check) {
@@ -170,11 +183,13 @@ mod tests {
     fn test_ceiling_model_large_files() {
         let root = WorktreeConfig::new("proj");
         // Tree tries to set a HIGHER threshold — ceiling model prevents it
-        let mut tree = TreeLevelConfig::default();
-        tree.large_files = Some(TreeLargeFilesSection {
-            threshold_bytes: Some(100 * 1024 * 1024), // 100MB > root's 10MB
-            chunk_size_bytes: None,
-        });
+        let tree = TreeLevelConfig {
+            large_files: Some(TreeLargeFilesSection {
+                threshold_bytes: Some(100 * 1024 * 1024), // 100MB > root's 10MB
+                chunk_size_bytes: None,
+            }),
+            ..Default::default()
+        };
         let resolved = ResolvedConfig::resolve(&root, Some(&tree));
         // Should be clamped to root's 10MB
         assert_eq!(resolved.large_file_threshold, 10 * 1024 * 1024);
@@ -198,7 +213,11 @@ mod tests {
             ..Default::default()
         });
         let resolved = ResolvedConfig::resolve(&root, Some(&tree));
-        let main_rule = resolved.branch_protection.iter().find(|r| r.pattern == "main").unwrap();
+        let main_rule = resolved
+            .branch_protection
+            .iter()
+            .find(|r| r.pattern == "main")
+            .unwrap();
         assert!(main_rule.no_direct_push); // ceiling: stays true
         assert_eq!(main_rule.required_reviewers, 3); // stricter: applied
         assert!(main_rule.require_ci_pass); // new restriction: applied

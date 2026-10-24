@@ -169,9 +169,7 @@ impl Patch {
                 }
 
                 if entries.contains_key(&delta.path) {
-                    return Err(PatchApplyError::RenameDestinationExists(
-                        delta.path.clone(),
-                    ));
+                    return Err(PatchApplyError::RenameDestinationExists(delta.path.clone()));
                 }
 
                 let new_hash = delta.new_hash.unwrap_or(source.hash);
@@ -179,10 +177,10 @@ impl Patch {
 
                 let new_entry = ManifestEntry {
                     path: delta.path.clone(),
-                    kind: source.kind,
+                    kind: delta.new_kind.unwrap_or(source.kind),
                     hash: new_hash,
                     size: new_size,
-                    executable: source.executable,
+                    executable: delta.new_executable.unwrap_or(source.executable),
                 };
                 entries.insert(delta.path.clone(), new_entry);
             }
@@ -205,10 +203,10 @@ impl Patch {
 
                 let new_entry = ManifestEntry {
                     path: delta.path.clone(),
-                    kind: source.kind,
+                    kind: delta.new_kind.unwrap_or(source.kind),
                     hash: new_hash,
                     size: new_size,
-                    executable: source.executable,
+                    executable: delta.new_executable.unwrap_or(source.executable),
                 };
                 entries.insert(delta.path.clone(), new_entry);
             }
@@ -246,10 +244,10 @@ impl Patch {
 
             let entry = ManifestEntry {
                 path: delta.path.clone(),
-                kind: EntryKind::File,
+                kind: delta.new_kind.unwrap_or(EntryKind::File),
                 hash,
                 size,
-                executable: false,
+                executable: delta.new_executable.unwrap_or(false),
             };
             entries.insert(delta.path.clone(), entry);
         }
@@ -277,10 +275,10 @@ impl Patch {
 
             let updated = ManifestEntry {
                 path: delta.path.clone(),
-                kind: existing.kind,
+                kind: delta.new_kind.unwrap_or(existing.kind),
                 hash: new_hash,
                 size: new_size,
-                executable: existing.executable,
+                executable: delta.new_executable.unwrap_or(existing.executable),
             };
             entries.insert(delta.path.clone(), updated);
         }
@@ -810,6 +808,8 @@ mod tests {
             new_hash: Some(hash),
             old_size: Some(16),
             new_size: Some(16),
+            new_kind: None,
+            new_executable: None,
         };
 
         let patch = Patch::new(vec![delta]);
@@ -858,7 +858,7 @@ mod tests {
     fn test_apply_preserves_executable_flag_on_rename() {
         let hash = hash_bytes(b"executable script");
         let manifest = make_manifest(vec![
-            ManifestEntry::file("run.sh", hash, 17).with_executable(true),
+            ManifestEntry::file("run.sh", hash, 17).with_executable(true)
         ]);
 
         let patch = Patch::new(vec![Delta::rename("run.sh", "execute.sh", hash, 17)]);
@@ -872,7 +872,7 @@ mod tests {
     fn test_apply_preserves_executable_flag_on_copy() {
         let hash = hash_bytes(b"executable copy");
         let manifest = make_manifest(vec![
-            ManifestEntry::file("run.sh", hash, 15).with_executable(true),
+            ManifestEntry::file("run.sh", hash, 15).with_executable(true)
         ]);
 
         let patch = Patch::new(vec![Delta::copy("run.sh", "run_copy.sh", hash, 15)]);
@@ -897,7 +897,10 @@ mod tests {
         assert_eq!(err.to_string(), "rename source not found: src.txt");
 
         let err = PatchApplyError::RenameDestinationExists(PathBuf::from("dst.txt"));
-        assert_eq!(err.to_string(), "rename destination already exists: dst.txt");
+        assert_eq!(
+            err.to_string(),
+            "rename destination already exists: dst.txt"
+        );
 
         let err = PatchApplyError::CopySourceNotFound(PathBuf::from("orig.txt"));
         assert_eq!(err.to_string(), "copy source not found: orig.txt");
@@ -919,5 +922,59 @@ mod tests {
         assert!(msg.contains("hash mismatch at file.txt"));
         assert!(msg.contains(&h1.to_hex()));
         assert!(msg.contains(&h2.to_hex()));
+    }
+
+    fn entries_of(m: &Manifest) -> Vec<ManifestEntry> {
+        let mut v = m.entries.clone();
+        v.sort_by(|a, b| a.path.cmp(&b.path));
+        v
+    }
+
+    #[test]
+    fn test_diff_apply_roundtrip_preserves_kind_and_mode() {
+        // Regression: Modify kept the old kind/executable flag and Add always
+        // produced a non-executable File, so apply(old, diff(old, new)) != new.
+        use crate::feature::diff::compute::{compute_diff, compute_diff_default, DiffOptions};
+        let h = hash_bytes(b"x");
+        let old = make_manifest(vec![
+            ManifestEntry::file("run.sh", h, 1),
+            ManifestEntry::file("moved.bin", hash_bytes(b"moved"), 5).with_executable(true),
+            ManifestEntry::file("kind", hash_bytes(b"k"), 1),
+        ]);
+        let new = make_manifest(vec![
+            ManifestEntry::file("run.sh", h, 1).with_executable(true),
+            ManifestEntry::directory("lib"),
+            ManifestEntry::symlink("ln", hash_bytes(b"target")),
+            ManifestEntry::file("tool", hash_bytes(b"tool"), 4).with_executable(true),
+            ManifestEntry::file("renamed.bin", hash_bytes(b"moved"), 5),
+            ManifestEntry::symlink("kind", hash_bytes(b"k")),
+        ]);
+
+        let out = Patch::new(compute_diff_default(&old, &new))
+            .apply(&old, true)
+            .unwrap();
+        assert_eq!(entries_of(&out), entries_of(&new));
+
+        let copies = DiffOptions {
+            detect_renames: false,
+            detect_copies: true,
+        };
+        let out = Patch::new(compute_diff(&old, &new, &copies))
+            .apply(&old, true)
+            .unwrap();
+        assert_eq!(entries_of(&out), entries_of(&new));
+    }
+
+    #[test]
+    fn test_legacy_delta_without_meta_keeps_existing_mode() {
+        let h = hash_bytes(b"x");
+        let old = make_manifest(vec![ManifestEntry::file("a.sh", h, 1).with_executable(true)]);
+        let patch = Patch::new(vec![Delta::modify("a.sh", h, hash_bytes(b"y"), 1, 1)]);
+        let out = patch.apply(&old, true).unwrap();
+        assert!(
+            out.find_entry(std::path::Path::new("a.sh"))
+                .unwrap()
+                .executable
+        );
     }
 }
