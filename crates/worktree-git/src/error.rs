@@ -7,6 +7,10 @@ pub enum GitCompatError {
     #[error("git error: {0}")]
     GitError(#[from] git2::Error),
 
+    /// An error reported by the W0rkTree SDK (local repository engine).
+    #[error(transparent)]
+    SdkError(#[from] worktree_sdk::SdkError),
+
     /// An error related to the Worktree protocol layer.
     #[error("protocol error: {0}")]
     ProtocolError(String),
@@ -15,9 +19,13 @@ pub enum GitCompatError {
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
 
-    /// An error in the hash index (Git SHA-1 ↔ BLAKE3 mapping).
+    /// An error in the hash index (Git SHA-1 <-> BLAKE3 mapping).
     #[error("hash index error: {0}")]
     HashIndexError(String),
+
+    /// The `.wt/git-map.json` mapping file is unreadable or malformed.
+    #[error("git map error: {0}")]
+    MapError(String),
 
     /// An error during Git-to-Worktree import.
     #[error("import error: {0}")]
