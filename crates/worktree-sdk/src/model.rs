@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use worktree_protocol::proto::sync as wire;
+
+use crate::error::{Result, SdkError};
 use crate::store::ObjectHash;
 
 /// Snapshot ids are UUID v4 strings (matches `SnapshotId.value` on the wire).
@@ -31,29 +33,123 @@ pub struct Manifest {
 impl Manifest {
     /// Build from entries in any order (sorts + dedups by path, last wins).
     pub fn from_entries(entries: Vec<ManifestEntry>) -> Self {
-        let _ = entries;
-        todo!("sdk-core: Manifest::from_entries")
+        let mut entries = entries;
+        // Stable sort keeps duplicates in input order, so "last wins" means
+        // keeping the final element of each run.
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut out: Vec<ManifestEntry> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match out.last_mut() {
+                Some(last) if last.path == entry.path => *last = entry,
+                _ => out.push(entry),
+            }
+        }
+        Self { entries: out }
     }
 
+    /// The entry for `path`, if present.
     pub fn get(&self, path: &str) -> Option<&ManifestEntry> {
-        let _ = path;
-        todo!("sdk-core: Manifest::get")
+        self.entries
+            .binary_search_by(|e| e.path.as_str().cmp(path))
+            .ok()
+            .map(|i| &self.entries[i])
     }
 
     /// Canonical protobuf encoding (ManifestRecord).
     pub fn to_bytes(&self) -> Vec<u8> {
-        todo!("sdk-core: Manifest::to_bytes")
+        use prost::Message;
+        let record = wire::ManifestRecord {
+            entries: self
+                .entries
+                .iter()
+                .map(|e| wire::ManifestEntry {
+                    path: e.path.clone(),
+                    blob_hash: Some(hash_to_wire(&e.hash)),
+                    size: e.size,
+                    executable: e.executable,
+                })
+                .collect(),
+        };
+        record.encode_to_vec()
     }
 
+    /// Decode a protobuf `ManifestRecord`. Rejects unsorted or duplicate
+    /// entries, malformed hashes and unsafe paths (see [`validate_manifest_path`]).
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let _ = data;
-        todo!("sdk-core: Manifest::from_bytes")
+        use prost::Message;
+        let record = wire::ManifestRecord::decode(data)
+            .map_err(|e| SdkError::Serialization(format!("invalid manifest: {e}")))?;
+        let mut entries = Vec::with_capacity(record.entries.len());
+        for e in record.entries {
+            validate_manifest_path(&e.path)?;
+            let hash = e
+                .blob_hash
+                .as_ref()
+                .ok_or_else(|| {
+                    SdkError::Serialization(format!("manifest entry {} has no hash", e.path))
+                })
+                .and_then(|h| hash_from_wire(h, "blob_hash"))?;
+            entries.push(ManifestEntry {
+                path: e.path,
+                hash,
+                size: e.size,
+                executable: e.executable,
+            });
+        }
+        if entries.windows(2).any(|w| w[0].path >= w[1].path) {
+            return Err(SdkError::Serialization(
+                "manifest entries are not sorted and unique".into(),
+            ));
+        }
+        Ok(Self { entries })
     }
 
     /// BLAKE3 of `to_bytes()`.
     pub fn hash(&self) -> ObjectHash {
-        todo!("sdk-core: Manifest::hash")
+        crate::store::hash_bytes(&self.to_bytes())
     }
+}
+
+/// Check that a manifest path is a safe, normalized, '/'-separated relative
+/// path: non-empty, no leading '/', no empty, `.` or `..` components, no
+/// backslashes or NUL bytes, and never inside `.wt/` or a `.wt-tree/` marker.
+pub fn validate_manifest_path(path: &str) -> Result<()> {
+    let bad = |why: &str| {
+        Err(SdkError::InvalidArgument(format!(
+            "invalid path {path:?}: {why}"
+        )))
+    };
+    if path.is_empty() {
+        return bad("empty");
+    }
+    if path.contains('\\') || path.contains('\0') {
+        return bad("contains a backslash or NUL byte");
+    }
+    for component in path.split('/') {
+        match component {
+            "" => return bad("empty component or leading/trailing '/'"),
+            "." | ".." => return bad("relative component"),
+            ".wt" | ".wt-tree" => return bad("reserved directory"),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn hash_to_wire(hash: &ObjectHash) -> wire::ContentHash {
+    wire::ContentHash {
+        value: hash.as_bytes().to_vec(),
+    }
+}
+
+fn hash_from_wire(hash: &wire::ContentHash, field: &str) -> Result<ObjectHash> {
+    let bytes: [u8; 32] = hash.value.as_slice().try_into().map_err(|_| {
+        SdkError::Serialization(format!(
+            "{field}: expected 32 hash bytes, got {}",
+            hash.value.len()
+        ))
+    })?;
+    Ok(ObjectHash::from_bytes(bytes))
 }
 
 /// An immutable point-in-time record of a tree.
@@ -83,13 +179,70 @@ impl Snapshot {
 
     /// Convert to the wire record.
     pub fn to_record(&self) -> worktree_protocol::proto::sync::SnapshotRecord {
-        todo!("sdk-core: Snapshot::to_record")
+        wire::SnapshotRecord {
+            id: Some(wire::SnapshotId {
+                value: self.id.clone(),
+            }),
+            tree_id: Some(wire::TreeId {
+                value: self.tree_id.clone(),
+            }),
+            branch_name: self.branch.clone(),
+            parents: self
+                .parents
+                .iter()
+                .map(|p| wire::SnapshotId { value: p.clone() })
+                .collect(),
+            manifest_hash: Some(hash_to_wire(&self.manifest)),
+            author: self.author.clone(),
+            message: self.message.clone(),
+            created_at: Some(prost_types::Timestamp {
+                seconds: self.created_at.timestamp(),
+                nanos: i32::try_from(self.created_at.timestamp_subsec_nanos()).unwrap_or(0),
+            }),
+            auto_generated: self.auto_generated,
+        }
     }
 
-    /// Convert from the wire record.
+    /// Convert from the wire record. `Serialization` if a required field is
+    /// missing or malformed.
     pub fn from_record(rec: &worktree_protocol::proto::sync::SnapshotRecord) -> Result<Self> {
-        let _ = rec;
-        todo!("sdk-core: Snapshot::from_record")
+        let missing = |f: &str| SdkError::Serialization(format!("snapshot record: missing {f}"));
+        let id = rec
+            .id
+            .as_ref()
+            .map(|i| i.value.clone())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| missing("id"))?;
+        let tree_id = rec
+            .tree_id
+            .as_ref()
+            .map(|t| t.value.clone())
+            .unwrap_or_default();
+        let manifest = rec
+            .manifest_hash
+            .as_ref()
+            .ok_or_else(|| missing("manifest_hash"))
+            .and_then(|h| hash_from_wire(h, "manifest_hash"))?;
+        let ts = rec
+            .created_at
+            .as_ref()
+            .ok_or_else(|| missing("created_at"))?;
+        let nanos = u32::try_from(ts.nanos)
+            .map_err(|_| SdkError::Serialization("snapshot record: negative nanos".into()))?;
+        let created_at = DateTime::from_timestamp(ts.seconds, nanos).ok_or_else(|| {
+            SdkError::Serialization("snapshot record: created_at out of range".into())
+        })?;
+        Ok(Self {
+            id,
+            tree_id,
+            branch: rec.branch_name.clone(),
+            parents: rec.parents.iter().map(|p| p.value.clone()).collect(),
+            manifest,
+            author: rec.author.clone(),
+            message: rec.message.clone(),
+            created_at,
+            auto_generated: rec.auto_generated,
+        })
     }
 }
 
@@ -206,10 +359,16 @@ pub struct ConflictInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeOutcome {
     UpToDate,
-    FastForward { to: SnapshotId },
-    Merged { snapshot: Snapshot },
+    FastForward {
+        to: SnapshotId,
+    },
+    Merged {
+        snapshot: Snapshot,
+    },
     /// Working tree contains the partial merge; `.wt/conflicts/` describes it.
-    Conflicts { conflicts: Vec<ConflictInfo> },
+    Conflicts {
+        conflicts: Vec<ConflictInfo>,
+    },
 }
 
 /// Persisted while a conflicted merge awaits resolution.
@@ -235,7 +394,11 @@ pub struct DiffOptions {
 
 impl Default for DiffOptions {
     fn default() -> Self {
-        Self { context: 3, name_only: false, paths: Vec::new() }
+        Self {
+            context: 3,
+            name_only: false,
+            paths: Vec::new(),
+        }
     }
 }
 
@@ -273,4 +436,137 @@ pub struct InitOptions {
     pub name: Option<String>,
     /// Default branch (default: "main").
     pub default_branch: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::hash_bytes;
+
+    fn entry(path: &str, content: &[u8]) -> ManifestEntry {
+        ManifestEntry {
+            path: path.into(),
+            hash: hash_bytes(content),
+            size: content.len() as u64,
+            executable: false,
+        }
+    }
+
+    #[test]
+    fn from_entries_sorts_and_last_wins() {
+        let m = Manifest::from_entries(vec![
+            entry("b.txt", b"1"),
+            entry("a.txt", b"2"),
+            entry("b.txt", b"3"),
+        ]);
+        let paths: Vec<_> = m.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "b.txt"]);
+        assert_eq!(m.get("b.txt").unwrap().hash, hash_bytes(b"3"));
+        assert!(m.get("c.txt").is_none());
+    }
+
+    #[test]
+    fn manifest_bytes_roundtrip_and_deterministic() {
+        let mut e = entry("dir/x.sh", b"#!/bin/sh");
+        e.executable = true;
+        let m = Manifest::from_entries(vec![e, entry("a", b""), entry("z/y", b"y")]);
+        let bytes = m.to_bytes();
+        assert_eq!(bytes, m.clone().to_bytes());
+        let back = Manifest::from_bytes(&bytes).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(m.hash(), hash_bytes(&bytes));
+        assert_eq!(Manifest::default().to_bytes(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn from_bytes_rejects_unsorted_and_unsafe() {
+        use prost::Message;
+        let mk = |paths: &[&str]| {
+            wire::ManifestRecord {
+                entries: paths
+                    .iter()
+                    .map(|p| wire::ManifestEntry {
+                        path: (*p).into(),
+                        blob_hash: Some(hash_to_wire(&hash_bytes(b"x"))),
+                        size: 1,
+                        executable: false,
+                    })
+                    .collect(),
+            }
+            .encode_to_vec()
+        };
+        assert!(Manifest::from_bytes(&mk(&["b", "a"])).is_err());
+        assert!(Manifest::from_bytes(&mk(&["a", "a"])).is_err());
+        assert!(Manifest::from_bytes(&mk(&["../evil"])).is_err());
+        assert!(Manifest::from_bytes(&mk(&[".wt/config.toml"])).is_err());
+        assert!(Manifest::from_bytes(&mk(&["/abs"])).is_err());
+        assert!(Manifest::from_bytes(b"\xff\xff\xff").is_err());
+        assert!(Manifest::from_bytes(&mk(&["a", "b/c"])).is_ok());
+    }
+
+    #[test]
+    fn validate_manifest_path_rules() {
+        for ok in ["a", "a/b.txt", ".wtignore", "x/.hidden", "a..b"] {
+            assert!(validate_manifest_path(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "/a",
+            "a/",
+            "a//b",
+            "./a",
+            "a/../b",
+            "a\\b",
+            ".wt",
+            "x/.wt-tree/y",
+        ] {
+            assert!(validate_manifest_path(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn snapshot_record_roundtrip() {
+        let snap = Snapshot {
+            id: uuid::Uuid::new_v4().to_string(),
+            tree_id: uuid::Uuid::new_v4().to_string(),
+            branch: "main".into(),
+            parents: vec!["p1".into(), "p2".into()],
+            manifest: hash_bytes(b"manifest"),
+            author: "Ada <ada@example.com>".into(),
+            message: "msg".into(),
+            created_at: DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
+            auto_generated: true,
+        };
+        let rec = snap.to_record();
+        assert_eq!(rec.parents.len(), 2);
+        assert_eq!(Snapshot::from_record(&rec).unwrap(), snap);
+        assert!(snap.is_merge());
+        assert_eq!(snap.short_id().len(), 8);
+    }
+
+    #[test]
+    fn snapshot_record_requires_fields() {
+        let snap = Snapshot {
+            id: "abc".into(),
+            tree_id: "t".into(),
+            branch: "main".into(),
+            parents: vec![],
+            manifest: hash_bytes(b"m"),
+            author: String::new(),
+            message: String::new(),
+            created_at: Utc::now(),
+            auto_generated: false,
+        };
+        let mut rec = snap.to_record();
+        rec.manifest_hash = Some(wire::ContentHash {
+            value: vec![1, 2, 3],
+        });
+        assert!(Snapshot::from_record(&rec).is_err());
+        let mut rec = snap.to_record();
+        rec.id = None;
+        assert!(Snapshot::from_record(&rec).is_err());
+        let mut rec = snap.to_record();
+        rec.created_at = None;
+        assert!(Snapshot::from_record(&rec).is_err());
+    }
 }
