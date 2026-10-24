@@ -161,10 +161,8 @@ impl AccessEngine {
 
         // Step 3: Collect all permissions from those roles, considering scope.
         let mut rbac_allowed = false;
-        let applicable_roles: Vec<&Role> = roles
-            .iter()
-            .filter(|r| role_ids.contains(&r.id))
-            .collect();
+        let applicable_roles: Vec<&Role> =
+            roles.iter().filter(|r| role_ids.contains(&r.id)).collect();
 
         // Check if any role grants the requested permission.
         // RBAC roles are scoped to the tenant level — if the role belongs to the same
@@ -283,7 +281,9 @@ mod tests {
     use super::*;
     use crate::core::id::*;
     use crate::iam::account::{Account, AccountStatus};
-    use crate::iam::policy::{AttributeCondition, ConditionOperator, Policy, PolicyEffect, PolicySubject};
+    use crate::iam::policy::{
+        AttributeCondition, ConditionOperator, Policy, PolicyEffect, PolicySubject,
+    };
     use crate::iam::role::Role;
     use crate::iam::scope::Scope;
     use crate::iam::team::Team;
@@ -309,7 +309,11 @@ mod tests {
     }
 
     fn make_team(tenant_id: TenantId, member: AccountId, role: RoleId) -> Team {
-        let mut team = Team::new(tenant_id, "Test Team".to_string(), "A test team".to_string());
+        let mut team = Team::new(
+            tenant_id,
+            "Test Team".to_string(),
+            "A test team".to_string(),
+        );
         team.add_member(member);
         team.add_role(role);
         team
@@ -320,7 +324,8 @@ mod tests {
         let engine = AccessEngine::new();
         let tenant_id = make_tenant();
         let account = make_suspended_account(tenant_id);
-        let request = AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_id));
+        let request =
+            AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[], &[], &[]);
         assert!(decision.is_deny());
@@ -338,11 +343,8 @@ mod tests {
 
         let team = make_team(tenant_id, account.id, viewer_role.id);
 
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeRead,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[team], &[viewer_role], &[]);
         assert!(decision.is_allow());
@@ -358,11 +360,8 @@ mod tests {
         let team = make_team(tenant_id, account.id, viewer_role.id);
 
         // Viewer role does not have TreeWrite
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeWrite,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeWrite, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[team], &[viewer_role], &[]);
         assert!(decision.is_deny());
@@ -395,20 +394,11 @@ mod tests {
         deny_policy.priority = 100;
         deny_policy.enabled = true;
 
-        let mut request = AccessRequest::new(
-            account.id,
-            Permission::TreeWrite,
-            Scope::Tenant(tenant_id),
-        );
+        let mut request =
+            AccessRequest::new(account.id, Permission::TreeWrite, Scope::Tenant(tenant_id));
         request.set_attribute("office_hours", "false");
 
-        let decision = engine.evaluate(
-            &request,
-            &account,
-            &[team],
-            &[dev_role],
-            &[deny_policy],
-        );
+        let decision = engine.evaluate(&request, &account, &[team], &[dev_role], &[deny_policy]);
         assert!(decision.is_deny());
         if let AccessDecision::Deny { reason } = &decision {
             assert!(reason.contains("denied by policy"));
@@ -433,11 +423,8 @@ mod tests {
         allow_policy.permissions.insert(Permission::TreeRead);
         allow_policy.enabled = true;
 
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeRead,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[], &[], &[allow_policy]);
         assert!(decision.is_allow());
@@ -449,11 +436,8 @@ mod tests {
         let tenant_id = make_tenant();
         let account = make_active_account(tenant_id);
 
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeWrite,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeWrite, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[], &[], &[]);
         assert!(decision.is_deny());
@@ -486,11 +470,8 @@ mod tests {
         policy.enabled = true;
 
         // Request without mfa_verified attribute
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeWrite,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeWrite, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[], &[], &[policy]);
         assert!(decision.is_deny());
@@ -546,11 +527,7 @@ mod tests {
         let team = make_team(tenant_a, account.id, dev_role.id);
 
         // Request is for tenant_b, but the role belongs to tenant_a.
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeRead,
-            Scope::Tenant(tenant_b),
-        );
+        let request = AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_b));
 
         let decision = engine.evaluate(&request, &account, &[team], &[dev_role], &[]);
         assert!(decision.is_deny());
@@ -581,13 +558,8 @@ mod tests {
             Scope::Tenant(other_tenant),
         );
 
-        let decision = engine.evaluate(
-            &request,
-            &account,
-            &[team],
-            &[global_role, owner_role],
-            &[],
-        );
+        let decision =
+            engine.evaluate(&request, &account, &[team], &[global_role, owner_role], &[]);
         assert!(decision.is_allow());
     }
 
@@ -610,11 +582,8 @@ mod tests {
         policy.enabled = true;
 
         // The targeted account should be allowed.
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeRead,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_id));
         let decision = engine.evaluate(&request, &account, &[], &[], &[policy.clone()]);
         assert!(decision.is_allow());
 
@@ -648,23 +617,16 @@ mod tests {
             PolicyEffect::Allow,
             Scope::Tenant(tenant_id),
         );
-        policy.subjects.push(PolicySubject::Team(team_with_member.id));
+        policy
+            .subjects
+            .push(PolicySubject::Team(team_with_member.id));
         policy.permissions.insert(Permission::TreeWrite);
         policy.enabled = true;
 
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeWrite,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeWrite, Scope::Tenant(tenant_id));
 
-        let decision = engine.evaluate(
-            &request,
-            &account,
-            &[team_with_member],
-            &[],
-            &[policy],
-        );
+        let decision = engine.evaluate(&request, &account, &[team_with_member], &[], &[policy]);
         assert!(decision.is_allow());
     }
 
@@ -685,11 +647,8 @@ mod tests {
         policy.permissions.insert(Permission::TreeRead);
         policy.enabled = false; // disabled!
 
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeRead,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[], &[], &[policy]);
         assert!(decision.is_deny());
@@ -714,11 +673,8 @@ mod tests {
         team_b.add_role(dev_role.id);
 
         // TreeWrite should be available via Team B's developer role.
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeWrite,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeWrite, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(
             &request,
@@ -840,11 +796,7 @@ mod tests {
 
     #[test]
     fn test_request_set_attribute() {
-        let mut request = AccessRequest::new(
-            AccountId::new(),
-            Permission::TreeRead,
-            Scope::Global,
-        );
+        let mut request = AccessRequest::new(AccountId::new(), Permission::TreeRead, Scope::Global);
         request.set_attribute("ip_address", "192.168.1.1");
         assert_eq!(request.attributes.get("ip_address").unwrap(), "192.168.1.1");
     }
@@ -859,11 +811,8 @@ mod tests {
         let dev_role = Role::developer(tenant_id);
         let team = make_team(tenant_id, account.id, dev_role.id);
 
-        let request = AccessRequest::new(
-            account.id,
-            Permission::TreeRead,
-            Scope::Tenant(tenant_id),
-        );
+        let request =
+            AccessRequest::new(account.id, Permission::TreeRead, Scope::Tenant(tenant_id));
 
         let decision = engine.evaluate(&request, &account, &[team], &[dev_role], &[]);
         assert!(decision.is_deny());

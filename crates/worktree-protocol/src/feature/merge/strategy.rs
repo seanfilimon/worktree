@@ -223,10 +223,7 @@ impl MergeResult {
     }
 
     /// Create a fast-forward merge result.
-    pub fn fast_forward(
-        ours_snapshot: SnapshotId,
-        theirs_snapshot: SnapshotId,
-    ) -> Self {
+    pub fn fast_forward(ours_snapshot: SnapshotId, theirs_snapshot: SnapshotId) -> Self {
         Self {
             strategy: MergeStrategy::FastForward,
             outcome: MergeOutcome::FastForwarded,
@@ -420,13 +417,8 @@ mod tests {
         let hash = hash_bytes(b"merged manifest");
         let deltas = vec![Delta::add("new.txt", hash_bytes(b"new"), 3)];
 
-        let result = MergeResult::clean(
-            MergeStrategy::ThreeWay,
-            ours,
-            theirs,
-            deltas.clone(),
-            hash,
-        );
+        let result =
+            MergeResult::clean(MergeStrategy::ThreeWay, ours, theirs, deltas.clone(), hash);
 
         assert!(result.is_clean());
         assert_eq!(result.merged_manifest_hash, Some(hash));
@@ -489,8 +481,8 @@ mod tests {
         let theirs = SnapshotId::new();
         let base = SnapshotId::new();
 
-        let result = MergeResult::new(MergeStrategy::ThreeWay, ours, theirs)
-            .with_base_snapshot(base);
+        let result =
+            MergeResult::new(MergeStrategy::ThreeWay, ours, theirs).with_base_snapshot(base);
 
         assert_eq!(result.base_snapshot, Some(base));
     }

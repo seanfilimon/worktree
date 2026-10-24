@@ -13,10 +13,7 @@ pub enum ProtocolError {
 
     /// A content hash did not match the expected value.
     #[error("hash mismatch: expected {expected}, got {actual}")]
-    HashMismatch {
-        expected: String,
-        actual: String,
-    },
+    HashMismatch { expected: String, actual: String },
 
     /// An identifier was invalid or could not be parsed.
     #[error("invalid id: {0}")]

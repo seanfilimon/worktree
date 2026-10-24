@@ -596,10 +596,7 @@ mod tests {
 
     #[test]
     fn test_serde_bincode_roundtrip() {
-        let wf = WireFormat::with_flags(
-            1024,
-            WireFlags::NONE.with_compressed().with_encrypted(),
-        );
+        let wf = WireFormat::with_flags(1024, WireFlags::NONE.with_compressed().with_encrypted());
         let encoded = bincode::serialize(&wf).expect("serialize");
         let decoded: WireFormat = bincode::deserialize(&encoded).expect("deserialize");
         assert_eq!(wf, decoded);
@@ -685,10 +682,7 @@ mod tests {
     #[test]
     fn test_full_encode_decode_cycle() {
         let payload = b"this is a test payload";
-        let wf = WireFormat::with_flags(
-            payload.len() as u32,
-            WireFlags::NONE.with_checksummed(),
-        );
+        let wf = WireFormat::with_flags(payload.len() as u32, WireFlags::NONE.with_checksummed());
 
         // Encode
         let header = wf.encode_header();

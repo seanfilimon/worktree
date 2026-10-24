@@ -88,10 +88,7 @@ pub fn compute_diff(old: &Manifest, new: &Manifest, options: &DiffOptions) -> Ve
         let mut deleted_by_hash: HashMap<ContentHash, Vec<&ManifestEntry>> = HashMap::new();
         for entry in &deleted {
             if entry.kind == EntryKind::File && entry.hash != ContentHash::ZERO {
-                deleted_by_hash
-                    .entry(entry.hash)
-                    .or_default()
-                    .push(entry);
+                deleted_by_hash.entry(entry.hash).or_default().push(entry);
             }
         }
 
@@ -402,7 +399,7 @@ mod tests {
         let hash = hash_bytes(b"script");
         let old = make_manifest(vec![ManifestEntry::file("run.sh", hash, 6)]);
         let new = make_manifest(vec![
-            ManifestEntry::file("run.sh", hash, 6).with_executable(true),
+            ManifestEntry::file("run.sh", hash, 6).with_executable(true)
         ]);
 
         let deltas = compute_diff_default(&old, &new);

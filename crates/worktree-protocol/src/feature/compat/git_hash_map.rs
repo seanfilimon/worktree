@@ -107,8 +107,8 @@ impl FromStr for GitHash {
         let mut bytes = [0u8; 20];
         for i in 0..20 {
             let hex_byte = &s[i * 2..i * 2 + 2];
-            bytes[i] = u8::from_str_radix(hex_byte, 16)
-                .map_err(|_| GitHashParseError::InvalidHex)?;
+            bytes[i] =
+                u8::from_str_radix(hex_byte, 16).map_err(|_| GitHashParseError::InvalidHex)?;
         }
         Ok(GitHash(bytes))
     }
@@ -765,8 +765,7 @@ mod tests {
         index.insert(sample_mapping_2());
 
         let json = serde_json::to_string(&index).expect("serialize");
-        let deserialized: InMemoryHashIndex =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: InMemoryHashIndex = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_blake3(&sample_mapping().blake3));
@@ -779,8 +778,7 @@ mod tests {
         index.insert(sample_mapping());
 
         let encoded = bincode::serialize(&index).expect("serialize");
-        let decoded: InMemoryHashIndex =
-            bincode::deserialize(&encoded).expect("deserialize");
+        let decoded: InMemoryHashIndex = bincode::deserialize(&encoded).expect("deserialize");
 
         assert_eq!(decoded.len(), 1);
         let m = sample_mapping();

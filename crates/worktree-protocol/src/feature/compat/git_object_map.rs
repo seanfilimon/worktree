@@ -140,8 +140,7 @@ impl ObjectMappingIndex {
     pub fn insert(&mut self, mapping: ObjectMapping) {
         self.by_git_sha
             .insert(mapping.git_sha.clone(), mapping.clone());
-        self.by_worktree_hash
-            .insert(mapping.worktree_hash, mapping);
+        self.by_worktree_hash.insert(mapping.worktree_hash, mapping);
     }
 
     /// Look up a mapping by its Worktree content hash.
@@ -280,8 +279,7 @@ mod tests {
             GitObjectKind::Tag,
         ] {
             let json = serde_json::to_string(kind).expect("serialize");
-            let deserialized: GitObjectKind =
-                serde_json::from_str(&json).expect("deserialize");
+            let deserialized: GitObjectKind = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(*kind, deserialized);
         }
     }
@@ -313,12 +311,7 @@ mod tests {
 
     #[test]
     fn test_object_mapping_invalid_git_sha() {
-        let m = ObjectMapping::new(
-            hash_bytes(b"test"),
-            "short",
-            GitObjectKind::Blob,
-            5,
-        );
+        let m = ObjectMapping::new(hash_bytes(b"test"), "short", GitObjectKind::Blob, 5);
         assert!(!m.is_valid_git_sha());
 
         let m2 = ObjectMapping::new(
@@ -498,10 +491,16 @@ mod tests {
         );
 
         index.insert(m1.clone());
-        assert_eq!(index.get_by_worktree_hash(&hash).unwrap().git_sha, m1.git_sha);
+        assert_eq!(
+            index.get_by_worktree_hash(&hash).unwrap().git_sha,
+            m1.git_sha
+        );
 
         index.insert(m2.clone());
-        assert_eq!(index.get_by_worktree_hash(&hash).unwrap().git_sha, m2.git_sha);
+        assert_eq!(
+            index.get_by_worktree_hash(&hash).unwrap().git_sha,
+            m2.git_sha
+        );
     }
 
     #[test]
@@ -598,8 +597,7 @@ mod tests {
         ));
 
         let json = serde_json::to_string(&index).expect("serialize");
-        let deserialized: ObjectMappingIndex =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: ObjectMappingIndex = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_git_sha("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
@@ -612,6 +610,8 @@ mod tests {
         let hash = hash_bytes(b"nonexistent");
 
         assert!(index.get_by_worktree_hash(&hash).is_none());
-        assert!(index.get_by_git_sha("0000000000000000000000000000000000000000").is_none());
+        assert!(index
+            .get_by_git_sha("0000000000000000000000000000000000000000")
+            .is_none());
     }
 }

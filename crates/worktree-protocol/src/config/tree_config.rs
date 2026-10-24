@@ -118,7 +118,10 @@ mod tests {
     fn test_tree_config_new() {
         let cfg = TreeLevelConfig::new("backend");
         assert_eq!(cfg.tree.as_ref().unwrap().name, "backend");
-        assert_eq!(cfg.tree.as_ref().unwrap().branch_strategy, BranchStrategy::FeatureBranch);
+        assert_eq!(
+            cfg.tree.as_ref().unwrap().branch_strategy,
+            BranchStrategy::FeatureBranch
+        );
     }
 
     #[test]

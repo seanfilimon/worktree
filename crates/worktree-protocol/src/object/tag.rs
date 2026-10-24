@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use crate::core::id::{AccountId, SnapshotId, TreeId};
 use chrono::{DateTime, Utc};
-use crate::core::id::{SnapshotId, AccountId, TreeId};
+use serde::{Deserialize, Serialize};
 
 /// Tag type — lightweight, annotated, or signed
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,7 +38,13 @@ impl Tag {
         }
     }
 
-    pub fn annotated(name: &str, target: SnapshotId, tree_id: TreeId, message: &str, tagger: AccountId) -> Self {
+    pub fn annotated(
+        name: &str,
+        target: SnapshotId,
+        tree_id: TreeId,
+        message: &str,
+        tagger: AccountId,
+    ) -> Self {
         Self {
             name: name.to_string(),
             target,
@@ -51,7 +57,14 @@ impl Tag {
         }
     }
 
-    pub fn signed(name: &str, target: SnapshotId, tree_id: TreeId, message: &str, tagger: AccountId, signature: Vec<u8>) -> Self {
+    pub fn signed(
+        name: &str,
+        target: SnapshotId,
+        tree_id: TreeId,
+        message: &str,
+        tagger: AccountId,
+        signature: Vec<u8>,
+    ) -> Self {
         Self {
             name: name.to_string(),
             target,
@@ -64,9 +77,15 @@ impl Tag {
         }
     }
 
-    pub fn is_lightweight(&self) -> bool { self.kind == TagKind::Lightweight }
-    pub fn is_annotated(&self) -> bool { self.kind == TagKind::Annotated }
-    pub fn is_signed(&self) -> bool { self.kind == TagKind::Signed }
+    pub fn is_lightweight(&self) -> bool {
+        self.kind == TagKind::Lightweight
+    }
+    pub fn is_annotated(&self) -> bool {
+        self.kind == TagKind::Annotated
+    }
+    pub fn is_signed(&self) -> bool {
+        self.kind == TagKind::Signed
+    }
 }
 
 #[cfg(test)]
@@ -83,7 +102,13 @@ mod tests {
 
     #[test]
     fn test_annotated_tag() {
-        let tag = Tag::annotated("v2.0", SnapshotId::new(), TreeId::new(), "Release 2.0", AccountId::new());
+        let tag = Tag::annotated(
+            "v2.0",
+            SnapshotId::new(),
+            TreeId::new(),
+            "Release 2.0",
+            AccountId::new(),
+        );
         assert!(tag.is_annotated());
         assert_eq!(tag.message.as_deref(), Some("Release 2.0"));
         assert!(tag.tagger.is_some());
@@ -92,7 +117,14 @@ mod tests {
     #[test]
     fn test_signed_tag() {
         let sig = vec![1, 2, 3, 4];
-        let tag = Tag::signed("v3.0", SnapshotId::new(), TreeId::new(), "Signed release", AccountId::new(), sig);
+        let tag = Tag::signed(
+            "v3.0",
+            SnapshotId::new(),
+            TreeId::new(),
+            "Signed release",
+            AccountId::new(),
+            sig,
+        );
         assert!(tag.is_signed());
         assert!(tag.signature.is_some());
     }

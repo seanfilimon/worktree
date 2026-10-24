@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use crate::core::id::{AccountId, BranchId, SnapshotId, TreeId};
 use chrono::{DateTime, Utc};
-use crate::core::id::{TreeId, BranchId, SnapshotId, AccountId};
+use serde::{Deserialize, Serialize};
 
 // ============================================================
 // Level 1: Tree Dependencies
@@ -253,9 +253,15 @@ impl TodoItem {
         self.updated_at = Utc::now();
     }
 
-    pub fn is_open(&self) -> bool { self.state == TodoState::Open }
-    pub fn is_completed(&self) -> bool { self.state == TodoState::Completed }
-    pub fn is_blocking(&self) -> bool { self.requirement.blocking && !self.is_completed() }
+    pub fn is_open(&self) -> bool {
+        self.state == TodoState::Open
+    }
+    pub fn is_completed(&self) -> bool {
+        self.state == TodoState::Completed
+    }
+    pub fn is_blocking(&self) -> bool {
+        self.requirement.blocking && !self.is_completed()
+    }
 }
 
 // ============================================================
@@ -305,12 +311,17 @@ impl DependencyRegistry {
     }
 
     pub fn todos_for_tree(&self, tree_id: &TreeId) -> Vec<&TodoItem> {
-        self.todos.iter().filter(|t| t.from.tree == *tree_id).collect()
+        self.todos
+            .iter()
+            .filter(|t| t.from.tree == *tree_id)
+            .collect()
     }
 
     pub fn linked_group_for_branch(&self, tree: &str, branch: &str) -> Option<&LinkedBranchGroup> {
         self.linked_groups.iter().find(|g| {
-            g.branches.iter().any(|b| b.tree == tree && b.branch == branch)
+            g.branches
+                .iter()
+                .any(|b| b.tree == tree && b.branch == branch)
         })
     }
 }
@@ -321,9 +332,9 @@ mod tests {
 
     #[test]
     fn test_branch_dependency_blocking() {
-        let mut dep = BranchDependency::new(
-            TreeId::new(), BranchId::new(), TreeId::new(), "feature-x"
-        ).with_blocking();
+        let mut dep =
+            BranchDependency::new(TreeId::new(), BranchId::new(), TreeId::new(), "feature-x")
+                .with_blocking();
         assert!(dep.is_blocking());
 
         dep.complete();
@@ -377,9 +388,8 @@ mod tests {
         let mut registry = DependencyRegistry::new();
         let branch_id = BranchId::new();
 
-        let dep = BranchDependency::new(
-            TreeId::new(), branch_id, TreeId::new(), "main"
-        ).with_blocking();
+        let dep =
+            BranchDependency::new(TreeId::new(), branch_id, TreeId::new(), "main").with_blocking();
         registry.add_branch_dependency(dep);
 
         let blocking = registry.blocking_deps_for_branch(&branch_id);

@@ -1,7 +1,7 @@
 //! Archive/export functionality for worktree snapshots.
 
+use crate::core::id::{SnapshotId, TreeId};
 use serde::{Deserialize, Serialize};
-use crate::core::id::{TreeId, SnapshotId};
 
 /// Archive format
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

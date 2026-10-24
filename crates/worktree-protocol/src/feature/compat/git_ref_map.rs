@@ -275,11 +275,7 @@ impl fmt::Display for RefMapping {
                 bid, self.snapshot_id, self.git_ref
             )
         } else {
-            write!(
-                f,
-                "snapshot:{} <-> {}",
-                self.snapshot_id, self.git_ref
-            )
+            write!(f, "snapshot:{} <-> {}", self.snapshot_id, self.git_ref)
         }
     }
 }
@@ -317,8 +313,7 @@ impl RefMappingIndex {
         if let Some(bid) = mapping.branch_id {
             self.by_branch_id.insert(bid, mapping.clone());
         }
-        self.by_snapshot_id
-            .insert(mapping.snapshot_id, mapping);
+        self.by_snapshot_id.insert(mapping.snapshot_id, mapping);
     }
 
     /// Look up a mapping by its Git ref path.
@@ -446,10 +441,7 @@ mod tests {
             GitRefKind::from_ref_path("refs/heads/feature/login"),
             GitRefKind::Branch
         );
-        assert_eq!(
-            GitRefKind::from_ref_path("refs/tags/v1.0"),
-            GitRefKind::Tag
-        );
+        assert_eq!(GitRefKind::from_ref_path("refs/tags/v1.0"), GitRefKind::Tag);
         assert_eq!(
             GitRefKind::from_ref_path("refs/remotes/origin/main"),
             GitRefKind::Remote
@@ -459,10 +451,7 @@ mod tests {
             GitRefKind::from_ref_path("refs/notes/commits"),
             GitRefKind::Note
         );
-        assert_eq!(
-            GitRefKind::from_ref_path("refs/stash"),
-            GitRefKind::Other
-        );
+        assert_eq!(GitRefKind::from_ref_path("refs/stash"), GitRefKind::Other);
         assert_eq!(
             GitRefKind::from_ref_path("something/else"),
             GitRefKind::Other
@@ -539,10 +528,7 @@ mod tests {
             GitRef::new("refs/remotes/origin/main", SAMPLE_SHA).kind,
             GitRefKind::Remote
         );
-        assert_eq!(
-            GitRef::new("HEAD", SAMPLE_SHA).kind,
-            GitRefKind::Symbolic
-        );
+        assert_eq!(GitRef::new("HEAD", SAMPLE_SHA).kind, GitRefKind::Symbolic);
         assert_eq!(
             GitRef::new("refs/stash", SAMPLE_SHA).kind,
             GitRefKind::Other
@@ -589,10 +575,7 @@ mod tests {
             GitRef::new("refs/remotes/origin/main", SAMPLE_SHA).short_name(),
             "origin/main"
         );
-        assert_eq!(
-            GitRef::new("HEAD", SAMPLE_SHA).short_name(),
-            "HEAD"
-        );
+        assert_eq!(GitRef::new("HEAD", SAMPLE_SHA).short_name(), "HEAD");
         assert_eq!(
             GitRef::new("refs/notes/commits", SAMPLE_SHA).short_name(),
             "commits"
@@ -603,13 +586,11 @@ mod tests {
     fn test_git_ref_is_valid_target_sha() {
         assert!(GitRef::new("refs/heads/main", SAMPLE_SHA).is_valid_target_sha());
         assert!(!GitRef::new("refs/heads/main", "short").is_valid_target_sha());
-        assert!(
-            !GitRef::new(
-                "refs/heads/main",
-                "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
-            )
-            .is_valid_target_sha()
-        );
+        assert!(!GitRef::new(
+            "refs/heads/main",
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        )
+        .is_valid_target_sha());
     }
 
     #[test]
@@ -910,10 +891,7 @@ mod tests {
         ));
 
         let sid2 = SnapshotId::new();
-        index.insert(RefMapping::for_snapshot(
-            sid2,
-            GitRef::tag("b", SAMPLE_SHA),
-        ));
+        index.insert(RefMapping::for_snapshot(sid2, GitRef::tag("b", SAMPLE_SHA)));
 
         let all: Vec<_> = index.iter().collect();
         assert_eq!(all.len(), 2);
@@ -1004,8 +982,7 @@ mod tests {
         ));
 
         let json = serde_json::to_string(&index).expect("serialize");
-        let deserialized: RefMappingIndex =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: RefMappingIndex = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.len(), 2);
         assert!(deserialized.contains_ref_path("refs/heads/main"));

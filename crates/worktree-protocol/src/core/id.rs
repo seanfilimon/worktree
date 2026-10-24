@@ -50,7 +50,10 @@ macro_rules! define_id {
 define_id!(TreeId, "Unique identifier for a worktree.");
 define_id!(SnapshotId, "Unique identifier for a snapshot (commit).");
 define_id!(BranchId, "Unique identifier for a branch.");
-define_id!(TenantId, "Unique identifier for a tenant in multi-tenant setups.");
+define_id!(
+    TenantId,
+    "Unique identifier for a tenant in multi-tenant setups."
+);
 define_id!(AccountId, "Unique identifier for a user account.");
 define_id!(TeamId, "Unique identifier for a team.");
 define_id!(RoleId, "Unique identifier for a role.");

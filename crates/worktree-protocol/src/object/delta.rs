@@ -115,9 +115,7 @@ impl Delta {
     ) -> Self {
         Self {
             path: to.into(),
-            kind: DeltaKind::Rename {
-                from: from.into(),
-            },
+            kind: DeltaKind::Rename { from: from.into() },
             old_hash: Some(hash),
             new_hash: Some(hash),
             old_size: Some(size),
@@ -134,9 +132,7 @@ impl Delta {
     ) -> Self {
         Self {
             path: to.into(),
-            kind: DeltaKind::Copy {
-                from: from.into(),
-            },
+            kind: DeltaKind::Copy { from: from.into() },
             old_hash: None,
             new_hash: Some(hash),
             old_size: None,

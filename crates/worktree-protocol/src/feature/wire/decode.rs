@@ -53,7 +53,9 @@ pub fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, WireErro
 ///
 /// Returns a [`WireError`] if the length prefix is missing, the message is
 /// truncated, or deserialization fails.
-pub fn decode_length_prefixed<T: DeserializeOwned>(data: &[u8]) -> Result<(WireFormat, T), WireError> {
+pub fn decode_length_prefixed<T: DeserializeOwned>(
+    data: &[u8],
+) -> Result<(WireFormat, T), WireError> {
     if data.len() < 4 {
         return Err(WireError::TruncatedHeader(data.len()));
     }
@@ -248,8 +250,7 @@ mod tests {
     fn test_decode_length_prefixed_roundtrip() {
         let msg = sample_message();
         let encoded = encode_length_prefixed(&msg).expect("encode");
-        let (header, decoded): (_, TestMessage) =
-            decode_length_prefixed(&encoded).expect("decode");
+        let (header, decoded): (_, TestMessage) = decode_length_prefixed(&encoded).expect("decode");
 
         assert_eq!(header.version, CURRENT_VERSION);
         assert_eq!(decoded, msg);
@@ -482,8 +483,7 @@ mod tests {
         // Verify the magic bytes are after the length prefix
         assert_eq!(&encoded[4..8], &MAGIC);
 
-        let (header, decoded): (_, TestMessage) =
-            decode_length_prefixed(&encoded).expect("decode");
+        let (header, decoded): (_, TestMessage) = decode_length_prefixed(&encoded).expect("decode");
         assert_eq!(header.version, CURRENT_VERSION);
         assert_eq!(decoded, msg);
     }

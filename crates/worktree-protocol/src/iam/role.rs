@@ -44,7 +44,11 @@ pub struct Role {
 
 impl Role {
     /// Create a new custom role with the given name and no permissions.
-    pub fn new(tenant_id: TenantId, name: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        tenant_id: TenantId,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             id: RoleId::new(),
             tenant_id,
@@ -130,7 +134,9 @@ impl Role {
             id: RoleId::new(),
             tenant_id,
             name: "Admin".into(),
-            description: "Organizational administrator — manages trees, branches, accounts, and teams.".into(),
+            description:
+                "Organizational administrator — manages trees, branches, accounts, and teams."
+                    .into(),
             kind: RoleKind::BuiltIn,
             permissions: perms.into_iter().collect(),
             created_at: Utc::now(),
@@ -184,7 +190,8 @@ impl Role {
             id: RoleId::new(),
             tenant_id,
             name: "Developer".into(),
-            description: "Can read/write trees, create branches, create snapshots, and sync.".into(),
+            description: "Can read/write trees, create branches, create snapshots, and sync."
+                .into(),
             kind: RoleKind::BuiltIn,
             permissions: perms.into_iter().collect(),
             created_at: Utc::now(),

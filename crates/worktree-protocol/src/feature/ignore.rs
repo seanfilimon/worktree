@@ -36,7 +36,13 @@ impl IgnorePattern {
             pattern
         };
         let anchored = pattern.contains('/');
-        Some(Self { pattern, negated, directory_only, anchored, source })
+        Some(Self {
+            pattern,
+            negated,
+            directory_only,
+            anchored,
+            source,
+        })
     }
 
     /// Simple glob matching (supports * and **)
@@ -103,10 +109,9 @@ fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
 
 /// Hard-coded built-in ignore patterns
 pub fn builtin_ignores() -> Vec<IgnorePattern> {
-    let patterns = vec![
-        ".wt/", ".git/",
-    ];
-    patterns.into_iter()
+    let patterns = vec![".wt/", ".git/"];
+    patterns
+        .into_iter()
         .filter_map(|p| IgnorePattern::parse(p, IgnoreSource::BuiltIn))
         .collect()
 }
@@ -114,11 +119,24 @@ pub fn builtin_ignores() -> Vec<IgnorePattern> {
 /// Default soft ignore patterns
 pub fn default_ignores() -> Vec<IgnorePattern> {
     let patterns = vec![
-        "node_modules/", "target/", "__pycache__/", ".DS_Store",
-        "*.pyc", "*.pyo", ".env", ".venv/", "dist/", "build/",
-        "*.o", "*.so", "*.dylib", "*.dll", "*.exe",
+        "node_modules/",
+        "target/",
+        "__pycache__/",
+        ".DS_Store",
+        "*.pyc",
+        "*.pyo",
+        ".env",
+        ".venv/",
+        "dist/",
+        "build/",
+        "*.o",
+        "*.so",
+        "*.dylib",
+        "*.dll",
+        "*.exe",
     ];
-    patterns.into_iter()
+    patterns
+        .into_iter()
         .filter_map(|p| IgnorePattern::parse(p, IgnoreSource::BuiltIn))
         .collect()
 }
@@ -159,12 +177,17 @@ impl IgnoreEngine {
     }
 
     pub fn add_tree_pattern(&mut self, line: &str, tree_name: &str) {
-        if let Some(pat) = IgnorePattern::parse(line, IgnoreSource::TreeIgnore(tree_name.to_string())) {
+        if let Some(pat) =
+            IgnorePattern::parse(line, IgnoreSource::TreeIgnore(tree_name.to_string()))
+        {
             // Tree-level patterns cannot negate root patterns
             if pat.negated {
                 // Check if this negates a root pattern — if so, skip it
                 let base = pat.pattern.clone();
-                let negates_root = self.root_patterns.iter().any(|rp| !rp.negated && rp.pattern == base);
+                let negates_root = self
+                    .root_patterns
+                    .iter()
+                    .any(|rp| !rp.negated && rp.pattern == base);
                 if negates_root {
                     return; // Cannot negate root patterns
                 }
@@ -201,7 +224,11 @@ impl IgnoreEngine {
             if pat.matches(path) {
                 if pat.negated {
                     // Tree negation only overrides tree-level ignores
-                    if self.tree_patterns.iter().any(|tp| !tp.negated && tp.matches(path)) {
+                    if self
+                        .tree_patterns
+                        .iter()
+                        .any(|tp| !tp.negated && tp.matches(path))
+                    {
                         ignored = false;
                     }
                 } else {
