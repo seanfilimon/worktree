@@ -1,197 +1,192 @@
-use super::{GitAction, GitRemoteAction};
-use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+//! `wt git import|export` over `worktree_git::bridge`.
 
-pub async fn execute(action: GitAction) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        GitAction::Import { source } => {
-            format::print_info(&format!("Importing from Git repository: {}", source));
+use std::path::{Path, PathBuf};
 
-            // If we're already in a worktree, add as a tree; otherwise init
-            let engine = match WorktreeEngine::open(Path::new(".")) {
-                Ok(e) => e,
-                Err(_) => {
-                    format::print_info("No worktree found. Initializing...");
-                    WorktreeEngine::init(Path::new("."))?
-                }
-            };
+use clap::{Args, Subcommand};
+use colored::Colorize;
+use serde::Serialize;
+use worktree_git::bridge::{export_repository, import_repository, ExportOptions, ImportOptions};
 
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
-            format::print_kv("Worktree", &state.name);
-            format::print_info("Analyzing source repository...");
-            format::print_info("Converting Git commits to W0rkTree snapshots...");
-            format::print_info("Converting Git branches to W0rkTree branches...");
-            format::print_info("Converting Git tags to W0rkTree tags...");
-            format::print_warning("Git import is not yet fully implemented.");
-            format::print_info("Note: Full git import requires the worktree-git crate.");
-            format::print_info(&format!("Worktree initialized at '{}' — ready for manual import.", state.name));
-        }
-        GitAction::Export { tree, output, mode } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
+use crate::context::Context;
+use crate::error::{CliError, Result};
+use crate::output::format::plural;
 
-            // Validate tree
-            if state.find_tree(&tree).is_none() {
-                let tree_names: Vec<&str> = state.trees.iter().map(|t| t.name.as_str()).collect();
-                format::print_info(&format!("Available trees: {}", tree_names.join(", ")));
-                return Err(format!("Tree '{}' not found", tree).into());
-            }
-
-            format::print_info(&format!(
-                "Exporting tree '{}' to '{}' (mode: {})",
-                tree, output, mode
-            ));
-            format::print_info("Converting W0rkTree snapshots to Git commits...");
-            format::print_info("Converting W0rkTree branches to Git branches...");
-            format::print_info("Converting W0rkTree tags to Git tags...");
-            format::print_warning("Git export is not yet fully implemented.");
-            format::print_info("Note: Full git export requires the worktree-git crate.");
-            format::print_info(&format!("Tree '{}' prepared for export to '{}'.", tree, output));
-        }
-        GitAction::Clone { url, name } => {
-            let repo_name = name
-                .as_deref()
-                .or_else(|| {
-                    url.rsplit('/')
-                        .next()
-                        .map(|s| s.strip_suffix(".git").unwrap_or(s))
-                })
-                .unwrap_or("repo");
-
-            format::print_info(&format!("Cloning '{}' into '{}'...", url, repo_name));
-
-            // Initialize worktree at the target
-            let target = Path::new(repo_name);
-            if target.exists() {
-                return Err(format!("Directory '{}' already exists", repo_name).into());
-            }
-
-            std::fs::create_dir_all(target)?;
-            let engine = WorktreeEngine::init(target)?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
-
-            format::print_kv("Worktree", &state.name);
-            format::print_info("Fetching objects...");
-            format::print_info("Converting to W0rkTree format...");
-            format::print_success(&format!("Successfully cloned into '{}'", repo_name));
-            format::print_info("Note: Full git clone requires the worktree-git crate.");
-        }
-        GitAction::Remote { action } => {
-            execute_remote(action).await?;
-        }
-        GitAction::Push { remote, branch } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
-            format::print_kv("Worktree", &state.name);
-            format::print_info(&format!(
-                "Pushing to Git remote '{}' branch '{}'...",
-                remote, branch
-            ));
-            format::print_info("Converting W0rkTree snapshots to Git commits...");
-            format::print_warning("Git push is not yet fully implemented.");
-            format::print_info("Note: Full git push requires the worktree-git crate.");
-            format::print_info(&format!("Target: '{}/{}'.", remote, branch));
-        }
-        GitAction::Pull { remote, branch } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
-            format::print_kv("Worktree", &state.name);
-            format::print_info(&format!(
-                "Pulling from Git remote '{}' branch '{}'...",
-                remote, branch
-            ));
-            format::print_info("Fetching objects...");
-            format::print_info("Converting Git commits to W0rkTree snapshots...");
-            format::print_warning("Git pull is not yet fully implemented.");
-            format::print_info("Note: Full git pull requires the worktree-git crate.");
-            format::print_info(&format!("Target: '{}/{}'.", remote, branch));
-        }
-        GitAction::Mirror {
-            tree,
-            remote,
-            branch,
-        } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let state = worktree_sdk::engine::status::load_state(&engine)?;
-
-            if state.find_tree(&tree).is_none() {
-                return Err(format!("Tree '{}' not found", tree).into());
-            }
-
-            format::print_info(&format!(
-                "Setting up mirror for tree '{}' -> '{}:{}'",
-                tree, remote, branch
-            ));
-
-            // Write mirror config
-            let mirrors_dir = engine.wt_dir().join("cache").join("mirrors");
-            std::fs::create_dir_all(&mirrors_dir)?;
-            let mirror_config = format!(
-                "tree = \"{}\"\nremote = \"{}\"\nbranch = \"{}\"\nactive = true\n",
-                tree, remote, branch
-            );
-            std::fs::write(mirrors_dir.join(format!("{}.toml", tree)), mirror_config)?;
-
-            format::print_success(&format!(
-                "Mirror configured: '{}' <-> '{}:{}'",
-                tree, remote, branch
-            ));
-            format::print_info("Note: Full bidirectional sync requires the worktree-git crate.");
-        }
-    }
-    Ok(())
+#[derive(Debug, Args)]
+pub struct GitArgs {
+    #[command(subcommand)]
+    pub command: GitCommand,
 }
 
-async fn execute_remote(action: GitRemoteAction) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        GitRemoteAction::Add { name, url } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
+#[derive(Debug, Subcommand)]
+pub enum GitCommand {
+    /// Create a new worktree from a Git repository (all branches and tags)
+    Import {
+        /// Git repository to import
+        git_path: PathBuf,
+        /// Destination directory (default: ./<repository name>)
+        dest: Option<PathBuf>,
+    },
+    /// Export this tree's history into a Git repository (created if missing)
+    Export {
+        /// Git repository to write; a missing path ending in `.git` is created bare
+        git_path: PathBuf,
+        /// Branch to export (default: all branches)
+        #[arg(long, value_name = "REV")]
+        rev: Option<String>,
+    },
+}
 
-            // Store remote in .wt/cache/remotes/
-            let remotes_dir = engine.wt_dir().join("cache").join("remotes");
-            std::fs::create_dir_all(&remotes_dir)?;
-            std::fs::write(remotes_dir.join(format!("{}.url", name)), &url)?;
+#[derive(Serialize)]
+struct ImportResult<'a> {
+    dest: &'a Path,
+    branches: &'a [String],
+    snapshots: usize,
+    blobs: usize,
+    tags: usize,
+    checked_out: Option<&'a str>,
+}
 
-            format::print_success(&format!("Remote '{}' added -> {}", name, url));
+#[derive(Serialize)]
+struct ExportResult<'a> {
+    git_path: &'a Path,
+    branches: &'a [String],
+    commits: usize,
+    tags: usize,
+}
+
+pub fn run(ctx: &Context, args: GitArgs) -> Result<()> {
+    match args.command {
+        GitCommand::Import { git_path, dest } => import(ctx, &git_path, dest),
+        GitCommand::Export { git_path, rev } => export(ctx, &git_path, rev),
+    }
+}
+
+fn import(ctx: &Context, git_path: &Path, dest: Option<PathBuf>) -> Result<()> {
+    let source = ctx.absolute(git_path);
+    if !source.is_dir() {
+        return Err(CliError::failure(format!(
+            "no Git repository at '{}'",
+            git_path.display()
+        )));
+    }
+    let dest = match dest {
+        Some(dest) => ctx.absolute(&dest),
+        None => {
+            let name = repository_name(&source).ok_or_else(|| {
+                CliError::usage(format!(
+                    "cannot derive a destination from '{}'",
+                    git_path.display()
+                ))
+                .with_hint("pass a destination: `wt git import GIT_PATH DEST`")
+            })?;
+            ctx.cwd().join(name)
         }
-        GitRemoteAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            format::print_header("Git Remotes");
-
-            let remotes_dir = engine.wt_dir().join("cache").join("remotes");
-            if remotes_dir.exists() {
-                let mut found = false;
-                for entry in std::fs::read_dir(&remotes_dir)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.extension().map(|e| e == "url").unwrap_or(false) {
-                        let name = path.file_stem()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown");
-                        let url = std::fs::read_to_string(&path)?;
-                        format::print_list_item(&format!("{} -> {}", name, url.trim()));
-                        found = true;
-                    }
-                }
-                if !found {
-                    format::print_info("No remotes configured.");
-                }
-            } else {
-                format::print_info("No remotes configured. Use `wt git remote add <name> <url>` to add one.");
-            }
+    };
+    let opts = ImportOptions {
+        include_tags: true,
+        ..ImportOptions::default()
+    };
+    let report = import_repository(&source, &dest, &opts)?;
+    let result = ImportResult {
+        dest: &report.dest,
+        branches: &report.branches,
+        snapshots: report.snapshots,
+        blobs: report.blobs,
+        tags: report.tags,
+        checked_out: report.checked_out.as_deref(),
+    };
+    ctx.out.emit(&result, |t| {
+        t.line(format_args!(
+            "Imported {} ({}, {}, {}) into {}",
+            plural(report.branches.len(), "branch", "branches"),
+            plural(report.snapshots, "snapshot", "snapshots"),
+            plural(report.blobs, "blob", "blobs"),
+            plural(report.tags, "tag", "tags"),
+            report.dest.display()
+        ));
+        if let Some(branch) = &report.checked_out {
+            t.line(format_args!("Checked out {}", branch.green().bold()));
         }
-        GitRemoteAction::Remove { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let remote_file = engine.wt_dir().join("cache").join("remotes").join(format!("{}.url", name));
+    })
+}
 
-            if remote_file.exists() {
-                std::fs::remove_file(&remote_file)?;
-                format::print_success(&format!("Remote '{}' removed", name));
-            } else {
-                format::print_error(&format!("Remote '{}' not found", name));
-            }
+fn export(ctx: &Context, git_path: &Path, rev: Option<String>) -> Result<()> {
+    let (repo, tree) = ctx.open_tree()?;
+    if let Some(rev) = &rev {
+        if !repo
+            .branches(&tree.name, true)?
+            .iter()
+            .any(|b| &b.name == rev)
+        {
+            return Err(CliError::failure(format!(
+                "'{rev}' is not a branch of tree '{}'",
+                tree.name
+            ))
+            .with_hint("`--rev` names the branch to export; list them with `wt branch --all`"));
         }
     }
-    Ok(())
+    let target = ctx.absolute(git_path);
+    let bare = !target.exists() && target.extension().is_some_and(|ext| ext == "git");
+    let opts = ExportOptions {
+        tree: Some(tree.name.clone()),
+        branches: rev.into_iter().collect(),
+        include_tags: true,
+        bare,
+    };
+    let report = export_repository(&repo, &target, &opts)?;
+    let result = ExportResult {
+        git_path: &report.git_path,
+        branches: &report.branches,
+        commits: report.commits,
+        tags: report.tags,
+    };
+    ctx.out.emit(&result, |t| {
+        t.line(format_args!(
+            "Exported {} ({} new, {}) to {}",
+            plural(report.branches.len(), "branch", "branches"),
+            plural(report.commits, "commit", "commits"),
+            plural(report.tags, "tag", "tags"),
+            report.git_path.display()
+        ));
+    })
+}
+
+/// `../proj` → `proj`, `../proj.git` → `proj`, `../proj/.git` → `proj`.
+fn repository_name(path: &Path) -> Option<String> {
+    let path = crate::paths::normalize(path);
+    let mut name = path.file_name()?.to_string_lossy().into_owned();
+    if name == ".git" {
+        name = path.parent()?.file_name()?.to_string_lossy().into_owned();
+    }
+    let name = name.strip_suffix(".git").unwrap_or(&name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_names() {
+        assert_eq!(
+            repository_name(Path::new("/src/proj")).as_deref(),
+            Some("proj")
+        );
+        assert_eq!(
+            repository_name(Path::new("/src/proj.git")).as_deref(),
+            Some("proj")
+        );
+        assert_eq!(
+            repository_name(Path::new("/src/proj/.git")).as_deref(),
+            Some("proj")
+        );
+        assert_eq!(
+            repository_name(Path::new("/src/proj/")).as_deref(),
+            Some("proj")
+        );
+        assert_eq!(
+            repository_name(Path::new("/src/proj/sub/..")).as_deref(),
+            Some("proj")
+        );
+    }
 }

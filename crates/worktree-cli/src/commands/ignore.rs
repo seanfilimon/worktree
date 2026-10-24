@@ -1,36 +1,81 @@
-use super::IgnoreAction;
-use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+//! `wt ignore`
 
-pub async fn execute(action: IgnoreAction) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        IgnoreAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let patterns = worktree_sdk::engine::ignore::list_ignored(&engine)?;
-            format::print_header("Ignore Patterns");
-            if patterns.is_empty() {
-                format::print_info("No ignore patterns configured.");
-            } else {
+use std::path::PathBuf;
+
+use clap::{Args, Subcommand};
+use colored::Colorize;
+use serde::Serialize;
+
+use crate::context::Context;
+use crate::error::Result;
+
+#[derive(Debug, Args)]
+pub struct IgnoreArgs {
+    #[command(subcommand)]
+    pub command: IgnoreCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IgnoreCommand {
+    /// Show the effective ignore patterns
+    List,
+    /// Add a pattern (gitignore syntax) to .wt/ignore
+    Add { pattern: String },
+    /// Check whether a path is ignored
+    Check { path: PathBuf },
+}
+
+#[derive(Serialize)]
+struct Added<'a> {
+    pattern: &'a str,
+    added: bool,
+}
+
+#[derive(Serialize)]
+struct Checked<'a> {
+    path: &'a str,
+    ignored: bool,
+}
+
+pub fn run(ctx: &Context, args: IgnoreArgs) -> Result<()> {
+    let repo = ctx.open()?;
+    match args.command {
+        IgnoreCommand::List => {
+            let patterns = repo.ignore_patterns()?;
+            ctx.out.emit(&patterns, |t| {
                 for pattern in &patterns {
-                    format::print_list_item(pattern);
+                    t.line(pattern);
                 }
-                println!();
-                format::print_info(&format!("{} pattern(s) active", patterns.len()));
-            }
+            })
         }
-        IgnoreAction::Add { pattern } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let ignore_path = engine.wt_dir().join("ignore");
-            let mut content = std::fs::read_to_string(&ignore_path).unwrap_or_default();
-            if !content.ends_with('\n') && !content.is_empty() {
-                content.push('\n');
-            }
-            content.push_str(&pattern);
-            content.push('\n');
-            std::fs::write(&ignore_path, content)?;
-            format::print_success(&format!("Added ignore pattern: {}", pattern));
+        IgnoreCommand::Add { pattern } => {
+            repo.add_ignore_pattern(&pattern)?;
+            ctx.out.emit(
+                &Added {
+                    pattern: &pattern,
+                    added: true,
+                },
+                |t| {
+                    t.line(format_args!("Added ignore pattern {}", pattern.bold()));
+                },
+            )
+        }
+        IgnoreCommand::Check { path } => {
+            let rel = ctx.root_path(&repo, &path)?;
+            let ignored = repo.is_ignored(&rel)?;
+            ctx.out.emit(
+                &Checked {
+                    path: &rel,
+                    ignored,
+                },
+                |t| {
+                    if ignored {
+                        t.line(format_args!("{} is {}", rel, "ignored".yellow()));
+                    } else {
+                        t.line(format_args!("{} is {}", rel, "not ignored".green()));
+                    }
+                },
+            )
         }
     }
-    Ok(())
 }

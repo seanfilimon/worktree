@@ -1,80 +1,108 @@
-use super::TreeAction;
-use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+//! `wt tree`
 
-pub async fn execute(action: TreeAction) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        TreeAction::Add { path } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let tree = worktree_sdk::engine::tree::add_tree(&engine, &path)?;
-            format::print_success(&format!("Tree '{}' added at '{}'", tree.name, tree.path));
-            Ok(())
-        }
-        TreeAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let trees = worktree_sdk::engine::tree::list_trees(&engine)?;
-            format::print_header("Trees");
-            if trees.is_empty() {
-                format::print_info("No trees configured.");
-            } else {
+use std::path::{Path, PathBuf};
+
+use clap::{Args, Subcommand};
+use colored::Colorize;
+use serde::Serialize;
+
+use crate::context::Context;
+use crate::error::Result;
+
+#[derive(Debug, Args)]
+pub struct TreeArgs {
+    #[command(subcommand)]
+    pub command: TreeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TreeCommand {
+    /// List the trees of this worktree
+    List,
+    /// Register a directory as a nested tree
+    Add {
+        name: String,
+        /// Directory of the tree (created if missing)
+        path: PathBuf,
+    },
+    /// Unregister a nested tree (its files are kept)
+    Remove { name: String },
+}
+
+#[derive(Serialize)]
+struct Removed<'a> {
+    tree: &'a str,
+    removed: bool,
+}
+
+pub fn run(ctx: &Context, args: TreeArgs) -> Result<()> {
+    let repo = ctx.open()?;
+    match args.command {
+        TreeCommand::List => {
+            let trees = repo.trees()?;
+            let current = ctx.select_tree(&repo)?.name;
+            ctx.out.emit(&trees, |t| {
+                let width = trees.iter().map(|tree| tree.name.len()).max().unwrap_or(0);
                 for tree in &trees {
-                    let branch_count = tree.branches.len();
-                    let snapshot_count = tree.snapshots.len();
-                    format::print_list_item(&format!(
-                        "{} (path: {}, branch: {}, {} branches, {} snapshots)",
-                        tree.name, tree.path, tree.current_branch, branch_count, snapshot_count
+                    let name = format!("{:<width$}", tree.name);
+                    let (marker, name) = if tree.name == current {
+                        ("*", name.green().bold())
+                    } else {
+                        (" ", name.normal())
+                    };
+                    t.line(format_args!(
+                        "{marker} {name}  {}  [{}]",
+                        display_path(&tree.path),
+                        tree.current_branch.cyan()
                     ));
                 }
-            }
-            Ok(())
+            })
         }
-        TreeAction::Remove { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            worktree_sdk::engine::tree::remove_tree(&engine, &name)?;
-            format::print_success(&format!("Tree '{}' removed", name));
-            Ok(())
+        TreeCommand::Add { name, path } => {
+            let rel = ctx.root_path(&repo, &path)?;
+            let tree = repo.add_tree(&name, Path::new(&rel))?;
+            ctx.out.emit(&tree, |t| {
+                t.line(format_args!(
+                    "Added tree {} at {}",
+                    tree.name.bold(),
+                    display_path(&tree.path)
+                ));
+            })
         }
-        TreeAction::Status { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let trees = worktree_sdk::engine::tree::list_trees(&engine)?;
-            let target_name = name.as_deref();
-
-            let filtered: Vec<_> = if let Some(n) = target_name {
-                trees.iter().filter(|t| t.name == n).collect()
-            } else {
-                trees.iter().collect()
-            };
-
-            if filtered.is_empty() {
-                if let Some(n) = target_name {
-                    format::print_error(&format!("Tree '{}' not found", n));
-                } else {
-                    format::print_info("No trees configured.");
-                }
-            } else {
-                for tree in &filtered {
-                    format::print_header(&format!("Tree: {}", tree.name));
-                    format::print_kv("Path", &tree.path);
-                    format::print_kv("Current branch", &tree.current_branch);
-                    format::print_kv("Branches", &tree.branches.len().to_string());
-                    format::print_kv("Snapshots", &tree.snapshots.len().to_string());
-                    format::print_kv("Tags", &tree.tags.len().to_string());
-
-                    if !tree.branches.is_empty() {
-                        println!();
-                        format::print_info("Branches:");
-                        for branch in &tree.branches {
-                            let tip_display = branch.tip.as_deref()
-                                .map(|t| &t[..t.len().min(8)])
-                                .unwrap_or("(no snapshots)");
-                            let marker = if branch.name == tree.current_branch { "* " } else { "  " };
-                            println!("  {}{} -> {}", marker, branch.name, tip_display);
-                        }
-                    }
-                }
-            }
-            Ok(())
+        TreeCommand::Remove { name } => {
+            repo.remove_tree(&name)?;
+            ctx.out.emit(
+                &Removed {
+                    tree: &name,
+                    removed: true,
+                },
+                |t| {
+                    t.line(format_args!(
+                        "Removed tree {} (files were kept)",
+                        name.bold()
+                    ));
+                },
+            )
         }
+    }
+}
+
+/// Tree paths are root-relative; the root tree's is empty.
+fn display_path(path: &Path) -> String {
+    if path.as_os_str().is_empty() {
+        ".".into()
+    } else {
+        path.to_string_lossy().replace('\\', "/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_tree_path_displays_as_dot() {
+        assert_eq!(display_path(Path::new("")), ".");
+        assert_eq!(display_path(Path::new("apps/web")), "apps/web");
     }
 }

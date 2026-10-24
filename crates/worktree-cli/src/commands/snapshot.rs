@@ -1,43 +1,49 @@
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
-use crate::output::format;
+//! `wt snapshot`
 
-pub async fn execute(
-    tree: Option<String>,
-    message: String,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
-    let tree_display = tree.as_deref().unwrap_or("(current)");
+use clap::Args;
+use colored::Colorize;
+use worktree_sdk::{Snapshot, SnapshotOptions};
 
-    format::print_info(&format!(
-        "Creating snapshot on tree '{}': \"{}\"",
-        tree_display, message
-    ));
+use crate::context::Context;
+use crate::error::Result;
+use crate::output::format::subject;
+use crate::output::Text;
 
-    let snapshot = worktree_sdk::engine::snapshot::create_snapshot(
-        &engine,
-        tree.as_deref(),
-        &message,
+#[derive(Debug, Args)]
+pub struct SnapshotArgs {
+    /// Snapshot message
+    #[arg(short, long, value_name = "MSG")]
+    pub message: String,
+
+    /// Create a snapshot even if nothing changed
+    #[arg(long)]
+    pub allow_empty: bool,
+
+    /// Skip the pre-snapshot secret scan
+    #[arg(long)]
+    pub no_scan: bool,
+}
+
+pub fn run(ctx: &Context, args: SnapshotArgs) -> Result<()> {
+    let (repo, tree) = ctx.open_tree()?;
+    let snapshot = repo.snapshot(
+        &tree.name,
+        SnapshotOptions {
+            message: args.message,
+            allow_empty: args.allow_empty,
+            skip_secret_scan: args.no_scan,
+            ..SnapshotOptions::default()
+        },
     )?;
+    ctx.out.emit(&snapshot, |t| snapshot_line(t, &snapshot))
+}
 
-    format::print_success(&format!(
-        "Snapshot created: {}",
-        &snapshot.id[..snapshot.id.len().min(8)]
+/// `[main 1a2b3c4d] message` (shared by revert/merge).
+pub fn snapshot_line(t: &mut Text, snapshot: &Snapshot) {
+    t.line(format_args!(
+        "[{} {}] {}",
+        snapshot.branch.green(),
+        snapshot.short_id().yellow(),
+        subject(&snapshot.message)
     ));
-    format::print_kv("ID", &snapshot.id);
-    format::print_kv("Message", &snapshot.message);
-    format::print_kv("Author", &snapshot.author);
-    format::print_kv("Timestamp", &snapshot.timestamp);
-    format::print_kv("Tree", &snapshot.tree_name);
-    format::print_kv("Branch", &snapshot.branch_name);
-    format::print_kv("Files", &snapshot.files.len().to_string());
-
-    if !snapshot.parents.is_empty() {
-        let parents: Vec<String> = snapshot.parents.iter()
-            .map(|p| p.chars().take(8).collect::<String>())
-            .collect();
-        format::print_kv("Parents", &parents.join(", "));
-    }
-
-    Ok(())
 }

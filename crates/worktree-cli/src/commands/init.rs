@@ -1,19 +1,59 @@
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
-use crate::output::format;
+//! `wt init`
 
-pub async fn execute(path: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let target = path.unwrap_or_else(|| ".".to_string());
-    format::print_info(&format!("Initializing worktree at '{}'...", target));
+use std::path::{Path, PathBuf};
 
-    let target_path = Path::new(&target);
-    let engine = WorktreeEngine::init(target_path)?;
+use clap::Args;
+use colored::Colorize;
+use serde::Serialize;
+use worktree_sdk::{InitOptions, Repository, TreeInfo};
 
-    let root_display = engine.root().display();
-    format::print_success(&format!("Worktree repository initialized at '{}'", root_display));
-    format::print_kv("Location", &root_display.to_string());
-    format::print_kv("Default branch", "main");
-    format::print_kv("Default tree", "root");
+use crate::context::Context;
+use crate::error::Result;
 
-    Ok(())
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Directory to initialize (default: the current directory)
+    pub path: Option<PathBuf>,
+
+    /// Name of the worktree and its root tree (default: directory name)
+    #[arg(long, value_name = "N")]
+    pub name: Option<String>,
+
+    /// Default branch (default: main)
+    #[arg(long, value_name = "B")]
+    pub branch: Option<String>,
+}
+
+#[derive(Serialize)]
+struct InitResult<'a> {
+    root: &'a Path,
+    tree: TreeInfo,
+}
+
+pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
+    let path = args
+        .path
+        .map_or_else(|| ctx.cwd().to_path_buf(), |p| ctx.absolute(&p));
+    let repo = Repository::init(
+        &path,
+        InitOptions {
+            name: args.name,
+            default_branch: args.branch,
+        },
+    )?;
+    let result = InitResult {
+        root: repo.root(),
+        tree: repo.root_tree()?,
+    };
+    ctx.out.emit(&result, |t| {
+        t.line(format_args!(
+            "Initialized empty worktree {} in {}",
+            result.tree.name.bold(),
+            repo.wt_dir().display()
+        ));
+        t.line(format_args!(
+            "Default branch: {}",
+            result.tree.default_branch.green()
+        ));
+    })
 }
