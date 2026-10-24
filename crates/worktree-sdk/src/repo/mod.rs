@@ -17,20 +17,71 @@
 //!   trees/<tree>/index.json     stat cache: path -> (size, mtime_ns, hash)
 //!   trees/<tree>/reflog.jsonl   ReflogEntry per line (append-only)
 //!   trees/<tree>/MERGE_STATE.json
+//!   trees/<tree>/LOCK           advisory lock held by mutating operations
 //!   conflicts/<tree>.json       machine-readable conflict list during a merge
 //! ```
 //!
 //! Nested trees are directories containing a `.wt-tree/` marker; a tree's
 //! snapshot excludes nested trees' paths. `.wt/`, `.wt-tree/` and ignored
 //! paths are never snapshotted.
+//!
+//! The implementation is split by concern:
+//!
+//! - `trees` — tree registry and nested-tree markers
+//! - `ignore_rules` / `working` — working-directory scanning, ignore rules,
+//!   the stat-cache index and file materialization
+//! - `refs` — branches, remote-tracking refs and tags
+//! - `history` — snapshot records, revision resolution, log and ancestry
+//! - `snapshotting` — status and snapshot creation
+//! - `merging` — merge, merge state, revert and restore
+//! - `diffing` — working/revision diffs
+//! - `reflog` — the append-only per-tree reflog
+//!
+//! Mutating operations take a per-tree OS file lock (`trees/<tree>/LOCK`)
+//! so the CLI and the background daemon never interleave writes to the same
+//! tree; the lock is released automatically if a process dies.
 
+mod diffing;
+pub(crate) mod fsutil;
+mod history;
+mod ignore_rules;
+mod lock;
+mod merging;
+pub(crate) mod names;
+mod reflog;
+mod refs;
+mod snapshotting;
+mod trees;
+mod working;
+
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::WorktreeConfig;
-use crate::error::Result;
+use crate::error::{Result, SdkError};
 use crate::model::*;
-use crate::store::{ObjectHash, ObjectStore};
+use crate::store::ObjectStore;
 
+/// Name of the metadata directory at the worktree root.
+pub const WT_DIR: &str = ".wt";
+/// Name of the marker directory that turns a directory into a nested tree.
+pub const TREE_MARKER_DIR: &str = ".wt-tree";
+/// Name of per-directory ignore files.
+pub const IGNORE_FILE_NAME: &str = ".wtignore";
+
+/// Default branch name for new worktrees.
+const DEFAULT_BRANCH: &str = "main";
+
+/// Header written to a fresh `.wt/ignore`.
+const IGNORE_FILE_HEADER: &str = "\
+# W0rkTree ignore patterns (gitignore syntax), relative to the worktree root.
+# Built-in: .wt/ .wt-tree/ .git/ target/ node_modules/ .DS_Store *.swp
+";
+
+/// A W0rkTree worktree on disk: its root directory, configuration and
+/// object store. All local version-control operations are methods on this
+/// type.
+#[derive(Debug)]
 pub struct Repository {
     root: PathBuf,
     config: WorktreeConfig,
@@ -46,383 +97,171 @@ impl Repository {
     /// tree named after the directory, an empty default branch, and an
     /// "init" reflog entry. `AlreadyInitialized` if `.wt/` exists.
     pub fn init(path: &Path, opts: InitOptions) -> Result<Self> {
-        let _ = (path, opts);
-        todo!("sdk-core: Repository::init")
+        fs::create_dir_all(path)?;
+        let root = std::path::absolute(path)?;
+        let wt = root.join(WT_DIR);
+        if wt.exists() {
+            return Err(SdkError::AlreadyInitialized);
+        }
+
+        let name = match opts.name {
+            Some(name) => {
+                names::validate_tree_name(&name)?;
+                name
+            }
+            None => derive_tree_name(&root),
+        };
+        let default_branch = opts
+            .default_branch
+            .unwrap_or_else(|| DEFAULT_BRANCH.to_string());
+        names::validate_ref_name("branch", &default_branch)?;
+
+        fs::create_dir(&wt)?;
+        let result = (|| {
+            let config = WorktreeConfig::new(name.clone(), default_branch.clone());
+            config.save(&wt.join("config.toml"))?;
+            fs::create_dir_all(wt.join("objects"))?;
+            fs::create_dir_all(wt.join("snapshots"))?;
+            fs::create_dir_all(wt.join("trees"))?;
+            fsutil::write_atomic(&wt.join("ignore"), IGNORE_FILE_HEADER.as_bytes())?;
+            let repo = Repository {
+                store: ObjectStore::open(wt.join("objects")),
+                root: root.clone(),
+                config,
+            };
+            repo.create_tree_record(&name, "", &default_branch)?;
+            Ok(repo)
+        })();
+        if result.is_err() {
+            // Leave no half-initialized worktree behind.
+            let _ = fs::remove_dir_all(&wt);
+        }
+        result
     }
 
     /// Open the worktree containing `path` (walks up to find `.wt/`).
     pub fn open(path: &Path) -> Result<Self> {
-        let _ = path;
-        todo!("sdk-core: Repository::open")
+        let start = std::path::absolute(path)?;
+        let mut candidate = Some(start.as_path());
+        while let Some(dir) = candidate {
+            let wt = dir.join(WT_DIR);
+            if wt.is_dir() {
+                let config = WorktreeConfig::load(&wt.join("config.toml"))?;
+                return Ok(Repository {
+                    root: dir.to_path_buf(),
+                    config,
+                    store: ObjectStore::open(wt.join("objects")),
+                });
+            }
+            candidate = dir.parent();
+        }
+        Err(SdkError::NotAWorktree)
     }
 
+    /// The worktree root (the directory containing `.wt/`).
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// The `.wt/` metadata directory.
     pub fn wt_dir(&self) -> PathBuf {
-        self.root.join(".wt")
+        self.root.join(WT_DIR)
     }
 
+    /// The loaded `.wt/config.toml`.
     pub fn config(&self) -> &WorktreeConfig {
         &self.config
     }
 
     /// Replace and persist the config.
     pub fn set_config(&mut self, config: WorktreeConfig) -> Result<()> {
-        let _ = config;
-        todo!("sdk-core: Repository::set_config")
+        config.save(&self.wt_dir().join("config.toml"))?;
+        self.config = config;
+        Ok(())
     }
 
+    /// The object store under `.wt/objects`.
     pub fn store(&self) -> &ObjectStore {
         &self.store
     }
 
     /// Author string for new snapshots: config user ("Name <email>"), else
-    /// the logged-in username for the default remote, else the OS user.
+    /// the OS user (`USERNAME` / `USER`), else `"unknown"`.
     pub fn author(&self) -> String {
-        todo!("sdk-core: Repository::author")
+        let name = self.config.user.name.trim();
+        let email = self.config.user.email.trim();
+        match (name.is_empty(), email.is_empty()) {
+            (false, false) => return format!("{name} <{email}>"),
+            (false, true) => return name.to_string(),
+            (true, false) => return email.to_string(),
+            (true, true) => {}
+        }
+        ["USERNAME", "USER"]
+            .iter()
+            .filter_map(|var| std::env::var(var).ok())
+            .map(|v| v.trim().to_string())
+            .find(|v| !v.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
     // ----------------------------------------------------------------
-    // Trees
+    // Layout helpers
     // ----------------------------------------------------------------
 
-    pub fn trees(&self) -> Result<Vec<TreeInfo>> {
-        todo!("sdk-core: Repository::trees")
+    fn snapshots_dir(&self) -> PathBuf {
+        self.wt_dir().join("snapshots")
     }
 
-    pub fn tree(&self, name: &str) -> Result<TreeInfo> {
-        let _ = name;
-        todo!("sdk-core: Repository::tree")
+    /// `.wt/trees/<tree>` (does not check existence).
+    fn tree_meta_dir(&self, tree: &str) -> PathBuf {
+        self.wt_dir().join("trees").join(tree)
     }
 
-    /// The root tree (created by init).
-    pub fn root_tree(&self) -> Result<TreeInfo> {
-        todo!("sdk-core: Repository::root_tree")
+    fn merge_state_path(&self, tree: &str) -> PathBuf {
+        self.tree_meta_dir(tree).join("MERGE_STATE.json")
     }
 
-    /// Deepest tree whose directory contains `path` (absolute or relative to
-    /// the current dir). Falls back to the root tree.
-    pub fn tree_for_path(&self, path: &Path) -> Result<TreeInfo> {
-        let _ = path;
-        todo!("sdk-core: Repository::tree_for_path")
+    fn conflicts_path(&self, tree: &str) -> PathBuf {
+        self.wt_dir().join("conflicts").join(format!("{tree}.json"))
     }
+}
 
-    /// Register `rel_path` (relative to the root; created if missing) as a
-    /// nested tree, writing `<rel_path>/.wt-tree/config.toml`.
-    pub fn add_tree(&self, name: &str, rel_path: &Path) -> Result<TreeInfo> {
-        let _ = (name, rel_path);
-        todo!("sdk-core: Repository::add_tree")
+/// Derive a valid tree name from a directory name, replacing characters
+/// that are not allowed; falls back to `"root"`.
+fn derive_tree_name(root: &Path) -> String {
+    let raw = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned
+        .trim_matches(|c: char| c == '.' || c == ' ')
+        .to_string();
+    if names::validate_tree_name(&cleaned).is_ok() {
+        cleaned
+    } else {
+        "root".to_string()
     }
+}
 
-    /// Unregister a nested tree (files are kept). The root tree cannot be removed.
-    pub fn remove_tree(&self, name: &str) -> Result<()> {
-        let _ = name;
-        todo!("sdk-core: Repository::remove_tree")
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Set the server-side name of a tree.
-    pub fn set_tree_remote_name(&self, tree: &str, remote_name: &str) -> Result<()> {
-        let _ = (tree, remote_name);
-        todo!("sdk-core: Repository::set_tree_remote_name")
-    }
-
-    /// Replace a tree's id (used by clone so the local id matches the server).
-    pub fn set_tree_id(&self, tree: &str, id: &str) -> Result<()> {
-        let _ = (tree, id);
-        todo!("sdk-core: Repository::set_tree_id")
-    }
-
-    /// Absolute directory of a tree.
-    pub fn tree_dir(&self, tree: &str) -> Result<PathBuf> {
-        let _ = tree;
-        todo!("sdk-core: Repository::tree_dir")
-    }
-
-    // ----------------------------------------------------------------
-    // Status & snapshots
-    // ----------------------------------------------------------------
-
-    /// Compare the working directory with the tree's head snapshot.
-    pub fn status(&self, tree: &str) -> Result<StatusReport> {
-        let _ = tree;
-        todo!("sdk-core: Repository::status")
-    }
-
-    /// Snapshot the tree's working state onto its current branch. Runs the
-    /// secret scan on added/modified files unless `skip_secret_scan`
-    /// (`SecretsDetected`). `NoChanges` if identical to head and not
-    /// `allow_empty`. Refuses during a conflicted merge unless all conflict
-    /// markers are gone (then it completes the merge with two parents).
-    pub fn snapshot(&self, tree: &str, opts: SnapshotOptions) -> Result<Snapshot> {
-        let _ = (tree, opts);
-        todo!("sdk-core: Repository::snapshot")
-    }
-
-    /// Snapshots reachable from `rev` (default: current branch head), newest
-    /// first, at most `limit`.
-    pub fn log(&self, tree: &str, rev: Option<&str>, limit: Option<usize>) -> Result<Vec<Snapshot>> {
-        let _ = (tree, rev, limit);
-        todo!("sdk-core: Repository::log")
-    }
-
-    /// Load a snapshot by full id or unique prefix (>= 4 chars).
-    pub fn get_snapshot(&self, id: &str) -> Result<Snapshot> {
-        let _ = id;
-        todo!("sdk-core: Repository::get_snapshot")
-    }
-
-    pub fn has_snapshot(&self, id: &str) -> bool {
-        let _ = id;
-        todo!("sdk-core: Repository::has_snapshot")
-    }
-
-    /// Resolve a revision in `tree`: "HEAD", "HEAD~N", "<branch>",
-    /// "<branch>~N", "origin/<branch>", "<tag>", or an id prefix.
-    pub fn resolve(&self, tree: &str, rev: &str) -> Result<Snapshot> {
-        let _ = (tree, rev);
-        todo!("sdk-core: Repository::resolve")
-    }
-
-    pub fn manifest_of(&self, snapshot: &Snapshot) -> Result<Manifest> {
-        let _ = snapshot;
-        todo!("sdk-core: Repository::manifest_of")
-    }
-
-    /// Content of `path` in `snapshot`.
-    pub fn read_file_at(&self, snapshot: &Snapshot, path: &str) -> Result<Vec<u8>> {
-        let _ = (snapshot, path);
-        todo!("sdk-core: Repository::read_file_at")
-    }
-
-    // ----------------------------------------------------------------
-    // Branches
-    // ----------------------------------------------------------------
-
-    /// Non-archived branches (all if `include_archived`), sorted by name.
-    pub fn branches(&self, tree: &str, include_archived: bool) -> Result<Vec<BranchInfo>> {
-        let _ = (tree, include_archived);
-        todo!("sdk-core: Repository::branches")
-    }
-
-    pub fn current_branch(&self, tree: &str) -> Result<String> {
-        let _ = tree;
-        todo!("sdk-core: Repository::current_branch")
-    }
-
-    /// Create `name` pointing at `from` (a revision; default current head).
-    pub fn create_branch(&self, tree: &str, name: &str, from: Option<&str>) -> Result<BranchInfo> {
-        let _ = (tree, name, from);
-        todo!("sdk-core: Repository::create_branch")
-    }
-
-    /// Switch branches, rewriting the working directory to the target head.
-    /// `DirtyWorkingTree` if there are uncommitted changes and not `force`.
-    pub fn switch_branch(&self, tree: &str, name: &str, opts: SwitchOptions) -> Result<()> {
-        let _ = (tree, name, opts);
-        todo!("sdk-core: Repository::switch_branch")
-    }
-
-    /// Soft-delete (archive) a branch. History stays reachable; the name can
-    /// be reused only after `restore_branch`. Cannot archive the current or
-    /// default branch.
-    pub fn archive_branch(&self, tree: &str, name: &str) -> Result<()> {
-        let _ = (tree, name);
-        todo!("sdk-core: Repository::archive_branch")
-    }
-
-    pub fn restore_branch(&self, tree: &str, name: &str) -> Result<()> {
-        let _ = (tree, name);
-        todo!("sdk-core: Repository::restore_branch")
-    }
-
-    // ----------------------------------------------------------------
-    // Merge / revert / restore
-    // ----------------------------------------------------------------
-
-    /// Merge `source` (branch or revision) into the current branch.
-    /// Uses `crate::merge` for manifest/text merging. Requires a clean
-    /// working tree. On conflicts writes markers into files, saves
-    /// MERGE_STATE.json + `.wt/conflicts/<tree>.json`, and returns
-    /// `MergeOutcome::Conflicts`.
-    pub fn merge(&self, tree: &str, source: &str, opts: MergeOptions) -> Result<MergeOutcome> {
-        let _ = (tree, source, opts);
-        todo!("sdk-core: Repository::merge")
-    }
-
-    pub fn merge_state(&self, tree: &str) -> Result<Option<MergeState>> {
-        let _ = tree;
-        todo!("sdk-core: Repository::merge_state")
-    }
-
-    /// Restore the pre-merge head into the working tree and clear merge state.
-    pub fn abort_merge(&self, tree: &str) -> Result<()> {
-        let _ = tree;
-        todo!("sdk-core: Repository::abort_merge")
-    }
-
-    /// Finish a conflicted merge once markers are resolved: creates the
-    /// two-parent merge snapshot. `MergeConflict` if markers remain.
-    pub fn continue_merge(&self, tree: &str, message: Option<&str>) -> Result<Snapshot> {
-        let _ = (tree, message);
-        todo!("sdk-core: Repository::continue_merge")
-    }
-
-    /// New snapshot on the current branch that undoes `rev`'s changes
-    /// relative to its first parent (append-only; history is not rewritten).
-    pub fn revert(&self, tree: &str, rev: &str) -> Result<Snapshot> {
-        let _ = (tree, rev);
-        todo!("sdk-core: Repository::revert")
-    }
-
-    /// Overwrite working files at `paths` (all if empty) with their content
-    /// at `rev` (default HEAD), deleting files absent there.
-    pub fn restore(&self, tree: &str, paths: &[String], rev: Option<&str>) -> Result<Vec<String>> {
-        let _ = (tree, paths, rev);
-        todo!("sdk-core: Repository::restore")
-    }
-
-    // ----------------------------------------------------------------
-    // Diff
-    // ----------------------------------------------------------------
-
-    /// Working directory vs. `rev` (default HEAD).
-    pub fn diff_working(&self, tree: &str, rev: Option<&str>, opts: &DiffOptions) -> Result<Vec<FileDiff>> {
-        let _ = (tree, rev, opts);
-        todo!("sdk-core: Repository::diff_working")
-    }
-
-    /// `from` vs. `to` (both revisions).
-    pub fn diff_revs(&self, tree: &str, from: &str, to: &str, opts: &DiffOptions) -> Result<Vec<FileDiff>> {
-        let _ = (tree, from, to, opts);
-        todo!("sdk-core: Repository::diff_revs")
-    }
-
-    // ----------------------------------------------------------------
-    // Tags
-    // ----------------------------------------------------------------
-
-    pub fn create_tag(&self, tree: &str, name: &str, rev: Option<&str>, message: Option<&str>) -> Result<TagInfo> {
-        let _ = (tree, name, rev, message);
-        todo!("sdk-core: Repository::create_tag")
-    }
-
-    pub fn tags(&self, tree: &str) -> Result<Vec<TagInfo>> {
-        let _ = tree;
-        todo!("sdk-core: Repository::tags")
-    }
-
-    pub fn delete_tag(&self, tree: &str, name: &str) -> Result<()> {
-        let _ = (tree, name);
-        todo!("sdk-core: Repository::delete_tag")
-    }
-
-    // ----------------------------------------------------------------
-    // Reflog & ignore
-    // ----------------------------------------------------------------
-
-    /// Newest first.
-    pub fn reflog(&self, tree: &str, limit: Option<usize>) -> Result<Vec<ReflogEntry>> {
-        let _ = (tree, limit);
-        todo!("sdk-core: Repository::reflog")
-    }
-
-    pub fn append_reflog(&self, entry: &ReflogEntry) -> Result<()> {
-        let _ = entry;
-        todo!("sdk-core: Repository::append_reflog")
-    }
-
-    /// Effective ignore patterns: built-ins, `.wt/ignore`, `.wtignore` files.
-    pub fn ignore_patterns(&self) -> Result<Vec<String>> {
-        todo!("sdk-core: Repository::ignore_patterns")
-    }
-
-    pub fn add_ignore_pattern(&self, pattern: &str) -> Result<()> {
-        let _ = pattern;
-        todo!("sdk-core: Repository::add_ignore_pattern")
-    }
-
-    /// Whether `rel_path` ('/'-separated, relative to root) is ignored.
-    pub fn is_ignored(&self, rel_path: &str) -> Result<bool> {
-        let _ = rel_path;
-        todo!("sdk-core: Repository::is_ignored")
-    }
-
-    // ----------------------------------------------------------------
-    // Plumbing (used by remote sync and the Git bridge)
-    // ----------------------------------------------------------------
-
-    pub fn write_manifest(&self, manifest: &Manifest) -> Result<ObjectHash> {
-        let _ = manifest;
-        todo!("sdk-core: Repository::write_manifest")
-    }
-
-    pub fn read_manifest(&self, hash: &ObjectHash) -> Result<Manifest> {
-        let _ = hash;
-        todo!("sdk-core: Repository::read_manifest")
-    }
-
-    /// Persist a snapshot record (idempotent). Does not move any ref.
-    pub fn write_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
-        let _ = snapshot;
-        todo!("sdk-core: Repository::write_snapshot")
-    }
-
-    pub fn branch_tip(&self, tree: &str, branch: &str) -> Result<Option<SnapshotId>> {
-        let _ = (tree, branch);
-        todo!("sdk-core: Repository::branch_tip")
-    }
-
-    /// Move (or create) a branch ref. Does not touch the working tree.
-    pub fn set_branch_tip(&self, tree: &str, branch: &str, tip: Option<&str>) -> Result<()> {
-        let _ = (tree, branch, tip);
-        todo!("sdk-core: Repository::set_branch_tip")
-    }
-
-    pub fn remote_tip(&self, tree: &str, remote: &str, branch: &str) -> Result<Option<SnapshotId>> {
-        let _ = (tree, remote, branch);
-        todo!("sdk-core: Repository::remote_tip")
-    }
-
-    pub fn set_remote_tip(&self, tree: &str, remote: &str, branch: &str, tip: Option<&str>) -> Result<()> {
-        let _ = (tree, remote, branch, tip);
-        todo!("sdk-core: Repository::set_remote_tip")
-    }
-
-    /// Write a tag record directly (used by pull/import).
-    pub fn put_tag(&self, tree: &str, tag: &TagInfo) -> Result<()> {
-        let _ = (tree, tag);
-        todo!("sdk-core: Repository::put_tag")
-    }
-
-    /// All snapshots reachable from `tip`, parents before children.
-    pub fn ancestry(&self, tip: &str) -> Result<Vec<Snapshot>> {
-        let _ = tip;
-        todo!("sdk-core: Repository::ancestry")
-    }
-
-    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool> {
-        let _ = (ancestor, descendant);
-        todo!("sdk-core: Repository::is_ancestor")
-    }
-
-    pub fn merge_base(&self, a: &str, b: &str) -> Result<Option<SnapshotId>> {
-        let _ = (a, b);
-        todo!("sdk-core: Repository::merge_base")
-    }
-
-    /// Rewrite the tree's working directory to `snapshot` (removing tracked
-    /// files absent from it, never touching ignored or nested-tree paths) and
-    /// refresh the index. `DirtyWorkingTree` unless clean or `force`.
-    pub fn checkout(&self, tree: &str, snapshot: &str, force: bool) -> Result<()> {
-        let _ = (tree, snapshot, force);
-        todo!("sdk-core: Repository::checkout")
-    }
-
-    /// Build a manifest of the current working directory, storing blobs.
-    pub fn manifest_from_working(&self, tree: &str) -> Result<Manifest> {
-        let _ = tree;
-        todo!("sdk-core: Repository::manifest_from_working")
+    #[test]
+    fn derive_tree_name_sanitizes() {
+        assert_eq!(derive_tree_name(Path::new("/x/my-project")), "my-project");
+        assert_eq!(derive_tree_name(Path::new("/x/.hidden")), "hidden");
+        assert_eq!(derive_tree_name(Path::new("/x/a:b")), "a-b");
+        assert_eq!(derive_tree_name(Path::new("/")), "root");
     }
 }

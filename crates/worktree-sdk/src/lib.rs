@@ -25,6 +25,7 @@ pub mod scan;
 pub mod store;
 
 /// Legacy engine kept until the CLI no longer depends on it.
+#[allow(warnings, clippy::all)]
 pub mod engine;
 
 pub use error::{Result, SdkError};
