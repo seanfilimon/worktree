@@ -922,6 +922,7 @@ mod tests {
             new_tip: Some(SnapshotId::new().into()),
             snapshot_chain: vec![],
             account_id: Some(AccountId::new().into()),
+            snapshots: vec![],
         };
         let err = dom::PushRequest::try_from(w).unwrap_err();
         match err {
