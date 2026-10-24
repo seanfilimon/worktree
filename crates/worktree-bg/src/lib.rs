@@ -1,15 +1,28 @@
-//! worktree-bg — local background daemon for W0rkTree.
+//! worktree-bg — the local W0rkTree background daemon.
 //!
-//! See `../README.md` for role, and
-//! `../worktree-protocol/specs/bgprocess/BgProcess.md` for the full spec.
-//! Modules are stubs until WT-EXTRACT-2 lands.
+//! Watches registered worktrees and takes auto-snapshots after a quiet
+//! period (per each worktree's `[auto_snapshot]` config), optionally staging
+//! them on the configured remote. Clients talk to it over the
+//! [`worktree_sdk::ipc`] protocol; it advertises itself in `$WT_HOME/bg.json`
+//! and persists its watch list in `$WT_HOME/bg.toml`.
+//!
+//! Module map:
+//! - [`daemon`] — watch manager, IPC handling, [`run`] lifecycle
+//! - [`watcher`] — `notify` integration, event filtering, debouncing
+//! - [`worker`] — per-worktree event loop and stats
+//! - [`snapshot`] — the auto-snapshot + auto-stage pass
+//! - [`config`], [`info`] — `bg.toml` and `bg.json`
+//! - [`service`] — login-service definitions
 
 pub mod config;
-pub mod engine;
+pub mod daemon;
 pub mod error;
-pub mod git;
-pub mod ipc;
+pub mod info;
+pub mod paths;
 pub mod service;
-pub mod storage;
-pub mod sync;
+pub mod snapshot;
 pub mod watcher;
+pub mod worker;
+
+pub use daemon::{run, Daemon, RunOutcome, VERSION};
+pub use error::{BgError, Result};

@@ -1,218 +1,248 @@
-use std::path::PathBuf;
+//! Auto-snapshot debouncing, driven by a worktree's `[auto_snapshot]` config.
+//!
+//! The [`Debouncer`] is a pure state machine over [`tokio::time::Instant`], so
+//! it can be tested deterministically with a paused tokio clock. It tracks the
+//! set of changed paths since the last snapshot and decides when a snapshot
+//! is due: after `inactivity` without new events, or immediately once
+//! `max_changed_files` distinct paths have changed.
 
-use chrono::{DateTime, Utc};
+use std::collections::BTreeSet;
+use std::time::Duration;
 
-/// The kind of file-system event that was observed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EventKind {
-    /// A new file or directory was created.
-    Created,
-    /// An existing file was modified (content or metadata).
-    Modified,
-    /// A file or directory was deleted.
-    Deleted,
-    /// A file or directory was renamed (may appear as delete + create on some platforms).
-    Renamed,
+use tokio::time::Instant;
+use worktree_sdk::config::AutoSnapshotSection;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebounceSettings {
+    /// Auto-snapshots are taken at all.
+    pub enabled: bool,
+    /// Quiet period after the last event before a snapshot is due.
+    pub inactivity: Duration,
+    /// Snapshot as soon as this many distinct paths changed (0 = no limit).
+    pub max_changed_files: usize,
 }
 
-impl std::fmt::Display for EventKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EventKind::Created => write!(f, "created"),
-            EventKind::Modified => write!(f, "modified"),
-            EventKind::Deleted => write!(f, "deleted"),
-            EventKind::Renamed => write!(f, "renamed"),
+impl From<&AutoSnapshotSection> for DebounceSettings {
+    fn from(section: &AutoSnapshotSection) -> Self {
+        Self {
+            enabled: section.enabled,
+            inactivity: Duration::from_secs(section.inactivity_secs),
+            max_changed_files: section.max_changed_files,
         }
     }
 }
 
-/// A file-system event that has been tagged with a timestamp and normalized
-/// path, ready for debouncing.
+impl Default for DebounceSettings {
+    fn default() -> Self {
+        Self::from(&AutoSnapshotSection::default())
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct DebouncedEvent {
-    /// The path that was affected.
-    pub path: PathBuf,
-    /// What kind of change occurred.
-    pub kind: EventKind,
-    /// When the event was observed (UTC).
-    pub timestamp: DateTime<Utc>,
-}
-
-impl DebouncedEvent {
-    /// Create a new `DebouncedEvent` with the current UTC timestamp.
-    pub fn now(path: PathBuf, kind: EventKind) -> Self {
-        Self {
-            path,
-            kind,
-            timestamp: Utc::now(),
-        }
-    }
-
-    /// Create a new `DebouncedEvent` with an explicit timestamp.
-    pub fn new(path: PathBuf, kind: EventKind, timestamp: DateTime<Utc>) -> Self {
-        Self {
-            path,
-            kind,
-            timestamp,
-        }
-    }
-}
-
-/// Collects raw file-system events and collapses rapid successive changes
-/// to the same path within a configurable delay window.
-///
-/// The debouncer keeps an internal buffer of events. Callers [`push`] events
-/// in as they arrive and periodically call [`flush`] to retrieve the
-/// deduplicated batch.
 pub struct Debouncer {
-    /// The debounce window in milliseconds. Events affecting the same path
-    /// within this window are collapsed into the most recent event.
-    pub delay_ms: u64,
-
-    /// Internal buffer of pending events, keyed by path for fast dedup.
-    pending: Vec<DebouncedEvent>,
+    settings: DebounceSettings,
+    paused: bool,
+    pending: BTreeSet<String>,
+    last_event: Option<Instant>,
 }
 
 impl Debouncer {
-    /// Create a new `Debouncer` with the given delay window in milliseconds.
-    pub fn new(delay_ms: u64) -> Self {
+    pub fn new(settings: DebounceSettings) -> Self {
         Self {
-            delay_ms,
-            pending: Vec::new(),
+            settings,
+            paused: false,
+            pending: BTreeSet::new(),
+            last_event: None,
         }
     }
 
-    /// Push a new event into the debouncer.
-    ///
-    /// If an event for the same path already exists in the buffer and the new
-    /// event falls within the debounce window, the existing event is replaced
-    /// (keeping only the latest change for that path). Otherwise the event is
-    /// appended.
-    pub fn push(&mut self, event: DebouncedEvent) {
-        let dominated = self.pending.iter().position(|existing| {
-            if existing.path != event.path {
-                return false;
-            }
-            let delta = event
-                .timestamp
-                .signed_duration_since(existing.timestamp)
-                .num_milliseconds()
-                .unsigned_abs();
-            delta <= self.delay_ms as u64
-        });
-
-        if let Some(idx) = dominated {
-            // Replace the older event with the newer one.
-            self.pending[idx] = event;
-        } else {
-            self.pending.push(event);
-        }
+    pub fn settings(&self) -> DebounceSettings {
+        self.settings
     }
 
-    /// Flush all pending events whose debounce window has elapsed relative to
-    /// `now`, returning them in chronological order.
-    ///
-    /// Events whose window has **not** yet elapsed remain in the buffer for a
-    /// future flush.
-    pub fn flush(&mut self) -> Vec<DebouncedEvent> {
-        let now = Utc::now();
-        let delay = chrono::Duration::milliseconds(self.delay_ms as i64);
-
-        let mut ready = Vec::new();
-        let mut remaining = Vec::new();
-
-        for event in self.pending.drain(..) {
-            if now.signed_duration_since(event.timestamp) >= delay {
-                ready.push(event);
-            } else {
-                remaining.push(event);
-            }
-        }
-
-        self.pending = remaining;
-
-        // Return in chronological order.
-        ready.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-        ready
+    pub fn set_settings(&mut self, settings: DebounceSettings) {
+        self.settings = settings;
     }
 
-    /// Flush **all** pending events regardless of whether their debounce window
-    /// has elapsed. Useful during shutdown.
-    pub fn flush_all(&mut self) -> Vec<DebouncedEvent> {
-        let mut events: Vec<DebouncedEvent> = self.pending.drain(..).collect();
-        events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-        events
+    pub fn is_paused(&self) -> bool {
+        self.paused
     }
 
-    /// Returns the number of events currently buffered.
+    /// While paused, changes keep accumulating but no snapshot becomes due.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Record a change to `path` observed at `now`.
+    pub fn record(&mut self, path: impl Into<String>, now: Instant) {
+        self.pending.insert(path.into());
+        self.last_event = Some(now);
+    }
+
+    /// Distinct paths changed since the last [`take`](Self::take).
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
 
-    /// Returns `true` if there are no pending events.
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
+    fn armed(&self) -> bool {
+        self.settings.enabled && !self.paused && !self.pending.is_empty()
+    }
+
+    fn over_limit(&self) -> bool {
+        self.settings.max_changed_files > 0 && self.pending.len() >= self.settings.max_changed_files
+    }
+
+    /// When the next snapshot becomes due, if one is pending at all.
+    pub fn deadline(&self) -> Option<Instant> {
+        if !self.armed() {
+            return None;
+        }
+        if self.over_limit() {
+            return self.last_event;
+        }
+        self.last_event.map(|t| t + self.settings.inactivity)
+    }
+
+    /// Whether a snapshot is due at `now`.
+    pub fn is_ready(&self, now: Instant) -> bool {
+        self.deadline().is_some_and(|deadline| now >= deadline)
+    }
+
+    /// Clear the pending set, returning the changed paths (sorted).
+    pub fn take(&mut self) -> Vec<String> {
+        self.last_event = None;
+        std::mem::take(&mut self.pending).into_iter().collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
 
-    #[test]
-    fn push_collapses_same_path_within_window() {
-        let mut debouncer = Debouncer::new(500);
-        let now = Utc::now();
-
-        debouncer.push(DebouncedEvent::new(
-            PathBuf::from("src/main.rs"),
-            EventKind::Modified,
-            now,
-        ));
-        debouncer.push(DebouncedEvent::new(
-            PathBuf::from("src/main.rs"),
-            EventKind::Modified,
-            now + Duration::milliseconds(100),
-        ));
-
-        assert_eq!(debouncer.pending_count(), 1);
+    fn settings(inactivity_secs: u64, max: usize) -> DebounceSettings {
+        DebounceSettings {
+            enabled: true,
+            inactivity: Duration::from_secs(inactivity_secs),
+            max_changed_files: max,
+        }
     }
 
     #[test]
-    fn push_keeps_different_paths() {
-        let mut debouncer = Debouncer::new(500);
-        let now = Utc::now();
-
-        debouncer.push(DebouncedEvent::new(
-            PathBuf::from("src/main.rs"),
-            EventKind::Modified,
-            now,
-        ));
-        debouncer.push(DebouncedEvent::new(
-            PathBuf::from("src/lib.rs"),
-            EventKind::Created,
-            now,
-        ));
-
-        assert_eq!(debouncer.pending_count(), 2);
+    fn settings_follow_config_section() {
+        let section = AutoSnapshotSection {
+            enabled: false,
+            inactivity_secs: 7,
+            max_changed_files: 3,
+        };
+        let s = DebounceSettings::from(&section);
+        assert!(!s.enabled);
+        assert_eq!(s.inactivity, Duration::from_secs(7));
+        assert_eq!(s.max_changed_files, 3);
+        assert_eq!(
+            DebounceSettings::default(),
+            DebounceSettings::from(&AutoSnapshotSection::default())
+        );
     }
 
     #[test]
-    fn flush_all_drains_everything() {
-        let mut debouncer = Debouncer::new(500);
+    fn idle_debouncer_has_no_deadline() {
+        let d = Debouncer::new(settings(30, 50));
+        assert_eq!(d.deadline(), None);
+        assert!(!d.is_ready(Instant::now()));
+        assert_eq!(d.pending_count(), 0);
+    }
 
-        debouncer.push(DebouncedEvent::now(
-            PathBuf::from("a.rs"),
-            EventKind::Created,
-        ));
-        debouncer.push(DebouncedEvent::now(
-            PathBuf::from("b.rs"),
-            EventKind::Deleted,
-        ));
+    #[test]
+    fn deadline_is_inactivity_after_last_event() {
+        let mut d = Debouncer::new(settings(30, 50));
+        let t0 = Instant::now();
+        d.record("a.txt", t0);
+        assert_eq!(d.deadline(), Some(t0 + Duration::from_secs(30)));
+        assert!(!d.is_ready(t0 + Duration::from_secs(29)));
+        assert!(d.is_ready(t0 + Duration::from_secs(30)));
 
-        let events = debouncer.flush_all();
-        assert_eq!(events.len(), 2);
-        assert!(debouncer.is_empty());
+        // A later event pushes the deadline out.
+        d.record("b.txt", t0 + Duration::from_secs(20));
+        assert_eq!(d.deadline(), Some(t0 + Duration::from_secs(50)));
+        assert!(!d.is_ready(t0 + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn same_path_counts_once() {
+        let mut d = Debouncer::new(settings(30, 50));
+        let t0 = Instant::now();
+        d.record("a.txt", t0);
+        d.record("a.txt", t0 + Duration::from_secs(1));
+        d.record("b.txt", t0 + Duration::from_secs(2));
+        assert_eq!(d.pending_count(), 2);
+    }
+
+    #[test]
+    fn reaching_max_changed_files_is_immediately_ready() {
+        let mut d = Debouncer::new(settings(30, 3));
+        let t0 = Instant::now();
+        d.record("a", t0);
+        d.record("b", t0);
+        assert!(!d.is_ready(t0));
+        d.record("c", t0);
+        assert!(d.is_ready(t0));
+        assert_eq!(d.deadline(), Some(t0));
+    }
+
+    #[test]
+    fn zero_max_means_no_limit() {
+        let mut d = Debouncer::new(settings(30, 0));
+        let t0 = Instant::now();
+        for i in 0..1000 {
+            d.record(format!("f{i}"), t0);
+        }
+        assert!(!d.is_ready(t0));
+        assert!(d.is_ready(t0 + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn disabled_never_becomes_ready_but_tracks_changes() {
+        let mut d = Debouncer::new(DebounceSettings {
+            enabled: false,
+            ..settings(1, 1)
+        });
+        let t0 = Instant::now();
+        d.record("a", t0);
+        assert_eq!(d.pending_count(), 1);
+        assert_eq!(d.deadline(), None);
+        assert!(!d.is_ready(t0 + Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn pause_suspends_and_resume_restores_deadline() {
+        let mut d = Debouncer::new(settings(10, 50));
+        let t0 = Instant::now();
+        d.set_paused(true);
+        assert!(d.is_paused());
+        d.record("a", t0);
+        assert!(!d.is_ready(t0 + Duration::from_secs(60)));
+        d.set_paused(false);
+        assert!(d.is_ready(t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn take_clears_state_and_returns_sorted_paths() {
+        let mut d = Debouncer::new(settings(10, 50));
+        let t0 = Instant::now();
+        d.record("z", t0);
+        d.record("a", t0);
+        assert_eq!(d.take(), vec!["a".to_string(), "z".to_string()]);
+        assert_eq!(d.pending_count(), 0);
+        assert_eq!(d.deadline(), None);
+    }
+
+    #[test]
+    fn settings_change_applies_to_pending_changes() {
+        let mut d = Debouncer::new(settings(30, 50));
+        let t0 = Instant::now();
+        d.record("a", t0);
+        d.set_settings(settings(5, 50));
+        assert_eq!(d.settings().inactivity, Duration::from_secs(5));
+        assert!(d.is_ready(t0 + Duration::from_secs(5)));
     }
 }
