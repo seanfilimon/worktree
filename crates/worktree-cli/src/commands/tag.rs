@@ -1,56 +1,81 @@
-use super::TagAction;
-use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+//! `wt tag`
 
-pub async fn execute(action: TagAction) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        TagAction::Create { name, message } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let tag = worktree_sdk::engine::tag::create_tag(
-                &engine,
-                &name,
-                message.as_deref(),
-                None,
-            )?;
-            format::print_success(&format!("Tag '{}' created", tag.name));
-            format::print_kv("Target", &tag.target_snapshot[..8.min(tag.target_snapshot.len())]);
-            if let Some(msg) = &tag.message {
-                format::print_kv("Message", msg);
-            }
-            if let Some(tagger) = &tag.tagger {
-                format::print_kv("Tagger", tagger);
-            }
-            format::print_kv("Created", &tag.created_at);
-        }
-        TagAction::List => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            let tags = worktree_sdk::engine::tag::list_tags(&engine, None)?;
-            format::print_header("Tags");
-            if tags.is_empty() {
-                format::print_info("No tags yet. Create one with `wt tag create <name>`");
-            } else {
+use clap::{Args, Subcommand};
+use colored::Colorize;
+use serde::Serialize;
+
+use crate::context::Context;
+use crate::error::Result;
+use crate::output::format::{short, subject};
+
+#[derive(Debug, Args)]
+pub struct TagArgs {
+    #[command(subcommand)]
+    pub action: Option<TagCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TagCommand {
+    /// List tags (the default)
+    List,
+    /// Tag a snapshot
+    Create {
+        name: String,
+        /// Revision to tag (default: HEAD)
+        #[arg(value_name = "REV")]
+        rev: Option<String>,
+        /// Tag message (makes an annotated tag)
+        #[arg(short, long, value_name = "MSG")]
+        message: Option<String>,
+    },
+    /// Delete a tag
+    Delete { name: String },
+}
+
+#[derive(Serialize)]
+struct Deleted<'a> {
+    tag: &'a str,
+    deleted: bool,
+}
+
+pub fn run(ctx: &Context, args: TagArgs) -> Result<()> {
+    let (repo, tree) = ctx.open_tree()?;
+    match args.action.unwrap_or(TagCommand::List) {
+        TagCommand::List => {
+            let tags = repo.tags(&tree.name)?;
+            ctx.out.emit(&tags, |t| {
+                let width = tags.iter().map(|tag| tag.name.len()).max().unwrap_or(0);
                 for tag in &tags {
-                    let short_target: String = tag.target_snapshot.chars().take(8).collect();
-                    let msg = tag.message.as_deref().unwrap_or("");
-                    if msg.is_empty() {
-                        format::print_list_item(&format!("{} -> {}", tag.name, short_target));
-                    } else {
-                        format::print_list_item(&format!(
-                            "{} -> {} ({})",
-                            tag.name, short_target, msg
-                        ));
-                    }
+                    let message = tag.message.as_deref().map(subject).unwrap_or_default();
+                    t.line(format_args!(
+                        "{} {} {message}",
+                        format!("{:<width$}", tag.name).yellow().bold(),
+                        short(&tag.target)
+                    ));
                 }
-                println!();
-                format::print_info(&format!("{} tag(s) total", tags.len()));
-            }
+            })
         }
-        TagAction::Delete { name } => {
-            let engine = WorktreeEngine::open(Path::new("."))?;
-            worktree_sdk::engine::tag::delete_tag(&engine, &name, None)?;
-            format::print_success(&format!("Tag '{}' deleted", name));
+        TagCommand::Create { name, rev, message } => {
+            let tag = repo.create_tag(&tree.name, &name, rev.as_deref(), message.as_deref())?;
+            ctx.out.emit(&tag, |t| {
+                t.line(format_args!(
+                    "Tagged {} as {}",
+                    short(&tag.target).yellow(),
+                    tag.name.bold()
+                ));
+            })
+        }
+        TagCommand::Delete { name } => {
+            repo.delete_tag(&tree.name, &name)?;
+            ctx.out.emit(
+                &Deleted {
+                    tag: &name,
+                    deleted: true,
+                },
+                |t| {
+                    t.line(format_args!("Deleted tag {}", name.bold()));
+                },
+            )
         }
     }
-    Ok(())
 }

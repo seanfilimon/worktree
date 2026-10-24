@@ -1,102 +1,366 @@
-use crate::output::format;
-use std::path::Path;
-use worktree_sdk::WorktreeEngine;
+//! `wt archive`: write a snapshot's files to a tar.gz or zip archive.
 
-pub async fn execute(
-    output: String,
-    archive_format: String,
-    tree: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = WorktreeEngine::open(Path::new("."))?;
-    let state = worktree_sdk::engine::status::load_state(&engine)?;
+use std::fs::File;
+use std::io::{BufWriter, Seek, Write};
+use std::path::{Path, PathBuf};
 
-    let tree_name = tree.as_deref()
-        .or(state.current_tree.as_deref())
-        .ok_or("no tree specified")?;
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use clap::{Args, ValueEnum};
+use colored::Colorize;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use serde::Serialize;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
-    let tree_state = state.find_tree(tree_name)
-        .ok_or_else(|| format!("tree '{}' not found", tree_name))?;
+use crate::context::Context;
+use crate::error::{CliError, Result};
+use crate::output::format::plural;
 
-    // Validate format
-    let ext = match archive_format.as_str() {
-        "tar.gz" | "targz" | "tgz" => "tar.gz",
-        "zip" => "zip",
-        other => {
-            return Err(format!("Unsupported archive format: '{}'. Use 'tar.gz' or 'zip'.", other).into());
-        }
-    };
+#[derive(Debug, Args)]
+pub struct ArchiveArgs {
+    /// Snapshot to archive (default: HEAD)
+    #[arg(value_name = "REV")]
+    pub rev: Option<String>,
 
-    format::print_info(&format!(
-        "Creating {} archive of tree '{}' -> {}",
-        ext, tree_name, output
-    ));
+    /// Archive file to write
+    #[arg(short, long, value_name = "FILE")]
+    pub output: PathBuf,
 
-    // Collect files from the latest snapshot on current branch
-    let branch_name = &tree_state.current_branch;
-    let snapshots = tree_state.snapshots_on_branch(branch_name);
+    /// Archive format (default: from the file extension, else tar.gz)
+    #[arg(long, value_enum)]
+    pub format: Option<ArchiveFormat>,
+}
 
-    let file_count = if let Some(snap) = snapshots.last() {
-        snap.files.len()
-    } else {
-        // No snapshot — collect from working directory
-        let tree_path = if tree_name == "root" {
-            engine.root().to_path_buf()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
+pub enum ArchiveFormat {
+    #[value(name = "tar.gz", alias = "tgz")]
+    #[serde(rename = "tar.gz")]
+    TarGz,
+    #[value(name = "zip")]
+    #[serde(rename = "zip")]
+    Zip,
+}
+
+impl ArchiveFormat {
+    fn from_path(path: &Path) -> Self {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if name.ends_with(".zip") {
+            Self::Zip
         } else {
-            engine.root().join(&tree_state.path)
-        };
-
-        let mut count = 0u32;
-        if tree_path.exists() {
-            for entry in walkdir::WalkDir::new(&tree_path)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                if entry.file_type().is_file() {
-                    let rel = entry.path().strip_prefix(&tree_path).unwrap_or(entry.path());
-                    let rel_str = rel.to_string_lossy();
-                    if !rel_str.starts_with(".wt") && !rel_str.starts_with(".git") {
-                        count += 1;
-                    }
-                }
-            }
-        }
-        count as usize
-    };
-
-    // Create the archive file
-    let output_path = Path::new(&output);
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
+            Self::TarGz
         }
     }
+}
 
-    // Write a placeholder archive (actual compression would require tar/zip crate)
-    // For now, create a manifest file listing all contents
-    let manifest_content = if let Some(snap) = tree_state.snapshots_on_branch(branch_name).last() {
-        let mut lines = Vec::new();
-        lines.push(format!("# W0rkTree Archive Manifest"));
-        lines.push(format!("# Tree: {}", tree_name));
-        lines.push(format!("# Branch: {}", branch_name));
-        lines.push(format!("# Snapshot: {}", snap.id));
-        lines.push(format!("# Files: {}", snap.files.len()));
-        lines.push(String::new());
-        for f in &snap.files {
-            lines.push(format!("{}\t{}\t{}", f.path, f.hash, f.size));
+/// One file to put in an archive.
+pub struct ArchiveEntry {
+    pub path: String,
+    pub data: Vec<u8>,
+    pub executable: bool,
+}
+
+#[derive(Serialize)]
+struct ArchiveResult<'a> {
+    output: &'a Path,
+    format: ArchiveFormat,
+    snapshot: &'a str,
+    files: usize,
+}
+
+pub fn run(ctx: &Context, args: ArchiveArgs) -> Result<()> {
+    let (repo, tree) = ctx.open_tree()?;
+    let snapshot = repo.resolve(&tree.name, args.rev.as_deref().unwrap_or("HEAD"))?;
+    let manifest = repo.manifest_of(&snapshot)?;
+    let format = args
+        .format
+        .unwrap_or_else(|| ArchiveFormat::from_path(&args.output));
+    let output = ctx.absolute(&args.output);
+
+    let entries = manifest
+        .entries
+        .iter()
+        .map(|entry| -> Result<ArchiveEntry> {
+            Ok(ArchiveEntry {
+                path: entry.path.clone(),
+                data: repo.read_file_at(&snapshot, &entry.path)?,
+                executable: entry.executable,
+            })
+        });
+    let file = File::create(&output)
+        .map_err(|e| CliError::failure(format!("cannot create '{}': {e}", output.display())))?;
+    let written = write_archive(format, BufWriter::new(file), snapshot.created_at, entries);
+    let count = match written {
+        Ok(count) => count,
+        Err(err) => {
+            // Do not leave a truncated archive behind; the write error is what matters.
+            let _ = std::fs::remove_file(&output);
+            return Err(err);
         }
-        lines.join("\n")
-    } else {
-        format!("# W0rkTree Archive Manifest\n# Tree: {}\n# No snapshots\n", tree_name)
     };
 
-    std::fs::write(&output_path, manifest_content)?;
+    let result = ArchiveResult {
+        output: &output,
+        format,
+        snapshot: &snapshot.id,
+        files: count,
+    };
+    ctx.out.emit(&result, |t| {
+        t.line(format_args!(
+            "Wrote {} from {} to {}",
+            plural(count, "file", "files"),
+            snapshot.short_id().yellow(),
+            output.display()
+        ));
+    })
+}
 
-    format::print_success(&format!("Archive created: {}", output));
-    format::print_kv("Format", ext);
-    format::print_kv("Tree", tree_name);
-    format::print_kv("Branch", branch_name);
-    format::print_kv("Files", &file_count.to_string());
-    format::print_kv("Output", &output);
+/// Write `entries` as an archive with every file stamped `mtime`.
+/// Returns the number of files written.
+pub fn write_archive<W: Write + Seek>(
+    format: ArchiveFormat,
+    writer: W,
+    mtime: DateTime<Utc>,
+    entries: impl IntoIterator<Item = Result<ArchiveEntry>>,
+) -> Result<usize> {
+    match format {
+        ArchiveFormat::TarGz => write_tar_gz(writer, mtime, entries),
+        ArchiveFormat::Zip => write_zip(writer, mtime, entries),
+    }
+}
 
-    Ok(())
+fn mode(executable: bool) -> u32 {
+    if executable {
+        0o755
+    } else {
+        0o644
+    }
+}
+
+fn write_tar_gz<W: Write>(
+    writer: W,
+    mtime: DateTime<Utc>,
+    entries: impl IntoIterator<Item = Result<ArchiveEntry>>,
+) -> Result<usize> {
+    let mut builder = tar::Builder::new(GzEncoder::new(writer, Compression::default()));
+    let mtime = u64::try_from(mtime.timestamp()).unwrap_or(0);
+    let mut count = 0;
+    for entry in entries {
+        let entry = entry?;
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(entry.data.len() as u64);
+        header.set_mode(mode(entry.executable));
+        header.set_mtime(mtime);
+        builder.append_data(&mut header, &entry.path, entry.data.as_slice())?;
+        count += 1;
+    }
+    builder.into_inner()?.finish()?.flush()?;
+    Ok(count)
+}
+
+fn write_zip<W: Write + Seek>(
+    writer: W,
+    mtime: DateTime<Utc>,
+    entries: impl IntoIterator<Item = Result<ArchiveEntry>>,
+) -> Result<usize> {
+    let zip_err =
+        |e: zip::result::ZipError| CliError::failure(format!("cannot write zip archive: {e}"));
+    let mut zip = ZipWriter::new(writer);
+    let base = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(zip_time(mtime));
+    let mut count = 0;
+    for entry in entries {
+        let entry = entry?;
+        let options = base
+            .unix_permissions(mode(entry.executable))
+            .large_file(entry.data.len() >= u32::MAX as usize);
+        zip.start_file(entry.path.as_str(), options)
+            .map_err(zip_err)?;
+        zip.write_all(&entry.data)?;
+        count += 1;
+    }
+    zip.finish().map_err(zip_err)?.flush()?;
+    Ok(count)
+}
+
+/// Zip timestamps are DOS dates (1980..=2107); clamp anything outside.
+fn zip_time(at: DateTime<Utc>) -> zip::DateTime {
+    let date = |y: i32| {
+        u16::try_from(y).ok().and_then(|year| {
+            zip::DateTime::from_date_and_time(
+                year,
+                u8::try_from(at.month()).ok()?,
+                u8::try_from(at.day()).ok()?,
+                u8::try_from(at.hour()).ok()?,
+                u8::try_from(at.minute()).ok()?,
+                u8::try_from(at.second()).ok()?,
+            )
+            .ok()
+        })
+    };
+    date(at.year()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Read};
+
+    use chrono::TimeZone;
+
+    use super::*;
+
+    fn entries() -> Vec<Result<ArchiveEntry>> {
+        vec![
+            Ok(ArchiveEntry {
+                path: "README.md".into(),
+                data: b"# hello\n".to_vec(),
+                executable: false,
+            }),
+            Ok(ArchiveEntry {
+                path: "bin/run.sh".into(),
+                data: b"#!/bin/sh\necho hi\n".to_vec(),
+                executable: true,
+            }),
+            Ok(ArchiveEntry {
+                path: "empty.txt".into(),
+                data: Vec::new(),
+                executable: false,
+            }),
+        ]
+    }
+
+    fn mtime() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 24, 12, 30, 44)
+            .single()
+            .expect("valid time")
+    }
+
+    #[test]
+    fn format_from_extension() {
+        assert_eq!(
+            ArchiveFormat::from_path(Path::new("out.zip")),
+            ArchiveFormat::Zip
+        );
+        assert_eq!(
+            ArchiveFormat::from_path(Path::new("OUT.ZIP")),
+            ArchiveFormat::Zip
+        );
+        assert_eq!(
+            ArchiveFormat::from_path(Path::new("out.tar.gz")),
+            ArchiveFormat::TarGz
+        );
+        assert_eq!(
+            ArchiveFormat::from_path(Path::new("out.tgz")),
+            ArchiveFormat::TarGz
+        );
+        assert_eq!(
+            ArchiveFormat::from_path(Path::new("out")),
+            ArchiveFormat::TarGz
+        );
+    }
+
+    #[test]
+    fn format_serializes_as_cli_name() {
+        assert_eq!(
+            serde_json::to_string(&ArchiveFormat::TarGz).expect("json"),
+            "\"tar.gz\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ArchiveFormat::Zip).expect("json"),
+            "\"zip\""
+        );
+    }
+
+    #[test]
+    fn tar_gz_round_trip() {
+        let mut buf = Cursor::new(Vec::new());
+        let count =
+            write_archive(ArchiveFormat::TarGz, &mut buf, mtime(), entries()).expect("write");
+        assert_eq!(count, 3);
+
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(buf.get_ref().as_slice()));
+        let mut seen = Vec::new();
+        for entry in archive.entries().expect("entries") {
+            let mut entry = entry.expect("entry");
+            let path = entry
+                .path()
+                .expect("path")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let mode = entry.header().mode().expect("mode");
+            let time = entry.header().mtime().expect("mtime");
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).expect("read");
+            seen.push((path, mode, time, data));
+        }
+        let ts = u64::try_from(mtime().timestamp()).expect("positive");
+        assert_eq!(
+            seen,
+            vec![
+                ("README.md".to_string(), 0o644, ts, b"# hello\n".to_vec()),
+                (
+                    "bin/run.sh".to_string(),
+                    0o755,
+                    ts,
+                    b"#!/bin/sh\necho hi\n".to_vec()
+                ),
+                ("empty.txt".to_string(), 0o644, ts, Vec::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn zip_round_trip() {
+        let mut buf = Cursor::new(Vec::new());
+        let count = write_archive(ArchiveFormat::Zip, &mut buf, mtime(), entries()).expect("write");
+        assert_eq!(count, 3);
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(buf.into_inner())).expect("zip");
+        assert_eq!(archive.len(), 3);
+        let mut file = archive.by_name("bin/run.sh").expect("entry");
+        assert_eq!(file.unix_mode().map(|m| m & 0o777), Some(0o755));
+        let modified = file.last_modified().expect("mtime");
+        assert_eq!(
+            (modified.year(), modified.month(), modified.day()),
+            (2026, 10, 24)
+        );
+        let mut data = String::new();
+        file.read_to_string(&mut data).expect("read");
+        assert_eq!(data, "#!/bin/sh\necho hi\n");
+        drop(file);
+        let readme = archive.by_name("README.md").expect("entry");
+        assert_eq!(readme.unix_mode().map(|m| m & 0o777), Some(0o644));
+    }
+
+    #[test]
+    fn entry_errors_abort_the_archive() {
+        let failing = vec![
+            Ok(ArchiveEntry {
+                path: "a".into(),
+                data: b"a".to_vec(),
+                executable: false,
+            }),
+            Err(CliError::failure("object not found")),
+        ];
+        let mut buf = Cursor::new(Vec::new());
+        let err =
+            write_archive(ArchiveFormat::Zip, &mut buf, mtime(), failing).expect_err("must fail");
+        assert!(err.to_string().contains("object not found"));
+    }
+
+    #[test]
+    fn zip_time_clamps_pre_1980() {
+        let old = Utc
+            .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+            .single()
+            .expect("valid");
+        assert_eq!(zip_time(old), zip::DateTime::default());
+        let now = zip_time(mtime());
+        assert_eq!((now.year(), now.hour(), now.second()), (2026, 12, 44));
+    }
 }
