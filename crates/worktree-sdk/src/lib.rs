@@ -11,7 +11,6 @@
 //! - [`scan`] — secret scanning, license detection, content chunking
 //! - [`remote`] — gRPC/REST client for the W0rkTree server
 //! - [`ipc`] — CLI <-> background daemon protocol
-//! - [`engine`] — legacy JSON-state engine, to be removed
 
 pub mod config;
 pub mod diff;
@@ -24,14 +23,7 @@ pub mod repo;
 pub mod scan;
 pub mod store;
 
-/// Legacy engine kept until the CLI no longer depends on it.
-#[allow(warnings, clippy::all)]
-pub mod engine;
-
 pub use error::{Result, SdkError};
 pub use model::*;
 pub use repo::Repository;
 pub use store::{ObjectHash, ObjectStore};
-
-/// Legacy alias.
-pub use engine::WorktreeEngine;

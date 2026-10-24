@@ -16,7 +16,8 @@ fn branch_protection_and_mr() {
     let alice_api = alice.api();
     let bob = env.user("bob");
     bob.register();
-    add_member(&alice_api, "alice", "bob", "developer");
+    // Approving merge requests requires maintainer or above (see the role matrix).
+    add_member(&alice_api, "alice", "bob", "maintainer");
     let b = bob.clone_tree("alice", TREE, TREE);
     let bob_api = bob.api();
     let tree_path = format!("/api/v1/trees/alice/{TREE}");

@@ -203,19 +203,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = clone("http://127.0.0.1:1", "", "tree", &dir.path().join("x"))
             .await
-            .err()
-            .expect("clone must fail");
+            .expect_err("clone must fail");
         assert!(matches!(err, SdkError::InvalidArgument(_)), "{err:?}");
         let err = clone("ftp://nope", "t", "tree", &dir.path().join("x"))
             .await
-            .err()
-            .expect("clone must fail");
+            .expect_err("clone must fail");
         assert!(matches!(err, SdkError::InvalidArgument(_)), "{err:?}");
         std::fs::write(dir.path().join("f"), "x").unwrap();
         let err = clone("http://127.0.0.1:1", "t", "tree", dir.path())
             .await
-            .err()
-            .expect("clone must fail");
+            .expect_err("clone must fail");
         assert!(matches!(err, SdkError::InvalidArgument(m) if m.contains("not empty")));
     }
 }

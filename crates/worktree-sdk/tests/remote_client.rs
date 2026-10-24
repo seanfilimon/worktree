@@ -442,8 +442,7 @@ async fn remote_clone_of_unknown_tree_creates_nothing() {
     let target = dest.path().join("clone");
     let err = remote::clone(&server.url, "alice", "nope", &target)
         .await
-        .err()
-        .expect("clone must fail");
+        .expect_err("clone must fail");
     assert!(
         matches!(err, SdkError::TreeNotFound(ref t) if t == "alice/nope"),
         "{err:?}"
