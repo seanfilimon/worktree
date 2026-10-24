@@ -56,6 +56,14 @@ type Deps struct {
 	// Long-lived responses (the SSE stream) end when it is closed so that
 	// graceful shutdown is not held up by idle subscribers.
 	Done <-chan struct{}
+
+	// AllowRegistration mirrors the server's self-service registration
+	// setting; it is reported by GET /api/v1/admin/system.
+	AllowRegistration bool
+	// DataDir is the server data directory (holding meta.db and objects/).
+	// GET /api/v1/admin/system reports it and the size of <DataDir>/meta.db.
+	// "" = unknown.
+	DataDir string
 }
 
 // defaultCORSOrigin is the Vite dev server of apps/admin.

@@ -125,6 +125,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Logger:      log,
 		CORSOrigins: cfg.CORSOrigins,
 		Done:        ctx.Done(),
+
+		AllowRegistration: cfg.AllowRegistration,
+		DataDir:           cfg.DataDir,
 	})
 
 	srv := newHTTPServer(mux(grpcServer, api), log)
