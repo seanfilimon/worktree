@@ -71,6 +71,23 @@ pub fn parse_gitattributes(content: &str) -> Vec<GitAttribute> {
     result
 }
 
+/// Patterns whose paths are stored with Git LFS (`filter=lfs`). Importing
+/// such paths brings in the LFS pointer files, not the large content.
+///
+/// ```
+/// use worktree_git::config::gitattributes::{lfs_patterns, parse_gitattributes};
+///
+/// let attrs = parse_gitattributes("*.psd filter=lfs diff=lfs merge=lfs -text\n*.rs text\n");
+/// assert_eq!(lfs_patterns(&attrs), vec!["*.psd"]);
+/// ```
+pub fn lfs_patterns(attrs: &[GitAttribute]) -> Vec<&str> {
+    attrs
+        .iter()
+        .filter(|a| a.attributes.iter().any(|t| t == "filter=lfs"))
+        .map(|a| a.pattern.as_str())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +151,15 @@ mod tests {
         assert_eq!(attrs.len(), 2);
         assert_eq!(attrs[0].attributes, vec!["-text", "-diff"]);
         assert_eq!(attrs[1].attributes, vec!["text", "eol=lf"]);
+    }
+
+    #[test]
+    fn lfs_detection() {
+        let attrs = parse_gitattributes(
+            "*.bin filter=lfs -text\n*.txt text\n*.zip -filter=lfs\nassets/** filter=lfs\n",
+        );
+        assert_eq!(lfs_patterns(&attrs), vec!["*.bin", "assets/**"]);
+        assert!(lfs_patterns(&[]).is_empty());
     }
 
     #[test]
