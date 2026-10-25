@@ -55,6 +55,9 @@ impl Repository {
         let rec = self.load_tree(tree)?;
         match self.merge_state(tree)? {
             Some(state) => {
+                // rewrite (§14.5): a stopped cherry-pick/rebase step is not a
+                // merge; it finishes with `wt cherry-pick|rebase --continue`.
+                self.ensure_no_rewrite(tree)?;
                 if !self.unresolved_conflicts(&rec, &state)?.is_empty() {
                     return Err(SdkError::MergeInProgress);
                 }

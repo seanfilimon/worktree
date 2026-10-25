@@ -3,11 +3,13 @@
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde::Serialize;
+use worktree_sdk::config::OnBranchSwitch;
+use worktree_sdk::repo::{AutoStashSwitch, StashApplyOutcome, StashEntry};
 use worktree_sdk::{BranchInfo, Repository, SwitchOptions};
 
 use crate::context::Context;
 use crate::error::Result;
-use crate::output::format::{short_or, subject};
+use crate::output::format::{plural, short_or, subject};
 
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -41,7 +43,14 @@ pub enum BranchCommand {
     Restore { name: String },
 }
 
+/// `wt switch NAME [-c] [--force]`
 #[derive(Debug, Args)]
+#[command(after_long_help = "\
+A dirty working tree is refused unless `--force` (discard the changes) or
+`auto_snapshot.on_branch_switch` says otherwise: `snapshot` lets the daemon
+snapshot the tree first; `stash` stashes the changes (new files included) as
+`auto-stash on BRANCH` and, when you switch back to BRANCH, pops that
+auto-stash again. `-c` carries the changes to the new branch.")]
 pub struct SwitchArgs {
     /// Branch to switch to
     pub name: String,
@@ -67,6 +76,12 @@ struct SwitchResult<'a> {
     tree: &'a str,
     branch: &'a str,
     created: bool,
+    /// Auto-stash of the branch left behind (`on_branch_switch = "stash"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stashed: Option<&'a StashEntry>,
+    /// Auto-stash of the target branch that was popped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restored: Option<&'a StashApplyOutcome>,
 }
 
 pub fn run(ctx: &Context, args: BranchArgs) -> Result<()> {
@@ -155,28 +170,46 @@ fn tip_subjects(repo: &Repository, branches: &[BranchInfo]) -> Result<Vec<String
 
 pub fn switch(ctx: &Context, args: SwitchArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
-    // daemon workstream (§13.11): a running daemon snapshots the tree first
-    // when auto_snapshot.on_branch_switch = "snapshot". Best effort.
-    if !args.force {
-        let _ = crate::context::block_on(worktree_sdk::ipc::prepare_branch_switch(
-            repo.root(),
-            &tree.name,
-        ));
-    }
-    repo.switch_branch(
-        &tree.name,
-        &args.name,
-        SwitchOptions {
-            create: args.create,
-            force: args.force,
-        },
-    )?;
+    let opts = SwitchOptions {
+        create: args.create,
+        force: args.force,
+    };
+    // rewrite (§14.5): `auto_snapshot.on_branch_switch = "stash"` stashes
+    // dirty changes on leave and pops the target's auto-stash on return.
+    let mode = repo
+        .effective_config(Some(&tree.name))
+        .map(|c| c.auto_snapshot.on_branch_switch)
+        .unwrap_or_default();
+    let autostash = if mode == OnBranchSwitch::Stash {
+        repo.switch_branch_autostash(&tree.name, &args.name, opts)?
+    } else {
+        // daemon workstream (§13.11): a running daemon snapshots the tree first
+        // when auto_snapshot.on_branch_switch = "snapshot". Best effort.
+        if !args.force {
+            let _ = crate::context::block_on(worktree_sdk::ipc::prepare_branch_switch(
+                repo.root(),
+                &tree.name,
+            ));
+        }
+        repo.switch_branch(&tree.name, &args.name, opts)?;
+        AutoStashSwitch::default()
+    };
     let result = SwitchResult {
         tree: &tree.name,
         branch: &args.name,
         created: args.create,
+        stashed: autostash.stashed.as_ref(),
+        restored: autostash.restored.as_ref(),
     };
     ctx.out.emit(&result, |t| {
+        if let Some(entry) = &autostash.stashed {
+            t.line(format_args!(
+                "Stashed {} as {}: {}",
+                plural(entry.changes.len(), "changed file", "changed files"),
+                "stash@{0}".yellow(),
+                entry.message
+            ));
+        }
         let what = if args.create {
             "a new branch"
         } else {
@@ -186,5 +219,12 @@ pub fn switch(ctx: &Context, args: SwitchArgs) -> Result<()> {
             "Switched to {what} {}",
             args.name.green().bold()
         ));
-    })
+        if let Some(restored) = &autostash.restored {
+            crate::commands::stash::render_apply(t, restored);
+        }
+    })?;
+    match &autostash.restored {
+        Some(restored) => crate::commands::stash::apply_status(restored),
+        None => Ok(()),
+    }
 }

@@ -52,6 +52,7 @@ is authoritative; the spec is a bug.
 | **Webhooks** | [`server/Webhooks.md`](./server/Webhooks.md) | Tenant and tree webhooks: event patterns, signed JSON deliveries, retries, deactivation, delivery log, SSRF guard, `wt webhook` |
 | **Code search** | [`server/CodeSearch.md`](./server/CodeSearch.md) | Trigram index of default branches, literal/regex search, permission filtering, `GET /search/code`, `wt search code` |
 | **CLI ergonomics** | [`cli/CliErgonomics.md`](./cli/CliErgonomics.md) | Shell completions, `[alias]` expansion rules, `wt doctor` checks, `wt open` admin-panel URLs, grouped help |
+| **History rewriting** | [`tree/HistoryRewriting.md`](./tree/HistoryRewriting.md) | `wt cherry-pick`, `wt rebase` (pushed-history guard, conflicts via `wt merge resolve`), `wt stash`, auto-stash on branch switch |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →
