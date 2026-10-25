@@ -6,6 +6,7 @@ import {
   ScrollText,
   Server,
   Settings,
+  ShieldQuestionMark,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -45,6 +46,12 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/accounts", label: "Accounts", icon: Users, adminOnly: true, keywords: ["users"] },
       { to: "/audit", label: "Audit log", icon: ScrollText, keywords: ["events", "security"] },
+      {
+        to: "/iam/simulator",
+        label: "Access simulator",
+        icon: ShieldQuestionMark,
+        keywords: ["iam", "permissions", "policies", "authorization", "effective"],
+      },
       { to: "/system", label: "System", icon: Server, adminOnly: true, keywords: ["server", "health", "runtime"] },
       {
         to: "/sso",
