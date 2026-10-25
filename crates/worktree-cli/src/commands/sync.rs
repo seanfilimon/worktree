@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 use colored::Colorize;
 use serde::Serialize;
-use worktree_sdk::remote::{self, FetchReport};
+use worktree_sdk::remote::{self, FetchOptions, FetchReport};
+use worktree_sdk::Repository;
 
 use crate::commands::merge::{conflict_status, render_outcome};
 use crate::commands::remote::{normalize_server, remote_name};
@@ -30,6 +31,14 @@ pub struct FetchArgs {
     /// Remote to fetch from (default: [sync].remote, usually origin)
     #[arg(long, value_name = "R")]
     pub remote: Option<String>,
+
+    /// Download at most N new snapshots per branch (shallow history)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub depth: Option<u32>,
+
+    /// Extend a shallow history by N snapshots per branch
+    #[arg(long, value_name = "N", conflicts_with = "depth", value_parser = clap::value_parser!(u32).range(1..))]
+    pub deepen: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -41,6 +50,10 @@ pub struct PullArgs {
     /// Branch to integrate (default: the current branch)
     #[arg(long, value_name = "B")]
     pub branch: Option<String>,
+
+    /// Fetch at most N new snapshots per branch (shallow history)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub depth: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -54,6 +67,10 @@ pub struct CloneArgs {
 
     /// Destination directory (default: ./TREE)
     pub dest: Option<PathBuf>,
+
+    /// Clone only the newest N snapshots of each branch (shallow clone)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub depth: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -99,24 +116,50 @@ pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
 pub fn fetch(ctx: &Context, args: FetchArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
-    let report = block_on(remote::fetch(&repo, &tree.name, &remote))??;
-    ctx.out.emit(&report, |t| render_fetch(t, &remote, &report))
+    let opts = FetchOptions {
+        depth: args.depth,
+        deepen: args.deepen,
+    };
+    let report = block_on(remote::fetch_with_options(&repo, &tree.name, &remote, opts))??;
+    let shallow = shallow_note(&repo, &tree.name)?;
+    ctx.out.emit(&report, |t| {
+        render_fetch(t, &remote, &report);
+        if let Some(note) = &shallow {
+            t.line(note);
+        }
+    })
 }
 
 pub fn pull(ctx: &Context, args: PullArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
-    let report = block_on(remote::pull(
+    let opts = FetchOptions {
+        depth: args.depth,
+        deepen: None,
+    };
+    let report = block_on(remote::pull_with_options(
         &repo,
         &tree.name,
         &remote,
         args.branch.as_deref(),
+        opts,
     ))??;
     ctx.out.emit(&report, |t| {
         render_fetch(t, &remote, &report.fetch);
         render_outcome(t, &report.outcome);
     })?;
     conflict_status(&report.outcome)
+}
+
+/// "History is shallow (N boundary snapshots)..." when the tree is shallow.
+fn shallow_note(repo: &Repository, tree: &str) -> Result<Option<String>> {
+    let boundary = repo.shallow_boundary(tree)?;
+    Ok((!boundary.is_empty()).then(|| {
+        format!(
+            "History is shallow ({}); use `wt fetch --deepen N` for more.",
+            plural(boundary.len(), "boundary snapshot", "boundary snapshots")
+        )
+    }))
 }
 
 fn render_fetch(t: &mut Text, remote: &str, report: &FetchReport) {
@@ -159,20 +202,31 @@ struct CloneResult<'a> {
     tenant: &'a str,
     tree: &'a str,
     branch: &'a str,
+    shallow: bool,
+    restricted: &'a [String],
 }
 
 pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
     let (tenant, tree_name) = parse_tree_spec(&args.spec)?;
     let server = normalize_server(&args.url);
     let dest = ctx.absolute(args.dest.as_deref().unwrap_or_else(|| Path::new(tree_name)));
-    let repo = block_on(remote::clone(&server, tenant, tree_name, &dest))??;
+    let opts = FetchOptions {
+        depth: args.depth,
+        deepen: None,
+    };
+    let repo = block_on(remote::clone_with_options(
+        &server, tenant, tree_name, &dest, opts,
+    ))??;
     let root_tree = repo.root_tree()?;
+    let restricted = repo.restricted_paths(&root_tree.name)?;
     let result = CloneResult {
         root: repo.root(),
         server: &server,
         tenant,
         tree: tree_name,
         branch: &root_tree.current_branch,
+        shallow: repo.is_shallow(&root_tree.name)?,
+        restricted: &restricted,
     };
     ctx.out.emit(&result, |t| {
         t.line(format_args!(
@@ -182,6 +236,15 @@ pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
             result.root.display(),
             result.branch.green()
         ));
+        if result.shallow {
+            t.line("History is shallow; use `wt fetch --deepen N` for more.");
+        }
+        if !restricted.is_empty() {
+            t.line(format_args!(
+                "{} not checked out (restricted by license rules); see `wt status`.",
+                plural(restricted.len(), "file", "files")
+            ));
+        }
     })
 }
 
@@ -219,6 +282,35 @@ pub fn stage(ctx: &Context, args: StageArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(args: &[&str]) -> std::result::Result<crate::cli::Command, clap::Error> {
+        use clap::Parser;
+        crate::cli::Cli::try_parse_from(std::iter::once("wt").chain(args.iter().copied()))
+            .map(|c| c.command)
+    }
+
+    #[test]
+    fn shallow_flags() {
+        use crate::cli::Command;
+        match parse(&["fetch", "--depth", "3"]).expect("parse") {
+            Command::Fetch(a) => assert_eq!((a.depth, a.deepen), (Some(3), None)),
+            other => panic!("{other:?}"),
+        }
+        match parse(&["fetch", "--deepen", "2"]).expect("parse") {
+            Command::Fetch(a) => assert_eq!((a.depth, a.deepen), (None, Some(2))),
+            other => panic!("{other:?}"),
+        }
+        match parse(&["pull", "--depth", "1"]).expect("parse") {
+            Command::Pull(a) => assert_eq!(a.depth, Some(1)),
+            other => panic!("{other:?}"),
+        }
+        match parse(&["clone", "http://x", "a/b", "--depth", "5"]).expect("parse") {
+            Command::Clone(a) => assert_eq!(a.depth, Some(5)),
+            other => panic!("{other:?}"),
+        }
+        assert!(parse(&["fetch", "--depth", "1", "--deepen", "1"]).is_err());
+        assert!(parse(&["fetch", "--depth", "0"]).is_err());
+    }
 
     #[test]
     fn tree_specs() {

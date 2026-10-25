@@ -407,6 +407,25 @@ type fakeLicense struct {
 	mu    sync.Mutex
 	fn    func(paths []string) error
 	calls [][]string
+	// readFn decides CheckRead (nil = everything readable); v0.5 chunks
+	// workstream (download scoping).
+	readFn func(paths []string) error
+}
+
+func (l *fakeLicense) setRead(fn func(paths []string) error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.readFn = fn
+}
+
+func (l *fakeLicense) CheckRead(_ context.Context, _ *domain.Principal, _ *domain.Tree, paths []string) error {
+	l.mu.Lock()
+	fn := l.readFn
+	l.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(paths)
 }
 
 func (l *fakeLicense) set(fn func(paths []string) error) {

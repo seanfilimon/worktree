@@ -36,6 +36,8 @@ var (
 	alice = &domain.Principal{AccountID: "acct-alice", Username: "alice", TenantID: "tenant-alice"}
 	bob   = &domain.Principal{AccountID: "acct-bob", Username: "bob", TenantID: "tenant-bob"}
 	carol = &domain.Principal{AccountID: "acct-carol", Username: "carol", TenantID: "tenant-carol"}
+	// root is a server admin (v0.5 chunks workstream: unscoped downloads).
+	root = &domain.Principal{AccountID: "acct-root", Username: "root", TenantID: "tenant-root", IsAdmin: true}
 )
 
 // harness runs a Service behind a real gRPC server over bufconn.
@@ -84,7 +86,7 @@ func newHarness(t *testing.T) *harness {
 		Version: "test-1.0",
 	})
 
-	tokens := map[string]*domain.Principal{"alice": alice, "bob": bob, "carol": carol}
+	tokens := map[string]*domain.Principal{"alice": alice, "bob": bob, "carol": carol, "root": root}
 	resolve := func(ctx context.Context) (context.Context, error) {
 		md, _ := metadata.FromIncomingContext(ctx)
 		v := md.Get("authorization")

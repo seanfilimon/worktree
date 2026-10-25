@@ -55,6 +55,9 @@ pub fn log(ctx: &Context, args: LogArgs) -> Result<()> {
     } else {
         RefLabels::load(&repo, &tree.name)?
     };
+    // v0.5 chunks workstream (§13.2): history of a shallow copy ends at
+    // its boundary snapshots.
+    let boundary = repo.shallow_boundary(&tree.name)?;
     ctx.out.emit(&snapshots, |t| {
         for (i, snap) in snapshots.iter().enumerate() {
             if args.oneline {
@@ -64,6 +67,12 @@ pub fn log(ctx: &Context, args: LogArgs) -> Result<()> {
                     t.blank();
                 }
                 header(t, snap, &refs);
+            }
+            if boundary.contains(&snap.id) {
+                t.line(format_args!(
+                    "{}",
+                    "(shallow boundary: older history not fetched; `wt fetch --deepen N`)".dimmed()
+                ));
             }
         }
     })

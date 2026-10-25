@@ -476,7 +476,15 @@ async fn remote_objects_stream_up_and_down_in_batches() {
     let dst = ObjectStore::open(dst_dir.path());
     let mut wanted = hashes.clone();
     wanted.push(worktree_sdk::store::hash_bytes(b"not on the server"));
-    assert_eq!(client.download_objects(&dst, &wanted).await.unwrap(), 1500);
+    let tree_id = server.add_tree(USER, "objects");
+    assert_eq!(
+        client
+            .download_objects(&dst, &tree_id, &wanted)
+            .await
+            .unwrap(),
+        1500
+    );
+    assert_eq!(server.state().download_tree_ids, vec![tree_id]);
     assert!(hashes.iter().all(|h| dst.has(h)));
     assert_eq!(dst.get(&hashes[7]).unwrap(), b"object number 7");
 }

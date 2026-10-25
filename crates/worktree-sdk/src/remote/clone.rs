@@ -7,6 +7,7 @@ use super::credentials::CredentialStore;
 use super::fetch::fetch_with;
 use super::server_url::normalize_server_url;
 use super::session::RemoteSession;
+use super::FetchOptions;
 use crate::config::RemoteSection;
 use crate::error::{Result, SdkError};
 use crate::model::InitOptions;
@@ -74,6 +75,7 @@ pub(crate) async fn clone(
     tenant: &str,
     tree_name: &str,
     dest: &Path,
+    opts: FetchOptions,
 ) -> Result<Repository> {
     let server = normalize_server_url(server)?;
     if tenant.trim().is_empty() || tree_name.trim().is_empty() {
@@ -93,7 +95,7 @@ pub(crate) async fn clone(
         username: cred.map(|c| c.username),
     };
 
-    match clone_into(session, &server, tenant, dest).await {
+    match clone_into(session, &server, tenant, dest, opts).await {
         Ok(repo) => Ok(repo),
         Err(e) => {
             cleanup(dest, state);
@@ -107,6 +109,7 @@ async fn clone_into(
     server: &str,
     tenant: &str,
     dest: &Path,
+    opts: FetchOptions,
 ) -> Result<Repository> {
     let RemoteTree {
         id,
@@ -141,7 +144,7 @@ async fn clone_into(
     repo.set_tree_id(&root, &id)?;
     repo.set_tree_remote_name(&root, &name)?;
 
-    let (_, branches) = fetch_with(&repo, &root, ORIGIN, &mut session).await?;
+    let (_, branches) = fetch_with(&repo, &root, ORIGIN, &mut session, opts).await?;
     for branch in &branches {
         repo.set_branch_tip(&root, &branch.name, branch.tip.as_deref())?;
     }
@@ -201,18 +204,36 @@ mod tests {
     #[tokio::test]
     async fn rejects_bad_arguments_before_connecting() {
         let dir = tempfile::tempdir().unwrap();
-        let err = clone("http://127.0.0.1:1", "", "tree", &dir.path().join("x"))
-            .await
-            .expect_err("clone must fail");
+        let err = clone(
+            "http://127.0.0.1:1",
+            "",
+            "tree",
+            &dir.path().join("x"),
+            FetchOptions::default(),
+        )
+        .await
+        .expect_err("clone must fail");
         assert!(matches!(err, SdkError::InvalidArgument(_)), "{err:?}");
-        let err = clone("ftp://nope", "t", "tree", &dir.path().join("x"))
-            .await
-            .expect_err("clone must fail");
+        let err = clone(
+            "ftp://nope",
+            "t",
+            "tree",
+            &dir.path().join("x"),
+            FetchOptions::default(),
+        )
+        .await
+        .expect_err("clone must fail");
         assert!(matches!(err, SdkError::InvalidArgument(_)), "{err:?}");
         std::fs::write(dir.path().join("f"), "x").unwrap();
-        let err = clone("http://127.0.0.1:1", "t", "tree", dir.path())
-            .await
-            .expect_err("clone must fail");
+        let err = clone(
+            "http://127.0.0.1:1",
+            "t",
+            "tree",
+            dir.path(),
+            FetchOptions::default(),
+        )
+        .await
+        .expect_err("clone must fail");
         assert!(matches!(err, SdkError::InvalidArgument(m) if m.contains("not empty")));
     }
 }

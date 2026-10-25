@@ -12,7 +12,7 @@
 // `tonic::Status` is the error type the generated service trait mandates.
 #![allow(clippy::result_large_err)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -72,6 +72,10 @@ pub struct FakeState {
     pub negotiate_calls: usize,
     pub upload_calls: usize,
     pub download_calls: usize,
+    /// `x-wt-tree-id` of every DownloadObjects call, in order.
+    pub download_tree_ids: Vec<String>,
+    /// tree id -> paths whose content is withheld (`PullResponse.stubbed_paths`).
+    pub stubbed: HashMap<String, BTreeSet<String>>,
 }
 
 impl FakeState {
@@ -86,18 +90,80 @@ impl FakeState {
             .ok_or_else(|| Status::not_found(format!("tree {id} not found")))
     }
 
-    fn manifest_hashes(&self, manifest: &[u8]) -> Result<Vec<Vec<u8>>, Status> {
+    fn manifest(&self, manifest: &[u8]) -> Result<wire::ManifestRecord, Status> {
         let data = self
             .objects
             .get(manifest)
             .ok_or_else(|| Status::failed_precondition("manifest object missing"))?;
-        let rec = wire::ManifestRecord::decode(data.as_slice())
-            .map_err(|e| Status::invalid_argument(format!("manifest does not decode: {e}")))?;
-        Ok(rec
+        wire::ManifestRecord::decode(data.as_slice())
+            .map_err(|e| Status::invalid_argument(format!("manifest does not decode: {e}")))
+    }
+
+    /// Entry hashes (blobs / chunk lists) of a manifest, excluding `skip` paths.
+    fn manifest_hashes_except(
+        &self,
+        manifest: &[u8],
+        skip: Option<&BTreeSet<String>>,
+    ) -> Result<Vec<Vec<u8>>, Status> {
+        Ok(self
+            .manifest(manifest)?
             .entries
             .into_iter()
+            .filter(|e| skip.is_none_or(|s| !s.contains(&e.path)))
             .filter_map(|e| e.blob_hash.map(|h| h.value))
             .collect())
+    }
+
+    /// Every object an entry needs: its blob, or its chunk list plus the
+    /// chunks (when the list is stored and decodes).
+    fn entry_closure(&self, e: &wire::ManifestEntry) -> Vec<Vec<u8>> {
+        let h = e.blob_hash.clone().map(|h| h.value).unwrap_or_default();
+        let mut out = vec![h.clone()];
+        if e.chunked {
+            if let Some(list) = self
+                .objects
+                .get(&h)
+                .and_then(|d| wire::ChunkList::decode(d.as_slice()).ok())
+            {
+                out.extend(
+                    list.chunks
+                        .into_iter()
+                        .filter_map(|c| c.hash.map(|h| h.value)),
+                );
+            }
+        }
+        out
+    }
+
+    /// Objects only reachable through stubbed paths of `tree` (refused by
+    /// DownloadObjects).
+    fn withheld(&self, tree: &str) -> HashSet<Vec<u8>> {
+        let Some(stubbed) = self.stubbed.get(tree).filter(|s| !s.is_empty()) else {
+            return HashSet::new();
+        };
+        let mut denied = HashSet::new();
+        let mut allowed = HashSet::new();
+        for rec in self.snapshots.values() {
+            if rec.tree_id.as_ref().map(|t| t.value.as_str()) != Some(tree) {
+                continue;
+            }
+            let mh = rec
+                .manifest_hash
+                .clone()
+                .map(|h| h.value)
+                .unwrap_or_default();
+            let Ok(m) = self.manifest(&mh) else { continue };
+            for e in &m.entries {
+                let target = if stubbed.contains(&e.path) {
+                    &mut denied
+                } else {
+                    &mut allowed
+                };
+                target.extend(self.entry_closure(e));
+            }
+        }
+        denied.retain(|h| !allowed.contains(h));
+        denied
     }
 
     /// Snapshot ids reachable from `tip` (inclusive), parents before children.
@@ -240,6 +306,14 @@ impl FakeServer {
 
     pub fn set_push_rejection(&self, rejection: Option<wire::PushRejection>) {
         self.state().push_rejection = rejection;
+    }
+
+    /// Withhold the content of `paths` of `tree_id` from pulls/downloads.
+    pub fn set_stubbed(&self, tree_id: &str, paths: &[&str]) {
+        self.state().stubbed.insert(
+            tree_id.to_string(),
+            paths.iter().map(|p| p.to_string()).collect(),
+        );
     }
 }
 
@@ -474,9 +548,19 @@ impl SyncService for Svc {
                 .as_ref()
                 .map(|h| h.value.clone())
                 .unwrap_or_default();
-            for blob in st.manifest_hashes(&manifest)? {
-                if !st.objects.contains_key(&blob) {
-                    return Err(Status::failed_precondition("blob object missing"));
+            for entry in st.manifest(&manifest)?.entries {
+                if entry.chunked
+                    && !st
+                        .objects
+                        .get(&entry.blob_hash.clone().map(|h| h.value).unwrap_or_default())
+                        .is_some_and(|d| wire::ChunkList::decode(d.as_slice()).is_ok())
+                {
+                    return Err(Status::failed_precondition("chunk list missing"));
+                }
+                for obj in st.entry_closure(&entry) {
+                    if !st.objects.contains_key(&obj) {
+                        return Err(Status::failed_precondition("blob object missing"));
+                    }
                 }
             }
             incoming.insert(id, rec.clone());
@@ -557,15 +641,28 @@ impl SyncService for Svc {
         }
         let snapshots: Vec<wire::SnapshotRecord> =
             chain.iter().map(|id| st.snapshots[id].clone()).collect();
+        let stubbed = st.stubbed.get(&tree_id);
         let mut objects = Vec::new();
         let mut seen = HashSet::new();
+        let mut stubbed_paths = BTreeSet::new();
         for rec in &snapshots {
             let manifest = rec
                 .manifest_hash
                 .as_ref()
                 .map(|h| h.value.clone())
                 .unwrap_or_default();
-            for h in st.manifest_hashes(&manifest)?.into_iter().chain([manifest]) {
+            if let Some(s) = stubbed {
+                for e in st.manifest(&manifest)?.entries {
+                    if s.contains(&e.path) {
+                        stubbed_paths.insert(e.path);
+                    }
+                }
+            }
+            for h in st
+                .manifest_hashes_except(&manifest, stubbed)?
+                .into_iter()
+                .chain([manifest])
+            {
                 if seen.insert(h.clone()) {
                     objects.push(hash(&h));
                 }
@@ -577,7 +674,7 @@ impl SyncService for Svc {
             snapshot_chain: chain.iter().map(|id| sid(id)).collect(),
             objects_to_fetch: objects,
             snapshots,
-            stubbed_paths: Vec::new(),
+            stubbed_paths: stubbed_paths.into_iter().collect(),
         }))
     }
 
@@ -636,12 +733,24 @@ impl SyncService for Svc {
         req: Request<wire::WantMessage>,
     ) -> Result<Response<Self::DownloadObjectsStream>, Status> {
         self.caller(&req)?;
+        // Like the Go server (ENGINEERING_PLAN §13.2): scoped to a tree.
+        let tree_id = req
+            .metadata()
+            .get("x-wt-tree-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| Status::failed_precondition("x-wt-tree-id metadata is required"))?;
         let mut st = lock(&self.state);
+        st.tree(&tree_id)?;
         st.download_calls += 1;
+        st.download_tree_ids.push(tree_id.clone());
+        let withheld = st.withheld(&tree_id);
         let items: Vec<_> = req
             .into_inner()
             .hashes
             .into_iter()
+            .filter(|h| !withheld.contains(&h.value))
             .filter_map(|h| {
                 st.objects.get(&h.value).map(|data| {
                     Ok(wire::ObjectData {

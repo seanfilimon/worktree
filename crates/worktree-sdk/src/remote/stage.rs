@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::Utc;
 use worktree_protocol::proto::sync as wire;
 
-use super::client::ObjectKind;
+use super::client::{entry_upload_objects, ObjectKind};
 use super::convert::{branch_id, snapshot_id, tenant_id, tree_id};
 use super::session::{self, Access};
 use super::StagedInfo;
@@ -82,11 +82,18 @@ pub(crate) async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result
     };
     let summary = summarize_changes(&base, &working);
 
-    let mut objects: Vec<(ObjectHash, ObjectKind)> = working
-        .entries
-        .iter()
-        .map(|e| (e.hash, ObjectKind::Blob))
-        .collect();
+    let mut objects: Vec<(ObjectHash, ObjectKind)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in &working.entries {
+        if seen.contains(&entry.hash) {
+            continue;
+        }
+        for (h, kind) in entry_upload_objects(repo.store(), entry)? {
+            if seen.insert(h) {
+                objects.push((h, kind));
+            }
+        }
+    }
     objects.push((manifest_hash, ObjectKind::Manifest));
     let hashes: Vec<ObjectHash> = objects.iter().map(|(h, _)| *h).collect();
     let missing: std::collections::HashSet<ObjectHash> = session

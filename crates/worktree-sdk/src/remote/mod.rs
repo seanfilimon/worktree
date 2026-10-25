@@ -35,7 +35,9 @@ mod server_url;
 mod session;
 mod stage;
 
-pub use client::{ObjectKind, RemoteBranch, RemoteTree, SyncClient, MAX_MESSAGE_SIZE};
+pub use client::{
+    ObjectKind, RemoteBranch, RemoteTree, SyncClient, MAX_MESSAGE_SIZE, TREE_ID_METADATA_KEY,
+};
 pub use clone::ORIGIN;
 pub use credentials::CredentialStore;
 pub use push::rejection_message;
@@ -200,7 +202,29 @@ pub struct FetchReport {
 /// Download all remote branches' new snapshots + objects + tags and update
 /// `refs/remotes/<remote>/*`. Never touches local branches or files.
 pub async fn fetch(repo: &Repository, tree: &str, remote: &str) -> Result<FetchReport> {
-    fetch::fetch(repo, tree, remote).await
+    fetch::fetch(repo, tree, remote, FetchOptions::default()).await
+}
+
+/// Shallow-sync options for fetch, pull and clone (ENGINEERING_PLAN §13.2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchOptions {
+    /// Download at most this many new snapshots per branch
+    /// (`PullRequest.depth`); older history is cut off and the oldest
+    /// snapshots received become the shallow boundary
+    /// (`.wt/trees/<tree>/shallow`).
+    pub depth: Option<u32>,
+    /// Extend a shallow history by this many snapshots per branch.
+    pub deepen: Option<u32>,
+}
+
+/// [`fetch`] with shallow-sync options.
+pub async fn fetch_with_options(
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    opts: FetchOptions,
+) -> Result<FetchReport> {
+    fetch::fetch(repo, tree, remote, opts).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,14 +242,36 @@ pub async fn pull(
     remote: &str,
     branch: Option<&str>,
 ) -> Result<PullReport> {
-    fetch::pull(repo, tree, remote, branch).await
+    fetch::pull(repo, tree, remote, branch, FetchOptions::default()).await
+}
+
+/// [`pull`] with shallow-sync options for its fetch (`wt pull --depth N`).
+pub async fn pull_with_options(
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    branch: Option<&str>,
+    opts: FetchOptions,
+) -> Result<PullReport> {
+    fetch::pull(repo, tree, remote, branch, opts).await
 }
 
 /// Clone `<tenant>/<tree_name>` from `server` into `dest` (must not exist or
 /// be empty): init, set `[remote.origin]`, set tree id/remote name, fetch,
 /// create local branches for every remote branch, checkout default branch.
 pub async fn clone(server: &str, tenant: &str, tree_name: &str, dest: &Path) -> Result<Repository> {
-    clone::clone(server, tenant, tree_name, dest).await
+    clone::clone(server, tenant, tree_name, dest, FetchOptions::default()).await
+}
+
+/// [`clone`] with shallow-sync options (`wt clone --depth N`).
+pub async fn clone_with_options(
+    server: &str,
+    tenant: &str,
+    tree_name: &str,
+    dest: &Path,
+    opts: FetchOptions,
+) -> Result<Repository> {
+    clone::clone(server, tenant, tree_name, dest, opts).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -471,10 +471,10 @@ impl Repository {
                     out.conflicts.push(ConflictInfo { path, kind });
                 }
                 PathResolution::MergeContent { base, ours, theirs } => {
-                    let ours_data = self.store.get(&ours.hash)?;
-                    let theirs_data = self.store.get(&theirs.hash)?;
+                    let ours_data = self.store.read_entry(&ours)?;
+                    let theirs_data = self.store.read_entry(&theirs)?;
                     let base_data = match &base {
-                        Some(b) => self.store.get(&b.hash)?,
+                        Some(b) => self.store.read_entry(b)?,
                         None => Vec::new(),
                     };
                     let texts = (
@@ -507,13 +507,13 @@ impl Repository {
                     };
                     match merge_text(&base_text, &ours_text, &theirs_text, labels) {
                         TextMergeResult::Clean(text) => {
-                            let hash = self.store.put(text.as_bytes())?;
+                            let (hash, chunked) = self.store.put_file(text.as_bytes())?;
                             out.entries.push(ManifestEntry {
                                 path,
                                 hash,
                                 size: text.len() as u64,
                                 executable,
-                                chunked: false,
+                                chunked,
                             });
                         }
                         TextMergeResult::Conflicted { merged, .. } => {

@@ -98,12 +98,12 @@ impl Repository {
             };
             if !opts.name_only {
                 let old_data = match old_entry {
-                    Some(e) => self.store.get(&e.hash)?,
+                    Some(e) => self.store.read_entry(e)?,
                     None => Vec::new(),
                 };
                 let new_data = match (new_entry, new_side) {
                     (None, _) => Vec::new(),
-                    (Some(e), NewSide::Store) => self.store.get(&e.hash)?,
+                    (Some(e), NewSide::Store) => self.store.read_entry(e)?,
                     (Some(_), NewSide::Working(dir)) => match fs::read(dir.join(&change.path)) {
                         Ok(d) => d,
                         Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
