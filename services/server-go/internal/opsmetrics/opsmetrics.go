@@ -71,19 +71,19 @@ func (c *Counter) Samples() []Sample {
 
 // The §13.3 counters.
 var (
-	SyncPushes = NewCounter("wt_sync_pushes_total",
+	SyncPushes = NewCounter("worktree_sync_pushes_total",
 		"gRPC pushes by result (accepted, rejected, error).", "result")
-	SyncPulls = NewCounter("wt_sync_pulls_total",
+	SyncPulls = NewCounter("worktree_sync_pulls_total",
 		"gRPC pulls served.", "")
-	AuthzDecisions = NewCounter("wt_authz_decisions_total",
+	AuthzDecisions = NewCounter("worktree_authz_decisions_total",
 		"Authorization decisions by outcome (allow, deny).", "decision")
-	MRMerges = NewCounter("wt_mr_merges_total",
+	MRMerges = NewCounter("worktree_mr_merges_total",
 		"Merge requests merged.", "")
-	GCRuns = NewCounter("wt_gc_runs_total",
+	GCRuns = NewCounter("worktree_gc_runs_total",
 		"Garbage-collection runs (including dry runs).", "")
-	GCDeletedObjects = NewCounter("wt_gc_deleted_objects_total",
+	GCDeletedObjects = NewCounter("worktree_gc_deleted_objects_total",
 		"Objects deleted by garbage collection.", "")
-	RateLimited = NewCounter("wt_rate_limited_total",
+	RateLimited = NewCounter("worktree_rate_limited_total",
 		"Requests rejected by the rate limiter.", "")
 )
 

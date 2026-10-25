@@ -100,7 +100,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	}
 	// Authorization (roles, teams, grants, service accounts, policies) is
 	// decided by the v0.4 engine; iamSvc handles authentication only.
-	// countingAuthz feeds wt_authz_decisions_total (§13.3).
+	// countingAuthz feeds worktree_authz_decisions_total (§13.3).
 	authorizer := countingAuthz{authz.New(store, authz.Options{})}
 	bus := events.NewBus()
 	auditLog := audit.New(store, log)

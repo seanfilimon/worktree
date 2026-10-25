@@ -33,7 +33,7 @@ const (
 
 	// MaxFilesListed is the maximum number of changed paths a client may list
 	// in one staged snapshot; larger requests are rejected with ErrInvalid.
-	MaxFilesListed = 10000
+	MaxFilesListed = 100_000 // matches syncsvc's Stage request limit
 
 	// MaxFilesStored is the number of changed paths retained in storage.
 	// Longer lists are truncated (after normalization and sorting); the

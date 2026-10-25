@@ -296,7 +296,7 @@ func (a *Authorizer) evaluate(ctx context.Context, p *domain.Principal, act doma
 	if !s.anonymous && len(p.Scopes) > 0 {
 		scope := ""
 		for _, sc := range p.Scopes {
-			if actionPatternMatches(sc, target) {
+			if actionPatternMatches(sc, target) || actionPatternMatches(sc, act) {
 				scope = sc
 				break
 			}

@@ -298,7 +298,7 @@ read a path whose license rule withholds it from their tenant.
 - **Merge execution.** Merging is **fast-forward only**. The target tip moves
   to the source tip with CAS, and a merge request that cannot fast-forward is
   refused. A merge publishes `mr.merged` and `branch.pushed` (so watchers
-  fetch) and increments `wt_mr_merges_total`. The server never creates merge
+  fetch) and increments `worktree_mr_merges_total`. The server never creates merge
   snapshots.
 - **Linked groups.** `POST /tenants/{t}/linked-groups {name,
   members[{tree, number}]}` requires `mr:merge` on every member tree.
@@ -451,10 +451,10 @@ CLI is `wt audit`. Retention is `--audit-retention`.
     `worktree_branches`, `worktree_snapshots`, `worktree_staged_snapshots`,
     `worktree_objects`, `worktree_storage_bytes`;
   - `worktree_build_info{version,goversion}`, `worktree_uptime_seconds`;
-  - `wt_sync_pushes_total{result}`, `wt_sync_pulls_total`,
-    `wt_authz_decisions_total{decision}`, `wt_mr_merges_total`,
-    `wt_gc_runs_total`, `wt_gc_deleted_objects_total`,
-    `wt_rate_limited_total`.
+  - `worktree_sync_pushes_total{result}`, `worktree_sync_pulls_total`,
+    `worktree_authz_decisions_total{decision}`, `worktree_mr_merges_total`,
+    `worktree_gc_runs_total`, `worktree_gc_deleted_objects_total`,
+    `worktree_rate_limited_total`.
 - **`GET /api/v1/admin/stats`** returns `ServerStats`, and **`GET
   /api/v1/admin/system`** returns `SystemInfo` (both server admin only).
 

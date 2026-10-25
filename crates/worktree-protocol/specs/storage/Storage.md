@@ -249,7 +249,7 @@ demand (`POST /api/v1/admin/gc?dry_run=`, `wt admin gc [--dry-run]`):
 4. **Report.** Each run produces a `GCReport{dry_run, scanned, reachable,
    unreachable, marked, deleted, freed_bytes, started_at, finished_at}`, kept in
    `gc_runs` (last 20) and shown by `GET /api/v1/admin/gc` and `wt admin
-   gc-status`. Metrics are `wt_gc_runs_total` and `wt_gc_deleted_objects_total`.
+   gc-status`. Metrics are `worktree_gc_runs_total` and `worktree_gc_deleted_objects_total`.
 
 Deleting a tree (`DELETE /api/v1/trees/{tenant}/{tree}`) removes its metadata
 (branches, tags, staged, protections, merge requests, licenses, grants,

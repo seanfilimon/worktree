@@ -340,3 +340,27 @@ func TestPathsLicenseGranteeAndExpiry(t *testing.T) {
 	// Only tree admins may change license rules.
 	wantStatus(t, f.do(t, "PUT", appAPI+"/licenses", "bob", rule("", nil)), 403, "")
 }
+
+// TestArchiveNeedsRedistributeGrant: an outsider may read a path licensed
+// read-only, but a server archive redistributes it, so it is omitted.
+func TestArchiveNeedsRedistributeGrant(t *testing.T) {
+	f := newPathsFixture(t)
+	must(t, f.store.PutLicenseRule(context.Background(), &domain.LicenseRule{TreeID: f.tree.ID, PathGlob: "src/**", SPDX: "MIT", Grant: "read-only"}))
+	rec := f.do(t, "GET", appAPI+"/blob/"+f.p2+"/src/a.go", "olga", nil)
+	wantStatus(t, rec, 200, "")
+	rec = f.do(t, "GET", appAPI+"/archive/"+f.p2, "olga", nil)
+	wantStatus(t, rec, 200, "")
+	files := untar(t, rec.Body.Bytes())
+	if _, ok := files["src/a.go"]; ok {
+		t.Fatal("read-only licensed path included in an archive")
+	}
+	if _, ok := files["README.md"]; !ok {
+		t.Fatalf("unrestricted path missing: %v", names(files))
+	}
+	// The owner tenant is unrestricted.
+	rec = f.do(t, "GET", appAPI+"/archive/"+f.p2, "alice", nil)
+	wantStatus(t, rec, 200, "")
+	if _, ok := untar(t, rec.Body.Bytes())["src/a.go"]; !ok {
+		t.Fatal("owner archive lacks src/a.go")
+	}
+}

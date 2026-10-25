@@ -224,7 +224,7 @@ On top of IAM:
 |---|---|---|
 | Failed logins per (username, client IP) | 10 within 5 minutes, then locked until the window passes. Unknown users and wrong passwords look identical and take equal time. | Login error |
 | Wrong second factors per account | 10 within 15 minutes | MFA error |
-| Requests per principal (account or service-account id) or, for anonymous callers, per remote IP (v0.5) | `--rate-limit` / `WT_RATE_LIMIT` = 1200 per minute, token bucket. `0` disables it. A tenant's `requests_per_minute` overrides it. | HTTP `429 {"code":"rate_limited"}` with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`; gRPC `ResourceExhausted`. Counted in `wt_rate_limited_total`. |
+| Requests per principal (account or service-account id) or, for anonymous callers, per remote IP (v0.5) | `--rate-limit` / `WT_RATE_LIMIT` = 1200 per minute, token bucket. `0` disables it. A tenant's `requests_per_minute` overrides it. | HTTP `429 {"code":"rate_limited"}` with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`; gRPC `ResourceExhausted`. Counted in `worktree_rate_limited_total`. |
 | Tenant quotas: trees, storage, branches per tree, members (v0.5) | Server defaults (unlimited) plus per-tenant overrides | `409 quota_exceeded` / `PushDenied{Kind:"quota_exceeded"}` |
 
 `/healthz` and `/metrics` are exempt from rate limiting. The client IP is the

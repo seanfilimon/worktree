@@ -626,10 +626,10 @@ push rejection kinds `signature_required` and `ci_checks_failed` are
   `Content-Type: application/x-ndjson`).
 - `/healthz`: `{"status":"ok"|"degraded","version","uptime_seconds",
   "checks":{"meta":"ok","objects":"ok"}}`; `503` when a probe fails.
-- Metrics: `wt_sync_pushes_total{result}`, `wt_sync_pulls_total`,
-  `wt_authz_decisions_total{decision}` (allow/deny, from the HTTP and gRPC
-  layers), `wt_mr_merges_total`, `wt_gc_runs_total`,
-  `wt_gc_deleted_objects_total`, `wt_rate_limited_total`.
+- Metrics: `worktree_sync_pushes_total{result}`, `worktree_sync_pulls_total`,
+  `worktree_authz_decisions_total{decision}` (allow/deny, from the HTTP and gRPC
+  layers), `worktree_mr_merges_total`, `worktree_gc_runs_total`,
+  `worktree_gc_deleted_objects_total`, `worktree_rate_limited_total`.
 - Audit completeness: `access.denied` for every 403 answered by the REST
   API and every gRPC `PermissionDenied` (details: method/route, action when
   known); `server.start` / `server.stop` events.

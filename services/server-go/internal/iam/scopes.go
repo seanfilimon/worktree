@@ -32,6 +32,9 @@ var knownActions = []domain.Action{
 	domain.ActServerAdmin,
 	domain.ActIAMRead,
 	domain.ActIAMAdmin,
+	domain.ActReleaseCreate,
+	domain.ActReleaseDelete,
+	domain.ActCIReport,
 }
 
 var (

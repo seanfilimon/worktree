@@ -69,7 +69,7 @@ type grpcOps struct {
 	audit   domain.AuditLog
 }
 
-// countingAuthz counts allow/deny decisions (wt_authz_decisions_total) of
+// countingAuthz counts allow/deny decisions (worktree_authz_decisions_total) of
 // the policy engine. Embedding keeps every other method (Evaluate's
 // AccessEvaluator interface, EffectivePermissions, ...) available.
 type countingAuthz struct {

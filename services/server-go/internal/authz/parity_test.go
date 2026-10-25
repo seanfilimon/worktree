@@ -257,3 +257,13 @@ func TestRoleOf(t *testing.T) {
 		t.Error("RoleOf must surface store errors")
 	}
 }
+
+// TestCatalogActionsAreScopable: every catalog action can be named in a
+// token scope (internal/iam keeps its own list for validation).
+func TestCatalogActionsAreScopable(t *testing.T) {
+	for _, a := range Actions() {
+		if !iam.IsKnownAction(a.Action) {
+			t.Errorf("action %s is in the catalog but not accepted as a token scope", a.Action)
+		}
+	}
+}

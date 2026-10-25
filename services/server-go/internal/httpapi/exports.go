@@ -39,8 +39,8 @@ type archiveFile struct {
 }
 
 // handleArchive streams an archive of a snapshot ({snapshot} is a snapshot
-// id or a branch name). Paths the caller may not read — license rules
-// (License.CheckRead) and tree:read path denies (Access) — are omitted, and
+// id or a branch name). Paths the caller may not redistribute — license
+// rules (License.CheckExport) and tree:read path denies (Access) — are omitted, and
 // a generated LICENSES/NOTICE lists the SPDX id of every included path
 // covered by a license rule. Audited as tree.export.
 func (a *api) handleArchive(w http.ResponseWriter, r *http.Request) error {
@@ -169,14 +169,22 @@ func (a *api) exportablePaths(r *http.Request, t *domain.Tenant, tree *domain.Tr
 		out[i] = true
 	}
 	if a.d.License != nil && len(paths) > 0 {
-		err := a.d.License.CheckRead(ctx, p, tree, paths)
+		// An archive redistributes content, so it needs the redistribute
+		// grant (CheckExport) where the checker offers it, not just read.
+		check := a.d.License.CheckRead
+		if ex, ok := a.d.License.(interface {
+			CheckExport(context.Context, *domain.Principal, *domain.Tree, []string) error
+		}); ok {
+			check = ex.CheckExport
+		}
+		err := check(ctx, p, tree, paths)
 		var denied *domain.PushDenied
 		switch {
 		case err == nil:
 		case errors.As(err, &denied):
 			// Some path is restricted: find out which ones.
 			for i, path := range paths {
-				err := a.d.License.CheckRead(ctx, p, tree, []string{path})
+				err := check(ctx, p, tree, []string{path})
 				switch {
 				case err == nil:
 				case errors.As(err, &denied):

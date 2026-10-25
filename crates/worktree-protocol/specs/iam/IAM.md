@@ -514,7 +514,7 @@ decide.
 | `SyncAccessConfig` / access-config REST | `iam:admin` plus the escalation check ([Declarative Access](./DeclarativeAccess.md)) |
 
 Every REST `403` and every gRPC `PermissionDenied` is audited as
-`access.denied`. The metric `wt_authz_decisions_total{decision}` counts
+`access.denied`. The metric `worktree_authz_decisions_total{decision}` counts
 allows and denies.
 
 ## 14. REST API

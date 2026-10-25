@@ -81,7 +81,9 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 	// 2. Authorization. The checks of this push (tree:write, branch:push and
 	// branch protection) share one memoized read of the caller's IAM data.
 	ctx = authz.WithRequestCache(ctx)
-	if err := s.d.Authz.Authorize(ctx, p, domain.ActTreeWrite, t.TenantID, t); err != nil {
+	// A token scoped to branch:push may push: its tree:write check is made
+	// with that scope widened, and branch:push is then evaluated as usual.
+	if err := s.d.Authz.Authorize(ctx, pushScoped(p), domain.ActTreeWrite, t.TenantID, t); err != nil {
 		if errors.Is(err, domain.ErrForbidden) {
 			s.auditRejected(ctx, p, t, branch, newTip, "access_denied")
 			return rejected(accessDenied("you do not have write access to this tree")), nil
@@ -213,6 +215,23 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 		},
 	})
 	return &syncpb.PushResponse{Accepted: true, NewTip: snapshotIDToPB(newTip)}, nil
+}
+
+// pushScoped returns p with a "tree:write" scope added when one of its
+// token scopes names branch:push explicitly ("branch:push" or "branch:*"),
+// so branch-push tokens pass the tree-level write check of Push.
+func pushScoped(p *domain.Principal) *domain.Principal {
+	if p == nil || len(p.Scopes) == 0 {
+		return p
+	}
+	for _, sc := range p.Scopes {
+		if sc == string(domain.ActBranchPush) || sc == "branch:*" {
+			q := *p
+			q.Scopes = append(append([]string(nil), p.Scopes...), string(domain.ActTreeWrite))
+			return &q
+		}
+	}
+	return p
 }
 
 // pushPlan is the validated content of a push request.

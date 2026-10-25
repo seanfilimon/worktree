@@ -132,7 +132,7 @@ func TestRateLimiting(t *testing.T) {
 		t.Fatalf("over budget: %d %s %v", rec.Code, rec.Body.String(), rec.Header())
 	}
 	if opsmetrics.RateLimited.Get("") <= before {
-		t.Fatal("wt_rate_limited_total not incremented")
+		t.Fatal("worktree_rate_limited_total not incremented")
 	}
 	// Other principals and exempt endpoints are unaffected.
 	if rec := f.do(t, "GET", "/api/v1/tenants", "bob", nil); rec.Code != 200 {
@@ -184,7 +184,7 @@ func TestGCEndpoints(t *testing.T) {
 		t.Fatalf("live run: %d %s", rec.Code, rec.Body.String())
 	}
 	if opsmetrics.GCRuns.Get("") < runsBefore+2 {
-		t.Fatal("wt_gc_runs_total not incremented")
+		t.Fatal("worktree_gc_runs_total not incremented")
 	}
 
 	rec = f.do(t, "GET", "/api/v1/admin/gc", "admin", nil)
@@ -442,16 +442,16 @@ func TestOpsMetricsExposed(t *testing.T) {
 	rec := f.do(t, "GET", "/metrics", "", nil)
 	body := rec.Body.String()
 	for _, want := range []string{
-		"# TYPE wt_sync_pushes_total counter",
-		`wt_sync_pushes_total{result="accepted"} `,
-		`wt_sync_pushes_total{result="rejected"} `,
-		`wt_authz_decisions_total{decision="allow"} `,
-		`wt_authz_decisions_total{decision="deny"} `,
-		"wt_sync_pulls_total ",
-		"wt_mr_merges_total ",
-		"wt_gc_runs_total ",
-		"wt_gc_deleted_objects_total ",
-		"wt_rate_limited_total ",
+		"# TYPE worktree_sync_pushes_total counter",
+		`worktree_sync_pushes_total{result="accepted"} `,
+		`worktree_sync_pushes_total{result="rejected"} `,
+		`worktree_authz_decisions_total{decision="allow"} `,
+		`worktree_authz_decisions_total{decision="deny"} `,
+		"worktree_sync_pulls_total ",
+		"worktree_mr_merges_total ",
+		"worktree_gc_runs_total ",
+		"worktree_gc_deleted_objects_total ",
+		"worktree_rate_limited_total ",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics lack %q:\n%s", want, body)
