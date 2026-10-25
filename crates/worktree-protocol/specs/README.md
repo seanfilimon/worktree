@@ -47,6 +47,7 @@ is authoritative; the spec is a bug.
 | **Staged visibility** | [`visibility/StagedVisibility.md`](./visibility/StagedVisibility.md) | Staged snapshots: lifecycle, who sees them, `wt status --team`, events, retention |
 | **License compliance** | [`licensing/LicenseCompliance.md`](./licensing/LicenseCompliance.md) | Per-path SPDX rules and grants, enforcement on push/pull/read/export, NOTICE generation, detection |
 | **Security** | [`security/Security.md`](./security/Security.md) | Threat model, transport, credentials, snapshot signing, secret scanning, audit, tenant isolation |
+| **Policy history** | [`iam/PolicyHistory.md`](./iam/PolicyHistory.md) | Policy versions on every REST and access-apply change, statement-level diff, rollback and restore, `wt policy history/diff/rollback` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

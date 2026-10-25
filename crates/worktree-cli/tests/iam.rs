@@ -1143,3 +1143,101 @@ fn identity_register_and_revoke() {
         .stderr(predicate::str::contains("already registered"));
 }
 // --- end signing ---
+
+// --- policy history (ENGINEERING_PLAN §14.7): `wt policy history|show-version|diff|rollback|deleted` ---
+
+#[test]
+fn policy_history_commands() {
+    let sb = Sandbox::logged_in();
+    let s = &sb.server;
+    let base = "/api/v1/tenants/acme/policies/p1";
+    let stmt = json!({"sid": "a", "effect": "deny", "actions": ["tree:write"], "resources": ["*"],
+                      "principals": ["*"], "conditions": {}});
+    let version = |n: i64, change: &str, enabled: bool| {
+        json!({"tenant_id": "t", "policy_id": "p1", "version": n, "change": change,
+               "policy": {"id": "p1", "tenant_id": "t", "name": "guard", "description": "", "enabled": enabled,
+                          "statements": [stmt.clone()], "version": n, "created_by": "ada",
+                          "created_at": TS, "updated_at": TS},
+               "changed_by": "ada", "changed_at": TS, "comment": ""})
+    };
+    let diff = json!({"from": 1, "to": 2, "fields": [{"field": "enabled", "before": true, "after": false}],
+                      "changes": [{"op": "remove", "sid": "a", "index": 0, "statement": stmt.clone()}]});
+    let mut rolled = version(3, "rollback", true);
+    rolled["comment"] = json!("rollback to version 1: oops");
+    s.on(
+        "GET",
+        &format!("{base}/versions"),
+        200,
+        json!([version(1, "create", true), version(2, "update", false)]),
+    )
+    .on(
+        "GET",
+        &format!("{base}/versions/2"),
+        200,
+        version(2, "update", false),
+    )
+    .on("GET", &format!("{base}/diff"), 200, diff.clone())
+    .on("GET", &format!("{base}/diff?from=0&to=2"), 200, diff)
+    .on("POST", &format!("{base}/rollback"), 200, rolled.clone())
+    .on("POST", &format!("{base}/rollback?force=true"), 200, rolled)
+    .on(
+        "GET",
+        "/api/v1/tenants/acme/policies/deleted",
+        200,
+        json!([version(4, "delete", true)]),
+    );
+
+    let out = sb.ok(&["policy", "history", "p1", "--tenant", "acme"]);
+    assert!(out.contains("1        create  ada"), "{out}");
+    assert!(out.contains("2        update  ada"), "{out}");
+    let json_out = sb.json(&["policy", "history", "p1", "--tenant", "acme"]);
+    assert_eq!(json_out[1]["change"], "update");
+
+    let out = sb.ok(&["policy", "show-version", "p1", "2", "--tenant", "acme"]);
+    assert!(out.contains("change:     update"), "{out}");
+    assert!(out.contains("Statement 1 (a): DENY"), "{out}");
+
+    let out = sb.ok(&["policy", "diff", "p1", "--tenant", "acme"]);
+    assert!(out.contains("Policy p1: version 1 -> 2"), "{out}");
+    assert!(out.contains("~ enabled: true -> false"), "{out}");
+    assert!(
+        out.contains("- statement 1 (a): DENY tree:write on * for *"),
+        "{out}"
+    );
+    sb.ok(&[
+        "policy", "diff", "p1", "--from", "0", "--to", "2", "--tenant", "acme",
+    ]);
+    s.request("GET", &format!("{base}/diff?from=0&to=2"));
+
+    let out = sb.ok(&[
+        "policy", "rollback", "p1", "1", "-m", "oops", "--tenant", "acme",
+    ]);
+    assert!(
+        out.contains("Rolled back policy guard (p1) to version 1; recorded as version 3"),
+        "{out}"
+    );
+    assert_eq!(
+        s.request("POST", &format!("{base}/rollback")).body,
+        json!({"version": 1, "comment": "oops"})
+    );
+    sb.ok(&[
+        "policy", "rollback", "p1", "1", "--force", "--tenant", "acme",
+    ]);
+    assert_eq!(
+        s.request("POST", &format!("{base}/rollback?force=true"))
+            .body,
+        json!({"version": 1, "comment": ""})
+    );
+
+    let out = sb.ok(&["policy", "deleted", "--tenant", "acme"]);
+    assert!(out.contains("p1  guard  ada"), "{out}");
+
+    // Outside a worktree the tenant must be given.
+    let before = s.seen().len();
+    sb.wt(&["policy", "history", "p1"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--tenant"));
+    assert_eq!(s.seen().len(), before);
+}
+// --- end policy history ---

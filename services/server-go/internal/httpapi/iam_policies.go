@@ -11,6 +11,7 @@ import (
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/policyhist"
 )
 
 // maxPolicyStatements bounds the size of one policy.
@@ -189,8 +190,10 @@ func (a *api) handleCreatePolicy(w http.ResponseWriter, r *http.Request) error {
 		}
 		return err
 	}
+	hv := a.recordPolicy(r, policyhist.Entry{Change: policyhist.ChangeCreate, Policy: *pol})
 	a.audit(r, "policy.create", t.ID, "policy", pol.ID, map[string]string{
-		"name": pol.Name, "enabled": strconv.FormatBool(pol.Enabled), "statements": strconv.Itoa(len(pol.Statements))})
+		"name": pol.Name, "enabled": strconv.FormatBool(pol.Enabled), "statements": strconv.Itoa(len(pol.Statements)),
+		"history_version": strconv.Itoa(hv)})
 	writeJSON(w, http.StatusCreated, pol)
 	return nil
 }
@@ -261,6 +264,7 @@ func (a *api) handlePutPolicy(w http.ResponseWriter, r *http.Request) error {
 	if err := a.checkPolicyName(ctx, t.ID, req.Name, pol.ID); err != nil {
 		return err
 	}
+	before := *pol
 	prevEnabled := pol.Enabled
 	pol.Name, pol.Description, pol.Statements = req.Name, req.Description, req.Statements
 	pol.Enabled = req.Enabled == nil || *req.Enabled
@@ -269,9 +273,11 @@ func (a *api) handlePutPolicy(w http.ResponseWriter, r *http.Request) error {
 	if err := a.d.Store.UpdatePolicy(ctx, pol); err != nil {
 		return err
 	}
+	hv := a.recordPolicy(r, policyhist.Entry{Change: policyhist.ChangeUpdate, Before: &before, Policy: *pol})
 	a.audit(r, "policy.update", t.ID, "policy", pol.ID, map[string]string{
 		"name": pol.Name, "version": strconv.Itoa(pol.Version), "enabled": strconv.FormatBool(pol.Enabled),
-		"previous_enabled": strconv.FormatBool(prevEnabled), "statements": strconv.Itoa(len(pol.Statements))})
+		"previous_enabled": strconv.FormatBool(prevEnabled), "statements": strconv.Itoa(len(pol.Statements)),
+		"history_version": strconv.Itoa(hv)})
 	writeJSON(w, http.StatusOK, pol)
 	return nil
 }
@@ -292,7 +298,8 @@ func (a *api) handleDeletePolicy(w http.ResponseWriter, r *http.Request) error {
 	if err := a.d.Store.DeletePolicy(r.Context(), t.ID, pol.ID); err != nil {
 		return err
 	}
-	a.audit(r, "policy.delete", t.ID, "policy", pol.ID, map[string]string{"name": pol.Name})
+	hv := a.recordPolicy(r, policyhist.Entry{Change: policyhist.ChangeDelete, Before: pol, Policy: *pol})
+	a.audit(r, "policy.delete", t.ID, "policy", pol.ID, map[string]string{"name": pol.Name, "history_version": strconv.Itoa(hv)})
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

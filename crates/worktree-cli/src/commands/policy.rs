@@ -15,6 +15,7 @@ use worktree_sdk::remote::rest::seg;
 use crate::commands::iam_common::{
     call, confirm, fields, read_input, show, tenant_path, when, yes, PrincipalRef, Table, YesArgs,
 };
+use crate::commands::server_common::cwd_origin_tenant;
 use crate::context::Context;
 use crate::error::{CliError, Result};
 use crate::output::Text;
@@ -126,6 +127,90 @@ pub enum PolicyCommand {
         #[arg(long)]
         mfa: bool,
     },
+    /// List the versions of a policy, oldest first
+    ///
+    /// Every create, update, delete and rollback through the API and every
+    /// `wt access apply` that changes the policy records a version. A
+    /// policy that predates version history shows a synthetic version 1.
+    /// The history stays readable after the policy is deleted.
+    History {
+        /// Policy id
+        id: String,
+        #[command(flatten)]
+        tenant: TenantOpt,
+    },
+    /// Show one stored version of a policy
+    ShowVersion {
+        /// Policy id
+        id: String,
+        /// Version number (from `wt policy history`)
+        #[arg(value_name = "VERSION")]
+        number: u32,
+        #[command(flatten)]
+        tenant: TenantOpt,
+    },
+    /// Show the statement-level changes between two versions of a policy
+    ///
+    /// Statements are matched by sid, statements without a sid by their
+    /// position among the statements without a sid. --to defaults to the
+    /// latest version and --from to the version before it (0 = the empty
+    /// policy).
+    Diff {
+        /// Policy id
+        id: String,
+        /// Old version
+        #[arg(long, value_name = "V")]
+        from: Option<u32>,
+        /// New version
+        #[arg(long, value_name = "V")]
+        to: Option<u32>,
+        #[command(flatten)]
+        tenant: TenantOpt,
+    },
+    /// Restore a policy's name, description, enabled flag and statements
+    /// from an earlier version (recorded as a new version)
+    ///
+    /// Rolling back a deleted policy restores it with its id. Policies
+    /// managed by an access document need --force by a tenant owner.
+    Rollback {
+        /// Policy id
+        id: String,
+        /// Version to restore
+        #[arg(value_name = "VERSION")]
+        number: u32,
+        /// Comment recorded with the new version
+        #[arg(short = 'm', long = "message", value_name = "MSG")]
+        message: Option<String>,
+        /// Roll back a policy managed by an access document (tenant owners)
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        tenant: TenantOpt,
+    },
+    /// List deleted policies (restore one with `wt policy rollback`)
+    Deleted {
+        #[command(flatten)]
+        tenant: TenantOpt,
+    },
+}
+
+/// `--tenant` for the history commands.
+#[derive(Debug, Args)]
+pub struct TenantOpt {
+    /// Tenant slug (default: the tenant of this worktree's origin remote)
+    #[arg(long, value_name = "SLUG")]
+    pub tenant: Option<String>,
+}
+
+impl TenantOpt {
+    fn resolve(self, ctx: &Context) -> Result<String> {
+        self.tenant
+            .or_else(|| cwd_origin_tenant(ctx))
+            .ok_or_else(|| {
+                CliError::usage("no tenant given and the worktree has no origin remote")
+                    .with_hint("pass --tenant SLUG")
+            })
+    }
 }
 
 /// Policies of a simulation file: one policy, an array of policies, or
@@ -288,6 +373,239 @@ fn policy_path(tenant: &str, id: &str) -> String {
     tenant_path(tenant, &format!("/policies/{}", seg(id)))
 }
 
+// ---- version history (§14.7) ----
+
+/// A stored policy version (`PolicyVersion`).
+#[derive(Debug, Deserialize)]
+struct PolicyVersion {
+    #[serde(default)]
+    policy_id: String,
+    version: i64,
+    change: String,
+    policy: Policy,
+    #[serde(default)]
+    changed_by: String,
+    #[serde(default)]
+    changed_at: String,
+    #[serde(default)]
+    comment: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyDiff {
+    from: i64,
+    to: i64,
+    #[serde(default)]
+    changes: Vec<StatementChange>,
+    #[serde(default)]
+    fields: Vec<FieldChange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatementChange {
+    op: String,
+    #[serde(default)]
+    sid: String,
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    statement: Option<Statement>,
+    #[serde(default)]
+    before: Option<Statement>,
+    #[serde(default)]
+    after: Option<Statement>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FieldChange {
+    field: String,
+    #[serde(default)]
+    before: Value,
+    #[serde(default)]
+    after: Value,
+}
+
+fn history_table(t: &mut Text, versions: &[PolicyVersion]) {
+    let mut table = Table::new(&[
+        "version",
+        "change",
+        "by",
+        "at",
+        "name",
+        "enabled",
+        "statements",
+        "comment",
+    ]);
+    for v in versions {
+        table.row([
+            v.version.to_string(),
+            v.change.clone(),
+            v.changed_by.clone(),
+            when(&v.changed_at),
+            v.policy.name.clone(),
+            yes(v.policy.enabled).to_string(),
+            v.policy.statements.len().to_string(),
+            v.comment.clone(),
+        ]);
+    }
+    table.render(t, "No versions.");
+}
+
+fn version_detail(t: &mut Text, v: &PolicyVersion) {
+    fields(
+        t,
+        &[
+            ("version", v.version.to_string()),
+            ("change", v.change.clone()),
+            ("changed by", v.changed_by.clone()),
+            ("changed", when(&v.changed_at)),
+            ("comment", v.comment.clone()),
+        ],
+    );
+    t.blank();
+    policy_detail(t, &v.policy);
+}
+
+fn deleted_table(t: &mut Text, versions: &[PolicyVersion]) {
+    let mut table = Table::new(&["id", "name", "deleted by", "deleted", "version"]);
+    for v in versions {
+        table.row([
+            v.policy_id.clone(),
+            v.policy.name.clone(),
+            v.changed_by.clone(),
+            when(&v.changed_at),
+            v.version.to_string(),
+        ]);
+    }
+    table.render(t, "No deleted policies.");
+}
+
+/// One-line summary of a statement: `DENY a, b on r for p [if {...}]`.
+fn statement_summary(s: &Statement) -> String {
+    let mut out = format!(
+        "{} {} on {} for {}",
+        s.effect.to_uppercase(),
+        s.actions.join(", "),
+        s.resources.join(", "),
+        s.principals.join(", ")
+    );
+    if s.conditions.as_object().is_some_and(|c| !c.is_empty()) {
+        out.push_str(&format!(" if {}", s.conditions));
+    }
+    out
+}
+
+/// `statement N (sid)` with a 1-based position, as `wt policy show` numbers them.
+fn statement_label(index: usize, sid: &str) -> String {
+    if sid.is_empty() {
+        format!("statement {}", index + 1)
+    } else {
+        format!("statement {} ({sid})", index + 1)
+    }
+}
+
+fn field_value(v: &Value) -> String {
+    match v {
+        Value::Null => "-".into(),
+        Value::String(s) => format!("{s:?}"),
+        other => other.to_string(),
+    }
+}
+
+fn diff_text(t: &mut Text, id: &str, d: &PolicyDiff) {
+    t.line(format_args!("Policy {id}: version {} -> {}", d.from, d.to));
+    if d.changes.is_empty() && d.fields.is_empty() {
+        t.line("No differences.");
+        return;
+    }
+    for f in &d.fields {
+        t.line(format_args!(
+            "~ {}: {} -> {}",
+            f.field,
+            field_value(&f.before),
+            field_value(&f.after)
+        ));
+    }
+    for c in &d.changes {
+        let label = statement_label(c.index, &c.sid);
+        match (c.op.as_str(), &c.statement, &c.before, &c.after) {
+            ("add", Some(s), _, _) => t.line(format_args!("+ {label}: {}", statement_summary(s))),
+            ("remove", Some(s), _, _) => {
+                t.line(format_args!("- {label}: {}", statement_summary(s)))
+            }
+            ("change", _, Some(b), Some(a)) => {
+                t.line(format_args!("~ {label}"));
+                t.line(format_args!("    - {}", statement_summary(b)));
+                t.line(format_args!("    + {}", statement_summary(a)));
+            }
+            (op, ..) => t.line(format_args!("? {label}: {op}")),
+        }
+    }
+}
+
+fn run_history(ctx: &Context, command: PolicyCommand) -> Result<()> {
+    match command {
+        PolicyCommand::History { id, tenant } => {
+            let tenant = tenant.resolve(ctx)?;
+            let path = format!("{}/versions", policy_path(&tenant, &id));
+            let versions: Value = call(ctx.rest()?.get(&path))?;
+            show(&ctx.out, &versions, |t, v: &Vec<PolicyVersion>| {
+                history_table(t, v)
+            })
+        }
+        PolicyCommand::ShowVersion { id, number, tenant } => {
+            let tenant = tenant.resolve(ctx)?;
+            let path = format!("{}/versions/{number}", policy_path(&tenant, &id));
+            let value: Value = call(ctx.rest()?.get(&path))?;
+            show(&ctx.out, &value, version_detail)
+        }
+        PolicyCommand::Diff {
+            id,
+            from,
+            to,
+            tenant,
+        } => {
+            let tenant = tenant.resolve(ctx)?;
+            let path = format!("{}/diff", policy_path(&tenant, &id));
+            let query = [
+                ("from", from.map(|v| v.to_string()).unwrap_or_default()),
+                ("to", to.map(|v| v.to_string()).unwrap_or_default()),
+            ];
+            let value: Value = call(ctx.rest()?.get_query(&path, &query))?;
+            show(&ctx.out, &value, |t, d: &PolicyDiff| diff_text(t, &id, d))
+        }
+        PolicyCommand::Rollback {
+            id,
+            number,
+            message,
+            force,
+            tenant,
+        } => {
+            let tenant = tenant.resolve(ctx)?;
+            let mut path = format!("{}/rollback", policy_path(&tenant, &id));
+            if force {
+                path.push_str("?force=true");
+            }
+            let body = json!({"version": number, "comment": message.unwrap_or_default()});
+            let value: Value = call(ctx.rest()?.post(&path, &body))?;
+            show(&ctx.out, &value, |t, v: &PolicyVersion| {
+                t.line(format_args!(
+                    "Rolled back policy {} ({}) to version {number}; recorded as version {}",
+                    v.policy.name, v.policy.id, v.version
+                ));
+            })
+        }
+        PolicyCommand::Deleted { tenant } => {
+            let tenant = tenant.resolve(ctx)?;
+            let value: Value = call(ctx.rest()?.get(&tenant_path(&tenant, "/policies/deleted")))?;
+            show(&ctx.out, &value, |t, v: &Vec<PolicyVersion>| {
+                deleted_table(t, v)
+            })
+        }
+        _ => unreachable!("run_history called with a non-history command"),
+    }
+}
+
 pub fn run(ctx: &Context, args: PolicyArgs) -> Result<()> {
     match args.command {
         PolicyCommand::List { tenant } => {
@@ -411,6 +729,11 @@ pub fn run(ctx: &Context, args: PolicyArgs) -> Result<()> {
         }
         PolicyCommand::Enable { tenant, id } => set_enabled(ctx, &tenant, &id, true),
         PolicyCommand::Disable { tenant, id } => set_enabled(ctx, &tenant, &id, false),
+        command @ (PolicyCommand::History { .. }
+        | PolicyCommand::ShowVersion { .. }
+        | PolicyCommand::Diff { .. }
+        | PolicyCommand::Rollback { .. }
+        | PolicyCommand::Deleted { .. }) => run_history(ctx, command),
     }
 }
 
@@ -736,6 +1059,138 @@ mod tests {
         let mut v = json!({"a": null, "b": {"c": null, "d": 1}, "e": [null]});
         strip_nulls(&mut v);
         assert_eq!(v, json!({"b": {"d": 1}, "e": [null]}));
+    }
+
+    #[test]
+    fn parses_history_subcommands() {
+        assert!(matches!(
+            policy(&["history", "p1", "--tenant", "acme"]),
+            PolicyCommand::History { id, tenant: TenantOpt { tenant: Some(t) } } if id == "p1" && t == "acme"
+        ));
+        assert!(matches!(
+            policy(&["history", "p1"]),
+            PolicyCommand::History {
+                tenant: TenantOpt { tenant: None },
+                ..
+            }
+        ));
+        assert!(matches!(
+            policy(&["show-version", "p1", "3"]),
+            PolicyCommand::ShowVersion { number: 3, .. }
+        ));
+        assert!(matches!(
+            policy(&["diff", "p1", "--from", "1", "--to", "4"]),
+            PolicyCommand::Diff {
+                from: Some(1),
+                to: Some(4),
+                ..
+            }
+        ));
+        assert!(matches!(
+            policy(&["diff", "p1"]),
+            PolicyCommand::Diff {
+                from: None,
+                to: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            policy(&["rollback", "p1", "2", "-m", "undo", "--force"]),
+            PolicyCommand::Rollback { number: 2, message: Some(m), force: true, .. } if m == "undo"
+        ));
+        assert!(matches!(
+            policy(&["deleted", "--tenant", "acme"]),
+            PolicyCommand::Deleted { .. }
+        ));
+        assert_eq!(
+            parse_err(&["policy", "rollback", "p1"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_err(&["policy", "show-version", "p1", "two"]),
+            ErrorKind::ValueValidation
+        );
+    }
+
+    #[test]
+    fn renders_history_and_versions() {
+        let versions: Vec<PolicyVersion> = serde_json::from_value(json!([
+            {"tenant_id": "t", "policy_id": "p1", "version": 1, "change": "create",
+             "policy": {"id": "p1", "name": "guard", "enabled": true, "statements": [], "version": 1},
+             "changed_by": "ada", "changed_at": "2026-01-01T00:00:00Z",
+             "comment": "synthetic version: the policy existed before version history was recorded"},
+            {"tenant_id": "t", "policy_id": "p1", "version": 2, "change": "delete",
+             "policy": {"id": "p1", "name": "guard", "enabled": false,
+                        "statements": [{"effect": "deny", "actions": ["tree:write"], "resources": ["*"], "principals": ["*"], "conditions": {}}]},
+             "changed_by": "bob", "changed_at": "2026-01-02T00:00:00Z"}
+        ]))
+        .unwrap();
+        let mut t = Text::default();
+        history_table(&mut t, &versions);
+        let out = t.as_str();
+        assert!(out.contains("1        create  ada"), "{out}");
+        assert!(out.contains("2        delete  bob"), "{out}");
+        assert!(out.contains("synthetic version"), "{out}");
+
+        let mut t = Text::default();
+        version_detail(&mut t, &versions[1]);
+        let out = t.as_str();
+        assert!(out.contains("change:     delete"), "{out}");
+        assert!(out.contains("Statement 1: DENY"), "{out}");
+
+        let mut t = Text::default();
+        deleted_table(&mut t, &versions[1..]);
+        assert!(t.as_str().contains("p1  guard  bob"), "{}", t.as_str());
+        let mut t = Text::default();
+        deleted_table(&mut t, &[]);
+        assert_eq!(t.as_str(), "No deleted policies.\n");
+    }
+
+    #[test]
+    fn renders_diffs() {
+        let d: PolicyDiff = serde_json::from_value(json!({
+            "from": 1, "to": 2,
+            "fields": [{"field": "enabled", "before": true, "after": false},
+                       {"field": "description", "before": null, "after": "d"}],
+            "changes": [
+                {"op": "add", "sid": "new", "index": 0, "statement":
+                    {"effect": "deny", "actions": ["mr:merge"], "resources": ["*"], "principals": ["role:developer"], "conditions": {}}},
+                {"op": "change", "sid": "", "index": 2,
+                 "before": {"effect": "deny", "actions": ["a:b"], "resources": ["*"], "principals": ["*"], "conditions": {}},
+                 "after": {"effect": "deny", "actions": ["a:b", "c:d"], "resources": ["*"], "principals": ["*"],
+                           "conditions": {"require_mfa": true}}},
+                {"op": "remove", "sid": "gone", "index": 1, "statement":
+                    {"effect": "allow", "actions": ["tree:read"], "resources": ["*"], "principals": ["*"], "conditions": {}}}
+            ]
+        }))
+        .unwrap();
+        let mut t = Text::default();
+        diff_text(&mut t, "p1", &d);
+        let out = t.as_str();
+        assert!(out.starts_with("Policy p1: version 1 -> 2\n"), "{out}");
+        assert!(out.contains("~ enabled: true -> false\n"), "{out}");
+        assert!(out.contains("~ description: - -> \"d\"\n"), "{out}");
+        assert!(
+            out.contains("+ statement 1 (new): DENY mr:merge on * for role:developer\n"),
+            "{out}"
+        );
+        assert!(out.contains("~ statement 3\n"), "{out}");
+        assert!(out.contains("    - DENY a:b on * for *\n"), "{out}");
+        assert!(
+            out.contains("    + DENY a:b, c:d on * for * if {\"require_mfa\":true}\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("- statement 2 (gone): ALLOW tree:read on * for *\n"),
+            "{out}"
+        );
+
+        let same: PolicyDiff =
+            serde_json::from_value(json!({"from": 2, "to": 2, "changes": [], "fields": []}))
+                .unwrap();
+        let mut t = Text::default();
+        diff_text(&mut t, "p1", &same);
+        assert!(t.as_str().ends_with("No differences.\n"), "{}", t.as_str());
     }
 
     #[test]
