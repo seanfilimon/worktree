@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import { ApiContext } from "@/api/context";
 import type { Api } from "@/api/endpoints";
 import { AuthProvider } from "@/auth/AuthProvider";
+import { LiveStatusProvider } from "@/components/shell/LiveStatusProvider";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/theme/ThemeProvider";
 import { ToastContext, type ToastStore } from "@/toast/store";
 import { Toaster } from "@/toast/Toaster";
@@ -21,8 +23,12 @@ export function AppProviders({ api, queryClient, toasts, children }: AppProvider
         <ApiContext.Provider value={api}>
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
-              {children}
-              <Toaster />
+              <LiveStatusProvider>
+                <TooltipProvider delayDuration={300}>
+                  {children}
+                  <Toaster />
+                </TooltipProvider>
+              </LiveStatusProvider>
             </AuthProvider>
           </QueryClientProvider>
         </ApiContext.Provider>

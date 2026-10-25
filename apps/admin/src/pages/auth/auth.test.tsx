@@ -73,6 +73,52 @@ describe("login flow", () => {
     expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
   });
 
+  it("shows the server version and keeps sign-in disabled until both fields are filled", async () => {
+    const { user } = renderApp({ route: "/login", signedIn: false });
+    expect(await screen.findByText("Server 2.0.0-test")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "Sign in" });
+    expect(submit).toBeDisabled();
+    await user.type(screen.getByLabelText("Username"), "alice");
+    expect(submit).toBeDisabled();
+    await user.type(screen.getByLabelText("Password"), "x");
+    expect(submit).toBeEnabled();
+  });
+
+  it("reports an unreachable server", async () => {
+    renderApp({ route: "/login", signedIn: false, api: { "GET /healthz": apiError(500, "internal", "down") } });
+    expect(await screen.findByText("Server unreachable")).toBeInTheDocument();
+  });
+
+  it("validates the registration form before submitting", async () => {
+    const { user, fetchMock } = renderApp({ route: "/register", signedIn: false });
+    await user.click(await screen.findByRole("button", { name: "Create account" }));
+    expect(screen.getByLabelText("Username")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Username")).toHaveAccessibleDescription(/Lowercase letters/);
+    expect(screen.getByLabelText("Email")).toHaveAccessibleDescription("Enter a valid email address.");
+    expect(screen.getByLabelText("Password")).toHaveAccessibleDescription("At least 8 characters.");
+    expect(fetchMock.find("POST /api/v1/auth/register")).toHaveLength(0);
+  });
+
+  it("registers, signs in and opens the dashboard", async () => {
+    const { user, router } = renderApp({
+      route: "/register",
+      signedIn: false,
+      api: {
+        ...dashboardApi,
+        "POST /api/v1/auth/register": (req) => {
+          expect(req.body).toEqual({ username: "carol", email: "carol@example.com", password: "long-enough" });
+          return json({ token: "carol-token", account: { ...fx.bob, username: "carol" } }, 201);
+        },
+      },
+    });
+    await user.type(await screen.findByLabelText("Username"), "Carol");
+    await user.type(screen.getByLabelText("Email"), "carol@example.com");
+    await user.type(screen.getByLabelText("Password"), "long-enough");
+    await user.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe("carol-token");
+  });
+
   it("explains when registration is disabled", async () => {
     const { user } = renderApp({
       route: "/register",

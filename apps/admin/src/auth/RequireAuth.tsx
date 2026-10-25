@@ -1,13 +1,15 @@
+import { CircleAlert, Loader2, ShieldAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router";
-import { Spinner } from "@/components/legacy/Spinner";
-import { ErrorState } from "@/components/legacy/States";
+import { errorMessage } from "@/api/client";
 import { Wordmark } from "@/components/Wordmark";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "./context";
 
 /** Gate for authenticated routes: redirects to /login without a session. */
 export function RequireAuth() {
-  const { token, me } = useAuth();
+  const { token, me, signOut } = useAuth();
   const location = useLocation();
 
   if (!token) {
@@ -15,18 +17,33 @@ export function RequireAuth() {
   }
   if (me.isPending) {
     return (
-      <div role="status" className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+      <div role="status" className="flex min-h-svh flex-col items-center justify-center gap-3 text-muted-foreground">
         <Wordmark className="text-lg" />
         <span className="flex items-center gap-2 text-sm">
-          <Spinner /> Loading session…
+          <Loader2 aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
+          Loading session…
         </span>
       </div>
     );
   }
   if (me.isError) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <ErrorState error={me.error} onRetry={() => void me.refetch()} />
+      <div className="flex min-h-svh items-center justify-center px-4">
+        <Alert className="max-w-md">
+          <CircleAlert aria-hidden="true" />
+          <AlertTitle>Could not load your session</AlertTitle>
+          <AlertDescription>
+            <p>{errorMessage(me.error)}</p>
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" onClick={() => void me.refetch()}>
+                Retry
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => void signOut()}>
+                Sign out
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
       </div>
     );
   }
@@ -38,9 +55,15 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
   const { isAdmin } = useAuth();
   if (!isAdmin) {
     return (
-      <div role="alert" className="flex flex-col items-center gap-2 py-16 text-center">
+      <div
+        role="alert"
+        className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-16 text-center"
+      >
+        <ShieldAlert aria-hidden="true" className="size-6 text-muted-foreground" />
         <p className="font-medium">Server admin access required</p>
-        <p className="text-[13px] text-muted-foreground">Ask a server administrator to grant your account admin rights.</p>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          Ask a server administrator to grant your account admin rights.
+        </p>
       </div>
     );
   }

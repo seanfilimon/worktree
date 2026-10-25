@@ -1,12 +1,13 @@
 import { useMutation } from "@tanstack/react-query";
+import { CircleAlert, Loader2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router";
 import { errorMessage, isApiError } from "@/api/client";
 import { useApi } from "@/api/context";
 import { useAuth } from "@/auth/context";
-import { Button } from "@/components/legacy/Button";
-import { TextField } from "@/components/legacy/Field";
-import { Alert } from "@/components/legacy/States";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { AuthField } from "./AuthField";
 import { AuthShell } from "./AuthShell";
 
 const USERNAME_RE = /^[a-z0-9][a-z0-9-]{0,38}$/;
@@ -33,8 +34,10 @@ export function RegisterPage() {
   if (token && !register.isPending && !register.isSuccess) return <Navigate to="/" replace />;
 
   const errors = {
-    username: USERNAME_RE.test(username) ? undefined : "Lowercase letters, digits and dashes; must start with a letter or digit.",
-    email: /^[^\s@]+@[^\s@]+$/.test(email) ? undefined : "Enter a valid email address.",
+    username: USERNAME_RE.test(username)
+      ? undefined
+      : "Lowercase letters, digits and dashes; must start with a letter or digit.",
+    email: /^[^\s@]+@[^\s@]+$/.test(email.trim()) ? undefined : "Enter a valid email address.",
     password: password.length >= MIN_PASSWORD ? undefined : `At least ${MIN_PASSWORD} characters.`,
   };
   const valid = !errors.username && !errors.email && !errors.password;
@@ -46,33 +49,41 @@ export function RegisterPage() {
   };
 
   const err = register.error;
+  const disabled = isApiError(err) && err.status === 403;
   return (
     <AuthShell
       title="Create account"
+      description="Register a new account on this W0rkTree server."
       footer={
-        <>
+        <p>
           Already registered?{" "}
-          <Link to="/login" className="font-medium text-foreground hover:underline">
+          <Link to="/login" className="font-medium text-foreground underline-offset-4 hover:underline">
             Sign in
           </Link>
-        </>
+        </p>
       }
     >
-      <form onSubmit={onSubmit} className="flex flex-col gap-3" noValidate>
+      <form onSubmit={onSubmit} className="grid gap-4" noValidate>
         {err && (
-          <Alert title={isApiError(err) && err.status === 403 ? "Registration is disabled on this server" : "Registration failed"}>
-            {isApiError(err) && err.status === 403 ? "Ask a server administrator to create an account for you." : errorMessage(err)}
+          <Alert>
+            <CircleAlert aria-hidden="true" />
+            <AlertTitle>{disabled ? "Registration is disabled on this server" : "Registration failed"}</AlertTitle>
+            <AlertDescription>
+              {disabled ? "Ask a server administrator to create an account for you." : errorMessage(err)}
+            </AlertDescription>
           </Alert>
         )}
-        <TextField
+        <AuthField
           label="Username"
           autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
           autoFocus
           value={username}
           onChange={(e) => setUsername(e.target.value.toLowerCase())}
           error={touched ? errors.username : undefined}
         />
-        <TextField
+        <AuthField
           label="Email"
           type="email"
           autoComplete="email"
@@ -80,16 +91,17 @@ export function RegisterPage() {
           onChange={(e) => setEmail(e.target.value)}
           error={touched ? errors.email : undefined}
         />
-        <TextField
+        <AuthField
           label="Password"
           type="password"
           autoComplete="new-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          hint={touched ? undefined : `At least ${MIN_PASSWORD} characters.`}
+          hint={`At least ${MIN_PASSWORD} characters.`}
           error={touched ? errors.password : undefined}
         />
-        <Button type="submit" variant="primary" loading={register.isPending} className="mt-1 w-full">
+        <Button type="submit" disabled={register.isPending} className="w-full">
+          {register.isPending && <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
           Create account
         </Button>
       </form>

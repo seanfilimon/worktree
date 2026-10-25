@@ -7,6 +7,7 @@ import type {
   ServerStats,
   Snapshot,
   SnapshotDetail,
+  SearchResults,
   StagedSnapshot,
   Tenant,
   TreeSummary,
@@ -31,6 +32,9 @@ export const bob: Account = { ...account, id: "acc-2", username: "bob", email: "
 export const tenant: Tenant = { id: "ten-acme", slug: "acme", name: "Acme Corp", kind: "org", plan: "pro", created_at: T0 };
 
 export const me: MeResponse = { account, memberships: [{ tenant, role: "owner" }] };
+
+/** `me` for a regular member (not a server admin). */
+export const memberMe: MeResponse = { account: { ...account, is_admin: false }, memberships: [{ tenant, role: "developer" }] };
 
 export const stats: ServerStats = {
   tenants: 3,
@@ -136,4 +140,12 @@ export const mergeRequest: MergeRequest = {
   approvals: [],
   created_at: recent(30),
   updated_at: recent(10),
+};
+
+/** GET /api/v1/search result covering every result kind. */
+export const searchResults: SearchResults = {
+  tenants: [tenant],
+  trees: [{ tree: summary.tree, tenant_slug: tenant.slug }],
+  branches: [{ tenant_slug: tenant.slug, tree: summary.tree.name, branch: branches[1]! }],
+  accounts: [bob],
 };
