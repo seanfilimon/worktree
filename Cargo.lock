@@ -3189,6 +3189,7 @@ dependencies = [
  "flate2",
  "reqwest",
  "serde_json",
+ "sha2",
  "tar",
  "tempfile",
 ]

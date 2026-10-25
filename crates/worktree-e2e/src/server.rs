@@ -40,11 +40,18 @@ impl Server {
     /// for the readiness line on stdout or `GET /healthz` == 200.
     #[track_caller]
     pub fn start(dir: &Path) -> Server {
+        Self::start_with(dir, &[])
+    }
+
+    /// [`Server::start`] with extra command-line flags (e.g.
+    /// `--webhook-allow-private`).
+    #[track_caller]
+    pub fn start_with(dir: &Path, extra_args: &[&str]) -> Server {
         let bin = bins::server_bin();
         let admin_password = format!("Adm-{}-9z", crate::random_hex(20));
         let mut last_err = String::new();
         for attempt in 1..=3 {
-            match Self::try_start(&bin, dir, attempt, &admin_password) {
+            match Self::try_start(&bin, dir, attempt, &admin_password, extra_args) {
                 Ok(s) => return s,
                 Err((retryable, e)) => {
                     last_err = e;
@@ -65,6 +72,7 @@ impl Server {
         dir: &Path,
         attempt: u32,
         admin_password: &str,
+        extra_args: &[&str],
     ) -> Result<Server, (bool, String)> {
         let port = free_port();
         let addr = format!("127.0.0.1:{port}");
@@ -85,6 +93,7 @@ impl Server {
             .arg("admin")
             .arg("--admin-password")
             .arg(admin_password)
+            .args(extra_args)
             .current_dir(dir)
             .env_remove("WT_ADDR")
             .env_remove("WT_DATA")

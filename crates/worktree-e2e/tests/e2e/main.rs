@@ -41,3 +41,13 @@ mod path_security;
 mod releases;
 mod review_ci;
 mod signing;
+
+// v0.6 feature expansion (ENGINEERING_PLAN §14).
+mod blame;
+mod cli_ux;
+mod code_search;
+mod policy_history;
+mod rewrite;
+mod server_merges;
+mod storage;
+mod webhooks;
