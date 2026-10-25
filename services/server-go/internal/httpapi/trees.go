@@ -386,12 +386,52 @@ func (a *api) handlePutLicense(w http.ResponseWriter, r *http.Request) error {
 	if !licenseGrants[rule.Grant] {
 		return badRequestf("grant must be one of read-only, modify, redistribute")
 	}
+	if err := a.validateLicenseGrantee(r.Context(), t, &rule); err != nil {
+		return err
+	}
+	if rule.ExpiresAt != nil {
+		if !rule.ExpiresAt.After(time.Now()) {
+			return badRequestf("expires_at must be in the future")
+		}
+		utc := rule.ExpiresAt.UTC()
+		rule.ExpiresAt = &utc
+	}
 	if err := a.d.Store.PutLicenseRule(r.Context(), &rule); err != nil {
 		return err
 	}
-	a.audit(r, "license.update", t.ID, "tree", tree.ID,
-		map[string]string{"path_glob": rule.PathGlob, "spdx": rule.SPDX, "grant": rule.Grant})
+	details := map[string]string{"path_glob": rule.PathGlob, "spdx": rule.SPDX, "grant": rule.Grant}
+	if rule.Grantee != "" {
+		details["grantee"] = rule.Grantee
+	}
+	if rule.ExpiresAt != nil {
+		details["expires_at"] = rule.ExpiresAt.Format(time.RFC3339)
+	}
+	a.audit(r, "license.update", t.ID, "tree", tree.ID, details)
 	writeJSON(w, http.StatusOK, rule)
+	return nil
+}
+
+// validateLicenseGrantee checks LicenseRule.Grantee (v0.5, §13.1): "" (every
+// non-owning tenant) or the slug of an existing tenant other than the
+// tree's owner (whose members are never restricted).
+func (a *api) validateLicenseGrantee(ctx context.Context, owner *domain.Tenant, rule *domain.LicenseRule) error {
+	rule.Grantee = strings.TrimSpace(rule.Grantee)
+	if rule.Grantee == "" {
+		return nil
+	}
+	if !slugRe.MatchString(rule.Grantee) {
+		return badRequestf("grantee must be a tenant slug")
+	}
+	g, err := a.d.Store.GetTenantBySlug(ctx, rule.Grantee)
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return badRequestf("grantee tenant %q does not exist", rule.Grantee)
+	case err != nil:
+		return err
+	}
+	if g.ID == owner.ID {
+		return badRequestf("grantee %q owns the tree: its members are never restricted by license rules", rule.Grantee)
+	}
 	return nil
 }
 

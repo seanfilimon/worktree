@@ -140,10 +140,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Audit:   auditLog,
 		Version: cfg.Version,
 
-		PushChecks: []domain.PushChecker{},
+		PushChecks: []domain.PushChecker{pathACL}, // sec-paths: path ACLs run first (§13.1)
 		AccessCfg:  accessCfg,
 	})
-	_ = pathACL // becomes a PushChecker in its workstream
 
 	// ---- gRPC ----
 	grpcServer, healthSrv := newGRPCServer(iamSvc, syncSvc, log)

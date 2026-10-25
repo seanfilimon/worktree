@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/content"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
@@ -234,6 +235,9 @@ type compareResult struct {
 	Snapshots []domain.Snapshot `json:"snapshots"`
 	Files     []fileDiff        `json:"files"`
 	Stats     compareStats      `json:"stats"`
+	// RestrictedCount is the number of changed files left out of Files
+	// because the caller may not read them (§13.1).
+	RestrictedCount int `json:"restricted_count"`
 }
 
 // handleCompare answers GET {tree}/compare?to=REV&from=REV&context=3.
@@ -244,9 +248,9 @@ type compareResult struct {
 // per-request budget of loaded blob bytes; beyond either limit a file is
 // reported with too_large and no patch.
 //
-// Paths the caller may not read under the tree's license rules are still
-// listed (path, status, hashes, sizes) but without patch or line counts, in
-// the same way the blob endpoint withholds their content.
+// Paths the caller may not read (path-deny policies or the tree's license
+// rules, §13.1) are left out of files and stats and counted in
+// restricted_count.
 func (a *api) handleCompare(w http.ResponseWriter, r *http.Request) error {
 	_, tree, err := a.treeFor(r, domain.ActTreeRead)
 	if err != nil {
@@ -329,16 +333,26 @@ func (a *api) handleCompare(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if len(files) > 0 {
-		readable, err := a.readablePaths(ctx, principal(r), tree, files)
+		paths := make([]string, len(files))
+		for i, f := range files {
+			paths[i] = f.Path
+		}
+		rs, err := a.readRestrictions(ctx, principal(r), tree, paths)
 		if err != nil {
 			return err
 		}
+		visible := files[:0]
+		for _, f := range files {
+			if rs.restricted(f.Path) {
+				res.RestrictedCount++
+				continue
+			}
+			visible = append(visible, f)
+		}
+		files = visible
 		budget := int64(maxCompareBlobBytes)
 		for i := range files {
 			fd := &files[i]
-			if !readable[fd.Path] {
-				continue
-			}
 			if err := a.fillPatch(ctx, fd, oldIdx[fd.Path], newIdx[fd.Path], contextLines, &budget); err != nil {
 				return err
 			}
@@ -406,36 +420,6 @@ func changedFiles(oldIdx, newIdx map[string]*syncpb.ManifestEntry) ([]fileDiff, 
 	return nonNil(out), nil
 }
 
-// readablePaths returns which of files' paths p may read under the tree's
-// license rules. The common all-readable case costs one check.
-func (a *api) readablePaths(ctx context.Context, p *domain.Principal, tree *domain.Tree, files []fileDiff) (map[string]bool, error) {
-	paths := make([]string, len(files))
-	for i, f := range files {
-		paths[i] = f.Path
-	}
-	ok := make(map[string]bool, len(paths))
-	err := a.d.License.CheckRead(ctx, p, tree, paths)
-	if err == nil {
-		for _, path := range paths {
-			ok[path] = true
-		}
-		return ok, nil
-	}
-	if !isReadDenied(err) {
-		return nil, err
-	}
-	for _, path := range paths {
-		err := a.d.License.CheckRead(ctx, p, tree, []string{path})
-		switch {
-		case err == nil:
-			ok[path] = true
-		case !isReadDenied(err):
-			return nil, err
-		}
-	}
-	return ok, nil
-}
-
 // isReadDenied reports whether err is a license or authorization refusal.
 func isReadDenied(err error) bool {
 	var denied *domain.PushDenied
@@ -463,10 +447,10 @@ func (a *api) fillPatch(ctx context.Context, fd *fileDiff, oe, ne *syncpb.Manife
 		if err != nil {
 			return nil, err
 		}
-		data, err := a.d.Objects.Get(ctx, h)
+		data, err := content.ReadEntry(ctx, a.d.Objects, e)
 		if err != nil {
 			// A referenced blob that is missing is corruption (500).
-			return nil, fmt.Errorf("blob %s of %q: %v", h, e.GetPath(), err)
+			return nil, fmt.Errorf("content %s of %q: %v", h, e.GetPath(), err)
 		}
 		return data, nil
 	}
@@ -555,8 +539,9 @@ type pathState struct {
 // with the snapshots on the branch's history (default: the default branch)
 // that changed P, newest first. Each snapshot is compared with its first
 // parent. At most maxFileHistoryScan snapshots are inspected. Reading the
-// history of a path requires the same license read permission as its
-// content.
+// history of a path requires the same read permission as its content: a
+// path-denied path answers 403 path_denied, a license-restricted one 451
+// license_restricted (§13.1).
 func (a *api) handleFileHistory(w http.ResponseWriter, r *http.Request) error {
 	_, tree, err := a.treeFor(r, domain.ActTreeRead)
 	if err != nil {
@@ -572,7 +557,11 @@ func (a *api) handleFileHistory(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := a.d.License.CheckRead(ctx, principal(r), tree, []string{filePath}); err != nil {
+	rs, err := a.readRestrictions(ctx, principal(r), tree, []string{filePath})
+	if err != nil {
+		return err
+	}
+	if err := rs.check(filePath); err != nil {
 		return err
 	}
 	tip, _, err := a.branchTipForInsights(ctx, tree, q.Get("branch"))

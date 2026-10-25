@@ -1,5 +1,6 @@
 //! `wt license` — path license rules of a server tree.
 
+use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use clap::{Args, Subcommand, ValueEnum};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,16 @@ pub enum LicenseCommand {
         /// What other tenants may do with the matching files
         #[arg(long, value_name = "GRANT", default_value = "read-only")]
         grant: Grant,
+        /// Apply the rule only to this tenant (slug; its members, its service
+        /// accounts or the user whose personal tenant it is). Default: every
+        /// tenant that does not own the tree
+        #[arg(long, value_name = "TENANT")]
+        grantee: Option<String>,
+        /// Stop applying the rule after this time (RFC 3339, e.g.
+        /// 2026-06-30T23:59:59Z, or a date YYYY-MM-DD meaning the end of
+        /// that day in UTC)
+        #[arg(long, value_name = "WHEN", value_parser = parse_expires)]
+        expires: Option<DateTime<Utc>>,
     },
     /// Remove the rule for a glob
     #[command(allow_missing_positional = true)]
@@ -60,6 +71,40 @@ struct LicenseRule {
     path_glob: String,
     spdx: String,
     grant: String,
+    grantee: Option<String>,
+    expires_at: Option<String>,
+}
+
+/// The PUT body of `wt license set`; grantee and expires_at only when given.
+fn set_body(
+    glob: &str,
+    spdx: &str,
+    grant: Grant,
+    grantee: Option<&str>,
+    expires: Option<DateTime<Utc>>,
+) -> serde_json::Value {
+    let mut body = json!({ "path_glob": glob, "spdx": spdx, "grant": grant });
+    if let Some(g) = grantee {
+        body["grantee"] = json!(g);
+    }
+    if let Some(e) = expires {
+        body["expires_at"] = json!(e.to_rfc3339_opts(SecondsFormat::Secs, true));
+    }
+    body
+}
+
+/// `--expires`: an RFC 3339 time, or a date meaning 23:59:59 UTC that day.
+fn parse_expires(s: &str) -> std::result::Result<DateTime<Utc>, String> {
+    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
+        return Ok(t.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(23, 59, 59))
+        .map(|t| t.and_utc())
+        .ok_or_else(|| {
+            format!("invalid time {s:?}: use RFC 3339 (2026-06-30T23:59:59Z) or YYYY-MM-DD")
+        })
 }
 
 pub fn run(ctx: &Context, args: LicenseArgs) -> Result<()> {
@@ -71,14 +116,26 @@ pub fn run(ctx: &Context, args: LicenseArgs) -> Result<()> {
             let value = api.get(&path(&tree))?;
             render(out, &value, |t, rules: Vec<LicenseRule>| table(t, &rules))
         }
-        LicenseCommand::Set { args, grant } => {
+        LicenseCommand::Set {
+            args,
+            grant,
+            grantee,
+            expires,
+        } => {
             let (tree, glob, spdx) = split_set_args(args)?;
             let tree = tree_or_default(ctx, tree)?;
-            let body = json!({ "path_glob": glob, "spdx": spdx, "grant": grant });
+            let body = set_body(&glob, &spdx, grant, grantee.as_deref(), expires);
             let value = api.put(&path(&tree), &body)?;
             render(out, &value, |t, rule: LicenseRule| {
+                let mut scope = String::new();
+                if let Some(g) = rule.grantee.as_deref().filter(|g| !g.is_empty()) {
+                    scope.push_str(&format!(" for {g}"));
+                }
+                if let Some(e) = rule.expires_at.as_deref().filter(|e| !e.is_empty()) {
+                    scope.push_str(&format!(" until {e}"));
+                }
                 t.line(format_args!(
-                    "Licensed {} on {tree} as {} ({})",
+                    "Licensed {} on {tree} as {} ({}{scope})",
                     rule.path_glob.bold(),
                     rule.spdx.green().bold(),
                     rule.grant
@@ -158,7 +215,7 @@ mod tests {
             license(&["list"]),
             LicenseCommand::List { tree: None }
         ));
-        let LicenseCommand::Set { args, grant } =
+        let LicenseCommand::Set { args, grant, .. } =
             license(&["set", "acme/web", "vendor/**", "MIT", "--grant", "modify"])
         else {
             panic!()
@@ -168,7 +225,7 @@ mod tests {
         assert_eq!(tree.map(|t| t.to_string()).as_deref(), Some("acme/web"));
         assert_eq!((glob.as_str(), spdx.as_str()), ("vendor/**", "MIT"));
 
-        let LicenseCommand::Set { args, grant } = license(&["set", "**", "Apache-2.0"]) else {
+        let LicenseCommand::Set { args, grant, .. } = license(&["set", "**", "Apache-2.0"]) else {
             panic!()
         };
         assert_eq!(grant, Grant::ReadOnly);
@@ -205,6 +262,86 @@ mod tests {
             license(&["remove", "acme/web", "vendor/**"]),
             LicenseCommand::Remove { tree: Some(_), .. }
         ));
+    }
+
+    #[test]
+    fn set_grantee_and_expires() {
+        let LicenseCommand::Set {
+            args,
+            grant,
+            grantee,
+            expires,
+        } = license(&[
+            "set",
+            "src/**",
+            "LicenseRef-Proprietary",
+            "--grant",
+            "modify",
+            "--grantee",
+            "partner",
+            "--expires",
+            "2026-06-30T12:00:00+02:00",
+        ])
+        else {
+            panic!()
+        };
+        assert_eq!(grantee.as_deref(), Some("partner"));
+        let expires = expires.expect("expires");
+        let (_, glob, spdx) = split_set_args(args).expect("split");
+        let body = set_body(&glob, &spdx, grant, grantee.as_deref(), Some(expires));
+        assert_eq!(
+            body,
+            json!({
+                "path_glob": "src/**",
+                "spdx": "LicenseRef-Proprietary",
+                "grant": "modify",
+                "grantee": "partner",
+                "expires_at": "2026-06-30T10:00:00Z",
+            })
+        );
+
+        // A bare date means the end of that day (UTC); neither flag is sent
+        // when absent.
+        let LicenseCommand::Set {
+            expires, grantee, ..
+        } = license(&["set", "**", "MIT", "--expires", "2026-12-31"])
+        else {
+            panic!()
+        };
+        assert!(grantee.is_none());
+        assert_eq!(
+            expires.map(|e| e.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            Some("2026-12-31T23:59:59Z".to_owned())
+        );
+        let body = set_body("**", "MIT", Grant::ReadOnly, None, None);
+        assert_eq!(
+            body,
+            json!({ "path_glob": "**", "spdx": "MIT", "grant": "read-only" })
+        );
+
+        assert_eq!(
+            parse_err(&["license", "set", "**", "MIT", "--expires", "tomorrow"]),
+            ErrorKind::ValueValidation
+        );
+        assert_eq!(
+            parse_err(&["license", "set", "**", "MIT", "--expires", "2026-02-30"]),
+            ErrorKind::ValueValidation
+        );
+    }
+
+    #[test]
+    fn rule_decodes_grantee_and_expiry() {
+        let rule: LicenseRule = serde_json::from_value(json!({
+            "tree_id": "t", "path_glob": "a/**", "spdx": "MIT", "grant": "modify",
+            "grantee": "partner", "expires_at": "2026-06-30T23:59:59Z"
+        }))
+        .expect("decode");
+        assert_eq!(rule.grantee.as_deref(), Some("partner"));
+        assert_eq!(rule.expires_at.as_deref(), Some("2026-06-30T23:59:59Z"));
+        let bare: LicenseRule =
+            serde_json::from_value(json!({ "path_glob": "a", "spdx": "MIT", "grant": "modify" }))
+                .expect("decode");
+        assert!(bare.grantee.is_none() && bare.expires_at.is_none());
     }
 
     #[test]
