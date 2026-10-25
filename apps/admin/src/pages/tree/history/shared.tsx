@@ -1,8 +1,9 @@
 /** Small building blocks shared by the tree overview / history / compare pages. */
-import { Bot, Check, CircleAlert, Copy, GitMerge, Inbox, RotateCw } from "lucide-react";
+import { BadgeCheck, Bot, Check, CircleAlert, Copy, FileSignature, GitMerge, Inbox, Link2, RotateCw, Undo2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { errorMessage, isApiError } from "@/api/client";
 import type { Snapshot } from "@/api/types";
+import type { SnapshotV05 } from "@/api/v05tree";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -100,11 +101,42 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
   );
 }
 
-/** "auto" (daemon-generated) and "merge" (2+ parents) markers. */
+/**
+ * "auto" (daemon-generated), "merge" (2+ parents) and the v0.5 markers:
+ * "verified" (signature checked by the server, filled), "signed" (carries a
+ * signature the server did not verify, outline), "revert" and "deps".
+ */
 export function SnapshotBadges({ snapshot }: { snapshot: Snapshot }) {
   const merge = (snapshot.parents?.length ?? 0) > 1;
+  const v = snapshot as SnapshotV05;
+  const deps = v.dependencies?.length ?? 0;
   return (
     <>
+      {v.verified ? (
+        <Badge title={v.signing_key_id ? `Signature verified (key ${v.signing_key_id})` : "Signature verified"}>
+          <BadgeCheck aria-hidden="true" />
+          verified
+        </Badge>
+      ) : (
+        v.signature && (
+          <Badge variant="outline" title="Signed, but the signature was not verified by the server">
+            <FileSignature aria-hidden="true" />
+            signed
+          </Badge>
+        )
+      )}
+      {v.reverts && (
+        <Badge variant="outline" title={`Reverts ${v.reverts}`}>
+          <Undo2 aria-hidden="true" />
+          revert
+        </Badge>
+      )}
+      {deps > 0 && (
+        <Badge variant="outline" title={`${deps} declared ${deps === 1 ? "dependency" : "dependencies"}`}>
+          <Link2 aria-hidden="true" />
+          {deps} {deps === 1 ? "dep" : "deps"}
+        </Badge>
+      )}
       {snapshot.auto_generated && (
         <Badge variant="outline" title="Created automatically by the background daemon">
           <Bot aria-hidden="true" />

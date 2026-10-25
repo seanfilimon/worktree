@@ -5,7 +5,7 @@ import { Link, useParams, useSearchParams } from "react-router";
 import { errorMessage } from "@/api/client";
 import { useApi } from "@/api/context";
 import { keys, useBranches, useCompare, useMergeRequest, useProtections } from "@/api/queries";
-import type { BranchProtection, CompareResult, MergeRequest } from "@/api/types";
+import type { CompareResult, MergeRequest } from "@/api/types";
 import { useAuth } from "@/auth/context";
 import { DiffViewer } from "@/components/diff/DiffViewer";
 import { BranchFlow } from "@/components/mr/BranchFlow";
@@ -16,15 +16,20 @@ import { MergeTimeline } from "@/components/mr/MergeTimeline";
 import { ReadinessChecklist } from "@/components/mr/ReadinessChecklist";
 import { Timestamp } from "@/components/mr/Timestamp";
 import { UserAvatar, UserChip } from "@/components/mr/UserAvatar";
+import { branchRelation, findBranch, matchingProtections, readiness, requiredApprovals, type BranchRelation } from "@/components/mr/model";
 import {
-  approvalCount,
-  branchRelation,
-  findBranch,
-  matchingProtections,
-  readiness,
-  requiredApprovals,
-  type BranchRelation,
-} from "@/components/mr/model";
+  asV05,
+  latestReviews,
+  reviewState,
+  useMrChecks,
+  type BranchProtectionV05,
+  type ReviewApproval,
+  type ReviewState,
+} from "@/api/v05tree";
+import { Badge } from "@/components/ui/badge";
+import { CommentThreads, ReviewForm } from "./v05/MrDiscussion";
+import { ChecksPanel, LinkedGroupCard, ServerReadiness } from "./v05/MrPanels";
+import { describeV05MergeError } from "./v05/util";
 import { useHotkeys } from "@/components/mr/useHotkeys";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -45,7 +50,6 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { firstLine, shortId } from "@/lib/format";
-import { describeMergeError } from "@/lib/mergeErrors";
 import { treePath } from "@/lib/paths";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
@@ -142,6 +146,7 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
   const queryClient = useQueryClient();
   const toast = useToast();
   const { account } = useAuth();
+  const { canManage: canModerate } = useTreeContext();
   const [params, setParams] = useSearchParams();
   const tab: Tab = TABS.find((t) => t === params.get("tab")) ?? "overview";
   const [confirmMerge, setConfirmMerge] = useState(false);
@@ -149,9 +154,35 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
   const protections = useProtections(tenant, tree);
   const rules = matchingProtections(protections.data ?? [], m.target_branch);
   const required = requiredApprovals(rules);
-  const have = approvalCount(m);
   const cmp = useMergeComparison(tenant, tree, m);
-  const { checks, blocker } = readiness({ mr: m, required, relation: cmp.relation, relationProblem: cmp.problem });
+  const open = m.state === "open";
+
+  // v0.5 (§13.4): only approvals of the current source tip count; a
+  // changes-requested review blocks until that reviewer approves.
+  const v = asV05(m);
+  const branchList = useBranches(tenant, tree);
+  const sourceTip = findBranch(branchList.data, m.source_branch)?.tip || undefined;
+  const reviews = latestReviews(v.approvals);
+  const stateOf = (r: ReviewApproval): ReviewState => reviewState(r, open ? sourceTip : undefined);
+  const counted = reviews.filter((r) => stateOf(r) === "approved");
+  const changesRequested = reviews.filter((r) => stateOf(r) === "changes_requested");
+  const have = counted.length;
+  const { checks, blocker: clientBlocker } = readiness({
+    mr: { ...m, approvals: counted },
+    required,
+    relation: cmp.relation,
+    relationProblem: cmp.problem,
+  });
+  const serverChecks = useMrChecks(tenant, tree, m.number, open);
+  const blocker =
+    clientBlocker ??
+    (changesRequested.length > 0
+      ? `Changes requested by ${changesRequested.map((r) => r.username).join(", ")}.`
+      : v.linked_group
+        ? "Part of a linked group: merge the group instead."
+        : serverChecks.data && !serverChecks.data.mergeable
+          ? (serverChecks.data.blockers[0]?.message ?? "The server reports this merge request is not mergeable.")
+          : null);
 
   const act = useMutation({
     mutationFn: (action: Action) => api.mergeRequests[action](tenant, tree, m.number),
@@ -165,12 +196,12 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
 
   const { mutate } = act;
   const blockerId = useId();
-  const open = m.state === "open";
   const isAuthor = account?.id === m.author_id;
-  const approvedByMe = (m.approvals ?? []).some((a) => a.account_id === account?.id);
+  const approvedByMe = counted.some((a) => a.account_id === account?.id);
   const canApprove = open && !isAuthor && !approvedByMe && !act.isPending;
   const canMerge = open && blocker === null && !protections.isPending && !act.isPending;
-  const error = act.isError ? describeMergeError(act.error) : null;
+  const error = act.isError ? describeV05MergeError(act.error) : null;
+  const ciRef = m.state === "merged" ? { snapshot: m.merged_snapshot } : sourceTip ? { snapshot: sourceTip } : { branch: m.source_branch };
   const snapshotHref = (id: string) => treePath(tenant, tree, `snapshots/${encodeURIComponent(id)}`);
 
   const hotkeys = useMemo(
@@ -266,6 +297,15 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
               </CardContent>
             </Card>
             <MergeTimeline mr={m} snapshotHref={snapshotHref} />
+            {open && !isAuthor && <ReviewForm tenant={tenant} tree={tree} mr={m} />}
+            <CommentThreads
+              tenant={tenant}
+              tree={tree}
+              mr={m}
+              sourceTip={open ? sourceTip : undefined}
+              files={cmp.current?.files.map((f) => f.path) ?? []}
+              canModerate={canModerate}
+            />
           </TabsContent>
 
           <TabsContent value="changes" className="pt-2">
@@ -278,7 +318,19 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
         </Tabs>
 
         <aside aria-label="Review" className="flex flex-col gap-4">
-          <ReviewCard mr={m} rules={rules} required={required} protectionsLoading={protections.isPending} />
+          <ReviewCard
+            mr={m}
+            reviews={reviews}
+            stateOf={stateOf}
+            have={have}
+            rules={rules}
+            required={required}
+            protectionsLoading={protections.isPending}
+          />
+
+          {v.linked_group && (
+            <LinkedGroupCard tenant={tenant} groupId={v.linked_group} currentTreeId={m.tree_id} canMerge={open} />
+          )}
 
           {open ? (
             <Card className="gap-4 py-4">
@@ -287,6 +339,16 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
               </CardHeader>
               <CardContent className="flex flex-col gap-4 px-4">
                 <ReadinessChecklist checks={checks} />
+                {changesRequested.length > 0 && (
+                  <p data-check="changes_requested" className="flex items-start gap-2 text-sm text-muted-foreground">
+                    <CircleX aria-hidden className="mt-0.5 size-4 shrink-0" />
+                    <span>
+                      <span className="sr-only">Failed: </span>
+                      Changes requested by {changesRequested.map((r) => r.username).join(", ")}
+                    </span>
+                  </p>
+                )}
+                <ServerReadiness checks={serverChecks.data} error={serverChecks.error} pending={serverChecks.isPending} />
                 <Separator />
                 <div className="flex flex-col gap-2">
                   {!isAuthor && (
@@ -365,6 +427,8 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
           ) : (
             <OutcomeCard mr={m} snapshotHref={snapshotHref} />
           )}
+
+          <ChecksPanel tenant={tenant} tree={tree} {...ciRef} missing={serverChecks.data?.ci.missing} />
         </aside>
       </div>
     </div>
@@ -386,19 +450,74 @@ function Kbd({ children, inverted = false }: { children: string; inverted?: bool
   );
 }
 
+const REVIEW_BADGE: Record<Exclude<ReviewState, "approved">, { label: string; variant: "outline" | "secondary" | "default"; className?: string }> = {
+  stale: { label: "stale", variant: "outline", className: "text-muted-foreground line-through" },
+  changes_requested: { label: "changes requested", variant: "default" },
+  commented: { label: "commented", variant: "secondary" },
+};
+
+function ReviewEntry({ r, state }: { r: ReviewApproval; state: ReviewState }) {
+  const badge = state === "approved" ? null : REVIEW_BADGE[state];
+  return (
+    <li data-review={state} className="flex flex-col gap-0.5">
+      <span className="flex items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <UserChip name={r.username} className={state === "stale" ? "text-muted-foreground" : undefined} />
+          {badge && (
+            <Badge
+              variant={badge.variant}
+              className={badge.className}
+              title={state === "stale" && r.snapshot_id ? `Approved ${shortId(r.snapshot_id)}, an older source tip: no longer counts` : undefined}
+            >
+              {badge.label}
+            </Badge>
+          )}
+        </span>
+        <Timestamp value={r.at} className="shrink-0 text-xs text-muted-foreground" />
+      </span>
+      {r.body && <p className="pl-7 text-xs break-words whitespace-pre-wrap text-muted-foreground">{r.body}</p>}
+    </li>
+  );
+}
+
+function ruleSummary(r: BranchProtectionV05): string {
+  const checks = r.required_checks ?? [];
+  return [
+    `${r.required_approvals} ${r.required_approvals === 1 ? "approval" : "approvals"}`,
+    r.no_direct_push && "no direct push",
+    r.no_delete && "no delete",
+    r.require_ci_pass && (checks.length ? `CI: ${checks.join(", ")}` : "CI must pass"),
+    r.require_signed && "signed only",
+    r.require_linear && "linear",
+    r.block_on_todos && "blocks on TODOs",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function ReviewCard({
   mr: m,
+  reviews,
+  stateOf,
+  have,
   rules,
   required,
   protectionsLoading,
 }: {
   mr: MergeRequest;
-  rules: BranchProtection[];
+  reviews: ReviewApproval[];
+  stateOf: (r: ReviewApproval) => ReviewState;
+  have: number;
+  rules: BranchProtectionV05[];
   required: number;
   protectionsLoading: boolean;
 }) {
-  const approvals = m.approvals ?? [];
-  const have = approvals.length;
+  const approvals = reviews.filter((r) => {
+    const s = stateOf(r);
+    return s === "approved" || s === "stale";
+  });
+  const others = reviews.filter((r) => !approvals.includes(r));
+  const stale = approvals.length - have;
   return (
     <Card className="gap-4 py-4">
       <CardHeader className="px-4">
@@ -425,14 +544,24 @@ function ReviewCard({
         {approvals.length > 0 ? (
           <ul aria-label="Approvals" className="flex flex-col gap-2 text-sm">
             {approvals.map((a) => (
-              <li key={a.account_id} className="flex items-center justify-between gap-2">
-                <UserChip name={a.username} />
-                <Timestamp value={a.at} className="text-xs text-muted-foreground" />
-              </li>
+              <ReviewEntry key={a.account_id} r={a} state={stateOf(a)} />
             ))}
           </ul>
         ) : (
           <p className="text-sm text-muted-foreground">No approvals yet.</p>
+        )}
+        {stale > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {stale} stale {stale === 1 ? "approval was" : "approvals were"} given for an older source tip and no longer{" "}
+            {stale === 1 ? "counts" : "count"}.
+          </p>
+        )}
+        {others.length > 0 && (
+          <ul aria-label="Other reviews" className="flex flex-col gap-2 text-sm">
+            {others.map((r) => (
+              <ReviewEntry key={r.account_id} r={r} state={stateOf(r)} />
+            ))}
+          </ul>
         )}
         <Separator />
         <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
@@ -452,13 +581,7 @@ function ReviewCard({
                 <li key={r.pattern}>
                   <span className="font-mono text-foreground">{r.pattern}</span>
                   {" · "}
-                  {[
-                    `${r.required_approvals} ${r.required_approvals === 1 ? "approval" : "approvals"}`,
-                    r.no_direct_push && "no direct push",
-                    r.no_delete && "no delete",
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
+                  {ruleSummary(r)}
                 </li>
               ))}
             </ul>

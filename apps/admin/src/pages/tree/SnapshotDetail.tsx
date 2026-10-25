@@ -1,15 +1,119 @@
-import { ArrowLeft, FolderOpen, GitBranch, GitCompareArrows } from "lucide-react";
+import { ArrowLeft, BadgeCheck, FileSignature, FolderOpen, GitBranch, GitCompareArrows, Link2, ShieldOff, Undo2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import { useCompare, useSnapshot } from "@/api/queries";
+import { useDependencies, type SnapshotDetailV05, type SnapshotV05 } from "@/api/v05tree";
 import { DiffViewer } from "@/components/diff/DiffViewer";
 import { ChangeCounts } from "@/components/diff/parts";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { absoluteTime, formatNumber, shortId } from "@/lib/format";
 import { filesPath, treePath } from "@/lib/paths";
 import { useTreeContext } from "./context";
 import { AuthorAvatar, CopyButton, LoadingRows, QueryError, RelativeTime, SnapshotBadges } from "./history/shared";
+import { BlockingBadge, PriorityBadge, TodoStatusBadge } from "./v05/shared";
+
+function SignatureInfo({ snapshot: s }: { snapshot: SnapshotV05 }) {
+  if (s.verified) {
+    return (
+      <>
+        <Badge>
+          <BadgeCheck aria-hidden="true" />
+          Verified
+        </Badge>
+        {s.signing_key_id && <code className="font-mono text-xs text-muted-foreground">key {s.signing_key_id}</code>}
+      </>
+    );
+  }
+  if (s.signature) {
+    return (
+      <>
+        <Badge variant="outline">
+          <FileSignature aria-hidden="true" />
+          Signed, not verified
+        </Badge>
+        {s.signing_key_id && <code className="font-mono text-xs text-muted-foreground">key {s.signing_key_id}</code>}
+      </>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+      <ShieldOff aria-hidden="true" className="size-3.5" />
+      Unsigned
+    </span>
+  );
+}
+
+/** Dependencies declared on this snapshot and the TODOs they created (§13.5). */
+function DependenciesCard({ snapshot: s }: { snapshot: SnapshotV05 }) {
+  const { tenant, tree } = useTreeContext();
+  const status = useDependencies(tenant, tree, s.branch_name);
+  const deps = s.dependencies ?? [];
+  const outgoing = (status.data?.outgoing ?? []).filter((o) => o.snapshot_id === s.id);
+
+  return (
+    <Card className="gap-3">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Link2 aria-hidden="true" className="size-4" />
+          Dependencies
+        </CardTitle>
+        <CardDescription>Work this snapshot requested from other trees. Each dependency opens a TODO in its target tree.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table aria-label="Dependencies">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Target</TableHead>
+              <TableHead>Request</TableHead>
+              <TableHead>Priority</TableHead>
+              <TableHead>TODO</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {deps.map((d, i) => {
+              const target = `${d.tenant_slug || tenant}/${d.tree}`;
+              const todo = outgoing.find((o) => o.dependency.tree === d.tree && o.dependency.title === d.title)?.todo;
+              return (
+                <TableRow key={`${target}:${d.title}:${i}`}>
+                  <TableCell className="font-mono text-xs">
+                    {target}
+                    {d.branch && <span className="text-muted-foreground">@{d.branch}</span>}
+                  </TableCell>
+                  <TableCell className="max-w-sm whitespace-normal">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-medium">{d.title}</span>
+                      {d.blocking && <BlockingBadge />}
+                      {d.linked && <Badge variant="outline">linked</Badge>}
+                    </span>
+                    {d.details && <span className="line-clamp-2 text-xs text-muted-foreground">{d.details}</span>}
+                  </TableCell>
+                  <TableCell>
+                    <PriorityBadge priority={d.priority} />
+                  </TableCell>
+                  <TableCell>
+                    {todo ? (
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <Link to={treePath(todo.tenant, todo.tree, "todos")} className="font-mono text-xs hover:underline">
+                          {todo.tenant}/{todo.tree}#{todo.number}
+                        </Link>
+                        <TodoStatusBadge status={todo.status} />
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">{status.isPending ? "…" : "not created"}</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
 
 function Meta({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -53,7 +157,9 @@ export function SnapshotDetail() {
     );
   }
 
-  const s = detail.data.snapshot;
+  const data = detail.data as SnapshotDetailV05;
+  const s = data.snapshot;
+  const restricted = data.restricted_count ?? 0;
   const parents = s.parents ?? [];
   const [title = "", ...rest] = s.message.split(/\r?\n/);
   const body = rest.join("\n").trim();
@@ -120,10 +226,28 @@ export function SnapshotDetail() {
             </Meta>
             <Meta label="Files">
               {formatNumber(fileCount)} in manifest · pushed <RelativeTime value={s.pushed_at} />
+              {restricted > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  · {formatNumber(restricted)} restricted {restricted === 1 ? "path" : "paths"} hidden
+                </span>
+              )}
             </Meta>
+            <Meta label="Signature">
+              <SignatureInfo snapshot={s} />
+            </Meta>
+            {s.reverts && (
+              <Meta label="Reverts">
+                <Undo2 aria-hidden="true" className="size-3.5 text-muted-foreground" />
+                <Link to={snapshotPath(s.reverts)} title={s.reverts} className="rounded border px-1.5 py-0.5 font-mono text-xs hover:bg-accent">
+                  {shortId(s.reverts)}
+                </Link>
+              </Meta>
+            )}
           </dl>
         </CardContent>
       </Card>
+
+      {(s.dependencies?.length ?? 0) > 0 && <DependenciesCard snapshot={s} />}
 
       <section aria-labelledby="snapshot-changes" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
