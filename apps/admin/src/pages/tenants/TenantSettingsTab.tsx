@@ -12,6 +12,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/toast/store";
+import { TenantLimitsCard } from "./TenantLimitsCard";
+import { TenantStatusCard } from "./TenantStatusCard";
 
 const PLANS: TenantPlan[] = ["free", "pro", "enterprise"];
 const MAX_NAME = 100;
@@ -150,6 +152,8 @@ export function TenantSettingsTab({ tenant, editable }: { tenant: Tenant; editab
           </CardContent>
         </Card>
       )}
+      <TenantStatusCard tenant={tenant} editable={isAdmin} />
+      <TenantLimitsCard slug={tenant.slug} editable={isAdmin} />
     </div>
   );
 }
