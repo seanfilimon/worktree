@@ -37,6 +37,14 @@ impl SnapshotAction for RepoSnapshotter {
             report
         }
     }
+
+    // local-config (§13.9): sizes for `auto_snapshot.max_changed_bytes`.
+    fn changed_bytes(&self, rel: &str) -> u64 {
+        std::fs::metadata(self.root.join(rel))
+            .ok()
+            .filter(|m| m.is_file())
+            .map_or(0, |m| m.len())
+    }
 }
 
 /// The auto-snapshot message for a tree with `changed` changed files.
@@ -76,8 +84,20 @@ fn snapshot_tree(repo: &Repository, tree: &str) -> worktree_sdk::Result<Option<S
     if status.is_clean() {
         return Ok(None);
     }
+    // local-config (§13.9): `auto_snapshot.message_format` of the tree's
+    // effective config ({count}, {files}, {branch}, {tree}).
+    let files: Vec<String> = status.changes.iter().map(|c| c.path.clone()).collect();
+    let message = match repo.effective_config(Some(tree)) {
+        Ok(cfg) => cfg
+            .auto_snapshot
+            .format_message(&files, &status.branch, tree),
+        Err(e) => {
+            tracing::warn!(tree, error = %e, "cannot read tree config; using the default message");
+            auto_message(files.len())
+        }
+    };
     let opts = SnapshotOptions {
-        message: auto_message(status.changes.len()),
+        message,
         auto_generated: true,
         ..SnapshotOptions::default()
     };
@@ -173,6 +193,29 @@ mod tests {
     #[test]
     fn message_format_matches_contract() {
         assert_eq!(auto_message(3), "auto: 3 files changed");
+    }
+
+    // local-config (§13.9): the tree's `auto_snapshot.message_format`.
+    #[test]
+    fn auto_snapshot_uses_configured_message_format() {
+        use worktree_sdk::config::ConfigScope;
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = Repository::init(dir.path(), Default::default()).unwrap();
+        repo.set_config_value(
+            &ConfigScope::Worktree,
+            "auto_snapshot.message_format",
+            "wip {branch}: {files}",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let tree = repo.root_tree().unwrap().name;
+        let snap = snapshot_tree(&repo, &tree).unwrap().unwrap();
+        assert_eq!(snap.message, "wip main: a.txt");
+        assert!(snap.auto_generated);
+
+        let action = RepoSnapshotter::new(dir.path().to_path_buf());
+        assert_eq!(action.changed_bytes("a.txt"), 1);
+        assert_eq!(action.changed_bytes("missing.txt"), 0);
     }
 
     #[test]

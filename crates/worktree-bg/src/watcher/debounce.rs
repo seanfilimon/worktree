@@ -6,7 +6,7 @@
 //! is due: after `inactivity` without new events, or immediately once
 //! `max_changed_files` distinct paths have changed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -20,6 +20,9 @@ pub struct DebounceSettings {
     pub inactivity: Duration,
     /// Snapshot as soon as this many distinct paths changed (0 = no limit).
     pub max_changed_files: usize,
+    /// local-config (§13.9): snapshot as soon as the changed files total
+    /// this many bytes (0 = no limit).
+    pub max_changed_bytes: u64,
 }
 
 impl From<&AutoSnapshotSection> for DebounceSettings {
@@ -28,6 +31,7 @@ impl From<&AutoSnapshotSection> for DebounceSettings {
             enabled: section.enabled,
             inactivity: Duration::from_secs(section.inactivity_secs),
             max_changed_files: section.max_changed_files,
+            max_changed_bytes: section.max_changed_bytes,
         }
     }
 }
@@ -44,6 +48,8 @@ pub struct Debouncer {
     paused: bool,
     pending: BTreeSet<String>,
     last_event: Option<Instant>,
+    /// local-config (§13.9): latest known size of each changed path.
+    pending_bytes: BTreeMap<String, u64>,
 }
 
 impl Debouncer {
@@ -53,7 +59,19 @@ impl Debouncer {
             paused: false,
             pending: BTreeSet::new(),
             last_event: None,
+            pending_bytes: BTreeMap::new(),
         }
+    }
+
+    /// local-config (§13.9): note the current size of a changed path (for
+    /// `max_changed_bytes`). Call alongside [`Self::record`].
+    pub fn record_bytes(&mut self, path: &str, bytes: u64) {
+        self.pending_bytes.insert(path.to_string(), bytes);
+    }
+
+    /// Total bytes of the changed paths with a known size.
+    pub fn pending_bytes(&self) -> u64 {
+        self.pending_bytes.values().sum()
     }
 
     pub fn settings(&self) -> DebounceSettings {
@@ -89,7 +107,10 @@ impl Debouncer {
     }
 
     fn over_limit(&self) -> bool {
-        self.settings.max_changed_files > 0 && self.pending.len() >= self.settings.max_changed_files
+        (self.settings.max_changed_files > 0
+            && self.pending.len() >= self.settings.max_changed_files)
+            || (self.settings.max_changed_bytes > 0
+                && self.pending_bytes() >= self.settings.max_changed_bytes)
     }
 
     /// When the next snapshot becomes due, if one is pending at all.
@@ -111,6 +132,7 @@ impl Debouncer {
     /// Clear the pending set, returning the changed paths (sorted).
     pub fn take(&mut self) -> Vec<String> {
         self.last_event = None;
+        self.pending_bytes.clear();
         std::mem::take(&mut self.pending).into_iter().collect()
     }
 }
@@ -124,7 +146,30 @@ mod tests {
             enabled: true,
             inactivity: Duration::from_secs(inactivity_secs),
             max_changed_files: max,
+            max_changed_bytes: 0,
         }
+    }
+
+    #[test]
+    fn max_changed_bytes_fires_immediately() {
+        let mut d = Debouncer::new(DebounceSettings {
+            max_changed_bytes: 100,
+            ..settings(30, 0)
+        });
+        let t0 = Instant::now();
+        d.record_bytes("a", 60);
+        d.record("a", t0);
+        assert!(!d.is_ready(t0));
+        // A rewrite of the same path replaces its size.
+        d.record_bytes("a", 70);
+        d.record("a", t0);
+        assert!(!d.is_ready(t0));
+        d.record_bytes("b", 30);
+        d.record("b", t0);
+        assert_eq!(d.pending_bytes(), 100);
+        assert!(d.is_ready(t0));
+        d.take();
+        assert_eq!(d.pending_bytes(), 0);
     }
 
     #[test]
@@ -133,11 +178,14 @@ mod tests {
             enabled: false,
             inactivity_secs: 7,
             max_changed_files: 3,
+            max_changed_bytes: 9,
+            ..AutoSnapshotSection::default()
         };
         let s = DebounceSettings::from(&section);
         assert!(!s.enabled);
         assert_eq!(s.inactivity, Duration::from_secs(7));
         assert_eq!(s.max_changed_files, 3);
+        assert_eq!(s.max_changed_bytes, 9);
         assert_eq!(
             DebounceSettings::default(),
             DebounceSettings::from(&AutoSnapshotSection::default())

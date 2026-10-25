@@ -520,11 +520,13 @@ mod tests {
         let Command::Ignore(a) = parse(&["ignore", "list"]).command else {
             panic!()
         };
-        assert!(matches!(a.command, ignore::IgnoreCommand::List));
+        assert!(matches!(a.command, ignore::IgnoreCommand::List { .. }));
         let Command::Ignore(a) = parse(&["ignore", "add", "*.log"]).command else {
             panic!()
         };
-        assert!(matches!(a.command, ignore::IgnoreCommand::Add { pattern } if pattern == "*.log"));
+        assert!(
+            matches!(a.command, ignore::IgnoreCommand::Add { pattern, .. } if pattern == "*.log")
+        );
         let Command::Ignore(a) = parse(&["ignore", "check", "build/out.o"]).command else {
             panic!()
         };
@@ -538,16 +540,19 @@ mod tests {
         let Command::Config(a) = parse(&["config", "list"]).command else {
             panic!()
         };
-        assert!(matches!(a.command, config::ConfigCommand::List));
+        assert!(matches!(
+            a.command,
+            config::ConfigCommand::List { show_origin: false }
+        ));
         let Command::Config(a) = parse(&["config", "get", "user.name"]).command else {
             panic!()
         };
-        assert!(matches!(a.command, config::ConfigCommand::Get { key } if key == "user.name"));
+        assert!(matches!(a.command, config::ConfigCommand::Get { key, .. } if key == "user.name"));
         let Command::Config(a) = parse(&["config", "set", "user.name", "Ada Lovelace"]).command
         else {
             panic!()
         };
-        let config::ConfigCommand::Set { key, value } = a.command else {
+        let config::ConfigCommand::Set { key, value, .. } = a.command else {
             panic!()
         };
         assert_eq!(

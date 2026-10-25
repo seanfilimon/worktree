@@ -46,6 +46,12 @@ impl Context {
         Ok(Repository::open(&self.cwd)?)
     }
 
+    /// local-config (§13.9): the explicit global `--tree` flag, if given
+    /// (`wt config set --tree NAME` writes that tree's config).
+    pub fn tree_flag(&self) -> Option<&str> {
+        self.tree.as_deref()
+    }
+
     /// The tree selected by `--tree`, else the tree containing the cwd.
     pub fn select_tree(&self, repo: &Repository) -> Result<TreeInfo> {
         Ok(match &self.tree {

@@ -22,6 +22,12 @@ pub struct SnapshotArgs {
     /// Skip the pre-snapshot secret scan
     #[arg(long)]
     pub no_scan: bool,
+
+    // --- local-config (ENGINEERING_PLAN §13.9): hooks ---------------------
+    /// Skip the pre-snapshot and post-snapshot hooks
+    #[arg(long)]
+    pub no_verify: bool,
+    // --- end local-config --------------------------------------------------
 }
 
 pub fn run(ctx: &Context, args: SnapshotArgs) -> Result<()> {
@@ -32,6 +38,8 @@ pub fn run(ctx: &Context, args: SnapshotArgs) -> Result<()> {
             message: args.message,
             allow_empty: args.allow_empty,
             skip_secret_scan: args.no_scan,
+            // local-config (§13.9): `--no-verify` skips hooks.
+            skip_hooks: args.no_verify,
             ..SnapshotOptions::default()
         },
     )?;

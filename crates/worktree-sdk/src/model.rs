@@ -421,6 +421,9 @@ pub struct SnapshotOptions {
     pub skip_secret_scan: bool,
     /// Dependencies to record on the snapshot (`wt snapshot --depend`).
     pub dependencies: Vec<Dependency>,
+    /// local-config (§13.9): skip pre/post-snapshot hooks (`--no-verify`).
+    #[serde(default)]
+    pub skip_hooks: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

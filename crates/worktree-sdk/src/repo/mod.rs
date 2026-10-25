@@ -44,7 +44,8 @@
 mod diffing;
 pub(crate) mod fsutil;
 mod history;
-mod ignore_rules;
+// local-config (§13.9): public for `IgnoreRule` and the default-pattern lists.
+pub mod ignore_rules;
 mod lock;
 mod merging;
 pub(crate) mod names;
@@ -77,7 +78,12 @@ const DEFAULT_BRANCH: &str = "main";
 /// Header written to a fresh `.wt/ignore`.
 const IGNORE_FILE_HEADER: &str = "\
 # W0rkTree ignore patterns (gitignore syntax), relative to the worktree root.
-# Built-in: .wt/ .wt-tree/ .git/ target/ node_modules/ .DS_Store *.swp
+# These root rules are authoritative: nested .wtignore and .wt-tree/ignore
+# files cannot re-include what they ignore.
+# Always ignored: .wt/ .wt-tree/ .git/
+# Soft defaults (re-include here with !pattern, e.g. !dist/):
+#   node_modules/ target/ __pycache__/ .DS_Store Thumbs.db *.pyc *.pyo
+#   *.swp *.swo *~ .env .venv/ dist/ build/ *.log
 ";
 
 /// A W0rkTree worktree on disk: its root directory, configuration and
@@ -190,8 +196,10 @@ impl Repository {
     /// Author string for new snapshots: config user ("Name <email>"), else
     /// the OS user (`USERNAME` / `USER`), else `"unknown"`.
     pub fn author(&self) -> String {
-        let name = self.config.user.name.trim();
-        let email = self.config.user.email.trim();
+        // local-config (§13.9): fall back to `[user]` in `<wt home>/config.toml`.
+        let user = crate::config::effective_user(&self.config.user);
+        let name = user.name.trim();
+        let email = user.email.trim();
         match (name.is_empty(), email.is_empty()) {
             (false, false) => return format!("{name} <{email}>"),
             (false, true) => return name.to_string(),

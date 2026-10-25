@@ -122,6 +122,7 @@ fn snapshot_options_are_honored() {
                 allow_empty: false,
                 skip_secret_scan: true,
                 dependencies: Vec::new(),
+                skip_hooks: false,
             },
         )
         .unwrap();
@@ -149,13 +150,12 @@ fn ignore_rules_apply_to_status() {
     fx.write("secret/key.pem", "x");
 
     let paths: Vec<_> = changes(&fx).into_iter().map(|(p, _)| p).collect();
-    assert_eq!(
-        paths,
-        [".wtignore", "keep.txt", "logs/.wtignore", "logs/keep.log"]
-    );
+    // §13.9: root `.wtignore` patterns cannot be re-included by a nested
+    // `!pattern`, so logs/keep.log stays ignored.
+    assert_eq!(paths, [".wtignore", "keep.txt", "logs/.wtignore"]);
 
     assert!(fx.repo.is_ignored("app.log").unwrap());
-    assert!(!fx.repo.is_ignored("logs/keep.log").unwrap());
+    assert!(fx.repo.is_ignored("logs/keep.log").unwrap());
     assert!(fx.repo.is_ignored("secret/key.pem").unwrap());
     assert!(fx.repo.is_ignored("target/debug/out.bin").unwrap());
     assert!(fx.repo.is_ignored(".wt/config.toml").unwrap());

@@ -109,6 +109,13 @@ impl TriggerReport {
 /// [`crate::snapshot::RepoSnapshotter`]; tests substitute fakes.
 pub trait SnapshotAction: Send + Sync + 'static {
     fn run(&self) -> impl Future<Output = TriggerReport> + Send;
+
+    // --- local-config (§13.9): `auto_snapshot.max_changed_bytes` ----------
+    /// Current size in bytes of the changed root-relative path (0 if gone
+    /// or unknown). Only consulted when `max_changed_bytes` is set.
+    fn changed_bytes(&self, _rel: &str) -> u64 {
+        0
+    }
 }
 
 /// Control messages from the daemon to a worker.
@@ -134,6 +141,11 @@ pub async fn run_worker<A: SnapshotAction>(
         tokio::select! {
             event = events.recv() => match event {
                 Some(WatchEvent::Changed(rel)) => {
+                    // local-config (§13.9): track sizes for max_changed_bytes.
+                    if debouncer.settings().max_changed_bytes > 0 {
+                        let bytes = action.changed_bytes(&rel);
+                        debouncer.record_bytes(&rel, bytes);
+                    }
                     debouncer.record(rel, Instant::now());
                     stats.lock().pending_changes = debouncer.pending_count();
                 }
@@ -224,6 +236,7 @@ mod tests {
             enabled: true,
             inactivity: Duration::from_secs(inactivity_secs),
             max_changed_files: max,
+            max_changed_bytes: 0,
         }
     }
 
