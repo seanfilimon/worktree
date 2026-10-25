@@ -12,6 +12,7 @@ import (
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
+	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 )
 
@@ -58,6 +59,11 @@ func (s *Service) ResolveTree(ctx context.Context, req *syncpb.ResolveTreeReques
 	if err := s.authorize(ctx, p, domain.ActTreeCreate, tenant.ID, nil); err != nil {
 		return nil, err
 	}
+	// ops (§13.3): creating a tree by pushing honours MaxTrees like the
+	// REST tree-create handler does.
+	if err := s.checkTreeQuota(ctx, tenant); err != nil {
+		return nil, err
+	}
 
 	now := s.now()
 	t := &domain.Tree{
@@ -99,6 +105,24 @@ func (s *Service) ResolveTree(ctx context.Context, req *syncpb.ResolveTreeReques
 		Details:      map[string]string{"name": t.Name, "tenant": tenant.Slug, "via": "grpc"},
 	})
 	return treeToPB(t, tenant.Slug, true), nil
+}
+
+// checkTreeQuota refuses creating another tree in tenant once its MaxTrees
+// quota is reached: PermissionDenied "push denied (quota_exceeded):
+// max_trees", the wire form of the push quota rejections.
+func (s *Service) checkTreeQuota(ctx context.Context, tenant *domain.Tenant) error {
+	if s.d.TreeQuota == nil {
+		return nil
+	}
+	err := s.d.TreeQuota.CheckTreeCreate(ctx, tenant)
+	var qe *limits.QuotaError
+	if errors.As(err, &qe) {
+		return s.toStatus(ctx, &domain.PushDenied{Kind: "quota_exceeded", Reason: qe.Limit}, "create tree")
+	}
+	if err != nil {
+		return s.toStatus(ctx, err, "tree quota")
+	}
+	return nil
 }
 
 // ListBranches lists the branches of a tree, sorted by name.

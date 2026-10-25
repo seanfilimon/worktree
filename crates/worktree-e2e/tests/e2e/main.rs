@@ -30,3 +30,14 @@ mod iam_policies;
 mod iam_service_accounts;
 mod iam_sessions_and_tokens;
 mod iam_teams_and_grants;
+
+// v0.5 spec completeness (ENGINEERING_PLAN §13).
+mod access_config;
+mod chunked_files;
+mod daemon_watch;
+mod deps_todos;
+mod ops_gc_quota;
+mod path_security;
+mod releases;
+mod review_ci;
+mod signing;

@@ -165,6 +165,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 			signer,  // signing (§13.6): verifies signatures, sets Verified; keep last
 		},
 		AccessCfg: accessCfg,
+		// ops (§13.3): MaxTrees also applies to trees created by a push.
+		TreeQuota: limiter,
 
 		// daemon (§13.11): ends WatchBranches streams on shutdown.
 		Done: ctx.Done(),

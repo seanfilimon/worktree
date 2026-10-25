@@ -69,11 +69,20 @@ type Deps struct {
 	// AccessCfg applies SyncAccessConfig documents; nil = documents are
 	// only stored (v0.4 behaviour).
 	AccessCfg *accesscfg.Service
+	// TreeQuota enforces the tenant MaxTrees quota (§13.3) when ResolveTree
+	// creates a missing tree; nil = unlimited.
+	TreeQuota TreeQuota
 
 	// v0.5 daemon (§13.11): Done, when non-nil, is closed when the server
 	// starts shutting down; open WatchBranches streams then end with
 	// Unavailable so graceful shutdown is not held up by idle watchers.
 	Done <-chan struct{}
+}
+
+// TreeQuota checks whether a tenant may create another tree (implemented by
+// *limits.Limiter: it returns a *limits.QuotaError when MaxTrees is reached).
+type TreeQuota interface {
+	CheckTreeCreate(ctx context.Context, t *domain.Tenant) error
 }
 
 // Service implements syncpb.SyncServiceServer.
