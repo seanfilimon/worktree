@@ -22,12 +22,18 @@ pub struct InitArgs {
     /// Default branch (default: main)
     #[arg(long, value_name = "B")]
     pub branch: Option<String>,
+
+    /// Start the background daemon (if needed) and auto-snapshot the new worktree
+    #[arg(long)]
+    pub watch: bool,
 }
 
 #[derive(Serialize)]
 struct InitResult<'a> {
     root: &'a Path,
     tree: TreeInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watching: Option<String>,
 }
 
 pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
@@ -41,9 +47,15 @@ pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
             default_branch: args.branch,
         },
     )?;
+    let watching = if args.watch {
+        Some(crate::commands::daemon::start_and_watch(repo.root())?)
+    } else {
+        None
+    };
     let result = InitResult {
         root: repo.root(),
         tree: repo.root_tree()?,
+        watching,
     };
     ctx.out.emit(&result, |t| {
         t.line(format_args!(
@@ -55,5 +67,8 @@ pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
             "Default branch: {}",
             result.tree.default_branch.green()
         ));
+        if let Some(msg) = &result.watching {
+            t.line(format_args!("Daemon: {msg}"));
+        }
     })
 }

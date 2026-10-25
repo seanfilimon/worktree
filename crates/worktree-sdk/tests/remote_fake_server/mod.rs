@@ -22,7 +22,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use prost::Message;
 use serde_json::{json, Value};
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tonic::{Request, Response, Status, Streaming};
 use worktree_protocol::proto::sync as wire;
 use worktree_protocol::proto::sync::sync_service_server::{SyncService, SyncServiceServer};
@@ -81,6 +81,20 @@ pub struct FakeState {
     pub access_docs: HashMap<(String, String), (Vec<u8>, String)>,
     /// access workstream: the last SyncAccessConfig request.
     pub last_access_sync: Option<wire::AccessConfigSyncRequest>,
+    /// WatchBranches calls answered (successfully or not).
+    pub watch_calls: usize,
+    /// When set, WatchBranches fails with Unavailable (fetches still work).
+    pub watch_unavailable: bool,
+    /// When set, every authenticated-or-anonymous RPC fails with Unavailable.
+    pub offline: bool,
+}
+
+/// Messages to open WatchBranches streams.
+#[derive(Debug, Clone)]
+enum WatchMsg {
+    Event(wire::BranchEvent),
+    /// End every open stream with Unavailable.
+    Disconnect,
 }
 
 impl FakeState {
@@ -208,14 +222,17 @@ fn lock(state: &Shared) -> MutexGuard<'_, FakeState> {
 pub struct FakeServer {
     pub url: String,
     pub state: Shared,
+    watch: broadcast::Sender<WatchMsg>,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl FakeServer {
     pub async fn start() -> Self {
         let state: Shared = Arc::default();
+        let (watch, _) = broadcast::channel(256);
         let grpc = SyncServiceServer::new(Svc {
             state: state.clone(),
+            watch: watch.clone(),
         })
         .max_decoding_message_size(MAX_MESSAGE)
         .max_encoding_message_size(MAX_MESSAGE);
@@ -242,8 +259,31 @@ impl FakeServer {
         Self {
             url: format!("http://{addr}"),
             state,
+            watch,
             shutdown: Some(tx),
         }
+    }
+
+    /// Publish a branch event to open WatchBranches streams.
+    pub fn emit_branch_event(
+        &self,
+        tree_id: &str,
+        branch: &str,
+        old_tip: Option<&str>,
+        new_tip: Option<&str>,
+    ) {
+        let _ = self.watch.send(WatchMsg::Event(branch_event(
+            tree_id, branch, old_tip, new_tip, "seed",
+        )));
+    }
+
+    /// End every open WatchBranches stream with Unavailable.
+    pub fn disconnect_watchers(&self) {
+        let _ = self.watch.send(WatchMsg::Disconnect);
+    }
+
+    pub fn watch_calls(&self) -> usize {
+        self.state().watch_calls
     }
 
     pub fn state(&self) -> MutexGuard<'_, FakeState> {
@@ -421,11 +461,44 @@ pub fn snapshot_record(
 
 struct Svc {
     state: Shared,
+    watch: broadcast::Sender<WatchMsg>,
+}
+
+fn branch_event(
+    tree_id: &str,
+    branch: &str,
+    old_tip: Option<&str>,
+    new_tip: Option<&str>,
+    actor: &str,
+) -> wire::BranchEvent {
+    wire::BranchEvent {
+        tree_id: Some(wire::TreeId {
+            value: tree_id.to_string(),
+        }),
+        branch_name: branch.to_string(),
+        old_tip: old_tip.map(sid),
+        new_tip: new_tip.map(sid),
+        actor: actor.to_string(),
+        at: Some(prost_types::Timestamp {
+            seconds: chrono::Utc::now().timestamp(),
+            nanos: 0,
+        }),
+    }
 }
 
 impl Svc {
+    /// `Unavailable` while the fake is "offline".
+    fn online(&self) -> Result<(), Status> {
+        if lock(&self.state).offline {
+            Err(Status::unavailable("fake server is offline"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// The caller's account; `Ok(None)` when anonymous, `Unauthenticated` for a bad token.
     fn caller<T>(&self, req: &Request<T>) -> Result<Option<Account>, Status> {
+        self.online()?;
         let Some(value) = req.metadata().get("authorization") else {
             return Ok(None);
         };
@@ -604,6 +677,13 @@ impl SyncService for Svc {
         st.staged.retain(|s| {
             !(s.tree_id == tree_id && s.username == caller.username && s.info.branch_name == branch)
         });
+        let _ = self.watch.send(WatchMsg::Event(branch_event(
+            &tree_id,
+            &branch,
+            current.as_deref(),
+            Some(&new_tip),
+            &caller.username,
+        )));
         Ok(Response::new(wire::PushResponse {
             accepted: true,
             rejection_reason: None,
@@ -961,22 +1041,86 @@ impl SyncService for Svc {
     }
 
     type WatchBranchesStream =
-        tokio_stream::Iter<std::vec::IntoIter<Result<wire::BranchEvent, Status>>>;
+        tokio_stream::wrappers::ReceiverStream<Result<wire::BranchEvent, Status>>;
 
+    /// Streams events for the requested trees (published by pushes and
+    /// [`FakeServer::emit_branch_event`]) until the client goes away or
+    /// [`FakeServer::disconnect_watchers`] is called.
     async fn watch_branches(
         &self,
         req: Request<wire::WatchBranchesRequest>,
     ) -> Result<Response<Self::WatchBranchesStream>, Status> {
-        self.require(&req)?;
-        Ok(Response::new(tokio_stream::iter(Vec::new())))
+        let caller = self.caller(&req);
+        let ids: HashSet<String> = req
+            .into_inner()
+            .tree_ids
+            .into_iter()
+            .map(|t| t.value)
+            .collect();
+        {
+            let mut st = lock(&self.state);
+            st.watch_calls += 1;
+            caller?;
+            if st.watch_unavailable {
+                return Err(Status::unavailable("watching is unavailable"));
+            }
+            if ids.is_empty() {
+                return Err(Status::invalid_argument("tree_ids is required"));
+            }
+            for id in &ids {
+                st.tree(id)?;
+            }
+        }
+        let mut events = self.watch.subscribe();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            loop {
+                let msg = match events.recv().await {
+                    Ok(msg) => msg,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let item = match msg {
+                    WatchMsg::Event(ev) => {
+                        let tree = ev.tree_id.as_ref().map(|t| t.value.as_str());
+                        if !tree.is_some_and(|t| ids.contains(t)) {
+                            continue;
+                        }
+                        Ok(ev)
+                    }
+                    WatchMsg::Disconnect => {
+                        Err(Status::unavailable("fake server dropped watchers"))
+                    }
+                };
+                let last = item.is_err();
+                if tx.send(item).await.is_err() || last {
+                    return;
+                }
+            }
+        });
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
     }
 
     async fn unstage(
         &self,
         req: Request<wire::UnstageRequest>,
     ) -> Result<Response<wire::UnstageResponse>, Status> {
-        self.require(&req)?;
-        Ok(Response::new(wire::UnstageResponse { removed: false }))
+        let caller = self.require(&req)?;
+        let r = req.into_inner();
+        let tree_id = tree_of(&r.tree_id);
+        let mut st = lock(&self.state);
+        st.tree(&tree_id)?;
+        let before = st.staged.len();
+        st.staged.retain(|s| {
+            !(s.tree_id == tree_id
+                && s.username == caller.username
+                && (r.branch_name.is_empty() || s.info.branch_name == r.branch_name))
+        });
+        Ok(Response::new(wire::UnstageResponse {
+            removed: st.staged.len() != before,
+        }))
     }
 
     async fn get_access_config(

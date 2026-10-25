@@ -52,6 +52,21 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
         shallow: repo.is_shallow(&tree.name)?,
     };
 
+    // daemon workstream (§13.11): hint when auto-snapshot is on but the
+    // daemon is not running / not watching this worktree (text mode only).
+    let daemon_hint = if ctx.out.is_json() {
+        None
+    } else {
+        crate::commands::daemon::status_hint(&repo)
+    };
+    let render = |t: &mut Text, local: &LocalStatus<'_>, head_line: &str| {
+        render(t, local, head_line);
+        if let Some(hint) = &daemon_hint {
+            t.blank();
+            t.line(hint);
+        }
+    };
+
     if !args.team {
         return ctx.out.emit(&local, |t| render(t, &local, &head_line));
     }

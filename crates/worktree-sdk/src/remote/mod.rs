@@ -36,6 +36,9 @@ pub mod rest;
 mod server_url;
 mod session;
 mod stage;
+// daemon workstream (§13.11): WatchBranches + Unstage.
+mod watch;
+pub use watch::{unstage, watch_trees, BranchEvent, BranchEventStream, TreeWatch};
 
 pub use client::{
     ObjectKind, RemoteBranch, RemoteTree, SyncClient, MAX_MESSAGE_SIZE, TREE_ID_METADATA_KEY,

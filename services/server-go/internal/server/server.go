@@ -165,6 +165,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 			signer,  // signing (§13.6): verifies signatures, sets Verified; keep last
 		},
 		AccessCfg: accessCfg,
+
+		// daemon (§13.11): ends WatchBranches streams on shutdown.
+		Done: ctx.Done(),
 	})
 
 	// ---- gRPC ----

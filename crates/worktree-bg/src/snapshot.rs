@@ -22,10 +22,11 @@ impl RepoSnapshotter {
 }
 
 impl SnapshotAction for RepoSnapshotter {
-    fn run(&self) -> impl Future<Output = TriggerReport> + Send {
+    fn run(&self, only: Option<String>) -> impl Future<Output = TriggerReport> + Send {
         let root = self.root.clone();
         async move {
-            let pass = tokio::task::spawn_blocking(move || snapshot_all(&root)).await;
+            let pass =
+                tokio::task::spawn_blocking(move || snapshot_all(&root, only.as_deref())).await;
             let (repo, mut report, trees) = match pass {
                 Ok(Ok(pass)) => pass,
                 Ok(Err(e)) => return TriggerReport::failed(e.to_string()),
@@ -52,15 +53,33 @@ pub fn auto_message(changed: usize) -> String {
     format!("auto: {changed} files changed")
 }
 
-/// Snapshot every tree with working changes. Returns the open repository,
-/// the report so far, and the names of the trees that got a snapshot.
+/// What `auto_snapshot.on_branch_switch` asks for (`snapshot`, `stash` or
+/// `refuse`). The key is added by the local-config workstream; it is read
+/// through [`WorktreeConfig::get`] so this compiles and behaves before and
+/// after it lands. Unset means `snapshot`.
+pub fn on_branch_switch(config: &WorktreeConfig) -> String {
+    config
+        .get("auto_snapshot.on_branch_switch")
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "snapshot".to_string())
+}
+
+/// Snapshot every tree (or only tree `only`) with working changes. Returns
+/// the open repository, the report so far, and the names of the trees that
+/// got a snapshot.
 fn snapshot_all(
     root: &std::path::Path,
+    only: Option<&str>,
 ) -> worktree_sdk::Result<(Repository, TriggerReport, Vec<String>)> {
     let repo = Repository::open(root)?;
     let mut report = TriggerReport::default();
     let mut snapshotted = Vec::new();
-    for tree in repo.trees()? {
+    let trees = match only {
+        Some(name) => vec![repo.tree(name)?],
+        None => repo.trees()?,
+    };
+    for tree in trees {
         match snapshot_tree(&repo, &tree.name) {
             Ok(Some(snapshot)) => {
                 tracing::info!(tree = %tree.name, id = %snapshot.short_id(), message = %snapshot.message, "auto-snapshot created");
@@ -188,6 +207,18 @@ mod tests {
             hooks: Default::default(),
             signing: Default::default(),
             git_remote: Default::default(), // git-export (§13.8)
+        }
+    }
+
+    #[test]
+    fn on_branch_switch_defaults_to_snapshot() {
+        let cfg = config(false, None);
+        // Before the local-config workstream adds the key, `get` knows
+        // nothing about it; the default applies either way.
+        let v = on_branch_switch(&cfg);
+        assert!(["snapshot", "stash", "refuse"].contains(&v.as_str()), "{v}");
+        if cfg.get("auto_snapshot.on_branch_switch").is_none() {
+            assert_eq!(v, "snapshot");
         }
     }
 

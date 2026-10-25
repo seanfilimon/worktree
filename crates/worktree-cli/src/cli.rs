@@ -110,6 +110,9 @@ pub enum Command {
     Clone(sync::CloneArgs),
     /// Upload work in progress as a team-visible staged snapshot
     Stage(sync::StageArgs),
+    // daemon workstream (§13.11)
+    /// Remove your staged snapshot from the remote
+    Unstage(sync::UnstageArgs),
     /// Write a snapshot's files to a tar.gz or zip archive
     Archive(archive::ArchiveArgs),
     /// Import from or export to Git
@@ -807,5 +810,82 @@ mod tests {
             a.command,
             daemon::DaemonCommand::Unwatch { path: Some(_) }
         ));
+    }
+
+    // daemon workstream (§13.11)
+    #[test]
+    fn daemon_v05_commands() {
+        let Command::Daemon(a) = parse(&["daemon", "restart"]).command else {
+            panic!()
+        };
+        assert!(matches!(a.command, daemon::DaemonCommand::Restart));
+        let Command::Daemon(a) = parse(&["daemon", "logs"]).command else {
+            panic!()
+        };
+        assert!(matches!(
+            a.command,
+            daemon::DaemonCommand::Logs {
+                lines: 50,
+                follow: false
+            }
+        ));
+        let Command::Daemon(a) = parse(&["daemon", "logs", "-n", "5", "--follow"]).command else {
+            panic!()
+        };
+        assert!(matches!(
+            a.command,
+            daemon::DaemonCommand::Logs {
+                lines: 5,
+                follow: true
+            }
+        ));
+        let Command::Daemon(a) = parse(&["daemon", "snapshot"]).command else {
+            panic!()
+        };
+        assert!(matches!(
+            a.command,
+            daemon::DaemonCommand::Snapshot {
+                path: None,
+                all: false
+            }
+        ));
+        let Command::Daemon(a) = parse(&["daemon", "snapshot", "--all"]).command else {
+            panic!()
+        };
+        assert!(matches!(
+            a.command,
+            daemon::DaemonCommand::Snapshot { all: true, .. }
+        ));
+        assert_eq!(
+            parse_err(&["daemon", "snapshot", "p", "--all"]),
+            ErrorKind::ArgumentConflict
+        );
+
+        let Command::Init(a) = parse(&["init", "--watch"]).command else {
+            panic!()
+        };
+        assert!(a.watch);
+        let Command::Clone(a) = parse(&["clone", "http://x", "a/b", "--watch"]).command else {
+            panic!()
+        };
+        assert!(a.watch);
+        let Command::Stage(a) = parse(&["stage", "--discard"]).command else {
+            panic!()
+        };
+        assert!(a.discard);
+        let Command::Unstage(a) = parse(&["unstage"]).command else {
+            panic!()
+        };
+        assert_eq!((a.branch, a.all, a.remote), (None, false, None));
+        let Command::Unstage(a) = parse(&["unstage", "--branch", "dev", "--remote", "up"]).command
+        else {
+            panic!()
+        };
+        assert_eq!(a.branch.as_deref(), Some("dev"));
+        assert_eq!(a.remote.as_deref(), Some("up"));
+        assert_eq!(
+            parse_err(&["unstage", "--all", "--branch", "x"]),
+            ErrorKind::ArgumentConflict
+        );
     }
 }
