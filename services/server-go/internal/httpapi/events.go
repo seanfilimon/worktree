@@ -27,62 +27,9 @@ var heartbeatInterval = 15 * time.Second
 // types is an optional comma-separated list of event types.
 func (a *api) handleEvents(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
-	q := r.URL.Query()
-	p := principal(r)
-	var f domain.EventFilter
-	// allow further restricts the subscription; nil admits every event.
-	var allow func(domain.Event) bool
-	switch tenantRef, treeName := q.Get("tenant"), q.Get("tree"); {
-	case treeName != "" && tenantRef == "":
-		return badRequestf("tree requires tenant")
-	case treeName != "":
-		t, err := a.tenantByRef(ctx, tenantRef)
-		if err != nil {
-			return err
-		}
-		tree, err := a.d.Store.GetTreeByName(ctx, t.ID, treeName)
-		if errors.Is(err, domain.ErrNotFound) {
-			return notFoundf("tree %s/%s not found", t.Slug, treeName)
-		}
-		if err != nil {
-			return err
-		}
-		if err := a.d.Authz.Authorize(ctx, p, domain.ActTreeRead, t.ID, tree); err != nil {
-			return err
-		}
-		f.TenantID, f.TreeID = t.ID, tree.ID
-	case tenantRef != "":
-		t, err := a.tenantByRef(ctx, tenantRef)
-		if err != nil {
-			return err
-		}
-		if err := a.d.Authz.Authorize(ctx, p, domain.ActTenantRead, t.ID, nil); err != nil {
-			return err
-		}
-		f.TenantID = t.ID
-	default:
-		if _, err := requireLogin(r); err != nil {
-			return err
-		}
-		err := a.d.Authz.Authorize(ctx, p, domain.ActServerAdmin, "", nil)
-		switch {
-		case err == nil:
-		case errors.Is(err, domain.ErrForbidden):
-			members, err := a.memberTenantIDs(ctx, p)
-			if err != nil {
-				return err
-			}
-			allow = func(e domain.Event) bool { return members[e.TenantID] }
-		default:
-			return err
-		}
-	}
-	if types := q.Get("types"); types != "" {
-		for _, t := range strings.Split(types, ",") {
-			if t = strings.TrimSpace(t); t != "" {
-				f.Types = append(f.Types, t)
-			}
-		}
+	f, allow, err := a.eventScope(r)
+	if err != nil {
+		return err
 	}
 
 	rc := http.NewResponseController(w)
@@ -136,6 +83,73 @@ func (a *api) handleEvents(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 	}
+}
+
+// eventScope authorizes the caller for the tenant= / tree= / types= query
+// of an events request (the SSE stream and GET /events/recent) and returns
+// the bus filter plus an optional extra predicate; allow is nil when every
+// event matching f may be delivered.
+//
+// With tree, tree:read on it is required; with only tenant, tenant:read;
+// with neither, server admins see every event and other signed-in accounts
+// only the events of the tenants they are members of.
+func (a *api) eventScope(r *http.Request) (f domain.EventFilter, allow func(domain.Event) bool, err error) {
+	ctx := r.Context()
+	q := r.URL.Query()
+	p := principal(r)
+	switch tenantRef, treeName := q.Get("tenant"), q.Get("tree"); {
+	case treeName != "" && tenantRef == "":
+		return f, nil, badRequestf("tree requires tenant")
+	case treeName != "":
+		t, err := a.tenantByRef(ctx, tenantRef)
+		if err != nil {
+			return f, nil, err
+		}
+		tree, err := a.d.Store.GetTreeByName(ctx, t.ID, treeName)
+		if errors.Is(err, domain.ErrNotFound) {
+			return f, nil, notFoundf("tree %s/%s not found", t.Slug, treeName)
+		}
+		if err != nil {
+			return f, nil, err
+		}
+		if err := a.d.Authz.Authorize(ctx, p, domain.ActTreeRead, t.ID, tree); err != nil {
+			return f, nil, err
+		}
+		f.TenantID, f.TreeID = t.ID, tree.ID
+	case tenantRef != "":
+		t, err := a.tenantByRef(ctx, tenantRef)
+		if err != nil {
+			return f, nil, err
+		}
+		if err := a.d.Authz.Authorize(ctx, p, domain.ActTenantRead, t.ID, nil); err != nil {
+			return f, nil, err
+		}
+		f.TenantID = t.ID
+	default:
+		if _, err := requireLogin(r); err != nil {
+			return f, nil, err
+		}
+		err := a.d.Authz.Authorize(ctx, p, domain.ActServerAdmin, "", nil)
+		switch {
+		case err == nil:
+		case errors.Is(err, domain.ErrForbidden):
+			members, err := a.memberTenantIDs(ctx, p)
+			if err != nil {
+				return f, nil, err
+			}
+			allow = func(e domain.Event) bool { return members[e.TenantID] }
+		default:
+			return f, nil, err
+		}
+	}
+	if types := q.Get("types"); types != "" {
+		for _, t := range strings.Split(types, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				f.Types = append(f.Types, t)
+			}
+		}
+	}
+	return f, allow, nil
 }
 
 // memberTenantIDs is the set of tenants p belongs to (including the
