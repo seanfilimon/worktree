@@ -65,8 +65,14 @@ impl TestEnv {
     /// Temp dir plus a freshly started server.
     #[track_caller]
     pub fn with_server(name: &str) -> Self {
+        Self::with_server_args(name, &[])
+    }
+
+    /// Temp dir plus a server started with extra flags.
+    #[track_caller]
+    pub fn with_server_args(name: &str, extra_args: &[&str]) -> Self {
         let mut env = Self::new(name);
-        let server = Server::start(&env.root.join("server"));
+        let server = Server::start_with(&env.root.join("server"), extra_args);
         eprintln!("e2e[{name}]: server {}", server.url);
         env.server = Some(server);
         env
