@@ -84,6 +84,13 @@ impl TestEnv {
             .expect("this TestEnv has no server (use TestEnv::with_server)")
     }
 
+    // storage-backends (§15.2): stop / restart the server in a scenario.
+    pub fn server_mut(&mut self) -> &mut Server {
+        self.server
+            .as_mut()
+            .expect("this TestEnv has no server (use TestEnv::with_server)")
+    }
+
     /// Server base URL.
     pub fn url(&self) -> String {
         self.server().url.clone()

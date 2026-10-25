@@ -16,6 +16,10 @@ use crate::error::{CliError, Result};
 use crate::output::format::date;
 use crate::output::Text;
 
+// storage-backends (§15.2): `wt admin backup ...`.
+#[path = "admin_backup.rs"]
+mod backup;
+
 #[derive(Debug, Args)]
 pub struct AdminArgs {
     #[command(subcommand)]
@@ -82,6 +86,11 @@ pub enum AdminCommand {
     /// blobs and chunks (exits 1 on problems)
     Fsck,
     // --- end storage ---
+    // --- storage-backends (§15.2) ---
+    /// Create, list, download and delete server backups (restore offline
+    /// with `worktree-server restore --data DIR FILE`)
+    Backup(backup::BackupArgs),
+    // --- end storage-backends ---
     /// Show or change a tenant's quotas (unset limits use the server
     /// defaults; 0 unsets a limit)
     Limits {
@@ -500,6 +509,7 @@ pub fn run(ctx: &Context, args: AdminArgs) -> Result<()> {
             }
         }
         // --- end storage ---
+        AdminCommand::Backup(args) => backup::run(ctx, &api, args), // storage-backends (§15.2)
         AdminCommand::Limits {
             tenant,
             max_trees,
@@ -1174,6 +1184,49 @@ mod tests {
         let mut t = Text::default();
         fsck_report(&mut t, &good);
         assert!(t.as_str().ends_with("No problems found\n"));
+    }
+
+    // storage-backends (§15.2)
+    #[test]
+    fn parses_backup_subcommands() {
+        use backup::BackupCommand as B;
+        let sub = |args: &[&str]| match admin(args) {
+            AdminCommand::Backup(b) => b.command,
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(
+            sub(&["backup", "create"]),
+            B::Create { note: None }
+        ));
+        let B::Create { note } = sub(&["backup", "create", "--note", "pre-upgrade"]) else {
+            panic!()
+        };
+        assert_eq!(note.as_deref(), Some("pre-upgrade"));
+        assert!(matches!(sub(&["backup", "list"]), B::List));
+        let B::Download { id, output } = sub(&["backup", "download", "bk-1", "-o", "x.wtbak"])
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (id.as_str(), output.as_deref()),
+            ("bk-1", Some(std::path::Path::new("x.wtbak")))
+        );
+        assert!(matches!(
+            sub(&["backup", "download", "bk-1"]),
+            B::Download { output: None, .. }
+        ));
+        assert!(matches!(
+            sub(&["backup", "delete", "bk-1", "--yes"]),
+            B::Delete { yes: true, .. }
+        ));
+        assert_eq!(
+            parse_err(&["admin", "backup", "download"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_err(&["admin", "backup", "restore"]),
+            ErrorKind::InvalidSubcommand
+        );
     }
 
     #[test]
