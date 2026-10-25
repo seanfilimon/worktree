@@ -530,6 +530,10 @@ impl Repository {
             let conflicts = self.conflicts_path(tree);
             self.scan_state_file(&conflicts, &mut roots)?;
         }
+        // The typed roots of the stash and of a stopped cherry-pick/rebase
+        // (the state-file scan above is a belt-and-braces fallback).
+        roots.objects.extend(self.stash_roots()?);
+        roots.snapshots.extend(self.rewrite_roots()?);
         Ok(roots)
     }
 
