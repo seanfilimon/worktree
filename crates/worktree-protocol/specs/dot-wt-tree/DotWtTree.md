@@ -1,541 +1,290 @@
-# `.wt-tree/` Individual Tree Configuration Specification
+# `.wt-tree/` Nested Tree Directory Specification
 
-> **Status:** Living Document
-> **Scope:** Per-tree configuration folder within a W0rkTree worktree
-> **Authority:** Subordinate to root `.wt/` — can restrict, never expand
+> **Version:** 0.5 — describes the marker directory as built (`crates/worktree-sdk/src/repo/trees.rs`, `docs/ENGINEERING_PLAN.md` §13.7, §13.9).
+> Features described but not built are listed under [Roadmap](#roadmap).
 
 ---
 
 ## 1. Overview
 
-The `.wt-tree/` folder lives inside each **child tree** in a W0rkTree worktree. It manages
-tree-specific configuration: branch strategy, auto-snapshot rules, tree-level access policies,
-tree-level ignore patterns, tree-level hooks, tree-level license config, registered paths,
-branch protection, and reflog retention overrides.
+A `.wt-tree/` directory turns the directory containing it into a **nested
+tree** of the enclosing worktree. It is written by `wt tree add NAME PATH`
+and holds:
 
-`.wt-tree/` operates **under the authority** of the root `.wt/`. It can customize settings for
-its tree and **restrict** access further, but it **CANNOT** expand permissions or negate
-root-level ignores. This invariant is enforced both by the CLI and the bgprocess at sync time.
+- the tree's identity (`name`, `id`) — the marker proper;
+- tree-level configuration overrides (`[auto_snapshot]`,
+  `[secret_scanning]`, `[hooks]`);
+- tree-level ignore patterns;
+- tree-level snapshot hooks;
+- tree-scoped declarative access policies (deny statements only).
 
-Every tree created via `wt tree add <path>` receives a `.wt-tree/` directory scaffolded with
-sensible defaults inherited from the root `.wt/` configuration.
+The root tree has no `.wt-tree/`; its equivalents are `.wt/config.toml`,
+`.wt/ignore`, `.wt/hooks/` and `.wt/access/`.
+
+Two facts shape everything below:
+
+1. **The registry is in `.wt/`, not here.** A tree exists because
+   `.wt/trees/<name>/tree.toml` exists; the marker records the same name and
+   id so tools can identify the directory. Copying a directory with a
+   `.wt-tree/` into a worktree does not register it.
+2. **`.wt-tree/` is never snapshotted.** Manifest paths with a `.wt-tree`
+   component are rejected, so the contents of this directory are local to the
+   worktree; they are not pushed, fetched or cloned. Server-side effects
+   happen only through explicit commands (`wt access apply`).
 
 ---
 
-## 2. Folder Structure
+## 2. Layout
 
 ```
-services/auth-service/
+services/auth/
 ├── .wt-tree/
-│   ├── config.toml           # Tree config: branch strategy, auto-snapshot, large files,
-│   │                         #   reflog, branch protection, registered paths, license
-│   ├── ignore                # Tree-level ignore patterns (additive only, cannot negate root)
-│   │
-│   ├── access/
-│   │   └── policies.toml    # Tree-level access policies (can restrict, not expand)
-│   │
-│   └── hooks/
-│       ├── pre-snapshot      # Runs before snapshot creation for this tree
-│       └── post-snapshot     # Runs after snapshot creation for this tree
-│
-├── src/
-│   ├── main.rs
-│   └── oauth.rs
-├── Cargo.toml
-└── README.md
+│   ├── config.toml          marker identity + tree-level overrides (required)
+│   ├── ignore               tree-level ignore patterns (optional)
+│   ├── hooks/
+│   │   ├── pre-snapshot     (optional; also .cmd/.bat/.ps1 on Windows)
+│   │   └── post-snapshot
+│   └── access/
+│       └── policies.toml    tree-scope deny policies (optional)
+├── .wtignore                tracked ignore file (shared with the team)
+└── src/...
 ```
 
-### Minimal `.wt-tree/`
-
-A tree only requires `config.toml` to exist. All other files and directories are optional:
-
-```
-.wt-tree/
-└── config.toml
-```
-
-If `ignore`, `access/`, or `hooks/` are absent, the tree inherits root-level behavior
-unmodified and no tree-level customization is applied.
+`wt tree add` creates only `config.toml`. `wt tree init-config` scaffolds
+the full set (`config.toml`, `ignore`, `hooks/`, `access/`).
 
 ---
 
-## 3. `config.toml` — Full Reference
-
-The tree-level `config.toml` controls behavior for **this tree only**. Every key is optional;
-omitted keys inherit from the root `.wt/config.toml`.
+## 3. `config.toml`
 
 ```toml
-# ─── Tree Identity ───────────────────────────────────────────────────────────
+# Marker identity (written by wt tree add; rewritten when the tree adopts the server id)
+name = "auth"
+id = "0b7f3c9e-5d2a-4e61-8f0c-6a1d2e3b4c5d"
 
-[tree]
-name = "auth-service"                     # Human-readable tree name
-                                          # Defaults to the directory name
-branch_strategy = "feature-branch"        # feature-branch | trunk-based | release-train
-                                          # Determines how branches are created/merged
-
-# ─── Auto-Snapshot ───────────────────────────────────────────────────────────
-
+# Overrides of .wt/config.toml for this tree (all optional)
 [auto_snapshot]
-enabled = true                            # Enable/disable auto-snapshot for this tree
-                                          # Default: inherits from root
-inactivity_timeout_secs = 300             # Seconds of inactivity before auto-snapshot fires
-                                          # Default: inherits from root (typically 300)
-max_changed_files = 25                    # Auto-snapshot triggers if changed file count exceeds this
-                                          # Default: inherits from root (typically 50)
-on_tree_switch = true                     # Auto-snapshot when switching away from this tree's branch
-                                          # Default: inherits from root
+enabled = true
+inactivity_secs = 60
+max_changed_files = 20
+max_changed_bytes = 10485760
+message_format = "auto({branch}): {count} files changed"
+on_branch_switch = "snapshot"     # snapshot | stash | refuse
 
-# ─── Large Files ─────────────────────────────────────────────────────────────
+[secret_scanning]
+enabled = true
+block_on_match = false            # warn only in this tree
+patterns = [{ name = "auth-signing-key", regex = "ask_[0-9a-f]{40}" }]
+exclude = ["testdata/**"]
 
-[large_files]
-threshold_bytes = 5242880                 # Files above this size use chunked storage
-                                          # Default: inherits from root (typically 10MB)
-chunk_size_bytes = 2097152                # Chunk size for large file uploads
-                                          # Default: inherits from root (typically 4MB)
-lazy_loading = true                       # Lazy-load large files on demand
-                                          # Default: inherits from root
-preload_patterns = ["*.rs"]               # Patterns of large files to eagerly preload
-                                          # Default: inherits from root
-
-# ─── Reflog ──────────────────────────────────────────────────────────────────
-
-[reflog]
-retention_days = 180                      # How long to keep reflog entries for this tree
-                                          # Default: inherits from root (typically 90)
-max_entries_per_branch = 20000            # Max reflog entries per branch in this tree
-                                          # Default: inherits from root (typically 10000)
-
-# ─── License ─────────────────────────────────────────────────────────────────
-
-[license]
-license = "AGPL-3.0-only"                # SPDX identifier for this tree
-                                          # Overrides root default for this tree
-spdx_strict = true                        # Enforce SPDX validity
-                                          # Default: inherits from root
-
-# Per-path license overrides within this tree
-[[license.path]]
-path = "src/crypto"
-license = "proprietary"
-
-[[license.path]]
-path = "src/vendor"
-license = "Apache-2.0"
-
-# License grants scoped to this tree
-[[license.grant]]
-path = "src/crypto"
-tenant = "security-partner"
-grant = "read-only"
-
-# ─── Registered Paths ───────────────────────────────────────────────────────
-
-[[registered_path]]
-path = "src/crypto"
-description = "Cryptographic implementations — restricted access"
-
-[[registered_path]]
-path = "src/oauth.rs"
-description = "OAuth2 authorization code flow"
-
-[[registered_path]]
-path = "migrations"
-description = "Database migration scripts"
-
-# ─── Branch Protection ──────────────────────────────────────────────────────
-
-# Tree-level branch protection is ADDITIVE to root-level protection.
-# If root protects "main" with no_direct_push, the tree cannot remove that rule.
-# The tree CAN add additional rules on top.
-
-[[branch_protection]]
-branch = "main"
-rules = ["no_direct_push", "require_merge_review"]
-
-[branch_protection.review]
-min_approvals = 2
-require_from_roles = ["security-reviewer", "Admin"]
-
-[[branch_protection]]
-branch = "release/*"
-rules = ["no_direct_push", "no_force_push", "require_merge_review"]
-
-[branch_protection.review]
-min_approvals = 1
-require_from_roles = ["Maintainer", "Admin"]
+[hooks]
+enabled = true
+timeout_secs = 120
 ```
 
-### Inheritance Semantics
+| Key / section | Effect |
+|---|---|
+| `name`, `id` | Must match `.wt/trees/<name>/tree.toml`; maintained by the SDK |
+| `[auto_snapshot]` | Overrides the worktree values for this tree |
+| `[secret_scanning]` | Overrides the worktree/user values for snapshots of this tree |
+| `[hooks]` | Hook settings for this tree's snapshots |
 
-| Key                          | Inheritance Rule                                            |
-|------------------------------|-------------------------------------------------------------|
-| `tree.name`                  | Defaults to directory name; no inheritance                  |
-| `tree.branch_strategy`       | Defaults to root's implicit `feature-branch`                |
-| `auto_snapshot.*`            | Omitted keys inherit from root `[auto_snapshot]`            |
-| `large_files.*`              | Omitted keys inherit from root `[large_files]`              |
-| `reflog.*`                   | Omitted keys inherit from root `[reflog]`                   |
-| `license.license`            | Overrides root `[license].default` for this tree            |
-| `license.path`               | Tree-scoped; does not merge with root `[[license.path]]`    |
-| `registered_path`            | Tree-scoped; root registered paths still apply globally     |
-| `branch_protection`          | **Additive** — merges with root rules, cannot remove        |
+Resolution: `$WT_HOME/config.toml` < `.wt/config.toml` < this file, key by
+key. Inspect and edit with:
+
+```bash
+wt config get auto_snapshot.max_changed_files --tree auth --show-origin
+wt config set secret_scanning.block_on_match false --tree auth
+```
+
+Unknown keys are preserved on save. Server URL, tenant, remotes, `[user]`,
+`[signing]` and `[sync]` are worktree- or user-level only.
 
 ---
 
-## 4. Authority Model
+## 4. `ignore`
 
-The authority model is the **core invariant** of `.wt-tree/`. It is enforced by bgprocess
-during sync and by the CLI during local operations.
-
-### 4.1 CAN Customize
-
-The following settings can be freely customized per tree:
-
-- **Auto-snapshot rules** — enable/disable, timeouts, file thresholds
-- **Branch strategy** — `feature-branch`, `trunk-based`, `release-train`
-- **Large file thresholds** — can lower (but not raise above root ceiling)
-- **Reflog retention** — can extend or shorten for this tree
-- **Branch protection** — can ADD rules; cannot remove rules set by root
-- **Registered paths** — tree-scoped path registration
-- **Tree-level license** — can set a different SPDX license for the tree
-- **Tree-level ignore patterns** — additive patterns only
-- **Tree-level access policies** — can restrict further, not expand
-- **Tree-level hooks** — additional hooks that run after root hooks
-
-### 4.2 CANNOT Override
-
-The following are controlled exclusively by the root `.wt/` and cannot be overridden:
-
-| Setting                         | Reason                                                     |
-|---------------------------------|------------------------------------------------------------|
-| Server connection               | Single source of truth in `.wt/config.toml`                |
-| Tenant identity                 | Bound to the worktree, not to individual trees             |
-| Worktree visibility             | Global property of the worktree                            |
-| Root-level ignore patterns      | Security/policy — cannot negate root ignores               |
-| Root-level access roles         | Role definitions are worktree-wide                         |
-| Root-level access policies      | Cannot grant more than root allows                         |
-| Root license defaults           | Server respects root for cross-tenant enforcement          |
-| Sync interval                   | Controlled by bgprocess at the worktree level              |
-| Shallow clone settings          | Controlled at worktree level                               |
-
-### 4.3 Enforcement
+Gitignore syntax, relative to the tree directory, applied only to this tree.
+Precedence (low → high): hard-coded `.wt/ .wt-tree/ .git/`, soft defaults,
+root level (`.wt/ignore`, root `.wtignore`), `.wt-tree/ignore`, then
+`.wtignore` files below. Patterns from the root level cannot be re-included
+here: a `!pattern` that would re-include a path ignored by the root level has
+no effect. A `!pattern` can re-include a soft default or this file's own
+earlier patterns.
 
 ```
-┌──────────────────────────────┐
-│  Root .wt/ (ceiling)         │ ← Maximum permissions / authoritative ignores
-├──────────────────────────────┤
-│  Tree .wt-tree/ (restrict)   │ ← Can tighten within ceiling
-├──────────────────────────────┤
-│  Subtree .wt-tree/ (restrict)│ ← Can tighten further within parent tree
-└──────────────────────────────┘
+# services/auth/.wt-tree/ignore
+coverage/
+*.snap
+!keep.snap
 ```
 
-At every level, the effective policy is the **intersection** (most restrictive combination)
-of all levels in the chain.
+Because this file is not shared, prefer a tracked `.wtignore` in the tree
+directory for rules the team needs.
 
 ---
 
-## 5. Subtree Nesting
+## 5. `hooks/`
 
-When a tree contains subtrees (nested `.wt-tree/` inside another `.wt-tree/`), the authority
-chain extends downward:
+Same contract as `.wt/hooks/` ([DotWt.md §8](../dot-wt/DotWt.md#8-hooks)):
 
 ```
-services/auth-service/               ← Tree (has .wt-tree/)
+1. .wt/hooks/pre-snapshot          (abort on failure)
+2. <tree>/.wt-tree/hooks/pre-snapshot
+3. --- snapshot written ---
+4. .wt/hooks/post-snapshot         (failures reported)
+5. <tree>/.wt-tree/hooks/post-snapshot
+```
+
+Only the hooks of the tree being snapshotted run: a nested tree's snapshot
+does not run its parent tree's `.wt-tree/hooks/`. Environment: `WT_HOOK`,
+`WT_TREE`, `WT_TREE_PATH`, `WT_BRANCH`, `WT_ROOT`, `WT_SNAPSHOT` (post); the
+working directory is the tree root; timeout from `[hooks] timeout_secs`.
+
+---
+
+## 6. `access/policies.toml`
+
+Tree-scoped policies in the declarative access format, restricted to **deny
+statements** (an `allow` statement is a validation error, `E2001..` series):
+
+```toml
+[[policy]]
+name = "auth-hardening"
+description = "Contractors may not change crypto code or push main"
+enabled = true
+
+[[policy.statement]]
+sid = "no-contractor-crypto"
+effect = "deny"
+principals = ["team:contractors", "tenant:partner"]
+actions = ["tree:write"]
+resources = ["wt:path/acme/auth/src/crypto/**"]
+
+[[policy.statement]]
+sid = "no-contractor-main"
+effect = "deny"
+principals = ["team:contractors"]
+actions = ["branch:push"]
+resources = ["wt:branch/acme/auth/main"]
+```
+
+Workflow:
+
+```bash
+wt access validate [--dir services/auth]   # local parse + validation
+wt access plan                             # dry run against the server (create/update/delete)
+wt access apply [--yes]                    # applies tenant files and tree files
+wt access pull                             # writes the server's current documents back to TOML
+```
+
+The SDK compiles the TOML to canonical JSON and calls `SyncAccessConfig`
+with `tree_id` set to the tree's server id (`dry_run` for `plan`). The server
+validates statements, references and privilege escalation, then replaces the
+config-managed policies of that tree atomically, stores the document
+(`access_docs`), audits `access.applied` and publishes `access.applied`.
+Applied policies are `managed_by = "config"` and read-only in the REST API
+(`409 {"code":"managed_by_config"}`) unless an owner passes `?force=true`.
+
+Because deny statements can only remove permissions, a tree document cannot
+grant more than the tenant's roles, grants and policies allow. Custom roles
+are tenant-level only (`.wt/access/roles.toml`).
+
+---
+
+## 7. Nesting
+
+```
+services/auth/                    tree "auth"
 ├── .wt-tree/
-│   └── config.toml
-├── plugins/
-│   └── oauth-plugin/               ← Subtree (has .wt-tree/ inside parent's .wt-tree/)
-│       ├── .wt-tree/
-│       │   ├── config.toml
-│       │   └── ignore
-│       └── src/
-│           └── lib.rs
-└── src/
-    └── main.rs
+└── plugins/oauth/                tree "oauth" (nested inside auth)
+    ├── .wt-tree/
+    └── src/lib.rs                belongs to "oauth" only
 ```
 
-### Nesting Rules
-
-1. **Authority chain:** Root `.wt/` → Parent `.wt-tree/` → Subtree `.wt-tree/`
-2. **Each level is a further restriction** — subtree cannot expand what parent restricts
-3. **Ignore patterns accumulate** — subtree cannot negate parent tree's patterns
-4. **Access policies intersect** — effective policy is the most restrictive
-5. **Branch protection merges** — rules from all levels are combined (union)
-6. **Hooks execute in order** — root hooks → parent tree hooks → subtree hooks
-7. **No depth limit** — nesting can go arbitrarily deep, but each level only restricts
-
-### Resolution Example
-
-If root `.wt/` grants `team-backend` read+write access, and the parent tree's
-`policies.toml` restricts `team-backend` to read-only, then the subtree's `policies.toml`
-**cannot** restore write access. The most restrictive policy wins at every level.
+- Each level is an independent tree with its own branches, history and
+  server tree; the parent's snapshots exclude `plugins/oauth/`.
+- Configuration resolves user → worktree → this tree. A parent tree's
+  `.wt-tree/config.toml` does not apply to its nested trees.
+- Ignore rules: the root level applies everywhere; a parent tree's
+  `.wt-tree/ignore` applies to the parent tree's own files only, while
+  tracked `.wtignore` files in a directory apply to every path below it.
+- Tree-scope policies apply to the server tree they are applied to; server
+  authorization treats every tree independently.
+- There is no depth limit.
 
 ---
 
-## 6. `ignore` (Tree-Level)
+## 8. Validation
 
-The tree-level `ignore` file uses the same syntax as the root `.wt/ignore` (and `.gitignore`):
+`wt tree validate [NAME]` (all trees when omitted) reports:
 
-```
-# Tree-specific ignores for auth-service
-# These patterns are ADDITIVE to root .wt/ignore
+1. a missing `.wt-tree/` marker;
+2. a `config.toml` that does not parse;
+3. an `ignore` file that does not parse;
+4. a nested `.wt/` directory inside the tree.
 
-# Test fixtures
-tests/fixtures/*.snapshot
-tests/fixtures/large-*.json
-
-# Generated code
-src/generated/
-
-# Local development overrides
-.env.local
-docker-compose.override.yml
-```
-
-### Rules
-
-- **Additive only** — patterns here add to the root `.wt/ignore` patterns
-- **CANNOT negate root patterns** — if root ignores `*.log`, the tree cannot un-ignore `!*.log`
-- If a negation of a root pattern is attempted, bgprocess logs a **warning** and the root
-  pattern wins silently
-- Negation (`!`) IS allowed for patterns defined within this same file or within the
-  tree's own scope
-- Subtree `ignore` files cannot negate parent tree's `ignore` patterns
-
-### Pattern Resolution Order
-
-1. Hard-coded ignores (`.wt/`, `.wt-tree/`, `.git/`) — always active, never overridable
-2. Root `.wt/ignore` — authoritative
-3. Parent tree `.wt-tree/ignore` — additive
-4. Subtree `.wt-tree/ignore` — additive (cannot negate any above)
-5. Soft defaults — active unless explicitly un-ignored in `.wt/ignore`
-
-The final ignore set is the **union** of all levels.
+`wt access validate` checks `access/policies.toml`. Other commands treat an
+unparsable tree config as an error for that tree.
 
 ---
 
-## 7. `access/policies.toml` (Tree-Level)
+## 9. Lifecycle
 
-Tree-level access policies define who can do what **within this tree only**. They follow the
-same RBAC + ABAC model as root `.wt/access/policies.toml` but are scoped and restricted.
-
-```toml
-# ─── Tree-Level Access Policies ─────────────────────────────────────────────
-# These policies apply to the auth-service tree only.
-# They can RESTRICT access further but CANNOT expand beyond root policies.
-
-[[policy]]
-name = "restrict-crypto-to-security-team"
-description = "Only security team can write to src/crypto"
-effect = "deny"
-
-[policy.subject]
-not_team = ["security"]
-
-[policy.action]
-actions = ["write", "snapshot"]
-
-[policy.scope]
-path = "src/crypto"                      # Must be a registered_path in this tree's config.toml
-
-# ─── Read-Only for External Contractors ──────────────────────────────────────
-
-[[policy]]
-name = "contractors-read-only"
-description = "External contractors get read-only access to this tree"
-effect = "allow"
-
-[policy.subject]
-role = ["Contractor"]
-
-[policy.action]
-actions = ["read"]
-
-[policy.scope]
-scope = "tree"                           # Applies to entire tree
-
-# ─── Deny All to Specific Tenant ────────────────────────────────────────────
-
-[[policy]]
-name = "block-external-tenant"
-description = "Block access from untrusted tenant"
-effect = "deny"
-
-[policy.subject]
-tenant = ["external-corp"]
-
-[policy.action]
-actions = ["*"]
-
-[policy.scope]
-scope = "tree"
-```
-
-### Scope Options
-
-| Scope                          | Meaning                                              |
-|--------------------------------|------------------------------------------------------|
-| `scope = "tree"`               | Entire tree                                          |
-| `path = "src/crypto"`         | Specific registered path within this tree            |
-| `branch = "main"`             | Specific branch within this tree                     |
-| `branch = "release/*"`        | Branch pattern within this tree                      |
-
-### Restriction-Only Invariant
-
-The server and bgprocess enforce the restriction-only invariant:
-
-- **Before applying** a tree policy, the effective root policy for the subject is computed
-- **If the tree policy would EXPAND** permissions (e.g., grant write where root only grants
-  read), the tree policy is **rejected** and a warning is logged
-- **If the tree policy RESTRICTS** permissions (e.g., deny write where root grants read+write),
-  the tree policy is **accepted** and the effective policy is the intersection
+| Action | Effect on `.wt-tree/` |
+|---|---|
+| `wt tree add NAME PATH` | Creates `PATH/.wt-tree/config.toml` with `name` and a new `id` |
+| First push / fetch / clone contact | `id` rewritten to the server tree id |
+| `wt tree init-config` | Scaffolds `ignore`, `hooks/`, `access/` |
+| `wt tree remove NAME` | Deletes `.wt-tree/` and `.wt/trees/NAME/`; files are kept and fall back to the enclosing tree |
 
 ---
 
-## 8. `hooks/` (Tree-Level)
+## Implementation Status
 
-Tree-level hooks run **in addition to** root-level hooks. They provide tree-specific
-automation for snapshot lifecycle events.
+| Item | Status |
+|---|---|
+| Marker `config.toml` with `name`/`id`, registry in `.wt/trees/` | Built |
+| `.wt-tree/` excluded from scans and manifests | Built |
+| Tree-level `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` overrides | Built (v0.5 §13.9) |
+| `.wt-tree/ignore` | Built (v0.5 §13.9) |
+| `.wt-tree/hooks/` | Built (v0.5 §13.9) |
+| `.wt-tree/access/policies.toml` (deny only) | Built (v0.5 §13.7) |
+| `wt tree validate`, `wt tree init-config` | Built (v0.5 §13.9) |
 
-### Execution Order
+## Roadmap
 
-```
-1. Root .wt/hooks/pre-snapshot       ← Runs first (abort = no snapshot)
-2. Tree .wt-tree/hooks/pre-snapshot  ← Runs second (abort = no snapshot)
-3. --- snapshot creation ---
-4. Root .wt/hooks/post-snapshot      ← Runs first after snapshot
-5. Tree .wt-tree/hooks/post-snapshot ← Runs second after snapshot
-```
+Described in earlier drafts, not built and not in v0.5:
 
-For nested subtrees, the order extends:
+- **Versioning `.wt-tree/` with the tree** (so configuration and policies are
+  pushed, reviewed and cloned with the code), and server-side rejection of
+  invalid tree configuration during sync.
+- `[tree]` section keys `branch_strategy`, `parent`, `created_by`,
+  `description`.
+- `[large_files]` (threshold, chunk size, lazy loading, preload patterns) and
+  `[reflog]` (retention, per-branch caps) overrides.
+- `[license]`, `[[license.path]]`, `[[license.grant]]`, `spdx_strict` — license
+  rules are server rules (`wt license`).
+- `[[registered_path]]` and policy scopes `{ path = ... }` limited to
+  registered paths — path rules use glob resources.
+- `[[branch_protection]]` with `[branch_protection.review]` merged additively
+  with root rules — protections are server rules (`wt protect`).
+- Policy syntax with `subject`/`not_team`/`unless`/`scope` tables and
+  tree-level `allow` statements checked against a computed root ceiling.
+- Hook variables `WT_TREE_NAME`, `WT_CHANGED_FILES`, `WT_USER`,
+  `WT_HOOK_PHASE`; running parent-tree hooks for nested trees.
+- Warnings for attempted negation of root ignore patterns, and automatic
+  migration of deprecated keys.
 
-```
-1. Root pre-snapshot
-2. Parent tree pre-snapshot
-3. Subtree pre-snapshot
-4. --- snapshot creation ---
-5. Root post-snapshot
-6. Parent tree post-snapshot
-7. Subtree post-snapshot
-```
+## References
 
-### Hook Interface
-
-Hooks are **executable scripts or programs**. They receive context via environment variables:
-
-| Variable                     | Description                                           |
-|------------------------------|-------------------------------------------------------|
-| `WT_TREE_NAME`              | Name of the tree being snapshotted                    |
-| `WT_TREE_PATH`              | Absolute path to the tree directory                   |
-| `WT_BRANCH`                 | Current branch name                                   |
-| `WT_SNAPSHOT_ID`            | Snapshot ID (only in post-snapshot)                    |
-| `WT_CHANGED_FILES`          | Newline-separated list of changed file paths          |
-| `WT_USER`                   | Current user identity                                 |
-| `WT_HOOK_PHASE`             | `pre-snapshot` or `post-snapshot`                     |
-
-### Behavior
-
-- **pre-snapshot:** Exit code `0` = proceed. Any non-zero exit code **aborts** the snapshot.
-  Stderr output is captured and shown to the user as the abort reason.
-- **post-snapshot:** Exit code is logged but does **not** affect the snapshot. Post-snapshot
-  hooks are informational — useful for notifications, CI triggers, etc.
-- **Timeout:** Hooks have a default timeout of 30 seconds. Configurable in root
-  `.wt/config.toml` under `[hooks].timeout_secs`.
-- **Permissions:** Hook files must be executable (`chmod +x` on Unix). On Windows, `.cmd`,
-  `.bat`, `.ps1`, and `.exe` extensions are recognized.
-
----
-
-## 9. What `.wt-tree/` Does NOT Contain
-
-The following are explicitly **out of scope** for `.wt-tree/`:
-
-| Concern                        | Where It Lives                                        |
-|--------------------------------|-------------------------------------------------------|
-| Object store (blobs, snapshots)| Managed by bgprocess externally                       |
-| Full history                   | Managed by bgprocess + synced to server               |
-| Identity / authentication      | Root `.wt/identity/`                                  |
-| Server connection config       | Root `.wt/config.toml` `[worktree]`                   |
-| Tenant configuration           | Root `.wt/config.toml` `[worktree]`                   |
-| Custom role definitions        | Root `.wt/access/roles.toml`                          |
-| Global reflog                  | Root `.wt/reflog/_global.log`                         |
-| Conflict metadata              | Root `.wt/conflicts/`                                 |
-| Cache                          | Root `.wt/cache/`                                     |
-
----
-
-## 10. Creation and Lifecycle
-
-### Automatic Scaffolding
-
-When a tree is created via `wt tree add <path>`, the CLI scaffolds `.wt-tree/` automatically:
-
-```
-$ wt tree add services/auth-service
-
-Created tree 'auth-service' at services/auth-service/
-  .wt-tree/config.toml  — initialized with defaults from root
-```
-
-The scaffolded `config.toml` contains:
-
-```toml
-[tree]
-name = "auth-service"
-
-# All other settings inherit from root .wt/config.toml.
-# Uncomment and customize as needed:
-
-# [auto_snapshot]
-# enabled = true
-# inactivity_timeout_secs = 300
-
-# [large_files]
-# threshold_bytes = 10485760
-
-# [reflog]
-# retention_days = 90
-```
-
-### Removal
-
-When a tree is removed via `wt tree remove <path>`, the `.wt-tree/` directory is deleted
-along with the tree registration. History and snapshots are preserved on the server.
-
-### Migration
-
-If a `.wt-tree/config.toml` uses a deprecated key, bgprocess logs a deprecation warning
-during sync and attempts automatic migration. The migrated file is written back to disk
-with comments explaining the change.
-
----
-
-## 11. Validation
-
-bgprocess validates `.wt-tree/` contents during every sync cycle:
-
-1. **Schema validation** — `config.toml` must conform to the expected schema
-2. **Authority validation** — policies cannot expand root permissions
-3. **Ignore validation** — no negation of root ignore patterns
-4. **Path validation** — `[[registered_path]]` entries must exist on disk
-5. **License validation** — SPDX identifiers must be valid (if `spdx_strict = true`)
-6. **Branch protection merge** — tree rules are merged with root rules; conflicts logged
-
-Validation errors are reported via:
-- CLI output during `wt tree validate`
-- bgprocess logs
-- Server-side rejection during sync (for authority violations)
-
----
-
-## 12. Version Control
-
-The `.wt-tree/` directory is **version-controlled** — it is tracked by W0rkTree and included
-in snapshots. This means:
-
-- Changes to tree configuration are auditable in history
-- Configuration can be branched and merged alongside code
-- Policy changes go through the same review process as code (if branch protection requires it)
-- The server has the authoritative copy and rejects invalid configurations during sync
-
----
+- `crates/worktree-sdk/src/repo/trees.rs` — `add_tree`, `remove_tree`, marker writing, `set_tree_id`
+- `crates/worktree-sdk/src/repo/mod.rs` — `TREE_MARKER_DIR`, layout
+- `crates/worktree-sdk/src/model.rs` — `validate_manifest_path` (reserved components)
+- `crates/worktree-sdk/src/config.rs` — config sections and hierarchy
+- `crates/worktree-sdk/src/repo/ignore_rules.rs` — ignore evaluation
+- `crates/worktree-sdk/src/hooks.rs` — hook discovery and execution
+- `crates/worktree-protocol/src/access/` — declarative parser/compiler
+- `crates/worktree-sdk/src/remote/access.rs` — plan/apply/pull
+- `crates/worktree-cli/src/commands/{tree,config,access}.rs`
+- `services/server-go/internal/accesscfg/` — server apply
