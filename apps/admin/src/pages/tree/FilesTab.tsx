@@ -1,120 +1,79 @@
-import { useMutation } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { FolderGit2, Pin } from "lucide-react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { useApi } from "@/api/context";
-import { useBlob, useBranches, useSnapshot } from "@/api/queries";
-import type { SnapshotFile } from "@/api/types";
-import { Icon } from "@/components/icons";
-import { Badge } from "@/components/legacy/Badge";
-import { Button } from "@/components/legacy/Button";
-import { Card } from "@/components/legacy/Card";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
-import { Table, Td, Th, Tr } from "@/components/legacy/Table";
-import { RelativeTime } from "@/components/legacy/Time";
-import { baseName, decodeText, downloadBytes, listDirectory, normalizeDir, parentDir, splitLines } from "@/lib/files";
-import { firstLine, formatBytes, shortId } from "@/lib/format";
-import { filesPath } from "@/lib/paths";
+import { useBranches, useSnapshot } from "@/api/queries";
+import { DirectoryView } from "@/components/files/DirectoryView";
+import { FileTree } from "@/components/files/FileTree";
+import { FileViewer } from "@/components/files/FileViewer";
+import { resolveRelative } from "@/components/files/markdown";
+import { SplitPane } from "@/components/files/SplitPane";
+import { EmptyState, ErrorState, LoadingRows, RelativeTime } from "@/components/files/states";
+import { ancestorDirs } from "@/components/files/tree";
+import { Badge } from "@/components/ui/badge";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { normalizeDir, parentDir } from "@/lib/files";
+import { firstLine, shortId } from "@/lib/format";
+import { treePath } from "@/lib/paths";
 import { BranchSelect } from "./BranchSelect";
 import { useTreeContext } from "./context";
 
-/** Larger files are offered as a download instead of an inline preview. */
-const PREVIEW_LIMIT = 1024 * 1024;
-
-function PathCrumbs({ path, link }: { path: string; link: (dir: string) => string }) {
-  const parts = path ? path.split("/") : [];
-  return (
-    <nav aria-label="File path" className="min-w-0">
-      <ol className="flex flex-wrap items-center gap-1 font-mono text-[13px]">
-        <li>
-          <Link to={link("")} className="text-foreground hover:underline">
-            root
-          </Link>
-        </li>
-        {parts.map((p, i) => {
-          const last = i === parts.length - 1;
-          const dir = parts.slice(0, i + 1).join("/");
-          return (
-            <li key={dir} className="flex items-center gap-1">
-              <span className="text-subtle">/</span>
-              {last ? (
-                <span aria-current="page">{p}</span>
-              ) : (
-                <Link to={link(dir)} className="text-foreground hover:underline">
-                  {p}
-                </Link>
-              )}
-            </li>
-          );
-        })}
-      </ol>
-    </nav>
-  );
+/** Files tab location (`branch` empty = default branch, `snapshot` empty = branch tip). */
+function filesHref(tenant: string, tree: string, opts: { branch?: string; snapshot?: string; path?: string }): string {
+  const q = new URLSearchParams();
+  if (opts.branch) q.set("branch", opts.branch);
+  if (opts.snapshot) q.set("snapshot", opts.snapshot);
+  if (opts.path) q.set("path", opts.path);
+  const s = q.toString();
+  return `${treePath(tenant, tree, "files")}${s ? `?${s}` : ""}`;
 }
 
-function FileViewer({ snapshot, file }: { snapshot: string; file: SnapshotFile }) {
-  const api = useApi();
-  const { tenant, tree } = useTreeContext();
-  const previewable = file.size <= PREVIEW_LIMIT;
-  const blob = useBlob(tenant, tree, snapshot, file.path, previewable);
-  const text = useMemo(() => (blob.data ? decodeText(blob.data) : null), [blob.data]);
-  const lines = useMemo(() => (text === null ? [] : splitLines(text)), [text]);
+/** Directories to open so that `path` is visible (its ancestors and itself). */
+function autoExpand(path: string): string[] {
+  return path ? [...ancestorDirs(path), path] : [];
+}
 
-  const download = useMutation({
-    mutationFn: async () => blob.data ?? (await api.trees.blob(tenant, tree, snapshot, file.path)),
-    onSuccess: (bytes) => downloadBytes(bytes, baseName(file.path)),
-  });
-
-  const downloadButton = (
-    <Button size="sm" onClick={() => download.mutate()} loading={download.isPending}>
-      <Icon name="download" className="size-3.5" />
-      Download
-    </Button>
-  );
-
-  let body;
-  if (!previewable) {
-    body = <EmptyState title="File too large to preview">{formatBytes(file.size)} — download it to view.</EmptyState>;
-  } else if (blob.isPending) {
-    body = <SkeletonRows rows={8} label="Loading file" />;
-  } else if (blob.isError) {
-    body = <ErrorState error={blob.error} onRetry={() => void blob.refetch()} />;
-  } else if (text === null) {
-    body = <EmptyState title="Binary file">This file is not valid UTF-8 text and cannot be shown inline.</EmptyState>;
-  } else if (lines.length === 1 && lines[0] === "") {
-    body = <EmptyState title="Empty file" />;
-  } else {
-    body = (
-      <div role="region" aria-label={`Contents of ${file.path}`} tabIndex={0} className="overflow-auto font-mono text-[12.5px] leading-5">
-        <table className="w-full border-collapse">
-          <tbody>
-            {lines.map((line, i) => (
-              <tr key={i} className="hover:bg-surface-2/60">
-                <td aria-hidden="true" className="w-px border-r border-border px-3 text-right text-subtle select-none tabular-nums">
-                  {i + 1}
-                </td>
-                <td className="px-3 whitespace-pre">{line || " "}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
+function PathBreadcrumb({ root, path, hrefFor }: { root: string; path: string; hrefFor: (p: string) => string }) {
+  const parts = path ? path.split("/") : [];
   return (
-    <Card>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon name="file" className="text-subtle" />
-          <h2 className="truncate font-mono text-sm font-medium">{baseName(file.path)}</h2>
-          <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">{formatBytes(file.size)}</span>
-          {text !== null && <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">· {lines.length} lines</span>}
-          {file.executable && <Badge tone="warning">executable</Badge>}
-        </div>
-        {downloadButton}
-      </div>
-      {body}
-    </Card>
+    <Breadcrumb aria-label="File path">
+      <BreadcrumbList className="font-mono text-[13px]">
+        <BreadcrumbItem>
+          {parts.length ? (
+            <BreadcrumbLink asChild>
+              <Link to={hrefFor("")}>{root}</Link>
+            </BreadcrumbLink>
+          ) : (
+            <BreadcrumbPage>{root}</BreadcrumbPage>
+          )}
+        </BreadcrumbItem>
+        {parts.map((part, i) => {
+          const p = parts.slice(0, i + 1).join("/");
+          return (
+            <Fragment key={p}>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                {i === parts.length - 1 ? (
+                  <BreadcrumbPage className="font-semibold">{part}</BreadcrumbPage>
+                ) : (
+                  <BreadcrumbLink asChild>
+                    <Link to={hrefFor(p)}>{part}</Link>
+                  </BreadcrumbLink>
+                )}
+              </BreadcrumbItem>
+            </Fragment>
+          );
+        })}
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 }
 
@@ -122,35 +81,80 @@ export function FilesTab() {
   const { tenant, tree, summary } = useTreeContext();
   const [params, setParams] = useSearchParams();
   const pinned = params.get("snapshot") ?? "";
-  const branchParam = params.get("branch") || summary.tree.default_branch;
+  const branchParam = params.get("branch") ?? "";
+  const branch = branchParam || summary.tree.default_branch;
+  // Legacy links carry the folder in `path` and the file in `file`.
+  const target = normalizeDir(params.get("file") || params.get("path") || "");
   const branches = useBranches(tenant, tree);
-  const tip = branches.data?.find((b) => b.name === branchParam)?.tip ?? "";
+  const tip = branches.data?.find((b) => b.name === branch)?.tip ?? "";
   const snapshotId = pinned || tip;
-  const dir = normalizeDir(params.get("path") ?? "");
-  const filePath = params.get("file") ?? "";
   const detail = useSnapshot(tenant, tree, snapshotId);
-
   const files = useMemo(() => detail.data?.files ?? [], [detail.data]);
-  const listing = useMemo(() => listDirectory(files, dir), [files, dir]);
-  const selected = filePath ? files.find((f) => f.path === filePath) : undefined;
+  const selectedFile = files.find((f) => f.path === target);
 
-  const link = (opts: { path?: string; file?: string }) => filesPath(tenant, tree, { snapshot: snapshotId, ...opts });
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(autoExpand(target)));
+  const [revealed, setRevealed] = useState(target);
+  if (revealed !== target) {
+    setRevealed(target);
+    setExpanded((prev) => new Set([...prev, ...autoExpand(target)]));
+  }
+  const toggle = useCallback((dir: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(dir)) next.add(dir);
+      return next;
+    });
+  }, []);
 
+  const hrefFor = useCallback(
+    (path: string) => filesHref(tenant, tree, { branch: branchParam, snapshot: pinned, path }),
+    [tenant, tree, branchParam, pinned],
+  );
+  const baseDir = selectedFile ? parentDir(selectedFile.path) : target;
+  const resolveLink = useCallback((link: string) => hrefFor(resolveRelative(baseDir, link)), [hrefFor, baseDir]);
+
+  const onBranchChange = (b: string) => {
+    const next = new URLSearchParams();
+    if (b !== summary.tree.default_branch) next.set("branch", b);
+    if (target) next.set("path", target);
+    setParams(next);
+  };
+
+  const snap = detail.data?.snapshot;
   const toolbar = (
-    <div className="mb-3 flex flex-wrap items-center gap-3">
-      <BranchSelect tenant={tenant} tree={tree} value={branchParam} onChange={(b) => setParams({ branch: b })} />
+    <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+      <BranchSelect tenant={tenant} tree={tree} value={pinned && snap ? snap.branch_name : branch} onChange={onBranchChange} />
       {pinned && (
-        <Link to={filesPath(tenant, tree)} className="text-[13px] text-foreground hover:underline">
-          Show branch tip
-        </Link>
+        <Badge variant="outline" className="gap-1.5 py-1">
+          <Pin aria-hidden="true" />
+          Pinned to snapshot <span className="font-mono">{shortId(pinned)}</span>
+        </Badge>
       )}
-      {detail.data && (
-        <p className="min-w-0 truncate text-[13px] text-muted-foreground">
-          <span className="font-mono text-fg" title={detail.data.snapshot.id}>
-            {shortId(detail.data.snapshot.id)}
-          </span>{" "}
-          {firstLine(detail.data.snapshot.message)} · {detail.data.snapshot.author} · <RelativeTime value={detail.data.snapshot.created_at} />
+      {pinned && (
+        <Button variant="link" size="sm" asChild className="h-auto px-0">
+          <Link
+            to={filesHref(tenant, tree, {
+              branch: snap && snap.branch_name !== summary.tree.default_branch ? snap.branch_name : branchParam,
+              path: target,
+            })}
+          >
+            Show branch tip
+          </Link>
+        </Button>
+      )}
+      {snap ? (
+        <p className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+          <Link
+            to={treePath(tenant, tree, `snapshots/${encodeURIComponent(snap.id)}`)}
+            className="font-mono font-medium text-foreground hover:underline"
+            title={snap.id}
+          >
+            {shortId(snap.id)}
+          </Link>{" "}
+          {firstLine(snap.message)} · <span className="text-foreground">{snap.author}</span> · <RelativeTime value={snap.created_at} />
         </p>
+      ) : (
+        detail.isPending && snapshotId !== "" && <Skeleton className="h-4 w-64" />
       )}
     </div>
   );
@@ -159,15 +163,48 @@ export function FilesTab() {
     return (
       <>
         {toolbar}
-        <Card>
+        <div className="rounded-xl border bg-card">
           {branches.isPending ? (
-            <SkeletonRows label="Loading branches" />
+            <LoadingRows label="Loading branches" />
           ) : branches.isError ? (
             <ErrorState error={branches.error} onRetry={() => void branches.refetch()} />
           ) : (
-            <EmptyState title="Nothing to browse">The branch has no snapshots yet.</EmptyState>
+            <EmptyState icon={FolderGit2} title="Nothing to browse">
+              {branches.data.some((b) => b.name === branch) ? (
+                <>
+                  <span className="font-mono">{branch}</span> has no snapshots yet. Push one with <code className="font-mono">wt push</code>
+                  .
+                </>
+              ) : (
+                <>
+                  Branch <span className="font-mono">{branch}</span> does not exist.
+                </>
+              )}
+            </EmptyState>
           )}
-        </Card>
+        </div>
+      </>
+    );
+  }
+
+  if (detail.isPending) {
+    return (
+      <>
+        {toolbar}
+        <div className="rounded-xl border bg-card">
+          <LoadingRows rows={8} label="Loading files" />
+        </div>
+      </>
+    );
+  }
+
+  if (detail.isError) {
+    return (
+      <>
+        {toolbar}
+        <div className="rounded-xl border bg-card">
+          <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />
+        </div>
       </>
     );
   }
@@ -175,86 +212,45 @@ export function FilesTab() {
   return (
     <>
       {toolbar}
-      <div className="mb-3">
-        <PathCrumbs path={selected ? selected.path : dir} link={(d) => link({ path: d })} />
-      </div>
-      {detail.isPending ? (
-        <Card>
-          <SkeletonRows label="Loading files" />
-        </Card>
-      ) : detail.isError ? (
-        <Card>
-          <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />
-        </Card>
-      ) : filePath ? (
-        selected ? (
-          <FileViewer snapshot={snapshotId} file={selected} />
-        ) : (
-          <Card>
-            <EmptyState title="File not found in this snapshot" action={
-                <Link to={link({ path: parentDir(filePath) })} className="text-foreground hover:underline">
-                  Back to folder
-                </Link>
-              } />
-          </Card>
-        )
-      ) : listing.dirs.length === 0 && listing.files.length === 0 ? (
-        <Card>
-          <EmptyState title={files.length === 0 ? "This snapshot has no files" : "Folder not found"} />
-        </Card>
-      ) : (
-        <Card>
-          <Table label={`Files in ${dir || "root"}`}>
-            <thead>
-              <tr>
-                <Th>Name</Th>
-                <Th className="text-right">Size</Th>
-                <Th className="hidden sm:table-cell">Hash</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {dir && (
-                <Tr>
-                  <Td colSpan={3}>
-                    <Link to={link({ path: parentDir(dir) })} className="font-mono text-muted-foreground hover:text-fg" aria-label="Parent folder">
-                      ..
-                    </Link>
-                  </Td>
-                </Tr>
-              )}
-              {listing.dirs.map((d) => (
-                <Tr key={d.path}>
-                  <Td>
-                    <Link to={link({ path: d.path })} className="flex items-center gap-2 font-mono hover:underline">
-                      <Icon name="folder" className="text-foreground" />
-                      {d.name}/
-                    </Link>
-                  </Td>
-                  <Td className="text-right text-muted-foreground tabular-nums">
-                    {d.fileCount} {d.fileCount === 1 ? "file" : "files"}
-                  </Td>
-                  <Td className="hidden sm:table-cell" />
-                </Tr>
-              ))}
-              {listing.files.map((f) => (
-                <Tr key={f.path}>
-                  <Td>
-                    <Link to={link({ path: dir, file: f.path })} className="flex items-center gap-2 font-mono hover:underline">
-                      <Icon name="file" className="text-subtle" />
-                      {baseName(f.path)}
-                      {f.executable && <Badge tone="warning">x</Badge>}
-                    </Link>
-                  </Td>
-                  <Td className="text-right text-muted-foreground tabular-nums">{formatBytes(f.size)}</Td>
-                  <Td className="hidden font-mono text-xs text-subtle sm:table-cell" title={f.hash}>
-                    {f.hash.slice(0, 12)}
-                  </Td>
-                </Tr>
-              ))}
-            </tbody>
-          </Table>
-        </Card>
-      )}
+      <SplitPane
+        label="Resize file tree"
+        start={
+          <FileTree
+            files={files}
+            selected={target}
+            expanded={expanded}
+            onToggle={toggle}
+            hrefFor={hrefFor}
+            className="max-h-[45vh] rounded-xl border bg-card md:sticky md:top-4 md:max-h-[calc(100dvh-10rem)]"
+          />
+        }
+        end={
+          <div className="flex min-w-0 flex-col gap-3 md:pl-1">
+            <PathBreadcrumb root={tree} path={target} hrefFor={hrefFor} />
+            {selectedFile ? (
+              <FileViewer
+                key={`${snapshotId}:${selectedFile.path}`}
+                tenant={tenant}
+                tree={tree}
+                snapshot={snapshotId}
+                branch={pinned ? (snap?.branch_name ?? "") : branch}
+                file={selectedFile}
+                resolveLink={resolveLink}
+              />
+            ) : (
+              <DirectoryView
+                tenant={tenant}
+                tree={tree}
+                snapshot={snapshotId}
+                files={files}
+                dir={target}
+                hrefFor={hrefFor}
+                resolveLink={resolveLink}
+              />
+            )}
+          </div>
+        }
+      />
     </>
   );
 }
