@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AuditEvent } from "@/api/types";
 import { toCsv } from "@/components/dashboard/csv";
@@ -125,6 +125,80 @@ describe("AuditPage", () => {
     renderApp({ route: "/audit", api: { "GET /api/v1/audit": [] } });
     expect(await screen.findByText("No matching events")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export CSV" })).toBeDisabled();
+  });
+});
+
+describe("AuditPage v0.5 filters and NDJSON export", () => {
+  function stubDownloads() {
+    const blobs: Blob[] = [];
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn((b: Blob) => {
+          blobs.push(b);
+          return "blob:audit";
+        });
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    return { blobs, click };
+  }
+
+  it("sends resource type, resource id and an exclusive until", async () => {
+    const { user, fetchMock, router } = renderApp({ route: "/audit", api: { "GET /api/v1/audit": dx.auditEvents } });
+    await screen.findByRole("table", { name: "Audit events" });
+    await user.type(screen.getByLabelText("Resource type"), "tree");
+    await user.type(screen.getByLabelText("Resource ID"), "tree-web");
+    fireEvent.change(screen.getByLabelText("Until"), { target: { value: "2026-10-05" } });
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    const q = fetchMock.find("GET /api/v1/audit").at(-1)!.url.searchParams;
+    expect(q.get("resource_type")).toBe("tree");
+    expect(q.get("resource_id")).toBe("tree-web");
+    // The whole chosen day is included: until = next local midnight.
+    expect(q.get("until")).toBe(new Date("2026-10-06T00:00:00").toISOString().replace(/\.\d{3}Z$/, "Z"));
+    expect(router.state.location.search).toContain("resource_type=tree");
+
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(router.state.location.search).toBe("");
+    expect(screen.getByLabelText("Resource ID")).toHaveValue("");
+  });
+
+  it("exports every matching event as NDJSON without a limit", async () => {
+    const { blobs, click } = stubDownloads();
+    const ndjson = dx.auditEvents.map((e) => JSON.stringify(e)).join("\n") + "\n";
+    const { user, fetchMock } = renderApp({
+      route: "/audit?action=iam.*&resource_type=policy",
+      api: {
+        "GET /api/v1/audit": (req) =>
+          req.url.searchParams.get("format") === "ndjson"
+            ? new Response(ndjson, { headers: { "Content-Type": "application/x-ndjson" } })
+            : dx.auditEvents,
+      },
+    });
+    await screen.findByRole("table", { name: "Audit events" });
+    await user.click(screen.getByRole("button", { name: "Export NDJSON" }));
+
+    await waitFor(() => expect(click).toHaveBeenCalledOnce());
+    const req = fetchMock.find("GET /api/v1/audit").find((c) => c.url.searchParams.get("format") === "ndjson")!;
+    expect(req.url.searchParams.get("action")).toBe("iam.*");
+    expect(req.url.searchParams.get("resource_type")).toBe("policy");
+    expect(req.url.searchParams.has("limit")).toBe(false);
+    expect((click.mock.contexts[0] as HTMLAnchorElement).download).toMatch(/^audit-\d{8}-\d{6}\.ndjson$/);
+    expect(blobs[0]?.type).toBe("application/x-ndjson");
+    expect(await readText(blobs[0]!)).toBe(ndjson);
+  });
+
+  it("converts a JSON array answer (older servers) to NDJSON", async () => {
+    const { blobs, click } = stubDownloads();
+    const { user } = renderApp({ route: "/audit", api: { "GET /api/v1/audit": dx.auditEvents } });
+    await screen.findByRole("table", { name: "Audit events" });
+    await user.click(screen.getByRole("button", { name: "Export NDJSON" }));
+    await waitFor(() => expect(click).toHaveBeenCalledOnce());
+    const lines = (await readText(blobs[0]!)).trimEnd().split("\n");
+    expect(lines).toHaveLength(dx.auditEvents.length);
+    expect(JSON.parse(lines[0]!)).toEqual(dx.auditEvents[0]);
   });
 });
 

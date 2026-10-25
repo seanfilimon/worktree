@@ -1,8 +1,10 @@
-import { Download, ScrollText } from "lucide-react";
+import { Download, FileJson, ScrollText } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import { useAudit, useTenants } from "@/api/queries";
-import type { AuditEvent, AuditQuery } from "@/api/types";
+import type { AuditEvent } from "@/api/types";
+import { useOpsApi, type AuditFilterQuery } from "@/api/v05ops";
+import { useToast } from "@/toast/store";
 import { AuditTable } from "@/components/dashboard/AuditTable";
 import { downloadText, toCsv } from "@/components/dashboard/csv";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/dashboard/states";
@@ -17,7 +19,28 @@ const PAGE = 50;
 /** Server-side cap on `limit` (GET /api/v1/audit). */
 const MAX_LIMIT = 1000;
 const ALL_TENANTS = "__all";
-const FILTER_KEYS = ["tenant", "action", "actor", "since"] as const;
+const FILTER_KEYS = ["tenant", "action", "actor", "since", "until", "resource_type", "resource_id"] as const;
+
+/** Resource types recorded by the server; the field also accepts any other value. */
+const KNOWN_RESOURCE_TYPES = [
+  "account",
+  "branch",
+  "invitation",
+  "license",
+  "merge_request",
+  "policy",
+  "protection",
+  "release",
+  "role",
+  "server",
+  "service_account",
+  "snapshot",
+  "tag",
+  "team",
+  "tenant",
+  "token",
+  "tree",
+];
 
 /** Actions recorded by the server; the field also accepts any other value. */
 const KNOWN_ACTIONS = [
@@ -50,16 +73,38 @@ const KNOWN_ACTIONS = [
   "tree.create",
   "tree.delete",
   "tree.update",
+  // v0.5
+  "access.applied",
+  "access.denied",
+  "server.start",
+  "server.stop",
+  "snapshot.signature_invalid",
+  "todo.skipped",
+  "tree.export",
+  // prefix filters
+  "iam.*",
+  "auth.*",
+  "branch.*",
 ];
-
-/** `GET /audit` also takes `since` (RFC 3339), beyond the shared AuditQuery fields. */
-type AuditListQuery = AuditQuery & { since?: string };
 
 /** Local midnight of a `YYYY-MM-DD` date input as RFC 3339 (UTC), or undefined. */
 function sinceParam(date: string): string | undefined {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
   const t = new Date(`${date}T00:00:00`);
   return Number.isNaN(t.getTime()) ? undefined : t.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/** The server's `until` is exclusive: the end of the chosen day is the next local midnight. */
+function untilParam(date: string): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
+  const t = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(t.getTime())) return undefined;
+  t.setDate(t.getDate() + 1);
+  return t.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function fileStamp(): string {
+  return new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
 }
 
 const CSV_HEADER = ["at", "actor", "actor_id", "action", "resource_type", "resource_id", "tenant", "remote_addr", "details"];
@@ -88,10 +133,24 @@ export function AuditPage() {
   const action = params.get("action") ?? "";
   const actor = params.get("actor") ?? "";
   const since = params.get("since") ?? "";
+  const until = params.get("until") ?? "";
+  const resourceType = params.get("resource_type") ?? "";
+  const resourceId = params.get("resource_id") ?? "";
   const limit = Math.min(MAX_LIMIT, Math.max(PAGE, Number(params.get("limit")) || PAGE));
 
-  const [draft, setDraft] = useState({ action, actor, since });
-  const query: AuditListQuery = { tenant: tenant || undefined, action: action || undefined, since: sinceParam(since), limit };
+  const ops = useOpsApi();
+  const toast = useToast();
+  const [exporting, setExporting] = useState(false);
+  const [draft, setDraft] = useState({ action, actor, since, until, resourceType, resourceId });
+  const serverFilters: Omit<AuditFilterQuery, "limit"> = {
+    tenant: tenant || undefined,
+    action: action || undefined,
+    since: sinceParam(since),
+    until: untilParam(until),
+    resource_type: resourceType || undefined,
+    resource_id: resourceId || undefined,
+  };
+  const query: AuditFilterQuery = { ...serverFilters, limit };
   const audit = useAudit(query);
 
   const slugOf = (id: string) => tenants.data?.find((t) => t.id === id)?.slug;
@@ -116,17 +175,36 @@ export function AuditPage() {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    apply({ action: draft.action.trim(), actor: draft.actor.trim(), since: draft.since });
+    apply({
+      action: draft.action.trim(),
+      actor: draft.actor.trim(),
+      since: draft.since,
+      until: draft.until,
+      resource_type: draft.resourceType.trim(),
+      resource_id: draft.resourceId.trim(),
+    });
   };
 
   const clear = () => {
-    setDraft({ action: "", actor: "", since: "" });
-    apply({ tenant: "", action: "", actor: "", since: "" });
+    setDraft({ action: "", actor: "", since: "", until: "", resourceType: "", resourceId: "" });
+    apply({ tenant: "", action: "", actor: "", since: "", until: "", resource_type: "", resource_id: "" });
   };
 
   const exportCsv = () => {
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
-    downloadText(`audit-${stamp}.csv`, auditCsv(rows, slugOf));
+    downloadText(`audit-${fileStamp()}.csv`, auditCsv(rows, slugOf));
+  };
+
+  /** Every event matching the server-side filters (no limit), as the server streams it. */
+  const exportNdjson = async () => {
+    setExporting(true);
+    try {
+      const text = await ops.audit.exportNdjson(serverFilters);
+      downloadText(`audit-${fileStamp()}.ndjson`, text, "application/x-ndjson");
+    } catch (err) {
+      toast.error(err, "Export failed");
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -136,10 +214,22 @@ export function AuditPage() {
         breadcrumbs={[{ label: "Audit log" }]}
         description="Security-relevant actions, newest first. Requires tenant or server admin."
         actions={
-          <Button size="sm" variant="outline" onClick={exportCsv} disabled={rows.length === 0}>
-            <Download aria-hidden="true" />
-            Export CSV
-          </Button>
+          <>
+            <Button size="sm" variant="outline" onClick={exportCsv} disabled={rows.length === 0}>
+              <Download aria-hidden="true" />
+              Export CSV
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void exportNdjson()}
+              disabled={exporting}
+              title="Every event matching the filters (actor excluded), streamed by the server"
+            >
+              <FileJson aria-hidden="true" />
+              {exporting ? "Exporting…" : "Export NDJSON"}
+            </Button>
+          </>
         }
       />
       <Card className="gap-0 py-0">
@@ -167,7 +257,7 @@ export function AuditPage() {
               list="audit-actions"
               value={draft.action}
               onChange={(e) => setDraft((d) => ({ ...d, action: e.target.value }))}
-              placeholder="e.g. branch.push"
+              placeholder="branch.push or iam.*"
               className="w-52 font-mono text-xs"
             />
             <datalist id="audit-actions">
@@ -194,6 +284,43 @@ export function AuditPage() {
               value={draft.since}
               onChange={(e) => setDraft((d) => ({ ...d, since: e.target.value }))}
               className="w-40"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="audit-until">Until</Label>
+            <Input
+              id="audit-until"
+              type="date"
+              value={draft.until}
+              min={draft.since || undefined}
+              onChange={(e) => setDraft((d) => ({ ...d, until: e.target.value }))}
+              className="w-40"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="audit-resource-type">Resource type</Label>
+            <Input
+              id="audit-resource-type"
+              list="audit-resource-types"
+              value={draft.resourceType}
+              onChange={(e) => setDraft((d) => ({ ...d, resourceType: e.target.value }))}
+              placeholder="e.g. tree"
+              className="w-36 font-mono text-xs"
+            />
+            <datalist id="audit-resource-types">
+              {KNOWN_RESOURCE_TYPES.map((r) => (
+                <option key={r} value={r} />
+              ))}
+            </datalist>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="audit-resource-id">Resource ID</Label>
+            <Input
+              id="audit-resource-id"
+              value={draft.resourceId}
+              onChange={(e) => setDraft((d) => ({ ...d, resourceId: e.target.value }))}
+              placeholder="Exact id"
+              className="w-44 font-mono text-xs"
             />
           </div>
           <div className="flex gap-2">

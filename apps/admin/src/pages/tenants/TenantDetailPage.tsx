@@ -1,7 +1,8 @@
-import { Bot, FileText, FolderTree, Mail, Plus, Puzzle, Settings, Users, UsersRound } from "lucide-react";
+import { Bot, FileCode2, FileText, FolderTree, Mail, Plus, Puzzle, Settings, Users, UsersRound } from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useTenant } from "@/api/queries";
+import { tenantStatus } from "@/api/v05ops";
 import { canMaintain, canManage, useAuth } from "@/auth/context";
 import { PlanBadge, RoleBadge, TenantKindBadge } from "@/components/people/badges";
 import { CreateTreeDialog } from "@/components/people/CreateTreeDialog";
@@ -12,16 +13,18 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { absoluteTime, relativeTime } from "@/lib/format";
+import { AccessConfigTab } from "@/pages/iam/AccessConfigTab";
 import { InvitationsTab } from "@/pages/iam/InvitationsTab";
 import { PoliciesTab } from "@/pages/iam/PoliciesTab";
 import { RolesTab } from "@/pages/iam/RolesTab";
 import { ServiceAccountsTab } from "@/pages/iam/ServiceAccountsTab";
 import { TeamsTab } from "@/pages/iam/TeamsTab";
+import { TenantStatusBadge } from "./opsShared";
 import { TenantMembersTab } from "./TenantMembersTab";
 import { TenantSettingsTab } from "./TenantSettingsTab";
 import { TenantTreesTab } from "./TenantTreesTab";
 
-const TABS = ["trees", "members", "teams", "roles", "policies", "service-accounts", "invitations", "settings"] as const;
+const TABS = ["trees", "members", "teams", "roles", "policies", "service-accounts", "invitations", "access-config", "settings"] as const;
 type Tab = (typeof TABS)[number];
 
 function isTab(v: string | null): v is Tab {
@@ -69,6 +72,7 @@ export function TenantDetailPage() {
               <span className="font-mono">{tenant.slug}</span>
               <TenantKindBadge kind={tenant.kind} />
               <PlanBadge plan={tenant.plan} />
+              {tenantStatus(tenant) !== "active" && <TenantStatusBadge status={tenantStatus(tenant)} />}
               {role && <RoleBadge role={role} />}
               <span>
                 created{" "}
@@ -124,6 +128,10 @@ export function TenantDetailPage() {
                 <Mail aria-hidden="true" />
                 Invitations
               </TabsTrigger>
+              <TabsTrigger value="access-config">
+                <FileCode2 aria-hidden="true" />
+                Access config
+              </TabsTrigger>
               <TabsTrigger value="settings">
                 <Settings aria-hidden="true" />
                 Settings
@@ -150,6 +158,9 @@ export function TenantDetailPage() {
           </TabsContent>
           <TabsContent value="invitations">
             <InvitationsTab slug={slug} editable={manage} />
+          </TabsContent>
+          <TabsContent value="access-config">
+            <AccessConfigTab slug={slug} editable={manage} />
           </TabsContent>
           <TabsContent value="settings">{tenant && <TenantSettingsTab tenant={tenant} editable={manage} />}</TabsContent>
         </Tabs>
