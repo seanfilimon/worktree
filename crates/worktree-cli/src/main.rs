@@ -4,26 +4,47 @@
 //! implementations ([`commands`]), and an output layer that renders either
 //! human-readable text or one JSON document per invocation ([`output`]).
 //!
+//! Before clap sees the command line, a leading alias from `[alias]` in the
+//! user or worktree config is expanded ([`alias`]); the root `--help` lists
+//! the commands grouped by topic ([`help`]).
+//!
 //! Exit codes: 0 success, 1 error, 2 usage error, 3 merge conflicts.
 
+mod alias;
 mod cli;
 mod commands;
 mod context;
 mod error;
+mod help;
 mod output;
 mod paths;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use crate::cli::Cli;
 use crate::context::Context;
 use crate::error::CliError;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut command = help::grouped(Cli::command());
+    let args = match alias::expand(std::env::args_os().collect(), &command) {
+        Ok(args) => args,
+        Err(err) => {
+            configure_color(false);
+            err.report();
+            return ExitCode::from(err.exit_code());
+        }
+    };
+    let cli = match command
+        .try_get_matches_from_mut(args)
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
+        Ok(cli) => cli,
+        Err(e) => e.format(&mut command).exit(),
+    };
     init_tracing();
     configure_color(cli.global.no_color);
 
