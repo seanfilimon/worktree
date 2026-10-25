@@ -56,6 +56,10 @@ type Config struct {
 	// ShutdownTimeout bounds graceful shutdown. Flag --shutdown-timeout, env
 	// WT_SHUTDOWN_TIMEOUT.
 	ShutdownTimeout time.Duration
+	// PublicURL is the externally visible base URL of the server (e.g.
+	// https://wt.example.com), used for the default SSO redirect URL. Flag
+	// --public-url, env WT_PUBLIC_URL.
+	PublicURL string
 	// ShowVersion requests printing the version and exiting (--version).
 	ShowVersion bool
 
@@ -123,6 +127,7 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 	str("WT_ADMIN_PASSWORD", &cfg.AdminPassword)
 	str("WT_ADMIN_DIR", &cfg.AdminDir)
 	str("WT_LOG_FORMAT", &cfg.LogFormat)
+	str("WT_PUBLIC_URL", &cfg.PublicURL)
 
 	var errs []error
 	if v, ok := lookup("WT_ALLOW_REGISTRATION"); ok && v != "" {
@@ -168,6 +173,7 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 		return nil
 	})
 	fs.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", cfg.ShutdownTimeout, "graceful shutdown `timeout` (env WT_SHUTDOWN_TIMEOUT)")
+	fs.StringVar(&cfg.PublicURL, "public-url", cfg.PublicURL, "externally visible base `URL` of the server, used for the default SSO redirect URL (env WT_PUBLIC_URL)")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "print the version and exit")
 	return fs
 }
@@ -221,6 +227,13 @@ func (c *Config) Validate() error {
 		u, err := url.Parse(o)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" {
 			errs = append(errs, fmt.Errorf("cors origin %q: want scheme://host[:port]", o))
+		}
+	}
+	if c.PublicURL != "" {
+		u, err := url.Parse(c.PublicURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+			u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, fmt.Errorf("public-url %q: want scheme://host[:port][/path]", c.PublicURL))
 		}
 	}
 	return errors.Join(errs...)
