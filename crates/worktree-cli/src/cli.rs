@@ -134,7 +134,7 @@ pub enum Command {
     Audit(audit::AuditArgs),
     /// Server administration: accounts, system information, statistics
     Admin(admin::AdminArgs),
-    /// Search tenants, trees, branches and accounts on the server
+    /// Search tenants, trees, branches and accounts on the server (`wt search code`: file contents)
     Search(search::SearchArgs),
     /// Stream live server events
     Events(events::EventsArgs),

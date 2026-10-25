@@ -153,6 +153,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	// webhooks (§14.2): bus-driven deliveries, retries and log retention.
 	hooks.Configure(webhooks.Options{AllowPrivate: cfg.WebhookAllowPrivate, Version: cfg.Version})
 	hooks.Start(ctx)
+	codeIndex.Start(ctx) // code-search (§14.3): incremental re-index on pushes, drop on tree.deleted
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
