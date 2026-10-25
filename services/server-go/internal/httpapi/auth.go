@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
 )
 
 // maxTokenTTLHours caps API token lifetimes (5 years).
@@ -254,7 +255,15 @@ func (a *api) handleListTokens(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, nonNil(toks))
+	// Sign-in sessions are listed by GET /auth/sessions; this endpoint lists
+	// the account's personal API tokens only.
+	apiTokens := make([]domain.APIToken, 0, len(toks))
+	for i := range toks {
+		if iam.TokenKind(&toks[i]) != domain.TokenSession {
+			apiTokens = append(apiTokens, toks[i])
+		}
+	}
+	writeJSON(w, http.StatusOK, apiTokens)
 	return nil
 }
 

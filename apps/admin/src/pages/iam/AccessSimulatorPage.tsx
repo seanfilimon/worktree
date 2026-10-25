@@ -116,7 +116,7 @@ export function AccessSimulatorPage() {
         breadcrumbs={[{ label: "Access simulator" }]}
         description="Evaluate a hypothetical request against roles, grants and policies, and see every contributing reason."
       />
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
         <Card>
           <CardHeader>
             <CardTitle>Request</CardTitle>

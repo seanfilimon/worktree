@@ -127,7 +127,7 @@ export function EffectivePanel({ query, scope }: { query: UseQueryResult<Effecti
           <QueryError error={query.error} onRetry={() => void query.refetch()} title="Could not load effective permissions" />
         ) : (
           <>
-            <dl className="grid gap-4 sm:grid-cols-2">
+            <dl className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
               <div className="grid gap-1.5">
                 <dt className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Tenant role</dt>
                 <dd>{query.data.role ? <IamRoleBadge role={query.data.role} /> : <span className="text-sm text-muted-foreground">None</span>}</dd>

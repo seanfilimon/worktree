@@ -383,6 +383,19 @@ func TestAuthEndpoints(t *testing.T) {
 					t.Fatalf("tokens = %s", rec.Body.String())
 				}
 			}},
+		{name: "list tokens excludes sessions", method: "GET", path: "/api/v1/auth/tokens", as: "carol", status: 200,
+			setup: func(t *testing.T, f *fixture) {
+				ctx := context.Background()
+				must(t, f.store.CreateToken(ctx, &domain.APIToken{ID: "tok-sess", AccountID: "acct-carol", Name: "session", Kind: domain.TokenSession, TokenHash: "h-sess"}))
+				must(t, f.store.CreateToken(ctx, &domain.APIToken{ID: "tok-legacy", AccountID: "acct-carol", Name: "session", TokenHash: "h-legacy"}))
+				must(t, f.store.CreateToken(ctx, &domain.APIToken{ID: "tok-api", AccountID: "acct-carol", Name: "ci", Kind: domain.TokenAPI, TokenHash: "h-api"}))
+			},
+			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
+				toks := decode[[]domain.APIToken](t, rec)
+				if len(toks) != 1 || toks[0].ID != "tok-api" {
+					t.Fatalf("tokens = %s", rec.Body.String())
+				}
+			}},
 		{name: "list tokens empty is array", method: "GET", path: "/api/v1/auth/tokens", as: "dave", status: 200,
 			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
 				if strings.TrimSpace(rec.Body.String()) != "[]" {
