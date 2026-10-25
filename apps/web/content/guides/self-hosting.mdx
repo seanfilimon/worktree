@@ -132,12 +132,12 @@ Passwords are hashed with argon2id. API tokens are stored only as SHA-256 hashes
 By default, anyone who can reach the server can create an account with `wt register` or `POST /api/v1/auth/register`. For a private instance, start with `--allow-registration=false` (env `WT_ALLOW_REGISTRATION=false`).
 
 <Callout type="info">
-  v0.2.0 has no endpoint for an admin to create accounts on someone's behalf. On a closed instance, onboard people by briefly restarting with registration enabled, or by keeping registration on and exposing the server only on a private network. Server admins can disable accounts afterwards from the **Accounts** page of the admin panel (`PATCH /api/v1/admin/accounts/{username}` with `{"disabled": true}`).
+  On a closed instance, a server admin creates accounts with `wt admin account-create USERNAME --email EMAIL` (or `POST /api/v1/admin/accounts`), or invites existing accounts with `wt invite create`. Server admins can disable accounts afterwards from the **Accounts** page of the admin panel (`PATCH /api/v1/admin/accounts/{username}` with `{"disabled": true}`).
 </Callout>
 
 ## 5. Put TLS in front
 
-The server does not terminate TLS itself. Bind it to localhost (`--addr 127.0.0.1:7420`) and put a reverse proxy in front that:
+The server can serve TLS itself (`--tls-cert` / `--tls-key`; see [Operations](/docs/server/operations#tls)). Alternatively, bind it to localhost (`--addr 127.0.0.1:7420`), set `--trusted-proxies` to the proxy's address, and put a reverse proxy in front that:
 
 - terminates TLS,
 - forwards gRPC to the backend over **HTTP/2 cleartext (h2c)**,
@@ -192,7 +192,7 @@ server {
 </Tabs>
 
 <Callout type="warn" title="Client connections">
-  W0rkTree v0.2.0 documents remote URLs as `http://host:7420`. If your build of `wt` cannot connect to an `https://` remote, keep CLI traffic on a trusted network (VPN, private network, or SSH tunnel to port 7420) and use the TLS proxy for browsers and REST clients. Built-in TLS is on the [Roadmap](/roadmap).
+  `wt` connects to `https://` remote URLs over TLS (system and bundled root certificates), so clients use the proxy's or the server's `https://` URL.
 </Callout>
 
 If you serve the admin panel from a different origin than the API, list that origin in `WT_CORS_ORIGINS`. When the panel is served by the server at `/admin/`, no CORS setup is needed. See [Deployment](/docs/server/deployment).

@@ -149,10 +149,10 @@ If the CI system only needs files, not history, [`wt archive`](/docs/cli/snapsho
 
 ## Limitations
 
-- **One-shot commands, not a mirror.** Nothing runs in the background; Git and W0rkTree only meet when you run `wt git import` or `wt git export`.
-- **Import goes one way into a new worktree.** New Git commits made after an import cannot be pulled into the existing worktree. Pick a cut-over point.
-- **Local branches only.** Remote-tracking branches are not imported.
-- **Root tree only on import.** Submodules are not converted into nested trees.
+- **Commands, not a mirror.** Nothing runs in the background; Git and W0rkTree only meet when you run `wt git import`, `wt git export` or `wt git push`.
+- **Re-import into a tree.** Inside a worktree, `wt git import URL --tree NAME` imports into that tree, and importing again adds only new commits. See [`wt git`](/docs/cli/git).
+- **Remote-tracking branches** are imported only with `--all-branches` (or by name with `--branches`).
+- **Submodules** are not converted into nested trees.
 - **No LFS, hooks, config, stashes, index or Git reflog.** `.gitattributes` filters are not applied, so LFS files arrive as pointer files.
 - **No signatures.** Commit and tag signatures are not imported, and exported commits are unsigned.
 - **Different ids.** Snapshots use UUIDs and BLAKE3 object hashes; Git uses SHA-1. Correlate with `.wt/git-map.json`.

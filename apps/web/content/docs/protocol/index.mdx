@@ -1,6 +1,6 @@
 ---
 title: Protocol Overview
-description: The contracts that define W0rkTree v0.2.0 — the gRPC sync protocol, the content-addressed object model, the local .wt/ layout, and merge and diff semantics.
+description: The contracts W0rkTree's components share — the gRPC sync protocol, the content-addressed object model, chunked large files and shallow sync, the local .wt/ layout, and merge and diff semantics.
 ---
 
 import { Card, Cards } from 'fumadocs-ui/components/card';
@@ -8,46 +8,50 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 W0rkTree's components agree on a small set of contracts. The Rust client (`wt`, `worktree-bg`, `worktree-sdk`) and the Go server (`services/server-go`) share a gRPC service definition and a byte-exact object format, so a push or pull is a byte copy of content-addressed objects plus a list of snapshot records.
 
+These pages summarize the protocol. The normative text is the set of specifications in [`crates/worktree-protocol/specs`](https://github.com/seanfilimon/worktree/tree/main/crates/worktree-protocol/specs), each of which ends with an **Implementation status** and a **Roadmap** section.
+
 ## What is specified where
 
 | Contract | Source of truth | Documented in |
 |---|---|---|
-| Client ⇄ server sync (gRPC service, messages, push/pull flows) | `crates/worktree-protocol/proto/sync.proto` | [Sync protocol](/docs/protocol/sync-protocol) |
-| Object hashing, blobs, manifests, snapshot records, tags, branch tips | `sync.proto`, `crates/worktree-sdk/src/{model,store}.rs` | [Object model](/docs/protocol/object-model) |
-| Local repository layout (`.wt/`), configuration, ignores, `$WT_HOME` | `crates/worktree-sdk/src/{repo/mod,config}.rs` | [Local layout](/docs/protocol/local-layout) |
-| Three-way merge, conflict markers, diffs | `crates/worktree-sdk/src/{merge,diff}.rs` | [Merge and diff](/docs/protocol/merge-and-diff) |
-| CLI ⇄ daemon IPC | `crates/worktree-sdk/src/ipc.rs` | [Daemon IPC](/docs/sdk/ipc) |
-| REST API and Server-Sent Events | `services/server-go/internal/domain` | [REST API](/docs/server/rest-api), [Events](/docs/server/events) |
+| Client ⇄ server sync (gRPC service, messages, push/pull/stage/watch flows) | `crates/worktree-protocol/proto/sync.proto`, [Sync spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/Sync.md) | [Sync protocol](/docs/protocol/sync-protocol) |
+| Object hashing, blobs, manifests, chunk lists, snapshot records, tags, branch tips | `sync.proto`, `crates/worktree-sdk/src/{model,store}.rs`, [Storage spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Storage.md) | [Object model](/docs/protocol/object-model) |
+| Large files, shallow history, restricted paths | [Sync spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/Sync.md), [Storage spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Storage.md) | [Large files and shallow sync](/docs/protocol/large-files) |
+| Local repository layout (`.wt/`, `.wt-tree/`), configuration, ignores, hooks, `$WT_HOME` | `crates/worktree-sdk/src/{repo/mod,config}.rs`, [`.wt/` spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt/DotWt.md), [`.wt-tree/` spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/DotWtTree.md) | [Local layout](/docs/protocol/local-layout) |
+| Three-way merge, conflict markers, diffs | `crates/worktree-sdk/src/{merge,diff}`, [Tree spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Tree.md) | [Merge and diff](/docs/protocol/merge-and-diff) |
+| CLI ⇄ daemon IPC | `crates/worktree-sdk/src/ipc.rs`, [BgProcess spec](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/bgprocess/BgProcess.md) | [Daemon IPC](/docs/sdk/ipc) |
+| REST API, Server-Sent Events, IAM, licensing | `services/server-go/internal/domain`, [Server](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md), [IAM](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/IAM.md) and [License Compliance](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/licensing/LicenseCompliance.md) specs | [REST API](/docs/server/rest-api), [Events](/docs/server/events), [Access control](/docs/server/access-control) |
 
 ## Transport at a glance
 
 - **One port.** The server serves gRPC and REST/SSE/static files on a single listener, default `:7420`. Remote URLs look like `http://localhost:7420`; the same base URL is used for gRPC and REST.
-- **gRPC over h2c.** Sync uses gRPC on cleartext HTTP/2. Authentication uses REST (`/api/v1/auth/*`); the resulting bearer token is sent on every gRPC call as `authorization: Bearer <token>` metadata.
-- **64 MiB messages.** The gRPC maximum message size is 64 MiB in both directions.
-- **TLS** is provided by a reverse proxy in front of the server, not by the server itself.
+- **gRPC over HTTP/2.** Cleartext h2c by default; TLS with ALPN `h2` on the same port when the server runs with `--tls-cert`/`--tls-key` (optional mTLS with `--tls-client-ca`). Clients use `https://` remote URLs for TLS. See [Operations](/docs/server/operations#tls).
+- **Bearer tokens.** Authentication uses REST (`/api/v1/auth/*`); the resulting token is sent on every gRPC call as `authorization: Bearer <token>` metadata.
+- **64 MiB messages.** The gRPC maximum message size is 64 MiB in both directions. Files over 8 MiB are split into content-defined chunks, so a large file never needs one large message.
 
-<Callout type="warn" title="Roadmap">
-  A QUIC transport, built-in TLS, and chunked (FastCDC) large-file transfer on the wire are not part of v0.2.0. Objects are transferred whole in `ObjectData` messages.
+<Callout type="info" title="Not built yet">
+  A QUIC transport, wire compression, pack files and delta transfer are described in earlier designs but are not built (see the [roadmap](/roadmap)). Objects travel whole in `ObjectData` messages.
 </Callout>
 
 ## Versioning
 
 The protobuf package is **`worktree.sync.v1`** and the service is `worktree.sync.v1.SyncService`. Within `v1`, changes are additive only:
 
-- Field numbers are never reused or renumbered; new fields get new numbers.
+- Field numbers are never reused or renumbered; new fields, enum values and RPCs get new numbers. (`CHUNK_LIST`, snapshot dependencies and signatures, `stubbed_paths`, `WatchBranches`, `Unstage` and `GetAccessConfig` were all added this way.)
 - Every message reserves field tags `100` to `199` for future expansion.
-- IDs are wrapped messages (`TreeId`, `SnapshotId`, `BranchId`, `TenantId`, `AccountId`, `ContentHash`) for type safety across Rust and Go.
+- IDs are wrapped messages (`TreeId`, `SnapshotId`, `BranchId`, `TenantId`, `AccountId`, `ContentHash`) for type safety across Rust and Go. `BranchId.value` carries the branch name.
 - Timestamps use `google.protobuf.Timestamp`. Enums start with an `_UNSPECIFIED = 0` value.
 
-A breaking change would ship as a new package (`worktree.sync.v2`). The server reports its version in `PingResponse.server_version` and in `GET /healthz`.
+A breaking change would ship as a new package (`worktree.sync.v2`). The server reports its version in `PingResponse.server_version` and in `GET /healthz`. Local stored records gain fields the same way: new fields default when absent, so newer clients read older `.wt/` directories unchanged.
 
 Rust code is generated by the `worktree-protocol` build script (with a vendored `protoc`); Go code is regenerated with `bash scripts/gen-proto.sh` into `services/server-go/internal/proto/syncpb`.
 
 ## Pages
 
 <Cards>
-  <Card title="Sync protocol" href="/docs/protocol/sync-protocol" description="Every SyncService RPC, authentication, and the push and pull flows." />
-  <Card title="Object model" href="/docs/protocol/object-model" description="BLAKE3 hashes, blobs, manifests, snapshots, tags, and branch tips." />
-  <Card title="Local layout" href="/docs/protocol/local-layout" description="The .wt/ directory, config.toml, nested tree markers, $WT_HOME, and ignores." />
-  <Card title="Merge and diff" href="/docs/protocol/merge-and-diff" description="Three-way merge semantics, conflict markers, merge state, and diff output." />
+  <Card title="Sync protocol" href="/docs/protocol/sync-protocol" description="Every SyncService RPC, authentication, and the push, pull, stage, watch and access flows." />
+  <Card title="Object model" href="/docs/protocol/object-model" description="BLAKE3 hashes, blobs, manifests, chunk lists, snapshots, tags, and branch tips." />
+  <Card title="Large files and shallow sync" href="/docs/protocol/large-files" description="FastCDC chunking, --depth and --deepen, and restricted paths." />
+  <Card title="Local layout" href="/docs/protocol/local-layout" description="The .wt/ and .wt-tree/ directories, config.toml, $WT_HOME, and ignore rules." />
+  <Card title="Merge and diff" href="/docs/protocol/merge-and-diff" description="Three-way merge, strategies, conflict markers and resolution, rename detection and word diffs." />
 </Cards>

@@ -1,0 +1,122 @@
+---
+title: Snapshot Signing
+description: Sign snapshots with Ed25519 keys, register the public keys on the server, verify signatures locally, and require signed history on protected branches with wt identity and [signing].
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+Snapshots can carry an Ed25519 signature made with a key that never leaves your machine. The server verifies signatures on push and marks the snapshot **verified**; branch protection can require it. The server-side commands below accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#wt-identity).
+
+## Set up signing
+
+<Steps>
+<Step>
+
+### Generate a key
+
+```bash
+wt identity generate laptop
+```
+
+The private key is a hex seed in `$WT_HOME/keys/laptop.key` (mode `0600` on Unix); `$WT_HOME/keys/laptop.pub` holds the public key, its fingerprint and, after registration, the server key id. Without a name the key is called `default`. `--force` replaces an existing key of the same name.
+
+</Step>
+<Step>
+
+### Register the public key
+
+```bash
+wt login https://wt.example.com -u ada
+wt identity register laptop
+```
+
+`register` uploads the public half (`POST /api/v1/auth/keys`) and records the server key id in the `.pub` file. A public key can be registered once.
+
+</Step>
+<Step>
+
+### Choose when to sign
+
+```bash
+# sign every snapshot created on this machine, in every worktree
+wt config set signing.key laptop --global
+wt config set signing.auto true --global
+```
+
+Or sign one snapshot at a time:
+
+```bash
+wt snapshot -m "Release 1.4.0" --sign
+```
+
+</Step>
+</Steps>
+
+## `[signing]`
+
+```toml
+# $WT_HOME/config.toml (user level) or .wt/config.toml (worktree level)
+[signing]
+key = "laptop"   # key name under $WT_HOME/keys/; "" = no automatic signing
+auto = true      # sign every locally created snapshot
+```
+
+| Setting | Behaviour |
+|---|---|
+| `key` set, `auto = true` | Every snapshot is signed with `key`, including merge, revert and daemon auto-snapshots. |
+| `key` set, `auto = false` | Only `wt snapshot --sign` signs, with `key`. |
+| `key` empty | `wt snapshot --sign` signs with the `default` key; nothing else is signed. |
+
+If signing is requested and the key does not exist, the snapshot fails with an invalid-configuration error. `[signing]` can be set at the user level (`--global`) or in `.wt/config.toml`; it cannot be set per tree. See [Configuration](/docs/cli/configuration).
+
+## What is signed
+
+The signature covers the protobuf `SnapshotRecord` of the snapshot with `signature`, `signing_key_id`, `tree_id` and `branch_name` cleared: id, parents, manifest hash (and so every file), author, message, timestamp, dependencies and reverts. The Rust SDK (`signing::signed_payload`) and the Go server build the same bytes.
+
+The snapshot records `signing_key_id`: the server key id when the key was registered before signing, otherwise the key fingerprint `SHA256:<base64>`. The server resolves either, so you can register a key after signing as long as you do so before pushing.
+
+## Verification on push
+
+- Every pushed snapshot that carries a signature must verify against a **registered, unrevoked** key. A valid signature stores the snapshot with `verified: true`; an unknown key, a revoked key or a bad signature rejects the whole push and is audited as `snapshot.signature_invalid`.
+- On branches protected with `--require-signed`, every new snapshot must be signed and verified:
+
+  ```bash
+  wt protect set main --no-direct-push --approvals 1 --require-signed
+  ```
+
+  An unsigned snapshot is refused with `branch 'main' requires signed snapshots`. See [`wt protect`](/docs/cli/merge-requests#wt-protect).
+- Unsigned snapshots on other branches are accepted and stay unverified.
+
+<Callout type="warn">
+Remember that `wt protect set` replaces the whole rule: repeat the rule's other flags when you add `--require-signed`.
+</Callout>
+
+## `wt identity`
+
+```text
+wt identity generate [--force] [NAME]
+wt identity list
+wt identity show [NAME]
+wt identity register [NAME]
+wt identity revoke [--yes] <ID>
+wt identity verify [--account <USERNAME>] [SNAPSHOT]
+```
+
+| Command | Notes |
+|---|---|
+| `generate` | New Ed25519 key in `$WT_HOME/keys`. Default name `default`. |
+| `list` | Local keys with fingerprint, server key id and server. |
+| `show` | Fingerprint and public key. Default: the `[signing] key`, else `default`. |
+| `register` | Upload the public key and record its server id. |
+| `revoke` | Revoke a key on the server (`DELETE /api/v1/auth/keys/{id}`). `ID` may also be the name of a registered local key; the private key is kept locally. Snapshots signed with a revoked key can no longer be pushed. |
+| `verify` | Verify a snapshot (default `HEAD`) against local keys and, with `--account`, that account's registered keys (`GET /api/v1/accounts/{username}/keys`). Exits `1` when the snapshot is not verified. |
+
+```bash
+wt log -n 5 --show-signature
+wt identity verify HEAD --account ada
+```
+
+`wt log --show-signature` verifies each snapshot against your local keys. The admin panel shows a verified badge on snapshots the server verified.
+
+For the threat model and key handling see [Security](/docs/security) and the [Security specification, section 12](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/security/Security.md#12-snapshot-signing).

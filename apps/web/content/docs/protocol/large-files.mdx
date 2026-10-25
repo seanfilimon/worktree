@@ -1,0 +1,94 @@
+---
+title: Large Files and Shallow Sync
+description: How W0rkTree stores and transfers large files as content-defined chunks, how shallow clones and fetches work, and why some paths arrive as restricted stubs.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Three features keep big repositories practical without a separate large-file system: **chunked large files** (no LFS), **shallow sync** (fetch only recent history), and **restricted paths** (files the server withholds from you are never downloaded). All three work end to end in `wt`, the daemon and the server; there is nothing to configure.
+
+The normative description is in the [Sync](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/Sync.md) and [Storage](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Storage.md) specifications.
+
+## Chunked large files
+
+Any file larger than **8 MiB** is split into content-defined chunks when it is snapshotted, staged or imported. Smaller files stay one blob.
+
+| Property | Value |
+|---|---|
+| Threshold | Files over 8 MiB (`store::CHUNK_THRESHOLD`). Fixed, not configurable. |
+| Algorithm | FastCDC with a Gear rolling hash (`worktree_sdk::scan::chunk_boundaries`) |
+| Chunk sizes | Minimum 256 KiB, average 1 MiB, maximum 4 MiB |
+| Storage | Each chunk is an ordinary `BLOB` object. A `CHUNK_LIST` object lists the chunks in order. |
+| Manifest | The file's `ManifestEntry` has `chunked = true` and its hash names the `CHUNK_LIST` instead of a blob. |
+| Object limit | No single object, chunk or not, may exceed 64 MiB (the gRPC message limit). |
+
+```text
+ManifestEntry { path: "assets/video.mp4", blob_hash: <chunk list hash>, size: 734003200, chunked: true }
+ChunkList     { size: 734003200, chunks: [ {hash, size}, {hash, size}, ... ] }   // sizes sum to size
+```
+
+### What you get
+
+- **Deduplication of edits.** Chunk boundaries depend on content, so inserting bytes into a large file changes only the chunks around the edit. Unchanged chunks are shared with earlier versions and with other files, and the have/want negotiation uploads only the new ones.
+- **Ordinary files on disk.** Checkout, `wt restore`, `wt diff`, `wt merge`, `wt archive`, `wt git export`, secret scanning and `wt license detect` all read content through one reassembling reader (`ObjectStore::read_entry`). Working files are always complete; there is no lazy loading or virtual filesystem.
+- **Same flows everywhere.** `wt push` uploads chunk lists and chunks, `wt fetch` and `wt clone` download them, `wt stage` includes them, and the server's push check, `DownloadObjects` reachability and garbage collection all count them. On the server, `internal/content.ReadEntry` reassembles chunked files for REST blob, compare and archive endpoints (at most 4 GiB in memory).
+
+<Callout type="info">
+  There is nothing like `git lfs track`. Commit large binaries normally; W0rkTree chunks them automatically. Keep in mind that a [tenant storage quota](/docs/server/operations#quotas) counts the bytes of new objects each push uploads.
+</Callout>
+
+## Shallow sync
+
+Fetch only the newest snapshots of each branch when the full history is not needed, for example in CI.
+
+```bash
+wt clone http://localhost:7420 acme/web --depth 1
+wt fetch --depth 20          # at most 20 new snapshots per branch
+wt fetch --deepen 50         # extend a shallow history by 50 snapshots per branch
+wt pull --depth 5
+```
+
+| Command | Flag | Effect |
+|---|---|---|
+| [`wt clone`](/docs/cli/remote#wt-clone) | `--depth <N>` | Clone only the newest N snapshots of each branch. |
+| [`wt fetch`](/docs/cli/remote#wt-fetch) | `--depth <N>` | Download at most N new snapshots per branch. |
+| [`wt fetch`](/docs/cli/remote#wt-fetch) | `--deepen <N>` | Extend a shallow history by N snapshots per branch. |
+| [`wt pull`](/docs/cli/remote#wt-pull) | `--depth <N>` | Fetch at most N new snapshots per branch, then integrate. |
+
+How it works:
+
+1. The client sends `PullRequest.depth`. The server returns only the newest `depth` snapshots of the missing range and the objects they reference.
+2. The ids of boundary snapshots (fetched snapshots whose parents were not sent) are written to `.wt/trees/<tree>/shallow`.
+3. `wt log` stops at the boundary and prints `(shallow boundary: older history not fetched; wt fetch --deepen N)`. `wt status` notes that the history is shallow.
+4. Anything that needs older history fails with a clear error instead of a wrong answer. For example, a merge-base search that reaches the boundary reports `the local history is shallow; run wt fetch --deepen N (or wt fetch --depth N with a larger N) and try again`.
+
+`--deepen N` fetches N more generations behind the current boundary and moves it. Work on top of the fetched tips (snapshots, stages, fast-forward pushes) does not need the missing history; operations that walk past the boundary, such as a three-way merge whose base is older, ask you to deepen first.
+
+From Rust, use `remote::fetch_with_options`, `pull_with_options` or `clone_with_options` with `FetchOptions { depth, deepen }`; see [Remote API](/docs/sdk/remote).
+
+## Restricted paths
+
+The server can withhold individual files from you while still serving the rest of the tree. A path is withheld when:
+
+- a [license rule](/docs/server/licensing) makes it unreadable for your tenant (non-members only; grantee and expiry are honoured), or
+- an enabled [policy](/docs/server/access-control) denies `tree:read` on it, for example `wt:path/acme/payments/config/secrets/**`.
+
+What happens:
+
+- `Pull` returns the withheld paths of the new tip in `stubbed_paths` and leaves their blobs out of `objects_to_fetch`. `DownloadObjects` refuses their content even if you ask by hash.
+- The client does not write those files on checkout. It lists them in `.wt/trees/<tree>/stubbed`, and `wt status` reports them in a "Restricted" section (`restricted: <path>`). The rest of the tree works normally.
+- Missing restricted files are not treated as deletions: your next snapshot keeps their entries from the head snapshot, so pushing your work does not delete them on the server.
+- REST content endpoints answer `403 {"code":"path_denied"}` (policy) or `451 {"code":"license_restricted"}` (license) and omit the paths from listings, which report `restricted_count`.
+- Each pull that stubs paths is audited once as `license.denied` with the count and the first path.
+
+Writing is enforced separately: a push that changes a path you may not write is rejected (`access_denied` from a path policy, `license_violation` from a license rule). See [`wt push`](/docs/cli/remote#wt-push).
+
+<Callout type="warn" title="Not built yet">
+  Lazily hydrated stubs, sparse or partial checkout of chosen paths or trees, pack files and delta compression are described in earlier designs but are not built (see the [roadmap](/roadmap)). Restricted paths exist only because of authorization, and objects always travel whole.
+</Callout>
+
+## Related
+
+- [Object model](/docs/protocol/object-model): blobs, manifests and chunk lists.
+- [Sync protocol](/docs/protocol/sync-protocol): push, pull and download flows.
+- [Local layout](/docs/protocol/local-layout): the `shallow` and `stubbed` files.

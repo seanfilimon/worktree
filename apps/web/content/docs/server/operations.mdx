@@ -1,0 +1,134 @@
+---
+title: Operations
+description: Run worktree-server day to day - TLS, trusted proxies, garbage collection and retention, tenant quotas, rate limiting, tenant status and the wt admin commands.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+This page covers the knobs a server admin turns after the server is running. Every `wt admin` command needs a server admin account; `wt` finds the server from `--server URL` (or `WT_SERVER`), else the worktree's origin, else the only saved login. All commands accept `--json`. For health probes, metrics and the audit log, see [Monitoring](/docs/server/monitoring).
+
+## TLS
+
+The server terminates TLS itself on its single port:
+
+```bash
+worktree-server --tls-cert /etc/worktree/tls/fullchain.pem --tls-key /etc/worktree/tls/privkey.pem
+```
+
+- With `--tls-cert`/`--tls-key` (`WT_TLS_CERT`, `WT_TLS_KEY`) the port serves HTTPS and gRPC over TLS, negotiated with ALPN `h2`. Clients use `https://` remote URLs: `wt remote add origin https://wt.example.com --tenant acme`.
+- `--tls-client-ca` (`WT_TLS_CLIENT_CA`) additionally requires client certificates signed by that CA (mTLS).
+- Without TLS flags the port speaks cleartext HTTP/1.1 and h2c. The server logs a warning when it listens in cleartext on a non-loopback address, because tokens then travel unencrypted.
+
+Terminating TLS at a reverse proxy instead is equally supported; see [Deployment](/docs/server/deployment#reverse-proxy-and-tls).
+
+## Trusted proxies
+
+By default the client IP is the socket peer address. Behind a reverse proxy that is the proxy, so list the proxy addresses:
+
+```bash
+worktree-server --addr 127.0.0.1:7420 --trusted-proxies 127.0.0.1,10.0.0.0/8
+```
+
+When the peer is a trusted proxy (`--trusted-proxies` / `WT_TRUSTED_PROXIES`, IPs or CIDRs), the rightmost `X-Forwarded-For` entry that is not itself a trusted proxy is the client. That address is used for policy `ip_ranges` conditions, per-IP rate limits and the `remote_addr` of audit records. Never list addresses that untrusted clients can connect from: they could then forge `X-Forwarded-For`.
+
+## Garbage collection
+
+Objects (blobs, manifests, chunk lists, chunks) are shared and deduplicated, so nothing is deleted directly. The collector frees what nothing references any more:
+
+1. **Mark.** Start from every branch tip, tag, staged snapshot, merge-request source and target tip, and release snapshot and asset; collect every object they reach.
+2. **Sweep with a grace period.** Unreachable objects are recorded with the time they were first seen unreachable and deleted once that is older than `--gc-grace` (default `720h`, 30 days) and they are still unreachable. The grace period protects objects uploaded by a push that is still in progress.
+3. **Retention.** The same run deletes staged snapshots older than `--staged-retention` (default `168h`; `0` keeps them) and audit events older than `--audit-retention` (default `0`, keep forever).
+
+GC runs every `--gc-interval` (default `24h`; `0` disables the ticker) and on demand:
+
+```bash
+wt admin gc --dry-run      # report what would be marked and deleted
+wt admin gc                # run now
+wt admin gc-status         # configuration, whether a run is in progress, the last 20 runs
+```
+
+Each run produces a report:
+
+```json
+{
+  "dry_run": false,
+  "scanned": 18734,
+  "reachable": 18120,
+  "unreachable": 614,
+  "marked": 92,
+  "deleted": 522,
+  "freed_bytes": 48211968,
+  "staged_deleted": 3,
+  "audit_pruned": 0,
+  "started_at": "2026-10-25T03:00:00Z",
+  "finished_at": "2026-10-25T03:00:04Z"
+}
+```
+
+REST: `POST /api/v1/admin/gc?dry_run=true|false` returns the report; `GET /api/v1/admin/gc` returns `{"config", "running", "next_run_at", "runs"}`. Runs are counted in the `worktree_gc_runs_total` and `worktree_gc_deleted_objects_total` metrics. Deleting a tree or a server branch makes its objects unreachable; they are removed by a later run after the grace period.
+
+## Quotas
+
+Each tenant has limits. A tenant limit that is not set (or set to `0`) falls back to the server default, and a server default of `0` means unlimited.
+
+| Limit | Server default | Enforced by |
+|---|---|---|
+| `max_trees` | `--default-max-trees` | REST tree creation (`POST /api/v1/tenants/{tenant}/trees`, `wt trees create`), `409 quota_exceeded` |
+| `max_storage_bytes` | `--default-max-storage` | Push check: a push whose new objects would exceed it is rejected (`quota_exceeded`) |
+| `max_branches_per_tree` | unlimited | Push check: a push that creates a branch beyond the limit is rejected (`quota_exceeded`) |
+| `max_members` | unlimited | Adding members (`PUT .../members/{username}`), `409 quota_exceeded` |
+| `requests_per_minute` | `--rate-limit` | [Rate limiting](#rate-limiting) |
+
+```bash
+wt admin limits acme                                   # show
+wt admin limits acme --max-trees 50 --max-storage 10GiB --max-branches 200 --max-members 25
+wt admin limits acme --rate 600
+wt admin limits acme --max-trees 0                     # unset one limit (back to the default)
+wt admin limits acme --clear                           # remove every tenant-specific limit
+wt admin usage acme                                    # usage against the effective limits
+```
+
+`--max-storage` accepts `500M`, `10GiB` or `1TB` (`K/M/G/T` and `KiB/MiB/GiB/TiB` are powers of 1024, `KB/MB/GB/TB` powers of 1000).
+
+REST: `GET|PUT /api/v1/admin/tenants/{tenant}/limits` (server admin) and `GET /api/v1/tenants/{tenant}/usage` (`tenant:read`), which returns `{"trees", "branches", "members", "storage_bytes", "limits", "effective"}`.
+
+Storage usage counts the new objects of each accepted push for the pushing tenant. Because objects are shared across tenants, it measures what a tenant uploaded first, not unique bytes. Existing data is never deleted when a tenant is over quota: only new growth is refused.
+
+## Rate limiting
+
+A token bucket runs per principal (account or service-account id), or per client IP for anonymous callers. The default is `--rate-limit` = 1,200 requests per minute (`0` disables it); a tenant's `requests_per_minute` (`wt admin limits TENANT --rate N`) overrides it for that tenant's principals.
+
+- HTTP answers `429 {"error":{"code":"rate_limited",...}}` with `Retry-After`, `X-RateLimit-Limit` and `X-RateLimit-Remaining`.
+- gRPC answers `ResourceExhausted`; `wt` retries with backoff.
+- `/healthz` and `/metrics` are exempt. Refusals are counted in `worktree_rate_limited_total`.
+
+Separate from the request limit, failed logins are limited per (username, client IP) and wrong second factors per account. See [Security](/docs/security).
+
+## Tenant status
+
+A server admin can freeze a tenant without deleting or revoking anything:
+
+```bash
+wt tenant suspend acme --reason "Invoice overdue"    # read-only: every write is denied
+wt tenant deactivate acme --reason "Contract ended"  # every request is denied
+wt tenant resume acme                                # back to active
+```
+
+Members see the reason in the refusal (`tenant_suspended`). Server admins are never affected. REST: `PATCH /api/v1/admin/tenants/{tenant}` with `{"status", "status_reason"}`. See [`wt tenant`](/docs/cli/administration#wt-tenant).
+
+## Accounts and system information
+
+```bash
+wt admin accounts
+printf '%s\n' "$PASSWORD" | wt admin account-create alice --email alice@example.com --password-stdin
+wt admin account-set mallory --disabled true
+wt admin reset-code dave --ttl-hours 1       # one-time wtr_ code for wt password-reset
+wt admin system                              # version, runtime, storage
+wt admin stats                               # object counts across the server
+```
+
+See [`wt admin`](/docs/cli/administration#wt-admin) for every flag.
+
+<Callout type="info">
+  Plan-based limits (fixed quotas per `free`/`pro`/`enterprise` plan) are not built yet; the plan is a label. Limits are the server defaults plus per-tenant overrides. See the [roadmap](/roadmap) and the [Server specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md).
+</Callout>

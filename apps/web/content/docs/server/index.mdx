@@ -1,84 +1,82 @@
 ---
 title: W0rkTree Server
-description: The Go server that stores canonical history, enforces access control, and serves gRPC, REST, SSE, and the admin panel on a single port.
+description: The Go server that stores canonical history, enforces access, protection and license rules, and serves gRPC, REST, SSE and the admin panel on a single port.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
 
-The W0rkTree server (`worktree-server`, source in `services/server-go`) is the shared remote that `wt` clients push to and pull from. It is a single, pure-Go binary (no cgo) that keeps all metadata in an embedded bbolt database and all file content in a BLAKE3 content-addressed object store on local disk.
+The W0rkTree server (`worktree-server`, source in `services/server-go`) is the shared remote that `wt` clients push to and pull from. It is a single pure-Go binary (no cgo) that keeps all metadata in an embedded bbolt database and all file content in a BLAKE3 content-addressed object store on local disk. There are no external dependencies to run it.
 
 <Callout type="info" title="Server vs. daemon">
-  The server is the remote authority for a team. It is not the local background daemon `worktree-bg`, which watches your working copy, takes auto-snapshots, and uploads staged snapshots. See [`wt daemon`](/docs/cli/daemon) for the daemon.
+  The server is the remote authority for a team. It is not the local background daemon `worktree-bg`, which watches your working copy, takes auto-snapshots, stages work in progress and fetches remote branches. See [`wt daemon`](/docs/cli/daemon).
 </Callout>
 
 ## What the server does
 
-- **Stores canonical history.** Snapshots are immutable once written. A push must descend from the current server tip of the branch (there is no force push), and branch tips move with a compare-and-swap so concurrent pushes cannot overwrite each other.
-- **Hosts tenants and trees.** Every account gets a personal tenant; organizations are created as org tenants. Trees live inside a tenant and have a visibility of `private`, `internal`, or `public`.
-- **Authenticates and authorizes.** Passwords are hashed with argon2id, tokens are bearer tokens accepted on both gRPC metadata and REST. Membership roles (`owner`, `admin`, `maintainer`, `developer`, `viewer`) decide what each caller may do.
-- **Enforces policy on push.** Branch protection rules, merge request approvals, and per-path license rules are checked before a push is accepted.
-- **Shares work in progress.** Staged snapshots uploaded by `wt stage` or the daemon are visible to the team (`wt status --team`) without becoming part of branch history.
-- **Streams activity.** Pushes, stages, tags, tree creation, and merge request changes are published as Server-Sent Events.
-- **Records an audit log.** Security-relevant actions are appended to an append-only audit log.
+- **Stores canonical history.** Snapshots are immutable once pushed. A push must descend from the current server tip (there is no force push), and branch tips move with compare-and-swap.
+- **Hosts tenants and trees.** Every account gets a personal tenant; organizations are org tenants. Trees are `private`, `internal` or `public`.
+- **Authenticates and authorizes.** argon2id passwords, scoped bearer tokens, sessions, TOTP two-factor authentication, OpenID Connect SSO, invitations. Built-in and custom roles, teams, per-tree grants and allow/deny policies. See [Access control](/docs/server/access-control).
+- **Enforces rules on every push and read.** Per-branch and per-path policies, [branch and tag protection](/docs/server/branch-protection), [license rules](/docs/server/licensing), tenant quotas and snapshot signature verification.
+- **Runs code review.** Merge requests with reviews, stale-approval tracking, comments, CI status checks, merge readiness and linked groups that merge across trees atomically.
+- **Tracks cross-tree work.** Snapshot dependencies become TODOs in the target tree; releases with downloadable assets hang off tags.
+- **Shares work in progress.** Staged snapshots from `wt stage` or the daemon are visible to the team without entering branch history.
+- **Streams and records activity.** Server-Sent Events, a gRPC `WatchBranches` stream, and an append-only audit log with NDJSON export.
+- **Maintains itself.** Garbage collection with a grace period, staged and audit retention, rate limiting, health probes and Prometheus metrics. See [Operations](/docs/server/operations).
 
 ## Single-port architecture
 
-Everything is served from one listener (default `:7420`). The server speaks cleartext HTTP/2 (h2c) and HTTP/1.1 on that port and routes each request by content type and path:
+Everything is served from one listener (default `:7420`). In cleartext the port speaks HTTP/1.1 and HTTP/2 with prior knowledge (h2c); with `--tls-cert`/`--tls-key` the same port serves HTTPS and gRPC over TLS (ALPN `h2`). Requests are routed by protocol, content type and path:
 
 | Traffic | How it is recognised | Purpose |
 |---|---|---|
-| gRPC (`worktree.sync.v1.SyncService`) | `Content-Type: application/grpc*` over HTTP/2 | Object transfer, push, pull, stage, branches, tags, ping. Used by `wt` and `worktree-bg`. |
-| REST | `/api/v1/...` (JSON) | Accounts, tenants, trees, history browsing, protections, licenses, merge requests, audit, admin. |
-| SSE | `GET /api/v1/events` (`text/event-stream`) | Live event stream for dashboards and tools. |
-| Health and metrics | `GET /healthz`, `GET /metrics` | Liveness and Prometheus metrics (no `/api/v1` prefix). |
-| Admin panel | `GET /admin/...` | Static build of `apps/admin`, served when `--admin-dir` is set; unknown paths fall back to `index.html`. |
+| gRPC (`worktree.sync.v1.SyncService`, `grpc.health.v1.Health`) | HTTP/2 with `Content-Type: application/grpc*` | Object transfer, push, pull, stage, tags, branch watching, access config. Used by `wt` and `worktree-bg`. |
+| REST | `/api/v1/...` (JSON) | Accounts, IAM, tenants, trees, history, reviews, CI, releases, TODOs, admin. |
+| SSE | `GET /api/v1/events` (`text/event-stream`) | Live event stream. |
+| Health and metrics | `GET /healthz`, `GET /metrics` | Probes and Prometheus metrics (no `/api/v1` prefix). |
+| Admin panel | `GET /admin/...` | Static build of `apps/admin` when `--admin-dir` is set; `/` and `/admin` redirect to `/admin/`. |
 
-A remote URL is therefore just the server origin, for example `http://localhost:7420`:
+A remote URL is just the server origin:
 
 ```bash
 wt remote add origin http://localhost:7420 --tenant acme
+wt remote add company https://wt.example.com --tenant acme
 ```
 
-<Callout type="warn" title="No built-in TLS">
-  The server does not terminate TLS. In production put it behind a reverse proxy that terminates TLS and forwards HTTP/2 cleartext (h2c) to the backend so gRPC keeps working. Built-in TLS is on the Roadmap. See [Deployment](/docs/server/deployment).
-</Callout>
+The server logs a warning when it listens in cleartext on a non-loopback address. See [TLS](/docs/server/operations#tls) and [Deployment](/docs/server/deployment).
 
-The gRPC service is the Rust-to-Go contract defined in `crates/worktree-protocol/proto/sync.proto`. Its RPCs are `Ping`, `ResolveTree`, `ListBranches`, `Negotiate`, `UploadObjects`, `DownloadObjects`, `Push`, `Pull`, `Stage`, `ListStaged`, `PushTag`, `ListTags`, and `SyncAccessConfig`. The message size limit is 64 MiB in both directions. The push and pull flows are described in [Sync protocol](/docs/protocol/sync-protocol).
+The gRPC service is defined in `crates/worktree-protocol/proto/sync.proto`. Its 16 RPCs are `Ping`, `ResolveTree`, `ListBranches`, `ListTags`, `PushTag`, `Negotiate`, `UploadObjects`, `DownloadObjects`, `Push`, `Pull`, `Stage`, `ListStaged`, `Unstage`, `WatchBranches`, `SyncAccessConfig` and `GetAccessConfig`. Messages are limited to 64 MiB in both directions. See [Sync protocol](/docs/protocol/sync-protocol) and the [Server specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md).
 
 ## Internal packages
 
-The server is organised as small packages under `services/server-go/internal`, wired together through the shared contracts in `internal/domain` (data types and service interfaces).
+The server is organised as small packages under `services/server-go/internal`, wired together through the shared contracts in `internal/domain`.
 
 | Package | Role |
 |---|---|
-| `domain` | Shared data model (tenants, accounts, trees, branches, snapshots, merge requests, audit events, license rules) and the service interfaces every other package implements or consumes. |
-| `objstore` | Content-addressed object store on disk: `objects/<2-hex>/<62-hex>`, keyed by BLAKE3-256. Writes are verified against the hash and are idempotent. |
-| `meta` | Metadata store (`meta.db`, bbolt) for every record except object bytes, plus snapshot ancestry walking (ancestor checks, logs, missing-snapshot computation). |
-| `iam` | Registration, login, token issuance and verification, and role-based authorization. Provides the gRPC interceptors and HTTP middleware that attach the caller to each request, and creates the server admin account at startup. |
-| `events` | In-process publish/subscribe bus. Publishing never blocks; slow subscribers drop events. |
-| `staged` | Team-visible staged snapshots: at most one per tree, account, and branch; replaced by a newer stage and cleared when that account pushes the branch. |
-| `audit` | Append-only audit log of security-relevant actions, queryable by tenant and action. |
-| `license` | Per-path SPDX license rules, checked on push (changed paths) and on reads. |
-| `review` | Branch protection checks on direct pushes and the merge request lifecycle (open, approve, merge, close). |
-| `syncsvc` | Implementation of the gRPC `SyncService`: negotiation, object upload and download, push validation, pull, staging, tags. |
-| `httpapi` | REST API, SSE event stream, `/healthz`, `/metrics`, and static serving of the admin panel. |
-| `config`, `server` | Flag and environment parsing, and the h2c listener that multiplexes gRPC and HTTP on one port with graceful shutdown. |
+| `config`, `server` | Flags and `WT_*` variables; the single listener, TLS, interceptors, background tickers, graceful shutdown. |
+| `syncsvc` | The gRPC `SyncService`. |
+| `httpapi` | REST `/api/v1`, SSE, `/healthz`, `/metrics`, static admin panel. |
+| `meta`, `objstore`, `content` | bbolt metadata and document collections; BLAKE3 object store; reading (chunked) file content. |
+| `iam`, `authz`, `sso` | Authentication (accounts, tokens, sessions, MFA, invitations, resets); authorization (roles, teams, grants, policies, simulator); OIDC SSO. |
+| `review`, `ci` | Branch protection, merge requests, reviews, linked groups; CI check status. |
+| `license`, `pathacl`, `signing`, `limits` | License rules; path-level write denies; Ed25519 signature verification; quotas and rate limiting. |
+| `staged`, `events`, `audit` | Staged snapshots and overlap detection; event bus; audit log. |
+| `todo`, `release`, `gc`, `accesscfg` | Dependencies to TODOs; releases and assets; garbage collection and retention; declarative access documents. |
 
 ## What happens on a push
 
-1. The client resolves the tree (creating it if allowed), learns the remote branch tip, and asks the server which objects it is missing.
-2. It uploads the missing manifests and blobs, then sends the push with the old tip, the new tip, and the new snapshots.
-3. The server checks, in order: `tree:write` permission, branch protection, license rules on the changed paths, that every referenced object and parent snapshot is present, and that the new tip descends from the current server tip.
-4. The branch tip is updated atomically. The pusher's staged snapshot for that branch is cleared, a `branch.pushed` event is published, and a `branch.push` audit entry is written.
+1. The client resolves the tree (creating it if allowed), learns the server tip with `ListBranches`, and refuses locally if the server tip is not an ancestor of the local tip.
+2. It negotiates which objects the server lacks (manifests, blobs, chunk lists and chunks) and uploads them, then sends `Push` with the new snapshots, oldest first.
+3. The server checks, in order: request shape; `tree:write` and `branch:push` (per-branch policies); branch protection (`no_direct_push`, `allowed_pushers`, `require_linear`); snapshot records and ancestry; that every referenced object is stored; fast-forward from the current tip; license rules on the changed paths; then the push checks (path-level write denies, tenant quotas, signatures and `require_signed`).
+4. The snapshots are stored and the tip moves by compare-and-swap. The pusher's staged snapshot for that branch is cleared, `branch.pushed` is published and `branch.push` is audited. Rejections are audited as `branch.push_rejected`.
 
-If the server tip moved, the push is rejected with a conflict that carries the server tip; run `wt pull`, resolve, and push again. See [`wt push`](/docs/cli/remote#wt-push).
+If the server tip moved, the push is rejected with a conflict carrying the server tip: run `wt pull`, resolve, and push again. See [`wt push`](/docs/cli/remote#wt-push).
 
 <Cards>
   <Card title="Installation" href="/docs/server/installation" description="Build the server from source and run it for the first time." />
   <Card title="Configuration" href="/docs/server/configuration" description="Every flag and environment variable." />
-  <Card title="REST API" href="/docs/server/rest-api" description="Complete endpoint reference with JSON examples." />
-  <Card title="Access control" href="/docs/server/access-control" description="Accounts, tenants, roles, visibility, and tokens." />
-  <Card title="Deployment" href="/docs/server/deployment" description="Reverse proxy, service units, and a production checklist." />
-  <Card title="Self-hosting guide" href="/guides/self-hosting" description="End-to-end walkthrough of running your own server." />
+  <Card title="REST API" href="/docs/server/rest-api" description="Conventions, errors and the endpoint catalogue." />
+  <Card title="Access control" href="/docs/server/access-control" description="Roles, teams, grants, policies, tokens and SSO." />
+  <Card title="Operations" href="/docs/server/operations" description="TLS, garbage collection, quotas and rate limits." />
+  <Card title="Deployment" href="/docs/server/deployment" description="TLS options, service units, containers and a production checklist." />
 </Cards>

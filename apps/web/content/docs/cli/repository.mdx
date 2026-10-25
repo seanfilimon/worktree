@@ -5,40 +5,42 @@ description: Create a worktree, inspect its status, and manage configuration, ig
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Commands on this page set up and inspect a worktree: the directory that contains `.wt/`. Global flags (`--json`, `-C`, `--tree`, `--no-color`) are described in the [CLI overview](/docs/cli#global-flags).
+Commands on this page set up and inspect a worktree: the directory that contains `.wt/`. Global flags (`--json`, `-C`, `--tree`, `--no-color`) are described in the [CLI overview](/docs/cli#global-flags). How configuration files are layered, how ignore rules are evaluated, and how hooks and secret scanning are configured is explained in [Configuration](/docs/cli/configuration).
 
 ## `wt init`
 
 ```text
-wt init [path] [--name N] [--branch B]
+Usage: wt init [OPTIONS] [PATH]
 ```
 
-Create a new worktree. `wt init` creates `.wt/` in `path` (creating the directory if it does not exist), registers a **root tree**, creates an empty default branch, and writes an `init` entry to the reflog. No snapshot is taken; the first `wt snapshot` creates the first one.
+Create a new worktree. `wt init` creates `.wt/` in `PATH` (creating the directory if it does not exist), registers a **root tree**, creates an empty default branch, and writes an `init` entry to the reflog. No snapshot is taken; the first `wt snapshot` creates the first one.
 
 | Argument / flag | Description |
 |---|---|
-| `path` | Directory to initialize. Default: the current directory. |
-| `--name N` | Name of the worktree and of its root tree. Default: the directory name. |
-| `--branch B` | Name of the default branch. Default: `main`. |
+| `PATH` | Directory to initialize. Default: the current directory. |
+| `--name <N>` | Name of the worktree and of its root tree. Default: the directory name. |
+| `--branch <B>` | Name of the default branch. Default: `main`. |
+| `--watch` | Start the background daemon (if needed) and auto-snapshot the new worktree. |
 
 ```bash
 wt init
 wt init ./my-project --name my-project --branch trunk
+wt init ./notes --watch
 ```
 
 **Notes**
 
-- Fails if `path` already contains `.wt/` (already initialized).
+- Fails if `PATH` already contains `.wt/` (already initialized). If any step fails, the partial `.wt/` is removed.
 - The resulting layout (`.wt/config.toml`, `objects/`, `snapshots/`, `trees/<tree>/...`) is described in [Local layout](/docs/protocol/local-layout).
-- To start from an existing Git repository use [`wt git import`](/docs/cli/git#wt-git-import); to start from a server tree use [`wt clone`](/docs/cli/remote#wt-clone).
+- To start from a Git repository use [`wt git import`](/docs/cli/git#wt-git-import); to start from a server tree use [`wt clone`](/docs/cli/remote#wt-clone).
 
 ## `wt status`
 
 ```text
-wt status [--team]
+Usage: wt status [OPTIONS]
 ```
 
-Compare the working directory of the selected tree with its head snapshot and list added, modified and deleted files (sorted by path). The report also shows the current branch, the head snapshot id, and any merge in progress with its conflicted paths.
+Compare the working directory of the selected tree with its head snapshot and list added, modified and deleted files (sorted by path). The report also shows the current branch, the head snapshot, any merge in progress, files the server withheld (**restricted**), and whether the local history is shallow.
 
 | Flag | Description |
 |---|---|
@@ -53,115 +55,62 @@ wt --tree frontend status --json
 **Notes**
 
 - Ignored paths, `.wt/`, `.wt-tree/` markers and the directories of nested trees are never reported as changes of the parent tree.
-- With `--json` the output mirrors the SDK `StatusReport` (`tree`, `branch`, `head`, `changes[]` with `path` and `kind`, `merge`).
+- **Restricted** paths are files of the server tip that a license rule or a `tree:read` path policy withholds from you. They are not checked out and are listed in `.wt/trees/<tree>/stubbed`. See [Restricted paths](/docs/protocol/large-files#restricted-paths).
+- With `--json` the output mirrors the SDK `StatusReport` (`tree`, `branch`, `head`, `changes[]` with `path` and `kind`, `merge`) plus `restricted` (paths) and `shallow` (boolean).
+- When auto-snapshots are enabled but the daemon is not running, `wt status` prints a hint to run `wt daemon start`.
 - Staged snapshots are explained in [Staged visibility](/guides/staged-visibility).
 
 ## `wt config`
 
 ```text
-wt config list | get KEY | set KEY VALUE
+Usage: wt config [OPTIONS] <COMMAND>
 ```
 
-Read and write the worktree configuration in `.wt/config.toml`. Keys are dotted paths into the TOML file.
+Read and write configuration. Values are resolved from three layers: the user config (`$WT_HOME/config.toml`), the worktree config (`.wt/config.toml`) and the tree config (`<tree>/.wt-tree/config.toml`); see [Configuration hierarchy](/docs/cli/configuration#configuration-hierarchy). Keys are dotted paths into the TOML files.
 
 | Subcommand | Description |
 |---|---|
-| `list` | Print every key and value, sorted by key. |
-| `get KEY` | Print the value of one key. |
-| `set KEY VALUE` | Set one key and save the file. Unknown keys and values of the wrong type are rejected (invalid configuration). |
-
-### Keys
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `worktree.name` | string | directory name | Worktree name (set by `wt init --name`). |
-| `worktree.id` | string | generated | Worktree id (UUID). Do not change. |
-| `worktree.created_at` | string | init time | Creation timestamp. |
-| `worktree.default_branch` | string | `main` | Default branch (set by `wt init --branch`). |
-| `user.name` | string | empty | Author name for new snapshots. |
-| `user.email` | string | empty | Author email for new snapshots. |
-| `auto_snapshot.enabled` | bool | `true` | Let the daemon take automatic snapshots of this worktree. |
-| `auto_snapshot.inactivity_secs` | integer | `30` | Auto-snapshot after this many seconds without file events. |
-| `auto_snapshot.max_changed_files` | integer | `50` | Auto-snapshot immediately once this many files have changed. |
-| `sync.auto_stage` | bool | `true` | Upload auto-snapshots as staged (team-visible) snapshots. |
-| `sync.remote` | string | `origin` | Remote used by the daemon for auto-staging. |
-| `remote.<name>.url` | string | | Server base URL, e.g. `http://localhost:7420`. |
-| `remote.<name>.tenant` | string | | Tenant slug on that server. |
-
-The snapshot author is `user.name <user.email>` when configured; otherwise the username logged in to the default remote; otherwise the operating-system user.
+| `list [--show-origin]` | Print every effective key and value. `--show-origin` shows which file set each value (`default`, `user`, `worktree` or `tree`). |
+| `get <KEY> [--show-origin]` | Print one effective value. |
+| `set <KEY> <VALUE> [--global]` | Set one value in `.wt/config.toml`. With `--global`, write the user config (only `[user]`, `[signing]`, `[secret_scanning]`). With the global `--tree NAME`, write that tree's `.wt-tree/config.toml` (only `[auto_snapshot]`, `[secret_scanning]`, `[hooks]`). |
+| `unset <KEY> [--global]` | Remove one value from the same files. |
 
 ```bash
-wt config list
+wt config list --show-origin
 wt config get remote.origin.url
 wt config set user.name "Ada Lovelace"
-wt config set user.email ada@example.com
+wt config set user.email ada@example.com --global
 wt config set auto_snapshot.inactivity_secs 60
 wt config set sync.auto_stage false
-```
-
-The equivalent `.wt/config.toml`:
-
-```toml
-[worktree]
-name = "my-project"
-id = "4f9c2a1e-..."
-created_at = "..."
-default_branch = "main"
-
-[user]
-name = "Ada Lovelace"
-email = "ada@example.com"
-
-[auto_snapshot]
-enabled = true
-inactivity_secs = 60
-max_changed_files = 50
-
-[sync]
-auto_stage = false
-remote = "origin"
-
-[remote.origin]
-url = "http://localhost:7420"
-tenant = "ada"
+wt --tree frontend config set auto_snapshot.max_changed_files 20
+wt config get auto_snapshot.max_changed_files --tree frontend --show-origin
+wt config set secret_scanning.patterns.internal-token 'itk_[A-Za-z0-9]{32}'
 ```
 
 **Notes**
 
-- Configuration is per worktree. There is no global `wt config` file; per-user state (credentials, daemon) lives in `$WT_HOME`.
-- Prefer [`wt remote add`](/docs/cli/remote#wt-remote) for creating remotes; `wt config set remote.<name>.url` edits an existing entry.
-- See [Config model](/guides/config-model) for how configuration is layered.
+- Unknown keys and values of the wrong type are rejected by `set`; unknown keys already present in a file are preserved when it is rewritten.
+- Every settable key is listed in [Configuration keys](/docs/cli/configuration#keys).
+- Prefer [`wt remote add`](/docs/cli/remote#wt-remote) for creating remotes; `wt config set remote.<name>.url` creates or edits an entry.
 
 ## `wt ignore`
 
 ```text
-wt ignore list | add PATTERN | check PATH
+Usage: wt ignore [OPTIONS] <COMMAND>
 ```
 
 Manage which paths are never snapshotted. Patterns use gitignore syntax.
 
 | Subcommand | Description |
 |---|---|
-| `list` | Print the effective patterns: built-ins, then `.wt/ignore`, then `.wtignore` files. |
-| `add PATTERN` | Append `PATTERN` to `.wt/ignore`. |
-| `check PATH` | Report whether `PATH` (relative to the worktree root) is ignored. |
-
-Built-in ignores, always active:
-
-```text
-.wt/
-.wt-tree/
-.git/
-target/
-node_modules/
-.DS_Store
-*.swp
-```
+| `list [--sources]` | Print the effective patterns in evaluation order. `--sources` shows the file each pattern comes from (hard, soft, `.wt/ignore`, ...). |
+| `add <PATTERN> [--in-tree]` | Append `PATTERN` to `.wt/ignore`. With `--in-tree`, append it to the selected tree's `.wt-tree/ignore` instead (additive only: it cannot re-include paths ignored at the root level). |
+| `check <PATH>` | Report whether `PATH` is ignored. |
 
 ```bash
-wt ignore list
+wt ignore list --sources
 wt ignore add "*.log"
-wt ignore add "dist/"
+wt --tree frontend ignore add "coverage/" --in-tree
 wt ignore check build/output.log
 ```
 
@@ -172,27 +121,32 @@ wt ignore add '*.log'
 
 **Notes**
 
-- `.wt/ignore` is local to the worktree. `.wtignore` files can be placed in the working directory alongside your files.
-- `wt git import` converts `.gitignore` into `.wt/ignore`.
+- `.wt/`, `.wt-tree/` and `.git/` are always ignored. Soft defaults (`node_modules/`, `target/`, `*.log`, `.env`, ...) apply unless re-included with `!pattern`. The full order is in [Ignore rules](/docs/cli/configuration#ignore-rules).
+- `.wt/ignore` and `.wt-tree/ignore` are local to the worktree; commit rules the team needs as a tracked `.wtignore` file.
+- `wt git import` copies the Git repository's root `.gitignore` patterns into `.wt/ignore`.
 - More examples in [Ignore patterns](/guides/ignore-patterns).
 
 ## `wt tree`
 
 ```text
-wt tree list | add NAME PATH | remove NAME
+Usage: wt tree [OPTIONS] <COMMAND>
 ```
 
-Manage **nested trees**: independently versioned sub-projects inside one worktree. Each tree has its own branches, `HEAD`, tags, reflog and remote name. A nested tree is a directory containing a `.wt-tree/` marker.
+Manage **nested trees**: independently versioned sub-projects inside one worktree. Each tree has its own branches, `HEAD`, tags, reflog and server-side tree. A nested tree is a directory containing a `.wt-tree/` marker.
 
 | Subcommand | Description |
 |---|---|
 | `list` | List all trees: name, path relative to the root (empty for the root tree), current branch, default branch, and server-side name. |
-| `add NAME PATH` | Register `PATH` (relative to the worktree root; created if missing) as a nested tree named `NAME`, writing `PATH/.wt-tree/config.toml`. |
-| `remove NAME` | Unregister a nested tree. Its files are kept on disk. The root tree cannot be removed. |
+| `add <NAME> <PATH>` | Register `PATH` (relative to the worktree root; created if missing) as a nested tree named `NAME`, writing `PATH/.wt-tree/config.toml`. |
+| `remove <NAME>` | Unregister a nested tree. Its `.wt-tree/` and `.wt/trees/NAME/` are deleted; working files are kept and become part of the enclosing tree. The root tree cannot be removed. |
+| `validate [NAME]` | Check the tree layout: `.wt-tree/` marker present, config and ignore files parse, no nested `.wt/`. All trees when `NAME` is omitted; exits `1` on errors. |
+| `init-config [NAME]` | Scaffold `.wt-tree/{config.toml,ignore,hooks/,access/}` for a nested tree (default: the selected tree). Existing files are kept. |
 
 ```bash
 wt tree list
 wt tree add frontend apps/frontend
+wt tree init-config frontend
+wt tree validate
 wt --tree frontend snapshot -m "Initial frontend"
 cd apps/frontend && wt status    # tree inferred from the directory
 wt tree remove frontend
@@ -203,8 +157,8 @@ wt tree remove frontend
 - A tree's snapshots exclude the paths of trees nested inside it, so each tree's history only contains its own files.
 - Select a tree with `--tree <name>` or by running `wt` from inside its directory (the deepest containing tree wins).
 - Each tree is pushed to its own server tree; see [`wt push`](/docs/cli/remote#wt-push).
-- Adding a tree that already exists fails.
+- `.wt-tree/` is never snapshotted: tree configuration, ignore files, hooks and access files are local to the worktree. Tree access policies reach the server only through [`wt access apply`](/docs/cli/iam#wt-access).
 
 <Callout type="info">
-Design patterns for splitting a project into trees are covered in [Nested trees](/guides/nested-trees).
+Design patterns for splitting a project into trees are covered in [Nested trees](/guides/nested-trees). The marker directory is specified in [DotWtTree.md](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/DotWtTree.md).
 </Callout>

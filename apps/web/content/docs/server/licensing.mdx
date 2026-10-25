@@ -1,68 +1,120 @@
 ---
 title: License Rules
-description: Assign SPDX licenses to paths in a tree and control what principals outside the owning tenant may do with them.
+description: Assign SPDX licenses to paths in a tree and control what other tenants may read, push and export, per tenant and with expiry.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-License rules attach an SPDX license identifier and a **grant** to a set of paths in a tree. The grant decides what principals that do not belong to the tree's owning tenant may do with those paths. The server enforces rules on push (for the paths a push changes) and on reads.
+License rules attach an SPDX license expression and a **grant** to a set of paths in a tree. The grant decides what principals **outside the tree's owning tenant** may do with those paths: read, write (push) and export. The server enforces rules on every read, push and export, **in addition to IAM**: an operation must be allowed by both.
 
-Rules are managed with the [REST API](/docs/server/rest-api#licenses) or the admin panel and require `tree:admin`. There are no `wt` subcommands for them in v0.2.0.
+Rules are managed with [`wt license`](/docs/cli/administration#wt-license), the [REST API](/docs/server/rest-api#licenses) or the admin panel; changes need `tree:admin`. See the [License Compliance specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/licensing/LicenseCompliance.md).
 
 ## Rule fields
 
 | Field | Type | Meaning |
 |---|---|---|
 | `tree_id` | string | Set by the server. |
-| `path_glob` | string | `/`-separated glob selecting paths. `**` matches across directory levels, `*` matches within one path segment. Rules are keyed by this value. |
-| `spdx` | string | SPDX license identifier or expression, for example `MIT`, `Apache-2.0`, `GPL-3.0-only`, or `LicenseRef-Proprietary`. |
-| `grant` | string | `read-only`, `modify`, or `redistribute`. |
+| `path_glob` | string | Tree-relative glob (below). One rule per glob per tree; putting an existing glob replaces the rule. |
+| `spdx` | string | SPDX license expression, for example `MIT`, `MIT OR Apache-2.0`, `GPL-2.0-only WITH Classpath-exception-2.0`, `LicenseRef-Acme-Internal` or `Proprietary`. Checked for syntax, not against the SPDX list. |
+| `grant` | string | `read-only`, `modify`, `redistribute`, or `""` (license default). |
+| `grantee` | string | Tenant slug the rule applies to; omitted or `""` means every non-owning tenant. |
+| `expires_at` | string | Optional RFC 3339 time after which the rule is ignored. |
 
 ### Grants
 
-| Grant | Read | Modify (push changes) | Redistribute |
-|---|---|---|---|
+| `grant` | Read | Write (push) | Export |
+|---|:-:|:-:|:-:|
 | `read-only` | yes | no | no |
 | `modify` | yes | yes | no |
 | `redistribute` | yes | yes | yes |
+| `""` with a proprietary license | no | no | no |
+| `""` with any other license | yes | yes | yes |
 
-Grants restrict principals outside the owning tenant. Members of the owning tenant are governed only by their role.
+**Read** covers pull and clone content, object downloads, REST blob and file views, diffs and history. **Write** covers pushing changes to those paths. **Export** covers archives, `wt git export` and other copies out of the platform. A license is proprietary when it is `Proprietary`, `LicenseRef-Proprietary` or any `LicenseRef-*proprietary*`.
 
-### Glob examples
+### Who is restricted
 
-| `path_glob` | Selects |
+Rules never restrict server admins, members of the owning tenant (any role) or the owning tenant's service accounts. Everyone else is a non-member: accounts of other tenants, principals reaching the tree through grants or `internal`/`public` visibility, and anonymous callers.
+
+## Globs and specificity
+
+Globs are `/`-separated and anchored at the tree root:
+
+| Syntax | Matches |
 |---|---|
-| `vendor/**` | Everything under `vendor/`. |
-| `src/crypto/**` | Everything under `src/crypto/`. |
-| `**/*.proto` | Every `.proto` file at any depth. |
-| `LICENSE` | Only the top-level `LICENSE` file. |
+| `**` (whole segment) | zero or more segments: `**/*.proto` matches `a.proto` and `api/v1/a.proto` |
+| `*` | any run of characters within one segment |
+| `?` | one character within one segment |
+| `[...]` | a character class |
 
-## Creating and removing rules
+- A pattern that matches a directory covers everything beneath it: `vendor`, `vendor/` and `vendor/**` are equivalent.
+- There is no implicit depth: unlike `.gitignore`, `*.rs` covers top-level files only. Use `**/*.rs` for every depth.
+- When several rules match a path, **only the most specific one applies** (longest literal prefix, then fewest wildcards, then most literal characters). An exact file beats its directory, and `src/*.rs` beats `src/**`. Rules do not add up.
+
+## Managing rules
+
+```bash
+wt license set acme/payments 'vendor/crypto/**' Apache-2.0 --grant read-only
+wt license set acme/payments 'billing/**' Proprietary --grant license-default
+wt license set acme/payments billing Proprietary --grant modify --grantee partner --expires 2026-12-31
+wt license list acme/payments
+wt license remove acme/payments 'vendor/crypto/**'
+```
+
+`--grant` defaults to `read-only`; `license-default` sends the empty grant. `--expires` takes RFC 3339 or a date `YYYY-MM-DD` meaning the end of that day in UTC. Inside a worktree the `TENANT/TREE` argument can be omitted.
+
+The same over REST:
 
 ```bash
 curl -s -X PUT http://localhost:7420/api/v1/trees/acme/payments/licenses \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"path_glob":"vendor/crypto/**","spdx":"Apache-2.0","grant":"read-only"}'
+  -d '{"path_glob":"billing","spdx":"Proprietary","grant":"modify","grantee":"partner","expires_at":"2026-12-31T23:59:59Z"}'
 
-curl -s http://localhost:7420/api/v1/trees/acme/payments/licenses \
-  -H "Authorization: Bearer $TOKEN"
-
-curl -s -X DELETE "http://localhost:7420/api/v1/trees/acme/payments/licenses?path_glob=vendor%2Fcrypto%2F**" \
+curl -s -X DELETE "http://localhost:7420/api/v1/trees/acme/payments/licenses?path_glob=billing" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Putting a rule with an existing `path_glob` replaces it.
+Invalid globs, grants, SPDX syntax, grantees or expiry times answer `400 bad_request`.
 
-## Enforcement on push
+### Widening a rule for one tenant
 
-During a push the server computes the paths the push changes and passes them to the license checker (`CheckPush`) after authorization and branch protection. For a principal outside the owning tenant, a changed path that matches a rule whose grant does not allow modification rejects the whole push with a `license_violation` rejection that names the offending path and its license. Nothing is written; `wt push` reports the path and license and exits with an error.
+The example above combines a general rule with a grantee rule:
 
-Paths that match no rule are not restricted by licensing.
+- `billing/**` with `Proprietary` and the empty grant keeps everyone outside `acme` away from the billing code.
+- `billing` (no wildcard, so more specific) with `grantee: partner` gives tenant `partner` `modify` until the end of 2026.
 
-## Enforcement on read
+When a non-member is checked, only rules whose grantee is empty or the caller's tenant are considered, and the most specific of those wins. After `expires_at` the grantee rule is ignored and `partner` falls back to `billing/**`. Always keep a general rule beneath an expiring grantee rule, or access lapses to unrestricted.
 
-Reads and exports of file content (for example `GET /api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}`) are checked with `CheckRead`. When a rule does not permit the caller to read or export a path, the request is rejected as a `license_violation`, which the REST API returns as `403 forbidden`.
+## Detecting licenses
+
+`wt license detect` reads LICENSE/LICENCE/COPYING files and `SPDX-License-Identifier` headers and proposes rules:
+
+```bash
+wt license detect                # print proposals for the whole tree
+wt license detect vendor/        # one directory
+wt license detect --apply --yes  # create the proposed rules on the server (existing ones are skipped)
+```
+
+## Enforcement
+
+| Operation | For a non-member without the right |
+|---|---|
+| Push | Every path that differs between the server tip and the new tip is checked after IAM and branch protection. The push is rejected with a `license_violation` naming the path and license. |
+| Pull, clone, fetch | Unreadable paths of the new tip are returned in `stubbed_paths` and their content is not sent. The client does not write them, lists them in `.wt/trees/<tree>/stubbed`, and `wt status` shows them as restricted. Audited once per pull as `license.denied`. |
+| Object download | Blobs and chunks of unreadable paths are refused. |
+| REST content (`blob`, `files`, `compare`, file history, snapshot file lists) | Content answers `451 license_restricted`; listings omit the path and report `restricted_count`. |
+| Server archive (`GET {tree}/archive/{snapshot}`) | Unreadable paths are omitted and a `LICENSES/NOTICE` file is added. Audited as `tree.export`. |
+| `wt archive`, `wt git export`, `wt git push` | Local, using the tree's rules (cached from the server): a generated `LICENSES/NOTICE` lists the SPDX expression of each path, and paths that may not be redistributed are skipped with a warning. `--include-restricted` keeps them, `--no-license` skips license processing. |
+
+A denial explains itself, for example:
+
+```text
+license check failed for operation "write": path "billing/src/pricing.rs" is licensed
+"Proprietary" (rule "billing/**"); required grant: modify; granted: read-only
+```
+
+When the rules or the membership cannot be loaded, the check fails closed. Rule changes are audited as `license.update` and `license.delete`; query them with `wt audit --action 'license.*'`.
 
 <Callout type="info">
-  License rules are server-side policy for collaboration across tenants. They do not inspect file contents or detect license headers, and they are not a substitute for legal review. See the [license compliance guide](/guides/license-compliance).
+  License rules are server-side policy for collaboration across tenants; they are not a substitute for legal review. They complement IAM: a partner with `tree:write` through a grant still cannot push to a `read-only` path, and a reader of a public tree receives proprietary paths only as stubs. See the [license compliance guide](/guides/license-compliance).
 </Callout>

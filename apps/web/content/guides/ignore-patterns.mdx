@@ -26,11 +26,9 @@ These are always ignored and cannot be un-ignored:
 .wt/
 .wt-tree/
 .git/
-target/
-node_modules/
-.DS_Store
-*.swp
 ```
+
+These soft defaults are also ignored unless a `!pattern` in `.wt/ignore` or the root `.wtignore` re-includes them: `node_modules/`, `target/`, `__pycache__/`, `.DS_Store`, `Thumbs.db`, `*.pyc`, `*.pyo`, `*.swp`, `*.swo`, `*~`, `.env`, `.venv/`, `dist/`, `build/`, `*.log`. See [Ignore rules](/docs/cli/configuration#ignore-rules) for the full evaluation order.
 
 `.wt/` and `.wt-tree/` are W0rkTree's own metadata and nested-tree markers. `.git/` means a Git repository in the same directory is never captured, which is convenient while migrating.
 

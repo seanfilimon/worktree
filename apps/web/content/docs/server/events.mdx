@@ -1,85 +1,114 @@
 ---
 title: Event Stream (SSE)
-description: Subscribe to live server activity such as pushes, staged snapshots, tags, and merge requests over Server-Sent Events.
+description: Subscribe to live server activity such as pushes, staged snapshots, reviews, CI results, TODOs and releases over Server-Sent Events.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-The server publishes an event whenever something visible to a team happens: a snapshot is staged, a branch is pushed, a tree is created, a merge request changes state. Clients subscribe with a long-lived HTTP request that returns a `text/event-stream` (Server-Sent Events). The admin panel's dashboard uses this stream for its live activity feed.
+The server publishes an event whenever something visible to a team happens: a branch is pushed, a snapshot is staged, a merge request is reviewed, a CI check reports, a TODO is created. Clients subscribe with a long-lived HTTP request that returns `text/event-stream` (Server-Sent Events). The admin panel's activity feed and `wt events` use this stream.
 
 ## Endpoint
 
 ```text
-GET /api/v1/events?tenant=<tenant>&tree=<tree>
+GET /api/v1/events?tenant=<tenant>&tree=<tree>&types=<type>,<type>
 Authorization: Bearer <token>
 Accept: text/event-stream
 ```
 
 | Query | Meaning |
 |---|---|
-| `tenant` | Only events of this tenant. Optional. |
-| `tree` | Only events of this tree within `tenant`. Optional. |
+| `tenant` | Only events of this tenant. Needs `tenant:read`. |
+| `tree` | Only events of this tree within `tenant`. Needs `tree:read`. |
+| `types` | Comma-separated event types, for example `branch.pushed,mr.merged`. |
 
-Omitting a filter matches everything the caller is allowed to see. The response stays open until the client disconnects or the server shuts down.
+Without `tenant` and `tree`, server admins receive every event and other accounts the events of the tenants they are members of. The response stays open until the client disconnects or the server shuts down.
+
+From the CLI:
+
+```bash
+wt events --tenant acme
+wt events --tree acme/payments --type branch.pushed --type mr.merged
+wt events --json | jq -r '.type'
+```
+
+`wt events` streams until Ctrl-C; with `--json` it prints one JSON object per line.
 
 ## Authentication
 
-The token is sent in the `Authorization: Bearer <token>` header, like every other API request. There is no query-parameter form of the token.
+Send the token in the `Authorization: Bearer <token>` header. Because the browser `EventSource` API cannot set headers, GET requests may instead pass the token as the `access_token` query parameter:
 
-<Callout type="warn" title="Browser EventSource">
-  The browser `EventSource` API cannot set request headers, so it cannot send the bearer token. Browser clients should read the stream with `fetch()` and a streaming response body (example below). The admin panel served at `/admin/` is same-origin with the API, so no CORS setup is needed for it.
+```js
+const source = new EventSource(`/api/v1/events?tenant=acme&access_token=${encodeURIComponent(token)}`);
+source.addEventListener('branch.pushed', (e) => console.log(JSON.parse(e.data)));
+```
+
+<Callout type="warn">
+  Query strings can end up in proxy and access logs. Prefer the header (with `fetch()` and a streaming body, below) where you can, and use short-lived scoped tokens (`wt token create NAME --ttl-hours 1 --scope tree:read`) for `EventSource` clients.
 </Callout>
 
 ## Frame format
 
-Each event is one SSE frame: an `event:` line with the event type, a `data:` line with the event as single-line JSON, and a blank line.
+The stream starts with a comment and a reconnect hint:
 
 ```text
-event: branch.pushed
-data: {"type":"branch.pushed","tenant_id":"b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e","tree_id":"e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9","actor":"alice","payload":{"branch":"main"},"at":"2026-10-21T09:30:00Z"}
+: connected
+retry: 5000
 
 ```
 
-Every 15 seconds the server writes an SSE comment line (a line starting with `:`) as a heartbeat. Comments carry no event and are ignored by SSE parsers; they keep proxies and load balancers from closing an idle connection. Their text is not significant.
+Each event is then one SSE frame: an `event:` line with the event type, a `data:` line with the event as single-line JSON, and a blank line.
+
+```text
+event: branch.pushed
+data: {"type":"branch.pushed","tenant_id":"b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e","tree_id":"e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9","actor":"alice","payload":{"branch":"main","old_tip":"0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d","new_tip":"7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a","count":1},"at":"2026-10-21T09:30:00Z"}
+
+```
+
+Every 15 seconds the server writes a `: heartbeat` comment so that proxies and load balancers keep the connection open. Comments carry no event.
 
 ## Event object
-
-The `data` line is a JSON object with these fields:
 
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | One of the event types below; same value as the `event:` line. |
 | `tenant_id` | string | Tenant the event belongs to. |
 | `tree_id` | string | Tree the event belongs to. Omitted for events without a tree. |
-| `actor` | string | Username that caused the event. Omitted when not applicable. |
+| `actor` | string | Username (or `sa:<tenant>/<name>`) that caused the event. Omitted when not applicable. |
 | `payload` | object | Event-specific details. Omitted when empty. |
 | `at` | string | RFC 3339 timestamp. |
 
-<Callout type="info">
-  The `payload` object varies by event type and is not a stable contract in v0.2.0; payloads shown on this page are illustrative. Use `type`, `tenant_id`, `tree_id`, and `actor` for routing, and re-read state through the [REST API](/docs/server/rest-api) when you need exact data.
-</Callout>
+Payloads are not a stable contract yet. Route on `type`, `tenant_id`, `tree_id` and `actor`, and re-read state through the [REST API](/docs/server/rest-api) when you need exact data.
 
 ## Event types
 
-| Type | Published when |
-|---|---|
-| `snapshot.staged` | A staged (WIP) snapshot is uploaded by `wt stage` or the daemon. |
-| `staged.cleared` | A staged snapshot is removed, for example when its author pushes that branch. |
-| `branch.pushed` | A push moves a branch tip. |
-| `branch.created` | A branch is created on the server (first push of a new branch). |
-| `tag.pushed` | A tag is pushed. |
-| `tree.created` | A tree is created, by REST or by a first push. |
-| `mr.opened` | A merge request is opened. |
-| `mr.approved` | A merge request receives an approval. |
-| `mr.merged` | A merge request is merged (the target branch fast-forwarded). |
-| `mr.closed` | A merge request is closed without merging. |
+| Type | Published when | Main payload fields |
+|---|---|---|
+| `tree.created` | A tree is created, by REST or by a first push. | `name`, `tenant` |
+| `tree.deleted` | A tree is deleted. | `name` |
+| `branch.pushed` | A push is accepted or a merge request is merged. | `branch`, `old_tip`, `new_tip`, `count` |
+| `branch.created`, `branch.deleted` | A branch is created or deleted over REST. | branch |
+| `tag.pushed`, `tag.deleted` | A tag is created (gRPC or REST) or deleted. | `tag`, `target` |
+| `snapshot.staged` | `wt stage` or the daemon uploads a staged snapshot. | the staged snapshot |
+| `staged.cleared` | A staged snapshot is removed by a push, `wt unstage` or expiry. | `branch_name`, `snapshot_id`, `author`, `reason` (`pushed` or `expired`) |
+| `mr.opened`, `mr.approved`, `mr.reviewed`, `mr.commented`, `mr.merged`, `mr.closed` | Merge-request activity. | merge request summary |
+| `group.merged` | A linked group of merge requests is merged. | group |
+| `ci.status` | A CI check is reported. | the CI status |
+| `todo.created`, `todo.updated` | A TODO is created from a dependency or changed (published in the target tenant). | the TODO |
+| `release.created`, `release.deleted` | Release activity. | release |
+| `access.applied` | A declarative access document is applied. | plan |
+
+## Recent events
+
+`GET /api/v1/events/recent?tenant=&tree=&limit=50` returns the most recent events (the server keeps the last 200 in memory), oldest first, with the same scoping. Use it to fill a feed before opening the stream.
 
 ## Delivery semantics
 
-- Events are delivered to subscribers that are connected when the event is published. There is no replay and no `Last-Event-ID` resume; after reconnecting, re-read current state over REST.
-- Publishing never blocks the server. A subscriber that reads too slowly drops events rather than slowing pushes down.
+- Events are delivered to subscribers connected when they are published. There is no replay and no `Last-Event-ID` resume; after reconnecting, read `/events/recent` or re-read state over REST.
+- Publishing never blocks the server. Each subscriber has a 64-event buffer; a subscriber that reads too slowly drops events instead of slowing pushes down.
 - Order is the publish order within the server process.
+
+`wt` clients and the daemon do not use SSE for sync: they use the gRPC `WatchBranches` stream, which sends a `BranchEvent` for every `branch.pushed`, `branch.created` and `branch.deleted` on the trees they read. See [Sync protocol](/docs/protocol/sync-protocol) and [`wt daemon`](/docs/cli/daemon).
 
 ## Consuming the stream
 
@@ -126,14 +155,14 @@ for (;;) {
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trimStart())
       .join('\n');
-    if (!data) continue; // heartbeat comment
+    if (!data) continue; // comment or retry line
     const event = JSON.parse(data);
     console.log(event.type, event.actor, event.at);
   }
 }
 ```
 
-From another origin, add that origin to `WT_CORS_ORIGINS` (see [Configuration](/docs/server/configuration)).
+From another origin, add that origin to `--cors-origins` / `WT_CORS_ORIGINS` (see [Configuration](/docs/server/configuration)).
 
 ### Through a reverse proxy
 

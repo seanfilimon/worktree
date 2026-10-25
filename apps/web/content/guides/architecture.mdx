@@ -48,8 +48,8 @@ The server listens on a single address (default `:7420`) and multiplexes everyth
 
 So a remote URL is just the server origin, such as `http://localhost:7420`, and one firewall rule or one reverse-proxy route covers the whole service.
 
-<Callout type="warn" title="No built-in TLS">
-The server does not terminate TLS in v0.2.0. Put it behind a reverse proxy that terminates TLS and forwards HTTP/2 cleartext (h2c) to the backend so gRPC keeps working. Built-in TLS and a QUIC transport are on the Roadmap. See [Deployment](/docs/server/deployment).
+<Callout type="warn" title="TLS">
+Without TLS flags the port speaks cleartext. Serve TLS on the same port with `--tls-cert` / `--tls-key` (clients then use `https://` remote URLs), or put the server behind a reverse proxy that terminates TLS and forwards HTTP/2 cleartext (h2c) so gRPC keeps working. A QUIC transport is on the Roadmap. See [Deployment](/docs/server/deployment).
 </Callout>
 
 ## Local vs. server responsibilities
@@ -110,7 +110,7 @@ The wire-level details of all three flows are in [Sync protocol](/docs/protocol/
 
 ## Where the admin panel fits
 
-The admin panel is a static build (`apps/admin/dist`) served by the server when started with `--admin-dir`. It has no backend of its own: it signs in through `/api/v1/auth/login`, calls the REST API with a bearer token, and subscribes to `/api/v1/events` for live activity. Merge requests, branch protections, license rules, tenants and members are managed there or through the REST API; there are no `wt` subcommands for them in v0.2.0. See [Admin panel](/guides/admin-panel).
+The admin panel is a static build (`apps/admin/dist`) served by the server when started with `--admin-dir`. It has no backend of its own: it signs in through `/api/v1/auth/login`, calls the REST API with a bearer token, and subscribes to `/api/v1/events` for live activity. Merge requests, branch protections, license rules, tenants and members are managed there, through the REST API, or with `wt` subcommands such as `wt mr`, `wt protect`, `wt license` and `wt tenant` (see the [CLI reference](/docs/cli)). See [Admin panel](/guides/admin-panel).
 
 ## Why a Rust client and a Go server
 
@@ -121,7 +121,7 @@ The admin panel is a static build (`apps/admin/dist`) served by the server when 
 ## Not in v0.2.0
 
 <Callout type="warn" title="Roadmap">
-QUIC transport, built-in TLS, a virtual filesystem with lazy loading, chunked large-file transfer, snapshot signing, encryption at rest, OAuth/SSO and live Git mirroring are planned but not shipped. See the [roadmap](/roadmap).
+QUIC transport, a virtual filesystem with lazy loading, encryption at rest and live Git mirroring are planned but not shipped. (Built-in TLS, chunked large files, snapshot signing and OIDC single sign-on are available; see [Deployment](/docs/server/deployment), [Large files](/docs/protocol/large-files), [Snapshot signing](/docs/cli/signing) and [Access control](/docs/server/access-control).) See the [roadmap](/roadmap).
 </Callout>
 
 <Cards>

@@ -1,12 +1,12 @@
 ---
 title: Storage
-description: Layout of the server data directory, immutability guarantees, and how to back up and restore it.
+description: Layout of the server data directory, integrity guarantees, garbage collection, quotas, and how to back up and restore it.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-All server state lives in one data directory, set with `--data` / `WT_DATA` (default `./wt-data`). There is no external database.
+All server state lives in one data directory, set with `--data` / `WT_DATA` (default `./wt-data`, created with mode 0750). There is no external database.
 
 ## Layout
 
@@ -22,27 +22,52 @@ wt-data/
 
 ### `meta.db`
 
-An embedded [bbolt](https://github.com/etcd-io/bbolt) key-value database holding every record except file content: tenants, accounts (with argon2id password hashes), memberships, API token hashes, trees, branches and their tips, snapshots, tags, staged snapshots, branch protections, license rules, merge requests, the audit log, and access-config documents synced from clients. bbolt allows one process to open the file at a time, so only one server can use a data directory.
+An embedded [bbolt](https://github.com/etcd-io/bbolt) database holding every record except file content: tenants, accounts (argon2id password hashes), memberships, token hashes, trees, branches and their tips, snapshots, tags, staged snapshots, branch protections, license rules, merge requests, the audit log, and the IAM data (teams, custom roles, policies, grants, service accounts, MFA state, invitations, SSO configuration). Primary buckets hold JSON values keyed by id, with `idx_*` buckets for lookups.
+
+A `docs` bucket holds the document collections added with reviews, CI, releases and operations:
+
+| Collection | Holds |
+|---|---|
+| `todos`, `todo_sources` | TODOs created from snapshot dependencies |
+| `releases` | Releases (assets are referenced by hash) |
+| `ci_status`, `mr_comments`, `linked_groups`, `tag_protections` | CI checks, review comments, linked merge groups, tag protections |
+| `signing_keys`, `signing_key_index` | Registered Ed25519 signing keys |
+| `access_docs` | Last applied declarative access documents |
+| `gc_marks`, `gc_runs`, `tenant_usage` | GC bookkeeping, the last 20 GC reports, tenant storage usage |
+
+The file is opened exclusively with a 5 second lock timeout, so a second server on the same data directory fails to start. Every write is one bbolt transaction. A schema version is stored, and the server refuses to open a database written by a newer schema.
 
 ### `objects/`
 
-A content-addressed store of blobs (raw file bytes) and manifests (encoded file lists). Each object's name is the 64-character lowercase hex BLAKE3-256 hash of its exact bytes, split into a two-character fan-out directory and the remaining 62 characters: `objects/<2-hex>/<62-hex>`. The fan-out keeps each directory to at most 256 subdirectories.
+A content-addressed store of:
 
-Objects are shared and deduplicated by content across all trees and tenants. Which tenant may see which object is decided by the metadata (snapshots reference manifests, manifests reference blobs), not by the file layout. See the [object model](/docs/protocol/object-model).
+- **blobs**: raw file bytes, or one chunk of a large file;
+- **manifests**: the encoded file list of one snapshot;
+- **chunk lists**: the ordered chunks of a file larger than 8 MiB (see [Large files](/docs/protocol/large-files)).
+
+Each object is named by the 64-character lowercase hex BLAKE3-256 hash of its exact bytes, split into a two-character fan-out directory and the remaining 62 characters. Objects are stored raw (no compression) and are at most 64 MiB each.
+
+Objects are shared and deduplicated across all trees and tenants. Which tenant may read which object is decided by the metadata: an object is readable only through a tree whose branches, tags or staged snapshots reach it, and object downloads are scoped to one tree. See the [object model](/docs/protocol/object-model). Release assets are stored as blobs too.
 
 ## Integrity and immutability
 
-- **Verified writes.** The server hashes every uploaded object and rejects it if the bytes do not match the claimed hash.
-- **Idempotent writes.** Writing an object that already exists is a no-op. Objects are written to a temporary file and renamed into place, so a crash never leaves a partially written object under its final name.
-- **Immutable snapshots.** Once stored, a snapshot never changes. Storing the same snapshot id again with identical content is a no-op; different content is rejected as a conflict.
-- **Append-only history.** Branch tips only move forward to descendants (no force push). Tips are updated with a compare-and-swap, so concurrent pushes cannot overwrite each other.
-- **Append-only audit log.**
-
-Deleting a tree removes its metadata. Objects are not garbage-collected in v0.2.0.
+- **Verified writes.** The server hashes every uploaded object and rejects it if the bytes do not match. Manifests and chunk lists must also decode and validate.
+- **Idempotent, atomic writes.** Writing an existing object is a no-op. Objects are written to a temporary file, fsynced and renamed into place, so a crash never leaves a partial object under its final name.
+- **Immutable snapshots.** A stored snapshot never changes; storing the same id with different content is rejected.
+- **Append-only history.** Branch tips only move forward, with compare-and-swap. There is no force push.
+- **Append-only audit log**, pruned only by the optional `--audit-retention`.
 
 <Callout type="info" title="Windows">
-  On Windows, renaming a temporary file over an object that already exists can fail with "Access is denied", for example when two uploads of the same object race. Because objects are content-addressed, an existing target already has the correct bytes, so the server treats this case as success.
+  On Windows, renaming a temporary file over an object that already exists can fail with "Access is denied", for example when two uploads of the same object race. Such failures are retried with backoff, and because objects are content-addressed, a target that already has the right bytes counts as success.
 </Callout>
+
+## Garbage collection
+
+Deleting a tree removes its metadata in one transaction and publishes `tree.deleted`; deleting a server branch removes the ref. Objects are never deleted directly. The garbage collector marks everything reachable from branch tips, tags, staged snapshots, merge requests and releases, and deletes unreachable objects after a grace period (`--gc-grace`, default 30 days). It also applies staged-snapshot and audit retention. See [Garbage collection](/docs/server/operations#garbage-collection).
+
+## Quotas
+
+Per-tenant storage usage is tracked in the `tenant_usage` document and increased by the new objects of each accepted push. It is enforced by the `max_storage_bytes` quota. See [Quotas](/docs/server/operations#quotas).
 
 ## Backup
 
@@ -69,14 +94,14 @@ Start-Service worktree-server
 </Tab>
 </Tabs>
 
-To keep the downtime short, use the fact that objects are immutable:
+To keep the downtime short, use the fact that object files are immutable:
 
-1. While the server runs, copy `objects/` to the backup location (for example with `rsync -a`). Objects never change once written, so this copy is safe.
+1. While the server runs, copy `objects/` to the backup location (for example with `rsync -a`).
 2. Stop the server.
 3. Copy `meta.db`, and run the `objects/` copy again to pick up objects written since step 1.
 4. Start the server.
 
-Do not copy `meta.db` while the server is running: a copy taken during a write can be inconsistent. A filesystem-level atomic snapshot (LVM, ZFS, Btrfs, or a VSS snapshot on Windows) of the whole data directory is also consistent. Always back up `meta.db` and `objects/` together; a `meta.db` that references objects missing from `objects/` cannot serve those snapshots.
+Do not copy `meta.db` while the server is running: a copy taken during a write can be inconsistent. A filesystem-level atomic snapshot (LVM, ZFS, Btrfs, or a VSS snapshot on Windows) of the whole data directory is also consistent. Always back up `meta.db` and `objects/` together. Because garbage collection deletes objects, take the `objects/` copy after (or together with) `meta.db`, never long before it, or pause GC (`--gc-interval 0`) while the backup runs.
 
 ## Restore
 
@@ -84,12 +109,12 @@ Do not copy `meta.db` while the server is running: a copy taken during a write c
 2. Replace the data directory with the backup (both `meta.db` and `objects/`).
 3. Start the server with `--data` pointing at it.
 
-Clients whose local history is ahead of the restored server can push again: their snapshots descend from the restored tips. Clients that had pulled snapshots newer than the backup still have them locally and can push them back.
+Clients whose local history is ahead of the restored server can push again: their snapshots descend from the restored tips.
 
 ## Moving the data directory
 
 Stop the server, move the directory, and start the server with the new `--data` path. Paths inside the directory are relative, so no other changes are needed.
 
-## Not in v0.2.0
-
-Encryption at rest and chunked (content-defined) storage of large files are on the Roadmap. Use full-disk or volume encryption if you need data encrypted at rest today.
+<Callout type="info">
+  Encryption at rest, pluggable storage backends (S3, external databases) and replication are not built yet (see the [roadmap](/roadmap)). Use full-disk or volume encryption if you need data encrypted at rest. See the [Storage specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Storage.md).
+</Callout>

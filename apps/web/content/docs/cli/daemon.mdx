@@ -1,41 +1,49 @@
 ---
 title: Daemon
-description: Run the worktree-bg background daemon that watches worktrees, takes automatic snapshots, and stages work in progress.
+description: Run the worktree-bg background daemon that watches worktrees, takes automatic snapshots, stages work in progress, and fetches remote branches as they change.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
-The background daemon is a separate binary, `worktree-bg` (crate `worktree-bg`, installed with `cargo install --path crates/worktree-bg`). You normally control it through `wt daemon`. It watches worktrees for file changes, takes automatic snapshots after a period of inactivity, and optionally uploads them as staged snapshots so your team can see work in progress.
+The background daemon is a separate binary, `worktree-bg` (crate `worktree-bg`, installed with `cargo install --path crates/worktree-bg`). You normally control it through `wt daemon`. One daemon per user (per `$WT_HOME`) serves all your worktrees. For each watched worktree it:
+
+- takes **auto-snapshots** of trees with changes after a quiet period;
+- uploads them as **staged snapshots** so your team sees work in progress;
+- keeps **remote-tracking branches** fresh by subscribing to server branch events;
+- runs periodic **maintenance**.
+
+Everything it does can also be done by hand (`wt snapshot`, `wt stage`, `wt fetch`, `wt reflog expire`); no `wt` command requires the daemon. The full behavior is specified in [BgProcess.md](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/bgprocess/BgProcess.md).
 
 ## `wt daemon`
 
 ```text
-wt daemon start [--foreground] | stop | status | watch [PATH] | unwatch [PATH] | pause | resume
+Usage: wt daemon [OPTIONS] <COMMAND>
 ```
 
 | Subcommand | Description |
 |---|---|
-| `start` | Start the daemon (`worktree-bg run`) in the background. |
+| `start [--foreground]` | Start the daemon (`worktree-bg run`) in the background, or report that it is already running. `--foreground` runs it attached to the terminal (Ctrl+C stops it). |
 | `stop` | Ask the running daemon to shut down cleanly. |
+| `restart` | Stop the daemon (if running) and start it again. |
 | `status` | Show the daemon's pid, version, start time and per-worktree state. |
-| `watch [PATH]` | Start watching the worktree at `PATH`. |
-| `unwatch [PATH]` | Stop watching the worktree at `PATH`. |
-| `pause` | Pause automatic snapshots for all watched worktrees. File watching continues. |
-| `resume` | Resume automatic snapshots for all watched worktrees. |
-
-| Argument / flag | Applies to | Description |
-|---|---|---|
-| `--foreground` | `start` | Run the daemon attached to the terminal instead of detaching (runs `worktree-bg run --foreground`). Stop it with Ctrl+C. Useful for debugging. |
-| `PATH` | `watch`, `unwatch` | Worktree root. Default: the current worktree. |
+| `watch [PATH]` | Auto-snapshot the worktree containing `PATH` (default: the current one). Persisted in `bg.toml`. |
+| `unwatch [PATH]` | Stop watching a worktree (default: the current one). A path that no longer exists is accepted so stale entries can be removed. |
+| `pause` | Pause auto-snapshots for all watched worktrees. Changes are still collected. |
+| `resume` | Resume auto-snapshots. |
+| `logs [-n N] [-f]` | Show the last `N` lines (default 50) of `$WT_HOME/bg.log`; `-f, --follow` keeps printing new lines. |
+| `snapshot [PATH] [--all]` | Snapshot every changed tree of a worktree now (default: the current one); `--all` snapshots every watched worktree. Ignores pause and `auto_snapshot.enabled`. |
 
 ```bash
 wt daemon start
 wt daemon watch               # watch the worktree you are in
 wt daemon watch ~/src/other-project
 wt daemon status
+wt daemon snapshot            # snapshot and stage now
+wt daemon logs -f
 wt daemon pause
 wt daemon resume
+wt daemon restart
 wt daemon unwatch ~/src/other-project
 wt daemon stop
 ```
@@ -46,6 +54,8 @@ wt daemon watch C:\src\other-project
 wt daemon status --json | ConvertFrom-Json | Select-Object -ExpandProperty watched
 ```
 
+`wt init --watch` and `wt clone --watch` start the daemon if needed and watch the new worktree. `wt status` prints a hint when auto-snapshots are enabled but the daemon is not running.
+
 ### `status` fields
 
 | Field | Description |
@@ -53,48 +63,73 @@ wt daemon status --json | ConvertFrom-Json | Select-Object -ExpandProperty watch
 | `pid`, `version`, `started_at` | Daemon process and build. |
 | `watched[].root` | Worktree root. |
 | `watched[].paused` | Whether auto-snapshots are paused. |
-| `watched[].pending_changes` | Changed files waiting for the next auto-snapshot. |
+| `watched[].pending_changes` | Changed paths waiting for the next auto-snapshot. |
 | `watched[].snapshots_created` | Auto-snapshots taken since start. |
 | `watched[].last_snapshot`, `last_snapshot_at` | Most recent auto-snapshot id and time. |
 | `watched[].last_stage_at` | Time of the last successful auto-stage. |
-| `watched[].last_error` | Last error (for example a secret-scan failure or an unreachable server). |
+| `watched[].last_error` | Last snapshot or stage error (for example a secret-scan finding, a failing hook, or an unreachable server). Cleared by the next clean pass. |
+| `watched[].last_fetch_at` | When the background fetch last fetched remote branches. |
+| `watched[].sync_state` | State of the background fetch, for example `watching`, `polling`, `offline` or `disabled`. |
+| `watched[].sync_error` | Last background-fetch failure, cleared by the next successful fetch. |
 
 ## How it works
 
 <Steps>
   <Step>
-**Watch.** For every worktree in the watched list, the daemon runs a filesystem watcher. Events under `.wt/` are ignored, as are ignored paths.
+**Watch.** For every worktree in the watched list, the daemon runs a recursive filesystem watcher. Events under `.wt/`, pure reads and ignored paths are dropped. Changes to `.wt/config.toml`, `.wt/ignore`, `.wtignore` and `.wt-tree/` files reload the settings without a restart.
   </Step>
   <Step>
-**Debounce.** Changes are collected until no file event arrives for `auto_snapshot.inactivity_secs` (default `30`) seconds, or immediately once `auto_snapshot.max_changed_files` (default `50`) files have changed.
+**Debounce.** Changes are collected until no file event arrives for `auto_snapshot.inactivity_secs` (default `30`) seconds, or immediately once `auto_snapshot.max_changed_files` (default `50`) paths or `auto_snapshot.max_changed_bytes` bytes have changed.
   </Step>
   <Step>
-**Auto-snapshot.** For each tree with changes, the daemon creates a snapshot marked auto-generated with the message `auto: N files changed`, on the tree's current branch. Reflog action: `auto-snapshot`.
+**Auto-snapshot.** For each tree with changes, the daemon creates a snapshot marked auto-generated on the tree's current branch, with the message from `auto_snapshot.message_format` (default `auto: {count} files changed`). Hooks, the secret scan and signing (`[signing] auto = true`) apply as for `wt snapshot`. Reflog action: `auto-snapshot`.
   </Step>
   <Step>
-**Auto-stage.** If `sync.auto_stage` is `true` (default), the remote named by `sync.remote` (default `origin`) is configured, and you are logged in to it, the daemon uploads the working state as your staged snapshot, just like [`wt stage`](/docs/cli/remote#wt-stage).
+**Auto-stage.** If `sync.auto_stage` is `true` (default), the remote named by `sync.remote` (default `origin`) is configured, and you are logged in to it, the daemon uploads each snapshotted tree as your staged snapshot, just like [`wt stage`](/docs/cli/remote#wt-stage). Not logged in: staging is skipped silently.
   </Step>
 </Steps>
 
-Configure the behavior per worktree with [`wt config`](/docs/cli/repository#wt-config):
+Configure the behavior with [`wt config`](/docs/cli/repository#wt-config), per worktree or per tree; settings are re-read on every pass. All keys are listed in [Configuration](/docs/cli/configuration#keys).
 
 ```toml
 [auto_snapshot]
 enabled = true
 inactivity_secs = 30
 max_changed_files = 50
+max_changed_bytes = "50MB"
+message_format = "auto({branch}): {count} files changed"
 
 [sync]
 auto_stage = true
 remote = "origin"
+auto_fetch = true
+interval_secs = 300
 ```
 
 **Rules**
 
 - The daemon **never snapshots while a merge is in progress** in that tree.
-- Auto-snapshots go through the same secret scan as `wt snapshot`; a finding blocks the snapshot and is reported in `last_error`.
-- `auto_snapshot.enabled = false` turns auto-snapshots off for that worktree without unwatching it.
+- A secret-scan finding or a failing pre-snapshot hook skips that tree and is reported in `last_error`; other trees continue.
+- `auto_snapshot.enabled = false` turns auto-snapshots off for that worktree or tree without unwatching it.
+- With `auto_snapshot.on_branch_switch = "snapshot"`, `wt switch` asks the daemon to snapshot the tree before switching. See [`wt switch`](/docs/cli/branches#wt-switch).
 - Auto-snapshots never push. Only `wt push` changes branch history on the server.
+
+## Background fetch
+
+When `sync.auto_fetch = true` (default) and the worktree has a remote with a saved credential, the daemon keeps one sync task per watched worktree:
+
+1. It opens the gRPC `WatchBranches` stream for the worktree's trees that exist on the server. The server sends a `BranchEvent` for every push, merge-request merge, branch creation and branch deletion on trees you can read.
+2. On each event it runs a fetch for that tree: new snapshots and objects are downloaded and `refs/remotes/<remote>/<branch>` is updated. **Local branches and working files are never touched.**
+3. Every `sync.interval_secs` (default `300`) it fetches every linked tree as a fallback, even without events.
+4. When the server is unreachable or the stream breaks, it reconnects with exponential backoff from 1 second to 5 minutes. Snapshots continue locally meanwhile.
+
+Integrate fetched work yourself with [`wt pull`](/docs/cli/remote#wt-pull) or `wt merge origin/<branch>`. The protocol side is described in [Sync protocol](/docs/protocol/sync-protocol).
+
+## Maintenance and shutdown
+
+- Every 6 hours, for each watched worktree, the daemon expires reflog entries beyond the default retention (90 days, 1000 entries per tree; the same as `wt reflog expire`) and removes stale lock files left by dead processes.
+- On `wt daemon stop`, Ctrl+C or SIGTERM, it stops accepting requests, takes a final auto-snapshot of every worktree with pending changes, waits for in-flight passes, and removes `bg.json`.
+- After a crash, `bg.json` is stale and the next `wt daemon start` replaces it. Watches are restored from `bg.toml`, and changes made while the daemon was down are picked up by the next pass.
 
 ## Files
 
@@ -103,8 +138,8 @@ All daemon state lives in `$WT_HOME` (default `~/.wt`):
 | File | Description |
 |---|---|
 | `bg.toml` | `watched = ["path", ...]`, the watched worktree roots. Updated on `watch` / `unwatch`, so the list survives restarts. |
-| `bg.json` | `{"pid": ..., "port": ..., "version": "..."}`, written on startup and removed on clean shutdown. The CLI reads it to find the daemon. |
-| `bg.log` | Daemon log. Check it when `last_error` is set or the daemon exits. |
+| `bg.json` | `{"pid": ..., "port": ..., "version": "...", "token": "..."}`, written on startup and removed on clean shutdown. The CLI reads it to find and authenticate to the daemon. |
+| `bg.log` | Daemon log (level from `WT_LOG`, default `info`), rotated to `bg.log.old` above 10 MiB. Read it with `wt daemon logs`. |
 
 ```toml
 # $WT_HOME/bg.toml
@@ -113,14 +148,24 @@ watched = ["/home/ada/src/my-project", "/home/ada/src/other-project"]
 
 ## IPC
 
-The CLI talks to the daemon with newline-delimited JSON over TCP on `127.0.0.1`, using the port from `bg.json`: one request line and one response line per connection. Requests are tagged by `cmd` (`status`, `watch`, `unwatch`, `pause`, `resume`, `snapshot_now`, `shutdown`), responses by `result` (`status`, `ok`, `error`). See [SDK IPC](/docs/sdk/ipc).
+The CLI talks to the daemon with newline-delimited JSON over TCP on `127.0.0.1`, using the port from `bg.json`: one request line and one response line per connection. Every request carries the daemon's random `token` from `bg.json`; requests without the right token are rejected. Requests are tagged by `cmd` (`status`, `watch`, `unwatch`, `pause`, `resume`, `snapshot_now`, `prepare_switch`, `shutdown`), responses by `result` (`status`, `ok`, `error`). See [SDK IPC](/docs/sdk/ipc).
 
 ```json
-{"cmd":"watch","path":"/home/ada/src/my-project"}
+{"cmd":"watch","path":"/home/ada/src/my-project","token":"..."}
 ```
 
 <Callout type="info" title="Daemon not running">
-If `bg.json` is missing, or it is stale and the connection is refused, commands other than `start` fail with "background daemon is not running". Run `wt daemon start`. A stale `bg.json` left by a crash is harmless.
+If `bg.json` is missing, or it is stale and the connection is refused, commands other than `start` fail with "background daemon is not running". Run `wt daemon start`. A `bg.json` written by an older daemon without a token requires `wt daemon restart`.
 </Callout>
 
-See [Auto-tracking setup](/guides/auto-tracking-setup) for a walkthrough, including starting the daemon at login.
+## Starting at login
+
+`worktree-bg service` prints a login-service definition with install instructions; it never installs anything itself.
+
+```bash
+worktree-bg service --platform systemd   # ~/.config/systemd/user/worktree-bg.service
+worktree-bg service --platform launchd   # launchd agent dev.w0rktree.bg
+worktree-bg service --platform windows   # Task Scheduler logon task W0rkTree\worktree-bg
+```
+
+See [Auto-tracking setup](/guides/auto-tracking-setup) for a walkthrough.

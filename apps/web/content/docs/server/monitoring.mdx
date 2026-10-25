@@ -1,33 +1,34 @@
 ---
 title: Monitoring
-description: Health checks, Prometheus metrics, logs, admin statistics, and the audit log of worktree-server.
+description: Health checks, Prometheus metrics, logs, admin statistics, and querying and exporting the audit log of worktree-server.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
 ## Health check
 
-`GET /healthz` needs no authentication and has no `/api/v1` prefix.
+`GET /healthz` needs no authentication, has no `/api/v1` prefix and is never rate limited.
 
 ```bash
 curl -s http://localhost:7420/healthz
 ```
 
 ```json
-{"status":"ok","version":"0.2.0","uptime_seconds":86400}
+{"status":"ok","version":"0.2.0-dev","uptime_seconds":86400,"checks":{"meta":"ok","objects":"ok"}}
 ```
 
 | Field | Meaning |
 |---|---|
-| `status` | `ok` when the server is serving requests. |
+| `status` | `ok` (HTTP `200`) when every probe passes, `degraded` (HTTP `503`) when one fails. |
 | `version` | Server version string. |
 | `uptime_seconds` | Seconds since the process started. |
+| `checks` | Result per probe: `meta` (the bbolt metadata store) and `objects` (the object store). |
 
-Use it for load balancer health checks, container liveness probes, and uptime monitors. For a gRPC-level check, `wt` clients call the `Ping` RPC, which is allowed anonymously.
+Use it for load balancer health checks, container probes (the repository's `Dockerfile.server` declares a `HEALTHCHECK` on it) and uptime monitors. The standard gRPC health service `grpc.health.v1.Health` is also served and reports `NOT_SERVING` once shutdown begins; `wt whoami` uses the `Ping` RPC.
 
 ## Prometheus metrics
 
-`GET /metrics` returns server metrics in the Prometheus text exposition format, without authentication, for scraping by Prometheus or any compatible collector.
+`GET /metrics` returns Prometheus text format without authentication and is exempt from rate limiting.
 
 ```yaml
 scrape_configs:
@@ -37,17 +38,32 @@ scrape_configs:
       - targets: ['wt.internal.example.com:7420']
 ```
 
+| Metric | Type | Meaning |
+|---|---|---|
+| `worktree_http_requests_total{route,code}` | counter | REST requests by route pattern and status code |
+| `worktree_http_request_duration_seconds` | histogram | REST latency by route |
+| `worktree_http_requests_in_flight` | gauge | REST requests being served |
+| `worktree_tenants`, `worktree_accounts`, `worktree_trees`, `worktree_branches`, `worktree_snapshots`, `worktree_staged_snapshots` | gauge | Object counts |
+| `worktree_objects`, `worktree_storage_bytes` | gauge | Object store size |
+| `worktree_build_info{version,goversion}`, `worktree_uptime_seconds` | gauge | Build and uptime |
+| `worktree_sync_pushes_total{result}` | counter | Pushes by outcome |
+| `worktree_sync_pulls_total` | counter | Pulls |
+| `worktree_authz_decisions_total{decision}` | counter | Authorization allows and denies (REST and gRPC) |
+| `worktree_mr_merges_total` | counter | Merge-request merges |
+| `worktree_gc_runs_total`, `worktree_gc_deleted_objects_total` | counter | Garbage collection |
+| `worktree_rate_limited_total` | counter | Requests refused by the rate limiter |
+
 <Callout type="info">
-  Metric names are not a stable contract in v0.2.0. Inspect `/metrics` on your build before writing alerts or dashboards. Because `/metrics` is unauthenticated, do not expose it publicly; restrict it at your reverse proxy (see [Deployment](/docs/server/deployment)).
+  `/metrics` is unauthenticated. Do not expose it publicly; restrict it at your reverse proxy or firewall (see [Deployment](/docs/server/deployment)). Metrics carry no tenant or tree labels.
 </Callout>
 
 ## Logs
 
-The server writes structured log messages (Go `log/slog`) to the console. Set the verbosity with `--log-level` (`debug`, `info`, `warn`, `error`). Under systemd, read them with `journalctl -u worktree-server`. Recording an audit event never fails the request that caused it; if an audit event cannot be persisted, the error is logged instead.
+The server writes structured logs (Go `log/slog`) to stderr. Set the verbosity with `--log-level` / `WT_LOG_LEVEL` (`debug`, `info`, `warn`, `error`) and the format with `--log-format` / `WT_LOG_FORMAT` (`text` or `json`, for log shippers). Under systemd, read them with `journalctl -u worktree-server`. Internal errors are logged with the request id that is also returned in the `X-Request-Id` response header.
 
 ## Admin statistics
 
-Server admins can read aggregate counts from `GET /api/v1/admin/stats`, which the admin panel's dashboard displays:
+Server admins can read aggregate counts with `wt admin stats` or `GET /api/v1/admin/stats` (shown on the admin panel's dashboard):
 
 ```json
 {
@@ -62,34 +78,53 @@ Server admins can read aggregate counts from `GET /api/v1/admin/stats`, which th
 }
 ```
 
-`objects` and `storage_bytes` describe the object store (`objects/`); `meta.db` is not included in `storage_bytes`.
-
-For live activity, subscribe to the [event stream](/docs/server/events).
+`objects` and `storage_bytes` describe the object store; `meta.db` is not included. `wt admin system` (`GET /api/v1/admin/system`) adds version, runtime and storage details. Per-tenant usage against quotas: `wt admin usage TENANT` (see [Quotas](/docs/server/operations#quotas)). For live activity, subscribe to the [event stream](/docs/server/events).
 
 ## Audit log
 
-Security-relevant actions are appended to an append-only audit log stored in `meta.db`. Query it with `GET /api/v1/audit` (tenant admins for their tenant, server admins for everything) or on the admin panel's Audit log page.
+Security-relevant actions are appended to an append-only audit log in `meta.db`. Tenant admins see their tenants; server admins see everything when no tenant is given.
 
 ```bash
-curl -s "http://localhost:7420/api/v1/audit?tenant=acme&action=branch.push&limit=20" \
+wt audit --tenant acme --action branch.push -n 20
+wt audit --action 'iam.*' --since 2026-10-01T00:00:00Z --until 2026-11-01T00:00:00Z
+wt audit --resource-type tree --resource-id 0b7f3c9e-5d2a-4e61-8f0c-6a1d2e3b4c5d
+wt audit --tenant acme --format ndjson > acme-audit.ndjson
+```
+
+The REST form is `GET /api/v1/audit` with the same filters:
+
+| Query | Meaning |
+|---|---|
+| `tenant` | Tenant slug. |
+| `action` | Exact action such as `branch.push`, or a prefix with a trailing `.*` such as `iam.*` or `license.*`. |
+| `resource_type`, `resource_id` | Only events on this resource type (`tree`, `account`, ...) or id. |
+| `since`, `until` | RFC 3339 bounds; `until` is exclusive. |
+| `limit` | Page size, default 100, at most 1000. |
+| `format=ndjson` | Stream **every** match as `application/x-ndjson`, one event per line, with no limit, for export to a SIEM. |
+
+```bash
+curl -s "http://localhost:7420/api/v1/audit?tenant=acme&action=access.*&format=ndjson" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Each entry has `id`, `tenant_id`, `actor_id`, `actor` (a username, `anonymous`, or `system`), `action`, `resource_type`, `resource_id`, optional `details` and `remote_addr`, and `at`. Results are newest first, and `limit` defaults to 100. See the [REST API](/docs/server/rest-api#audit) for the full shape.
+Each event has `id` (UUIDv7, time-sortable), `tenant_id`, `actor_id`, `actor` (a username, `anonymous` or `system`), `action`, `resource_type`, `resource_id`, optional `details` (values of secret-looking keys are `[REDACTED]`) and `remote_addr`, and `at`. Page results are newest first.
 
-Actions use `resource.verb` names. Examples:
+Actions use `resource.verb` names, for example:
 
-| Action | Recorded when |
+| Area | Actions |
 |---|---|
-| `auth.login` | An account logs in. |
-| `tree.create` | A tree is created. |
-| `branch.push` | A push moves a branch tip. |
+| Authentication | `auth.login`, `auth.login_failed`, `auth.mfa_challenge`, `auth.logout`, `auth.register`, `sso.login` |
+| Sync | `branch.push`, `branch.push_rejected` (with reason), `tag.push`, `tree.create`, `license.denied`, `snapshot.signature_invalid` |
+| Management | `tree.*`, `branch.*`, `tag.*`, `protection.*`, `license.*`, `mr.*`, `member.*`, `tenant.*`, `account.*` |
+| IAM | `team.*`, `role.*`, `policy.*`, `grant.*`, `sa.*`, `token.*`, `session.*`, `mfa.*`, `invitation.*`, `password.*`, `access.applied` |
+| Server and denials | `access.denied` (every REST `403` and gRPC `PermissionDenied`), `todo.skipped`, `tree.export`, `server.start`, `server.stop` |
 
-Filter with `action=` using the exact name. Other actions follow the same naming pattern for registration, tokens, membership changes, protections, license rules, merge requests, and admin changes.
+Retention is `--audit-retention` (default `0`, keep forever); older events are pruned by [garbage collection](/docs/server/operations#garbage-collection). No API edits or deletes events.
 
 ## What to alert on
 
-- `/healthz` failing or timing out.
-- Free disk space on the volume holding the data directory. `objects/` only grows in v0.2.0.
-- Unexpected `auth.login` activity or unfamiliar `actor` values in the audit log.
-- Backup jobs that did not complete (see [Storage](/docs/server/storage#backup)).
+- `/healthz` returning `503` or timing out.
+- Free disk space on the data volume, and `worktree_storage_bytes` growth.
+- Spikes in `worktree_authz_decisions_total{decision="deny"}`, `access.denied` or `auth.login_failed` events.
+- `worktree_rate_limited_total` rising for legitimate clients (raise `--rate-limit` or the tenant's `requests_per_minute`).
+- GC runs that report an `error` (`wt admin gc-status`), and backups that did not complete (see [Storage](/docs/server/storage#backup)).

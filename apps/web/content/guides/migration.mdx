@@ -26,7 +26,7 @@ This guide moves an existing Git repository to W0rkTree v0.2.0. The Git bridge (
 | submodules | nested trees | Independently versioned directories inside one worktree (`wt tree add`). |
 | `.gitignore` | `.wtignore` and `.wt/ignore` | Same gitignore syntax. |
 | reflog | reflog | `wt reflog`, per tree, append-only. |
-| hooks, CI integration | none in v0.2.0 | Secret scanning is built into `wt snapshot`; CI gates are on the Roadmap. |
+| hooks, CI integration | `pre-snapshot` / `post-snapshot` hooks, `wt ci` | Secret scanning is built into `wt snapshot`; CI systems report checks with `wt ci report`, and branch protection can require them. |
 
 The biggest habit change: there is no index. Whatever is in the tree's working directory (minus ignored paths) is what the next snapshot records. Keep generated files out with ignore rules rather than by not staging them.
 
@@ -166,16 +166,16 @@ Use this to keep a Git mirror for tools that only speak Git, or as an exit path.
 |---|---|
 | Remote-tracking branches | Not imported. Create local branches first. |
 | Uncommitted changes, stashes, the index | Not imported. |
-| Hooks and `.git/config` | Not imported. There is no hook system in `wt`. |
+| Hooks and `.git/config` | Not imported. W0rkTree has its own `pre-snapshot` / `post-snapshot` hooks; see [Hooks](/docs/cli/configuration#hooks). |
 | Git reflog | Not imported. The W0rkTree reflog starts at the import. |
 | Submodules | Not converted into nested trees. Set nested trees up afterwards with `wt tree add`. |
 | Git LFS | `.gitattributes` filters are not applied, so LFS-tracked files arrive as pointer files. Fetch the real content in Git (`git lfs checkout`) and snapshot it, or keep large binaries out of the tree. |
-| Commit and tag signatures | Not preserved. Snapshot signing is on the Roadmap. |
+| Commit and tag signatures | Not preserved. Sign new snapshots with W0rkTree's own Ed25519 keys; see [Snapshot signing](/docs/cli/signing). |
 | Committer (as distinct from author) | Only author, timestamp and message are carried over. |
 | Commit SHAs | Snapshots get new UUID ids; correlate through `.wt/git-map.json` after an export. |
 
 <Callout type="warn" title="Roadmap">
-A live Git mirror mode, automatic submodule-to-nested-tree conversion and snapshot signing are not part of v0.2.0. See the [roadmap](/roadmap).
+A live Git mirror mode and automatic submodule-to-nested-tree conversion are not built yet. See the [roadmap](/roadmap).
 </Callout>
 
 ## Command cheat sheet

@@ -1,35 +1,38 @@
 ---
 title: CLI Reference
-description: Global flags, exit codes, environment variables, revision syntax, and a map of every wt command in v0.2.0.
+description: Global flags, exit codes, environment variables, revision syntax, and a map of every wt command.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
 
-`wt` is the W0rkTree command-line client (crate `worktree-cli`). It works on a local `.wt/` repository through the Rust SDK, talks to a W0rkTree server over gRPC (h2c) and REST on a single port, and controls the background daemon `worktree-bg` over newline-delimited JSON on a loopback (`127.0.0.1`) TCP port.
+`wt` is the W0rkTree command-line client (crate `worktree-cli`). It works on a local `.wt/` repository through the Rust SDK, talks to a W0rkTree server over gRPC and REST on a single port, and controls the background daemon `worktree-bg` over newline-delimited JSON on a loopback (`127.0.0.1`) TCP port.
 
-This reference covers **v0.2.0 ("v2 rebuild")**. Every command, subcommand, flag and positional listed here is the complete surface; there are no hidden or extra flags.
+These pages are task-oriented: each command is described with its common flags and examples. The complete, generated flag listing for every command is in [`docs/cli-reference.md`](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md) (produced from `wt --help`).
 
 <Callout type="info" title="Install from source">
-v0.2.0 is pre-1.0 and is built from source only: `cargo install --path crates/worktree-cli` (and `cargo install --path crates/worktree-bg` for the daemon). See [Installation](/docs/installation).
+W0rkTree is pre-1.0 and is built from source only: `cargo install --path crates/worktree-cli` (and `cargo install --path crates/worktree-bg` for the daemon). See [Installation](/docs/installation).
 </Callout>
 
 ## Synopsis
 
 ```text
-wt [--json] [-C <path>] [--tree <name>] [--no-color] <command> [args...]
+wt [--json] [-C <path>] [--tree <name>] [--no-color] [--server <url>] <command> [args...]
 ```
 
 ## Global flags
 
-Global flags are accepted by every command.
+Global flags are accepted by every command and may appear anywhere on the command line.
 
 | Flag | Description |
 |---|---|
-| `--json` | Write machine-readable JSON to stdout instead of human-formatted text. |
+| `--json` | Print exactly one machine-readable JSON document on stdout instead of human output. Errors go to stderr. |
 | `-C <path>` | Run as if `wt` had been started in `<path>`. The worktree is found by walking up from this directory to the nearest `.wt/`. |
 | `--tree <name>` | Operate on the named tree instead of the tree inferred from the current directory. |
-| `--no-color` | Disable ANSI colors in human output. |
+| `--no-color` | Disable colored output. Colors are also off when stdout is not a terminal or `NO_COLOR` is set. |
+| `--server <url>` | Server for server-side commands (`wt mr`, `wt trees`, `wt team`, ...). Env `WT_SERVER`. Default: this worktree's origin remote, else the only saved login. |
+| `-h`, `--help` | Show help for the command. |
+| `-V`, `--version` | Print the version. |
 
 ### Which tree a command acts on
 
@@ -39,33 +42,51 @@ A worktree contains one root tree (created by `wt init`) and optionally nested t
 2. the deepest tree whose directory contains the current directory (or the `-C` path); falling back to
 3. the root tree.
 
+### Server-side commands
+
+Commands that manage server state (`wt tenant`, `wt trees`, `wt mr`, `wt ci`, `wt protect`, `wt license`, `wt todo`, `wt deps`, `wt release`, the IAM commands, `wt admin`, `wt audit`, ...) talk to the REST API. They resolve the server from `--server` / `WT_SERVER`, else the worktree's origin remote, else the only saved login. `TREE` arguments are written `tenant/tree`; inside a worktree they default to the origin tenant plus the current tree's remote name.
+
+```bash
+wt mr list                              # the current tree on origin
+wt mr list acme/payments                # an explicit tree
+wt --server https://wt.example.com trees list --tenant acme
+```
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | Error (for example: not a worktree, dirty working tree, push rejected, secrets detected, not logged in). |
-| `2` | Usage error: unknown command or flag, missing or invalid argument. |
-| `3` | Merge conflicts: `wt merge` or `wt pull` stopped with conflicts that need resolving. |
+| `1` | The command failed (for example: not a worktree, branch not found, push rejected, secrets detected, server unreachable). |
+| `2` | Usage error: unknown command or flag, missing or conflicting arguments. |
+| `3` | A merge stopped with conflicts (`wt merge`, `wt pull`), or `wt merge --continue` found unresolved conflict markers. |
 
 ## Environment variables
 
 | Variable | Description |
 |---|---|
-| `WT_HOME` | Per-user state directory. Default `~/.wt` (on Windows, `%USERPROFILE%\.wt`). Holds `credentials.toml`, `bg.json`, `bg.toml`, `bg.log`. |
+| `WT_HOME` | Per-user state directory. Default `~/.wt` (on Windows, `%USERPROFILE%\.wt`). |
 | `WT_PASSWORD` | Password used by `wt login` and `wt register` instead of an interactive prompt. |
+| `WT_MFA_CODE` | TOTP or recovery code for `wt login` on accounts with two-factor authentication. |
+| `WT_SERVER` | Server for server-side commands (same as `--server`). |
+| `NO_COLOR` | Disable colors (same as `--no-color`). |
+| `WT_LOG` | Diagnostic logging on stderr, for example `WT_LOG=debug` or `WT_LOG=worktree_sdk=trace`. |
+
+Passwords are read from the first line of stdin with `--password-stdin`, else from `WT_PASSWORD`, else from an interactive prompt that does not echo.
 
 Files in `$WT_HOME`:
 
 | File | Contents |
 |---|---|
-| `credentials.toml` | Saved login tokens, keyed by server URL (written by `wt login` / `wt register`, removed by `wt logout`). |
-| `bg.json` | `pid`, `port` and `version` of the running daemon; written on daemon start, removed on clean shutdown. |
+| `credentials.toml` | Saved bearer tokens, keyed by normalized server URL (written by `wt login` / `wt register`, removed by `wt logout`). |
+| `config.toml` | User-level defaults: `[user]`, `[signing]`, `[secret_scanning]`. See [Configuration](/docs/cli/configuration#configuration-hierarchy). |
+| `keys/<name>.key`, `keys/<name>.pub` | Ed25519 snapshot-signing keys created by [`wt identity generate`](/docs/cli/signing). |
+| `bg.json` | `pid`, `port`, `version` and the random IPC `token` of the running daemon; written on daemon start, removed on clean shutdown. |
 | `bg.toml` | `watched = [...]`, the worktree roots the daemon watches. |
-| `bg.log` | Daemon log. |
+| `bg.log` | Daemon log (rotated to `bg.log.old` above 10 MiB). |
 
 <Callout type="warn" title="Tests and CI">
-Set `WT_HOME` to a temporary directory in tests and CI so runs never read or overwrite your real credentials or daemon state.
+Set `WT_HOME` to a temporary directory in tests and CI so runs never read or overwrite your real credentials, keys or daemon state.
 </Callout>
 
 ## Revision syntax
@@ -74,13 +95,15 @@ Wherever a command takes `REV` (`wt log`, `wt show`, `wt diff`, `wt revert`, `wt
 
 | Form | Resolves to |
 |---|---|
-| `HEAD` | Head snapshot of the current branch. |
-| `HEAD~N` | The `N`th first-parent ancestor of `HEAD`. |
+| `HEAD`, `@` | Head snapshot of the current branch. |
 | `<branch>` | Tip of a local branch. |
-| `<branch>~N` | The `N`th first-parent ancestor of a branch tip. |
-| `origin/<branch>` | Last known tip of a remote branch (from `refs/remotes/origin/<branch>`, updated by `wt fetch`, `wt pull`, `wt push`). |
+| `origin/<branch>` | Last known tip of a remote branch (from `refs/remotes/origin/<branch>`, updated by `wt fetch`, `wt pull`, `wt push`). Any remote name works. |
 | `<tag>` | The snapshot a tag points to. |
 | `<id-prefix>` | A snapshot id (UUID) or a unique prefix of at least 4 characters. An ambiguous prefix is an error. |
+| `REV~N` | The `N`th first-parent ancestor, for example `HEAD~2`, `main~1`. |
+| `REV^N` | The `N`th parent (`^` = `^1`), for example the second parent of a merge: `HEAD^2`. Suffixes chain: `main~2^2`. |
+| `@{N}` | The `N`th newest reflog entry of the current branch. |
+| `BRANCH@{N}` | The `N`th newest reflog entry of that branch; `HEAD@{N}` counts entries of the whole tree. `main@{1}~2` works. |
 
 Snapshot ids are UUID v4 strings; human output usually shows the first 8 characters.
 
@@ -89,50 +112,70 @@ Snapshot ids are UUID v4 strings; human output usually shows the first 8 charact
 | Command | Purpose | Page |
 |---|---|---|
 | [`wt init`](/docs/cli/repository#wt-init) | Create a new worktree | Repository |
-| [`wt status`](/docs/cli/repository#wt-status) | Show working changes (and team WIP with `--team`) | Repository |
-| [`wt config`](/docs/cli/repository#wt-config) | Read and write `.wt/config.toml` | Repository |
+| [`wt status`](/docs/cli/repository#wt-status) | Working changes, restricted paths, team WIP with `--team` | Repository |
+| [`wt config`](/docs/cli/repository#wt-config) | Read and write configuration (worktree, user, tree) | Repository |
 | [`wt ignore`](/docs/cli/repository#wt-ignore) | List, add and test ignore patterns | Repository |
-| [`wt tree`](/docs/cli/repository#wt-tree) | Manage nested trees | Repository |
-| [`wt snapshot`](/docs/cli/snapshots#wt-snapshot) | Record the working state | Snapshots |
+| [`wt tree`](/docs/cli/repository#wt-tree) | Manage, validate and scaffold nested trees | Repository |
+| [`wt snapshot`](/docs/cli/snapshots#wt-snapshot) | Record the working state (optionally signed, with dependencies) | Snapshots |
 | [`wt log`](/docs/cli/snapshots#wt-log) | Show snapshot history | Snapshots |
 | [`wt show`](/docs/cli/snapshots#wt-show) | Show one snapshot and its changes | Snapshots |
 | [`wt diff`](/docs/cli/snapshots#wt-diff) | Compare working files and revisions | Snapshots |
-| [`wt reflog`](/docs/cli/snapshots#wt-reflog) | Show the per-tree action log | Snapshots |
+| [`wt reflog`](/docs/cli/snapshots#wt-reflog) | Show and expire the per-tree action log | Snapshots |
 | [`wt revert`](/docs/cli/snapshots#wt-revert) | Undo a snapshot with a new snapshot | Snapshots |
 | [`wt restore`](/docs/cli/snapshots#wt-restore) | Overwrite working files from a revision | Snapshots |
 | [`wt archive`](/docs/cli/snapshots#wt-archive) | Export a revision as `tar.gz` or `zip` | Snapshots |
 | [`wt branch`](/docs/cli/branches#wt-branch) | List, create, archive and restore branches | Branches |
 | [`wt switch`](/docs/cli/branches#wt-switch) | Switch the working directory to a branch | Branches |
-| [`wt merge`](/docs/cli/branches#wt-merge) | Three-way merge into the current branch | Branches |
+| [`wt merge`](/docs/cli/branches#wt-merge) | Three-way merge, conflict resolution | Branches |
 | [`wt tag`](/docs/cli/branches#wt-tag) | List, create and delete tags | Branches |
 | [`wt remote`](/docs/cli/remote#wt-remote) | Configure servers | Remote |
 | [`wt register`](/docs/cli/remote#wt-register) | Create an account on a server | Remote |
-| [`wt login`](/docs/cli/remote#wt-login) | Log in and save a token | Remote |
+| [`wt login`](/docs/cli/remote#wt-login) | Log in (with two-factor authentication) and save a token | Remote |
 | [`wt logout`](/docs/cli/remote#wt-logout) | Remove a saved token | Remote |
 | [`wt whoami`](/docs/cli/remote#wt-whoami) | Show the server version and logged-in user | Remote |
+| [`wt password-reset`](/docs/cli/remote#wt-password-reset) | Set a new password with an admin-issued reset code | Remote |
 | [`wt push`](/docs/cli/remote#wt-push) | Upload a branch to the server | Remote |
-| [`wt fetch`](/docs/cli/remote#wt-fetch) | Download remote branches and tags | Remote |
+| [`wt fetch`](/docs/cli/remote#wt-fetch) | Download remote branches and tags (optionally shallow) | Remote |
 | [`wt pull`](/docs/cli/remote#wt-pull) | Fetch and integrate a remote branch | Remote |
 | [`wt clone`](/docs/cli/remote#wt-clone) | Create a worktree from a server tree | Remote |
 | [`wt stage`](/docs/cli/remote#wt-stage) | Upload WIP as a team-visible staged snapshot | Remote |
-| [`wt git`](/docs/cli/git#wt-git) | Import from and export to Git | Git |
+| [`wt unstage`](/docs/cli/remote#wt-unstage) | Remove your staged snapshot from the server | Remote |
+| [`wt mr`](/docs/cli/merge-requests#wt-mr) | Merge requests: open, review, comment, check, merge, linked groups | Reviews and merges |
+| [`wt ci`](/docs/cli/merge-requests#wt-ci) | Report and show CI check results | Reviews and merges |
+| [`wt protect`](/docs/cli/merge-requests#wt-protect) | Branch and tag protection rules | Reviews and merges |
+| [`wt todo`](/docs/cli/dependencies#wt-todo) | TODOs created from snapshot dependencies | Dependencies |
+| [`wt deps`](/docs/cli/dependencies#wt-deps) | Dependency status and graph | Dependencies |
+| [`wt release`](/docs/cli/dependencies#wt-release) | Releases and release assets | Dependencies |
+| [`wt git`](/docs/cli/git#wt-git) | Import from, export to and push to Git | Git |
+| [`wt identity`](/docs/cli/signing#wt-identity) | Snapshot signing keys | Signing |
+| [`wt access`](/docs/cli/iam#wt-access) | Declarative access files: validate, plan, apply, pull | Access |
+| [`wt team`](/docs/cli/iam#wt-team) | Teams and their members | Access |
+| [`wt role`](/docs/cli/iam#wt-role) | Custom roles | Access |
+| [`wt policy`](/docs/cli/iam#wt-policy) | Allow/deny policies, validation and simulation | Access |
+| [`wt grant`](/docs/cli/iam#wt-grant) | Per-tree grants for users, teams, service accounts, tenants | Access |
+| [`wt sa`](/docs/cli/iam#wt-sa) | Service accounts and their keys | Access |
+| [`wt token`](/docs/cli/iam#wt-token) | Personal API tokens | Access |
+| [`wt session`](/docs/cli/iam#wt-session) | Sign-in sessions | Access |
+| [`wt mfa`](/docs/cli/iam#wt-mfa) | Two-factor authentication and recovery codes | Access |
+| [`wt invite`](/docs/cli/iam#wt-invite) | Tenant invitations | Access |
+| [`wt iam`](/docs/cli/iam#wt-iam) | Action catalog, effective permissions, access simulator | Access |
+| [`wt sso`](/docs/cli/iam#wt-sso) | OpenID Connect single sign-on configuration | Access |
+| [`wt tenant`](/docs/cli/administration#wt-tenant) | Tenants, members, plans and status | Administration |
+| [`wt trees`](/docs/cli/administration#wt-trees) | Server trees: settings, branches, tags, history, stats | Administration |
+| [`wt license`](/docs/cli/administration#wt-license) | Per-path license rules and license detection | Administration |
+| [`wt search`](/docs/cli/administration#wt-search) | Search tenants, trees, branches and accounts | Administration |
+| [`wt events`](/docs/cli/administration#wt-events) | Stream live server events | Administration |
+| [`wt admin`](/docs/cli/administration#wt-admin) | Server administration: accounts, GC, quotas, usage | Administration |
+| [`wt audit`](/docs/cli/administration#wt-audit) | Query and export the audit log | Administration |
 | [`wt daemon`](/docs/cli/daemon#wt-daemon) | Control the background daemon | Daemon |
-
-### Not in the CLI
-
-Merge requests, branch protections, license rules, tenants, members and API tokens have **no `wt` subcommands in v0.2.0**. Manage them with the [REST API](/docs/server/rest-api) or the [admin panel](/guides/admin-panel).
-
-<Callout type="warn" title="Roadmap">
-`wt` subcommands for merge requests, tenants, access and licenses are planned but not shipped. See the [roadmap](/roadmap).
-</Callout>
 
 ## Scripting with `--json`
 
-- `--json` puts the command's result on stdout as JSON. Field names follow the SDK data types (for example `wt status --json` mirrors `StatusReport`: `tree`, `branch`, `head`, `changes` with `path` and `kind` of `added`, `modified` or `deleted`, and `merge`). See [SDK repository](/docs/sdk/repository).
+- `--json` puts the command's result on stdout as one JSON document. Field names follow the SDK data types (for example `wt status --json` mirrors `StatusReport`: `tree`, `branch`, `head`, `changes` with `path` and `kind` of `added`, `modified` or `deleted`, and `merge`, plus `restricted` and `shallow`). Server-side commands print the server's JSON. See [SDK repository](/docs/sdk/repository).
 - Branch on the **exit code**, not on message text: `0` success, `1` error, `2` usage, `3` conflicts.
-- Never type passwords into scripts interactively. Use `--password-stdin` or `WT_PASSWORD`.
+- Never type passwords into scripts interactively. Use `--password-stdin` or `WT_PASSWORD`. `wt` reads tokens only from `$WT_HOME/credentials.toml` (there is no token environment variable); for REST calls from CI, a scoped API token or service-account key works as a bearer token (see [`wt token`](/docs/cli/iam#wt-token)).
+- Destructive commands ask for confirmation; pass `--yes` (or `-y`) when stdin is not a terminal.
 - Use `-C <path>` instead of changing directories, and `--tree <name>` instead of relying on the current directory.
-- Pass `--no-color` when capturing human output.
 
 ```bash
 # Fail a CI step when the working tree is dirty
@@ -143,7 +186,7 @@ if [ "$changes" -ne 0 ]; then echo "uncommitted changes"; exit 1; fi
 wt merge feature/login
 case $? in
   0) echo "merged" ;;
-  3) echo "conflicts; see .wt/conflicts/" ;;
+  3) echo "conflicts; run wt merge status" ;;
   *) echo "merge failed"; exit 1 ;;
 esac
 ```
@@ -153,20 +196,26 @@ $status = wt -C .\repo status --json | ConvertFrom-Json
 if ($status.changes.Count -ne 0) { Write-Error "uncommitted changes"; exit 1 }
 
 wt merge feature/login
-if ($LASTEXITCODE -eq 3) { Write-Host "conflicts; see .wt\conflicts\" }
+if ($LASTEXITCODE -eq 3) { wt merge status }
 ```
 
 <Callout type="info">
-JSON output is pre-1.0. Field names track the SDK types and may change between minor versions.
+JSON output is pre-1.0. Field names track the SDK and server types and may change between versions.
 </Callout>
 
 ## Sections
 
 <Cards>
   <Card title="Repository" description="init, status, config, ignore, tree" href="/docs/cli/repository" />
+  <Card title="Configuration" description="Config hierarchy, ignore rules, hooks, secret scanning" href="/docs/cli/configuration" />
   <Card title="Snapshots" description="snapshot, log, show, diff, reflog, revert, restore, archive" href="/docs/cli/snapshots" />
   <Card title="Branches" description="branch, switch, merge, tag" href="/docs/cli/branches" />
-  <Card title="Remote" description="remote, register, login, push, fetch, pull, clone, stage" href="/docs/cli/remote" />
-  <Card title="Git" description="git import, git export" href="/docs/cli/git" />
-  <Card title="Daemon" description="daemon start, stop, status, watch, pause" href="/docs/cli/daemon" />
+  <Card title="Remote" description="remote, login, push, fetch, pull, clone, stage, unstage" href="/docs/cli/remote" />
+  <Card title="Reviews and merges" description="mr, ci, protect" href="/docs/cli/merge-requests" />
+  <Card title="Dependencies and releases" description="todo, deps, release" href="/docs/cli/dependencies" />
+  <Card title="Git" description="git import, export, push, remote" href="/docs/cli/git" />
+  <Card title="Signing" description="identity: snapshot signing keys" href="/docs/cli/signing" />
+  <Card title="Access" description="access, team, role, policy, grant, sa, token, session, mfa, invite, iam, sso" href="/docs/cli/iam" />
+  <Card title="Administration" description="tenant, trees, license, search, events, admin, audit" href="/docs/cli/administration" />
+  <Card title="Daemon" description="daemon start, stop, restart, status, watch, logs, snapshot" href="/docs/cli/daemon" />
 </Cards>

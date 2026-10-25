@@ -1,0 +1,167 @@
+---
+title: Dependencies, TODOs and Releases
+description: Declare that a snapshot needs work in another tree, track the resulting TODOs, gate merges on them, and publish releases with assets using wt snapshot --depend, wt todo, wt deps and wt release.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+These commands talk to the server's REST API. They accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. A `TREE` argument is written `tenant/tree`; inside a worktree it defaults to the origin tenant plus the current tree's remote name. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#wt-todo).
+
+## Cross-tree dependencies
+
+A snapshot can declare that it needs work in another tree. When the snapshot is pushed, the server opens a **TODO** in that tree.
+
+<Steps>
+<Step>
+
+### Declare the dependency
+
+```bash
+# in the frontend tree
+wt snapshot -m "Dashboard UI" \
+  --depend backend --todo "GET /api/dashboard" --priority high --blocking
+wt push
+```
+
+</Step>
+<Step>
+
+### Pick up the TODO
+
+```bash
+# in the backend tree
+wt todo list
+wt todo claim 3
+```
+
+</Step>
+<Step>
+
+### Complete it
+
+Mention the TODO in a snapshot message and push:
+
+```bash
+wt snapshot -m "Add dashboard endpoint
+
+Completes: #3"
+wt push
+```
+
+Or complete it explicitly: `wt todo complete 3 --snapshot 5e6f7a8b`.
+
+</Step>
+</Steps>
+
+### `wt snapshot --depend`
+
+```text
+wt snapshot -m <MSG> --depend <TREE[@BRANCH]> [--depend-tenant <TENANT>] [--todo <TITLE>]
+            [--details <TEXT>] [--priority <low|medium|high|critical>] [--blocking] [--linked]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--depend <TREE[@BRANCH]>` | Tree that must do the work (`TENANT/TREE` also accepted). `@BRANCH` names the branch the work is needed on (default: that tree's default branch). |
+| `--depend-tenant <TENANT>` | Tenant of the dependency's tree (default: the tenant of this tree). |
+| `--todo <TITLE>` | TODO title (default: the first line of the snapshot message). |
+| `--details <TEXT>` | Longer description. |
+| `--priority` | `low`, `medium` (default), `high` or `critical`. |
+| `--blocking` | The target branch may not merge until the TODO is done (with `--block-on-todos` protection). |
+| `--linked` | Recorded on the TODO as a request that the branches merge together. Linking merge requests is still explicit: use [`wt mr link`](/docs/cli/merge-requests#linked-merges-across-trees). |
+
+The group is repeatable: `--depend`, then its options, then the next `--depend`. The options apply to the preceding `--depend`. See [`wt snapshot`](/docs/cli/snapshots#wt-snapshot).
+
+### What the server does on push
+
+- For every newly pushed snapshot and each of its dependencies, the server resolves the target tree. If the tree does not exist or the **pusher cannot read it** (`tree:read`), no TODO is created and the skip is audited as `todo.skipped`.
+- TODOs are deduplicated by (source snapshot, target tree, title), so pushing the same snapshot again creates nothing new.
+- A TODO gets a number per target tree and starts `open`; the event `todo.created` is published in the target tenant.
+- A pushed snapshot whose message has a line `Completes: #N` marks TODO `N` of the tree it is pushed to `done`. `Completes: tree#N` names a tree of the same tenant and `Completes: tenant/tree#N` any tree (that needs `tree:write` there). One line may list several references separated by commas or spaces.
+
+## `wt todo`
+
+```text
+wt todo list [--status <STATUS>] [--branch <B>] [--assignee <USER>] [--all-trees] [TREE]
+wt todo show <NUMBER> [TREE]
+wt todo claim <NUMBER> [TREE]
+wt todo complete [--snapshot <REV>] <NUMBER> [TREE]
+wt todo cancel <NUMBER> [TREE]
+wt todo create [--details <TEXT>] [--priority <PRIORITY>] [--blocking] [--branch <B>] <TITLE> [TREE]
+```
+
+| Command | Notes |
+|---|---|
+| `list` | `--status` is `active` (open and in progress, the default), `open`, `in-progress`, `done`, `cancelled` or `all`. `--assignee me` means you. `--all-trees` lists every tree of the tenant. |
+| `show` | One TODO with its source tree, branch and snapshot. |
+| `claim` | Assigns the TODO to you and sets it `in_progress`. |
+| `complete` | Sets it `done`; `--snapshot` (id, branch or tag) records what resolved it. |
+| `cancel` | Sets it `cancelled`. |
+| `create` | A manual TODO on `--branch` (default: the tree's default branch). |
+
+Statuses are `open`, `in_progress`, `done` and `cancelled`. Changing a TODO needs `tree:write` on its tree; changes publish `todo.updated`.
+
+```bash
+wt todo list --assignee me
+wt todo list --status all --all-trees --json
+wt todo create "Rotate the signing key" --priority critical --blocking --branch main
+```
+
+## `wt deps`
+
+```text
+wt deps status [--branch <B>] [TREE]
+wt deps graph [--branch <B>] [--format <text|dot>] [TREE]
+```
+
+`status` lists the dependencies declared by the snapshots of a branch (default: the default branch) with the state of each TODO, plus the TODOs other trees have requested from this one. `graph` prints the dependency graph between trees, as text or Graphviz:
+
+```bash
+wt deps status --branch feature/dashboard
+wt deps graph --format dot | dot -Tsvg > deps.svg
+```
+
+## Blocking merges on TODOs
+
+With the protection flag `--block-on-todos`, a merge request cannot merge while its tree has open or in-progress **blocking** TODOs whose target branch is the merge request's source branch:
+
+```bash
+wt protect set main --no-direct-push --approvals 1 --block-on-todos
+wt mr checks 7      # "todos": {"blocking_open": 1} and a "todos" blocker
+```
+
+See [`wt protect`](/docs/cli/merge-requests#wt-protect).
+
+## `wt release`
+
+Releases belong to a server tree and one of its tags.
+
+```text
+wt release list [TREE]
+wt release create [--name <NAME>] [--notes <TEXT> | --notes-file <FILE>] [--draft] [--prerelease] [--snapshot <REV>] <TAG> [TREE]
+wt release show <TAG> [TREE]
+wt release edit [--name <NAME>] [--notes <TEXT>] [--notes-file <FILE>] [--draft | --publish] [--prerelease | --no-prerelease] <TAG> [TREE]
+wt release delete [--yes] <TAG> [TREE]
+wt release upload [--in <TENANT/TREE>] <TAG> <FILE>...
+wt release download [--in <TENANT/TREE>] [-o <DIR>] <TAG> [ASSET]
+```
+
+```bash
+wt release create v1.4.0 --snapshot main --name "1.4.0" --notes-file CHANGELOG.md --draft
+wt release upload v1.4.0 dist/app-linux.tar.gz dist/app-windows.zip
+wt release edit v1.4.0 --publish
+wt release download v1.4.0 -o ./downloads
+```
+
+- `create` uses an existing tag, or creates it at `--snapshot` (id, branch or tag) when it does not exist yet.
+- `delete` removes the release; the tag is kept.
+- Each asset is at most 64 MiB, a release holds at most 100, and uploading a name that exists replaces it. Downloads keep the asset's content type and file name. `download` without `ASSET` fetches every asset.
+- Creating, editing and uploading need `release:create` (developer and above); deleting needs `release:delete` (maintainer and above). Drafts are listed only for accounts that may create releases.
+- Events: `release.created`, `release.deleted`.
+
+<Callout type="info">
+Assets are stored in the server's object store and kept by garbage collection while the release exists. See [Operations](/docs/server/operations#garbage-collection).
+</Callout>
+
+The full model is in the [Tree specification, section 8](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Tree.md#8-dependencies-todos-and-linked-merges) and the [Server specification, section 11](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md#11-tags-releases-dependencies-and-todos).

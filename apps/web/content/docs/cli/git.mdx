@@ -1,48 +1,55 @@
 ---
 title: Git
-description: Import a Git repository into a new worktree and export snapshots back to Git commits with wt git.
+description: Import Git repositories (from a URL or a path), export snapshots as Git commits, and push trees to Git remotes with wt git.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`wt git` is a one-shot bridge between Git and W0rkTree, implemented by the `worktree-git` crate (libgit2). It reads and writes Git repositories on disk; it does not talk to Git hosting servers.
+`wt git` bridges Git and W0rkTree. It is implemented by the `worktree-git` crate (libgit2) and can read from and write to local repositories as well as clone from and push to Git hosts over HTTPS, SSH and `file://`.
 
 ## `wt git`
 
 ```text
-wt git import GIT_PATH [DEST] | export GIT_PATH [--rev REV]
+Usage: wt git [OPTIONS] <COMMAND>
 ```
 
 | Subcommand | Description |
 |---|---|
-| `import GIT_PATH [DEST]` | Create a new worktree from the Git repository at `GIT_PATH`. |
-| `export GIT_PATH [--rev REV]` | Write snapshots into the Git repository at `GIT_PATH` as Git commits. |
+| `import <URL\|PATH> [DEST]` | Import a Git repository with its branches and tags. |
+| `export <GIT_PATH>` | Export this tree's history into a Git repository (created if missing). |
+| `push <NAME\|URL\|PATH>` | Export this tree and push it to a Git remote. |
+| `remote add\|list\|remove` | Manage Git remotes stored in `.wt/config.toml` (`[git_remote.NAME]`). |
 
 ## `wt git import`
 
 ```text
-wt git import GIT_PATH [DEST]
+Usage: wt git import [OPTIONS] <URL|PATH> [DEST]
 ```
 
-| Argument | Description |
+A URL (`https://`, `ssh://`, `user@host:path`, `file://`) is cloned into a temporary directory first; a path is read in place.
+
+| Argument / flag | Description |
 |---|---|
-| `GIT_PATH` | Path to an existing Git repository. |
-| `DEST` | Directory for the new worktree. The worktree is named after this directory. Pass it explicitly to control where the worktree is created. |
+| `URL\|PATH` | Git repository URL or path. |
+| `DEST` | Destination directory. Default: `./<repository name>` (or `./NAME` with `--tree`). |
+| `--branches <A,B>` | Import only these branches (comma-separated). A name without a local branch selects the remote-tracking branch of that name. |
+| `--all-branches` | Also import remote-tracking branches (`refs/remotes/*`) of a local repository. Default: local branches only. |
+| `--tree <NAME>` | Inside a worktree: import into that tree instead of creating a new worktree. The tree is created as a nested tree at `DEST` (or `./NAME`) if it does not exist. |
 
 What is imported:
 
-- **Branches**: every local Git branch. Each branch's commit graph becomes snapshots on the **root tree**, preserving parent links (merge commits become two-parent snapshots), author, timestamp and message.
+- **Branches**: each branch's commit graph becomes snapshots, preserving parent links (merge commits become two-parent snapshots), author, timestamp and message. Snapshot ids are derived from the commit SHAs, so re-imports are stable.
 - **Tags**: lightweight and annotated tags become W0rkTree tags.
-- **Ignore rules**: `.gitignore` is converted into `.wt/ignore` (the syntax is the same).
-- **Files**: blobs are re-hashed with BLAKE3 into the W0rkTree object store.
+- **Ignore rules**: the root `.gitignore` patterns are copied into `.wt/ignore`.
+- **Files**: regular files with their executable bit, re-hashed with BLAKE3 (files over 8 MiB are chunked).
 
-After import, one branch is checked out in the working directory.
+Importing again into the same tree adds only new commits and fast-forwards branches, so you can keep pulling from a Git repository during a migration.
 
 ```bash
-wt git import ~/src/legacy-app ./legacy-app
-cd legacy-app
-wt log -n 5 --oneline
-wt branch
+wt git import https://github.com/acme/legacy-app.git
+wt git import ~/src/legacy-app ./legacy-app --branches main,release
+cd my-platform
+wt git import git@github.com:acme/payments.git services/payments --tree payments
 ```
 
 ```powershell
@@ -53,33 +60,79 @@ wt -C .\legacy-app log -n 5 --oneline
 ## `wt git export`
 
 ```text
-wt git export GIT_PATH [--rev REV]
+Usage: wt git export [OPTIONS] <GIT_PATH>
 ```
 
 | Argument / flag | Description |
 |---|---|
-| `GIT_PATH` | Target Git repository. Created if it does not exist. |
-| `--rev REV` | Revision to export. Default: all branches of the tree. |
+| `GIT_PATH` | Git repository to write. A missing path ending in `.git` is created bare. |
+| `--rev <REV>` | Branch to export. Default: all branches. |
+| `--no-license` | Ignore license rules: export every path and add no `LICENSES/NOTICE`. |
+| `--include-restricted` | Keep paths whose license forbids redistribution. |
 
-Snapshots are written as Git commits with the same parents, author, timestamp and message. The tree to export is the root tree unless `--tree <name>` is given. The mapping between snapshot ids and Git commit SHAs is stored in `.wt/git-map.json`, so **repeated exports are incremental and deterministic**: already-exported snapshots are skipped and produce the same commits.
+Snapshots are written as Git commits with the same parents, author (also used as committer), timestamp and message. The tree to export is selected as usual (`--tree <name>` or the current directory). The mapping between snapshot ids and commit SHAs is stored in `.wt/git-map.json`, so **repeated exports are incremental and deterministic**. Branch and tag refs in the target are overwritten: W0rkTree is the source of truth.
+
+Exports are license-aware like [`wt archive`](/docs/cli/snapshots#wt-archive): a `LICENSES/NOTICE` file lists the SPDX expression of each path, and non-redistributable paths are skipped with a warning.
 
 ```bash
-wt git export ../legacy-app-git
+wt git export ../legacy-app.git
 wt git export ../legacy-app-git --rev main
-wt --tree frontend git export ../frontend-git
+wt --tree frontend git export ../frontend.git
 ```
+
+## `wt git push`
+
+```text
+Usage: wt git push [OPTIONS] <NAME|URL|PATH>
+```
+
+Export this tree and push it to a Git remote. `TARGET` is a remote added with `wt git remote add`, a URL, or a path (a missing local path is created as a bare repository). The remote's history is fetched first so imported commits are reused and pushes fast-forward. Tags are pushed too.
+
+| Flag | Description |
+|---|---|
+| `-b, --branch <B>` | Branch to push. Repeatable. Default: all branches. |
+| `-f, --force` | Overwrite remote branches even when the push is not a fast-forward. |
+| `--no-license`, `--include-restricted` | As for `wt git export`. |
+
+```bash
+wt git remote add github git@github.com:acme/web.git
+wt git push github --branch main
+wt git push https://gitlab.example.com/acme/web.git
+```
+
+Authentication uses the SSH agent for SSH URLs and the Git credential helper for HTTPS, as Git does.
+
+## `wt git remote`
+
+```text
+Usage: wt git remote [OPTIONS] <COMMAND>
+```
+
+| Subcommand | Description |
+|---|---|
+| `add <NAME> <URL>` | Add a Git remote. Local paths are stored absolute. |
+| `list` | List Git remotes. |
+| `remove <NAME>` | Remove a Git remote. |
+
+Git remotes are stored in `.wt/config.toml`:
+
+```toml
+[git_remote.github]
+url = "git@github.com:acme/web.git"
+```
+
+They are unrelated to W0rkTree server remotes ([`wt remote`](/docs/cli/remote#wt-remote)).
 
 ## Limitations
 
 <Callout type="warn">
-Be aware of these limits of the v0.2.0 bridge before migrating.
+Check these limits before migrating.
 </Callout>
 
-- **One-shot, not a mirror.** Import and export are explicit commands. There is no live Git mirror mode; it is on the [roadmap](/roadmap).
-- **Local branches only.** Import reads local branches. Remote-tracking branches (`origin/*` in Git) are not imported; check out the branches you need in Git first.
-- **Everything lands in the root tree.** Imported history goes to the root tree. Git submodules are not turned into nested trees by the import contract; set up nested trees afterwards with [`wt tree add`](/docs/cli/repository#wt-tree).
+- **Not a live mirror.** Import, export and push are explicit commands; there is no continuous mirror mode. Repeat `wt git import` or `wt git push` to sync (see the [roadmap](/roadmap)).
+- **Submodules and symlinks are skipped** with a warning. Git submodules are not turned into nested trees; set those up with [`wt tree add`](/docs/cli/repository#wt-tree).
 - **Ids differ.** Git uses SHA-1 commit ids, W0rkTree uses UUID snapshot ids and BLAKE3 object hashes. Use `.wt/git-map.json` to correlate them.
-- **Commits, tags and ignore rules only.** Hooks, Git config, stashes, the Git index and Git reflogs are not part of the import. `.gitattributes` filters (including Git LFS pointers) are not applied, so LFS files arrive as their pointer files.
-- **No Git remote transport.** Push to a Git host with `git push` from the exported repository.
+- **Commits, tags and ignore rules only.** Hooks, Git config, stashes, the Git index and Git reflogs are not imported. Commit signatures are not preserved.
+- **Git LFS.** `.gitattributes` filters are not applied, so LFS-tracked files arrive as their pointer files (the import warns). W0rkTree stores large files natively; see [Chunked large files](/docs/protocol/large-files#chunked-large-files).
 
 See [Git interop](/guides/git-interop) and [Migration](/guides/migration) for complete workflows.

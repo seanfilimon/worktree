@@ -201,7 +201,7 @@ There is no force push and no rebase, so a merge snapshot is the only way to com
 
 ## Merge requests on the server
 
-On protected branches you do not push directly; you open a **merge request** through the [REST API](/docs/server/rest-api#merge-requests) or the [admin panel](/guides/admin-panel). There is no `wt` subcommand for merge requests in v0.2.0.
+On protected branches you do not push directly; you open a **merge request** through the [REST API](/docs/server/rest-api#merge-requests) or the [admin panel](/guides/admin-panel). From the CLI, use [`wt mr`](/docs/cli/merge-requests#wt-mr).
 
 The server's merge is **fast-forward only**: it moves the target branch to the source tip if the target tip is an ancestor of the source tip, and rejects the merge with `409 conflict` otherwise. It never creates a merge snapshot. So before merging a request whose target has moved on, merge the target into the source locally and push:
 
@@ -216,7 +216,7 @@ wt push --branch feature/retry
 The source now descends from the target, and the merge request fast-forwards. Approval requirements come from branch protection rules; see [Branch protection](/guides/branch-protection).
 
 <Callout type="warn" title="Roadmap">
-Required CI status checks before merging are not implemented in v0.2.0. Merge readiness depends only on approvals and fast-forwardability.
+Besides approvals and fast-forwardability, branch protection can require passing CI checks, signed snapshots, linear history and no open blocking TODOs before a merge. Check a merge request with `wt mr checks`. See [Reviews, CI and merges](/docs/cli/merge-requests).
 </Callout>
 
 ## Undoing a merge

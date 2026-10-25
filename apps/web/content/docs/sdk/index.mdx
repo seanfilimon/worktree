@@ -6,10 +6,10 @@ description: The worktree-sdk crate — the local W0rkTree engine used by wt, wo
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
 
-`worktree-sdk` (`crates/worktree-sdk`) is the local W0rkTree engine. Everything that touches a `.wt/` directory lives in this crate; the CLI (`wt`), the background daemon (`worktree-bg`), and the Git bridge (`worktree-git`) are thin layers over it. You can use it to build your own tools: editor integrations, CI helpers, migration scripts, or custom clients.
+`worktree-sdk` (`crates/worktree-sdk`) is the local W0rkTree engine. Everything that touches a `.wt/` directory lives in this crate; the CLI (`wt`), the background daemon (`worktree-bg`), and the Git bridge (`worktree-git`) are thin layers over it. Anything `wt` can do, an embedding program can do too: editor integrations, CI helpers, migration scripts, or custom clients.
 
 <Callout type="warn" title="Pre-1.0 API">
-  The SDK API documented here is the v0.2.0 contract. It is not published to crates.io and may change before 1.0. A Node.js SDK is on the Roadmap; v0.2.0 ships only the Rust crate.
+  The SDK is not published to crates.io and its API may change before 1.0. Only the Rust crate exists; there is no Node.js SDK yet (see the [roadmap](/roadmap)).
 </Callout>
 
 ## Module map
@@ -17,18 +17,18 @@ import { Card, Cards } from 'fumadocs-ui/components/card';
 | Module | Purpose |
 |---|---|
 | `lib` | Crate root. Re-exports `Repository`, `ObjectHash`, `ObjectStore`, `Result`, `SdkError`, and every type in `model`. |
-| `model` | Data types shared by all consumers: `Snapshot`, `Manifest`, `ManifestEntry`, `TreeInfo`, `BranchInfo`, `TagInfo`, `StatusReport`, `FileChange`, `ChangeKind`, option structs, `MergeOutcome`, `MergeState`, `ConflictInfo`, `ConflictKind`, `FileDiff`, `DiffOptions`, `ReflogEntry`. |
-| `store` | `ObjectStore`: the content-addressed store under `.wt/objects/` (BLAKE3, raw bytes, atomic writes). `hash_bytes(data)`. |
-| `config` | `WorktreeConfig` (`.wt/config.toml`) with dotted-key `get` / `set` / `entries`, and `wt_home()` for `$WT_HOME`. |
-| `repo` | `Repository`: lifecycle, trees, status, snapshots, revisions, branches, merge, revert, restore, diff, tags, reflog, ignores, and low-level ref operations. See [Repository](/docs/sdk/repository). |
-| `diff` | Pure text diffing: `diff_lines`, `unified_diff`, `diff_stat`, `is_binary`. See [Merge and diff](/docs/protocol/merge-and-diff#diff). |
-| `merge` | Pure merge algorithms: `merge_text` (diff3), `merge_manifests`, `merge_base`. See [Merge and diff](/docs/protocol/merge-and-diff). |
-| `scan` | Pure content scanning: `scan_secrets` (pre-snapshot secret scan), `detect_license` (SPDX), `chunk_boundaries` (FastCDC). |
-| `remote` | Client for the server: credentials, login/register, ping, push, fetch, pull, clone, stage, list staged. See [Remote](/docs/sdk/remote). |
-| `ipc` | CLI ⇄ daemon protocol: request/response types, `bg.json` discovery, `send`. See [Daemon IPC](/docs/sdk/ipc). |
+| `model` | Data types shared by all consumers: `Snapshot` (with `dependencies`, `reverts`, `signature`), `Dependency`, `SnapshotSignature`, `Manifest`, `ManifestEntry`, `TreeInfo`, `BranchInfo`, `TagInfo`, `StatusReport`, `FileChange`, `ChangeKind`, option structs (`InitOptions`, `SnapshotOptions`, `SwitchOptions`, `MergeOptions`, `RevertOptions`, `DiffOptions`), `MergeStrategy`, `MergeOutcome`, `MergeState`, `MergeStatus`, `ConflictInfo`, `ConflictHunk`, `ConflictKind`, `ConflictResolution`, `FileDiff`, `ReflogEntry`, `ReflogExpireReport`. |
+| `store` | `ObjectStore`: the content-addressed store under `.wt/objects/` (BLAKE3, raw bytes, atomic writes), FastCDC chunking for files over 8 MiB (`CHUNK_THRESHOLD`, `ChunkList`, `read_entry`). `hash_bytes(data)`. |
+| `config` | `WorktreeConfig` (`.wt/config.toml`) with dotted-key `get` / `set` / `entries`, the user and tree configuration layers, `wt_home()` for `$WT_HOME`, and `parse_size`. |
+| `repo` | `Repository`: lifecycle, trees, status, snapshots, revisions, branches, merge and resolution, revert, restore, diff, tags, reflog and expiry, ignores, shallow and restricted paths, and low-level ref operations. See [Repository](/docs/sdk/repository). |
+| `diff` | Pure text diffing: `diff_lines`, `unified_diff`, `word_diff`, `diff_stat`, `similarity`, `is_binary`. See [Merge and diff](/docs/protocol/merge-and-diff#diff). |
+| `merge` | Pure merge algorithms: `merge_text` / `merge_text_with` (diff3, strategies), `merge_manifests`, `merge_executable`, `merge_base`. See [Merge and diff](/docs/protocol/merge-and-diff). |
+| `scan` | Pure content scanning: `scan_secrets` and the configurable `SecretScanner`, `detect_license` (SPDX), `chunk_boundaries` (FastCDC). |
+| `hooks` | Discovery and execution of `pre-snapshot` / `post-snapshot` hooks (`find_hooks`, `Phase`). See [Hooks](/docs/cli/configuration#hooks). |
+| `signing` | Ed25519 snapshot signing: local key store under `$WT_HOME/keys/`, `signed_payload`, `sign_snapshot`, `verify_local`, `verify_with_keys`. See [Snapshot signing](/docs/cli/signing). |
+| `remote` | Client for the server: credentials, login (with MFA) and registration, ping, push, fetch, pull, clone (with shallow options), stage, unstage, list staged, branch watching, declarative access (`remote::access`), a typed gRPC client (`SyncClient`) and a REST client (`RestClient`). See [Remote](/docs/sdk/remote). |
+| `ipc` | CLI ⇄ daemon protocol: request/response types, `bg.json` discovery with the IPC token, `send`. See [Daemon IPC](/docs/sdk/ipc). |
 | `error` | `SdkError` and `Result<T>`. |
-
-The crate also still contains a legacy `engine` module (and the `WorktreeEngine` alias) that is being removed. Do not use it in new code.
 
 ## Adding the dependency
 
@@ -41,7 +41,7 @@ worktree-sdk = { path = "../worktree/crates/worktree-sdk" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Local operations (`Repository`, `ObjectStore`, `diff`, `merge`, `scan`) are synchronous. The `remote` functions and `ipc::send` are `async` and run on Tokio.
+Local operations (`Repository`, `ObjectStore`, `diff`, `merge`, `scan`, `signing`) are synchronous. The `remote` functions and `ipc::send` are `async` and run on Tokio.
 
 ## Errors
 
@@ -60,7 +60,7 @@ Every fallible function returns `worktree_sdk::Result<T>`, an alias for `std::re
 | Daemon | `DaemonNotRunning` |
 | Generic | `Io(std::io::Error)`, `Serialization(String)`, `Other(String)` |
 
-`std::io::Error`, `serde_json::Error`, and TOML (de)serialization errors convert into `SdkError` automatically, so `?` works on them.
+A failing `pre-snapshot` hook surfaces as `Other("pre-snapshot hook failed: ...")`, and a shallow history that is too short for an operation as `InvalidArgument` with a hint to run `wt fetch --deepen N`. `std::io::Error`, `serde_json::Error`, and TOML (de)serialization errors convert into `SdkError` automatically, so `?` works on them.
 
 ## Minimal example
 
@@ -90,6 +90,8 @@ fn main() -> Result<()> {
 }
 ```
 
+`Repository::snapshot` runs the same pipeline as `wt snapshot`: hooks (unless `skip_hooks`), the configured secret scan (unless `skip_secret_scan`), signing when `[signing] auto` is set or `sign` is true, and the reflog entry.
+
 Open an existing worktree from any directory inside it with `Repository::open`, and push with the async remote API:
 
 ```rust
@@ -113,13 +115,13 @@ async fn main() -> Result<()> {
 ```
 
 <Callout type="info" title="Tests">
-  Code that logs in or talks to the daemon reads and writes `$WT_HOME`. Set `WT_HOME` to a temporary directory in tests so they never touch real credentials.
+  Code that logs in, signs snapshots, reads the user configuration or talks to the daemon reads and writes `$WT_HOME`. Set `WT_HOME` to a temporary directory in tests so they never touch real credentials or keys.
 </Callout>
 
 ## Pages
 
 <Cards>
   <Card title="Repository" href="/docs/sdk/repository" description="The full Repository API, grouped by area, with signatures." />
-  <Card title="Remote" href="/docs/sdk/remote" description="Credentials, login, push, fetch, pull, clone, and staged snapshots." />
-  <Card title="Daemon IPC" href="/docs/sdk/ipc" description="The JSON-over-TCP protocol between wt and worktree-bg." />
+  <Card title="Remote" href="/docs/sdk/remote" description="Credentials, login, push, fetch, pull, clone, staged snapshots, watching and access." />
+  <Card title="Daemon IPC" href="/docs/sdk/ipc" description="The authenticated JSON-over-TCP protocol between wt and worktree-bg." />
 </Cards>

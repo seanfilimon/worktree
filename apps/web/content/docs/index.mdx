@@ -1,51 +1,54 @@
 ---
 title: Introduction
-description: What W0rkTree is, how its components fit together, and where to find each part of the v0.2.0 documentation.
+description: What W0rkTree is, how its components fit together, and where to find each part of the documentation.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
 
-**W0rkTree** is a version control system designed as a replacement for Git. It keeps history as immutable **snapshots**, splits a project into independently versioned **nested trees**, shares work in progress with the team as **staged snapshots** before anything is pushed, and syncs with a **multi-tenant server** that enforces access control, branch protection, and license rules.
+**W0rkTree** is a version control system designed as a replacement for Git. It keeps history as immutable **snapshots**, splits a project into independently versioned **nested trees**, shares work in progress with the team as **staged snapshots** before anything is pushed, and syncs with a **multi-tenant server** that enforces access control, branch protection, reviews and license rules.
 
-<Callout type="info" title='v0.2.0 ("v2 rebuild")'>
-  This documentation covers **v0.2.0**, a pre-1.0 release. Commands, APIs, and on-disk formats may still change before 1.0. There are no prebuilt binaries or package-manager installs yet: you [build W0rkTree from source](/docs/installation).
+<Callout type="info" title="Pre-1.0">
+  This documentation describes W0rkTree as built on the `main` branch. It is pre-1.0: commands, APIs, and on-disk formats may still change. There are no prebuilt binaries or package-manager installs yet: you [build W0rkTree from source](/docs/installation). Features that are designed but not built are marked as roadmap items.
 </Callout>
 
 ## Core ideas
 
-- **Snapshots, not commits.** A snapshot is an immutable record of a tree's complete file listing (a manifest of BLAKE3-addressed blobs) plus its parents, author, and message. History is append-only: `wt revert` adds a new snapshot, branches are archived rather than deleted, and the server has no force push.
-- **Nested trees.** One worktree can contain several trees. Each tree has its own branches, tags, reflog, and server-side name, and a tree's snapshots exclude the paths of trees nested inside it. See [Nested trees](/guides/nested-trees).
-- **Staged, team-visible WIP.** `wt stage` (or the background daemon, automatically) uploads your current working state as a staged snapshot. Teammates see it with `wt status --team` without it ever entering branch history. See [Staged visibility](/guides/staged-visibility).
-- **Automatic local history.** The background daemon `worktree-bg` watches your worktree and takes auto-snapshots after a period of inactivity, so work is never lost between explicit snapshots.
-- **Multi-tenant server.** Accounts, personal and organization tenants, roles, tree visibility, branch protection with merge requests, per-path license rules, an audit log, and live Server-Sent Events, all on a single port.
-- **Secret scanning.** Every `wt snapshot` scans added and modified files for credentials before anything is recorded. See [Security](/docs/security).
+- **Snapshots, not commits.** A snapshot is an immutable record of a tree's complete file listing (a manifest of BLAKE3-addressed blobs) plus its parents, author, and message. History is append-only: `wt revert` adds a new snapshot, local branches are archived rather than deleted, and the server has no force push. Snapshots can be [signed](/docs/cli/signing) with Ed25519 keys.
+- **Nested trees.** One worktree can contain several trees. Each tree has its own branches, tags, reflog, configuration overrides, hooks and server-side name, and a tree's snapshots exclude the paths of trees nested inside it. See [Nested trees](/guides/nested-trees).
+- **Cross-tree dependencies.** A snapshot can declare that it needs work in another tree; pushing it creates a TODO there, and merge requests of several trees can be linked so they merge together. See [Dependencies, TODOs and releases](/docs/cli/dependencies).
+- **Staged, team-visible WIP.** `wt stage` (or the background daemon, automatically) uploads your current working state as a staged snapshot. Teammates see it with `wt status --team`, including files several people are changing at once, without it ever entering branch history. See [Staged visibility](/guides/staged-visibility).
+- **Automatic local history.** The background daemon `worktree-bg` watches your worktree, takes auto-snapshots after a period of inactivity, and keeps remote-tracking branches fresh as teammates push. See [`wt daemon`](/docs/cli/daemon).
+- **Large files without LFS.** Files over 8 MiB are split into content-defined chunks, so only changed chunks are stored and transferred; shallow clones fetch only recent history. See [Large files and shallow sync](/docs/protocol/large-files).
+- **Multi-tenant server.** Accounts, personal and organization tenants, built-in and custom roles, teams, grants, allow/deny policies down to individual paths, service accounts, MFA, SSO, branch and tag protection, reviews with CI gates, per-path license rules, releases, an audit log, and live events, all on a single port.
+- **Access as code.** Roles and policies can live in `.wt/access/*.toml` and be planned and applied like infrastructure. See [Declarative access](/docs/server/declarative-access).
+- **Secret scanning.** Every snapshot scans added and modified files for credentials before anything is recorded. See [Security](/docs/security).
 
 ## Architecture
 
 ```text
  wt (CLI, Rust) ──► worktree-sdk (Rust) ──► .wt/ on disk
-      │                  │  remote (gRPC h2c + REST)
+      │                  │  remote (gRPC over h2c or TLS + REST)
       │ ipc (JSON/TCP)   ▼
  worktree-bg (Rust) ──► worktree-server (Go, services/server-go) ──► bbolt meta + CAS objects
                               ▲ REST + SSE
                         apps/admin (React/Vite admin panel)
- worktree-git (Rust) — Git import/export over worktree-sdk
+ worktree-git (Rust) — Git import/export/push over worktree-sdk
  apps/web (Next.js) — marketing + docs site
 ```
 
-The CLI and the daemon are thin layers over the Rust SDK, which owns everything inside `.wt/`. The SDK talks to the server over gRPC (cleartext HTTP/2, h2c) for sync and over REST for authentication. The server serves gRPC, REST, SSE, and the static admin panel on **one port**, `7420` by default, so a remote URL is simply `http://localhost:7420`.
+The CLI and the daemon are thin layers over the Rust SDK, which owns everything inside `.wt/`. The SDK talks to the server over gRPC for sync and over REST for authentication and management. The server serves gRPC, REST, SSE, and the static admin panel on **one port**, `7420` by default, so a remote URL is simply `http://localhost:7420` (or `https://...` when the server runs with TLS).
 
 ## Components
 
 | Component | Location | Role |
 |---|---|---|
-| `wt` CLI | `crates/worktree-cli` | The command-line client. Every local and remote operation. See [CLI reference](/docs/cli). |
-| `worktree-sdk` | `crates/worktree-sdk` | The local engine: object store, snapshots, branches, merge, diff, secret scan, server client, daemon IPC. See [Rust SDK](/docs/sdk). |
-| `worktree-bg` | `crates/worktree-bg` | Background daemon: file watching, auto-snapshots, auto-staging. Normally started with [`wt daemon start`](/docs/cli/daemon#wt-daemon). |
-| `worktree-git` | `crates/worktree-git` | Git import/export bridge used by [`wt git`](/docs/cli/git). |
-| `worktree-protocol` | `crates/worktree-protocol` | Shared types and the gRPC contract `proto/sync.proto` (package `worktree.sync.v1`). See [Protocol](/docs/protocol). |
-| Go server | `services/server-go` | `worktree-server`: canonical history, IAM, policy, REST API, events. See [Server](/docs/server). |
+| `wt` CLI | `crates/worktree-cli` | The command-line client: every local operation, sync, and server management (merge requests, CI, IAM, releases, administration). See [CLI reference](/docs/cli). |
+| `worktree-sdk` | `crates/worktree-sdk` | The local engine: object store, snapshots, branches, merge, diff, hooks, signing, secret scan, server client, daemon IPC. See [Rust SDK](/docs/sdk). |
+| `worktree-bg` | `crates/worktree-bg` | Background daemon: file watching, auto-snapshots, auto-staging, background fetch, maintenance. Normally started with [`wt daemon start`](/docs/cli/daemon#wt-daemon). |
+| `worktree-git` | `crates/worktree-git` | Git import, export and push bridge used by [`wt git`](/docs/cli/git). |
+| `worktree-protocol` | `crates/worktree-protocol` | Shared types, the declarative access compiler, the gRPC contract `proto/sync.proto` (package `worktree.sync.v1`), and the protocol specifications. See [Protocol](/docs/protocol). |
+| Go server | `services/server-go` | `worktree-server`: canonical history, IAM, policy, reviews, CI status, releases, REST API, events, GC and quotas. See [Server](/docs/server). |
 | Admin panel | `apps/admin` | React + Vite web UI over the REST API, served by the server at `/admin/`. See [Admin panel](/guides/admin-panel). |
 | Website | `apps/web` | This site: marketing pages and documentation (Next.js + Fumadocs). |
 
@@ -66,9 +69,11 @@ The [Quick start](/guides/quick-start) walks through this end to end, including 
 <Cards>
   <Card title="Installation" href="/docs/installation" description="Build wt, worktree-bg, the server, and the admin panel from source." />
   <Card title="Quick start" href="/guides/quick-start" description="Create a worktree, snapshot, and push to a local server." />
-  <Card title="CLI reference" href="/docs/cli" description="Every wt command, subcommand, and flag in v0.2.0." />
-  <Card title="Server" href="/docs/server" description="Run, configure, and operate worktree-server." />
-  <Card title="Protocol" href="/docs/protocol" description="The gRPC sync protocol, object model, and on-disk layout." />
+  <Card title="CLI reference" href="/docs/cli" description="Every wt command, grouped by task." />
+  <Card title="Local configuration" href="/docs/cli/configuration" description="Configuration layers, ignore rules, hooks, and secret scanning." />
+  <Card title="Reviews, CI and merges" href="/docs/cli/merge-requests" description="Merge requests, reviews, CI checks, protections, and linked merges." />
+  <Card title="Server" href="/docs/server" description="Run, configure, secure, and operate worktree-server." />
+  <Card title="Protocol" href="/docs/protocol" description="The gRPC sync protocol, object model, large files, and on-disk layout." />
   <Card title="Rust SDK" href="/docs/sdk" description="Embed the worktree-sdk crate in your own tools." />
-  <Card title="Security" href="/docs/security" description="Secret scanning, tokens, authorization, and transport." />
+  <Card title="Security" href="/docs/security" description="Secret scanning, signing, tokens, authorization, licenses, and transport." />
 </Cards>

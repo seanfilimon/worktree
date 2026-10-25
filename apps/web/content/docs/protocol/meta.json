@@ -1,4 +1,4 @@
 {
   "title": "Protocol",
-  "pages": ["index", "sync-protocol", "object-model", "local-layout", "merge-and-diff"]
+  "pages": ["index", "sync-protocol", "object-model", "large-files", "local-layout", "merge-and-diff"]
 }

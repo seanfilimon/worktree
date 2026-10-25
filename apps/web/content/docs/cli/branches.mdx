@@ -1,29 +1,30 @@
 ---
 title: Branches
-description: Create, switch, archive and restore branches, merge them with three-way merges, and manage tags.
+description: Create, switch, archive and restore branches, merge them with three-way merges and resolve conflicts, and manage tags.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Branches and tags belong to a tree: each tree (root or nested) has its own set. Commands act on the selected tree (`--tree <name>` or the tree containing the current directory). `REV` accepts the [revision syntax](/docs/cli#revision-syntax).
+Branches and tags belong to a tree: each tree (root or nested) has its own set. Commands act on the selected tree (`--tree <name>` or the tree containing the current directory). `REV` accepts the [revision syntax](/docs/cli#revision-syntax). Server-side branches and tags of any tree can also be managed with [`wt trees`](/docs/cli/administration#wt-trees).
 
 ## `wt branch`
 
 ```text
-wt branch [list] [-a] | create NAME [--from REV] | archive NAME | restore NAME
+Usage: wt branch [OPTIONS]
+       wt branch <COMMAND>
 ```
 
 | Subcommand | Description |
 |---|---|
 | `list` (default) | List branches sorted by name, marking the current one. Archived branches are hidden. |
-| `create NAME` | Create branch `NAME` pointing at the current head. Does not switch to it. |
-| `archive NAME` | Soft-delete a branch: hide it from listings. Its snapshots stay reachable. |
-| `restore NAME` | Un-archive a branch. |
+| `create <NAME>` | Create branch `NAME` pointing at the current head. Does not switch to it. |
+| `archive <NAME>` | Soft-delete a branch: hide it from listings. Its snapshots stay reachable. |
+| `restore <NAME>` | Un-archive a branch. |
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-a` | `list` | Include archived branches. |
-| `--from REV` | `create` | Start the new branch at `REV` instead of the current head. |
+| `-a, --all` | `list` | Include archived branches. |
+| `--from <REV>` | `create` | Start the new branch at `REV` instead of the current head. |
 
 ```bash
 wt branch
@@ -36,23 +37,24 @@ wt branch restore feature/old-spike
 
 **Notes**
 
-- Branches are **never hard-deleted**. Archiving keeps all history; an archived name cannot be reused for a new branch until it is restored.
+- Local branches are **never hard-deleted**. Archiving keeps all history; an archived name cannot be reused for a new branch until it is restored.
 - The current branch and the tree's default branch cannot be archived.
 - Listings include the last known upstream tip (`origin/<branch>`) when one has been fetched.
-- Creating a branch that already exists fails. `wt branch create` and `wt branch archive` append `branch.create` and `branch.archive` reflog entries.
+- Branch names may contain `/`; components must not start with `.` or `-` or end with `.lock`, and names may not contain whitespace, `~ ^ : ? * [ \`, `..` or `@{`. `HEAD` is reserved.
+- Deleting a branch **on the server** is a separate, hard operation: [`wt trees branch-delete`](/docs/cli/administration#wt-trees), subject to `no_delete` protection.
 
 ## `wt switch`
 
 ```text
-wt switch NAME [-c] [--force]
+Usage: wt switch [OPTIONS] <NAME>
 ```
 
-Make `NAME` the current branch and rewrite the tree's working directory to that branch's head: files are updated, tracked files absent from the target are removed. Ignored paths and nested-tree directories are never touched.
+Make `NAME` the current branch and rewrite the tree's working directory to that branch's head: files are updated, tracked files absent from the target are removed. Untracked and ignored files and nested-tree directories are never touched.
 
 | Argument / flag | Description |
 |---|---|
 | `NAME` | Branch to switch to. |
-| `-c` | Create `NAME` at the current head first, then switch to it. |
+| `-c, --create` | Create `NAME` at the current head first, then switch to it. |
 | `--force` | Switch even if there are uncommitted changes, **discarding** them. |
 
 ```bash
@@ -63,13 +65,15 @@ wt switch main --force
 
 **Notes**
 
-- With uncommitted changes and no `--force`, `wt switch` refuses with "working tree has uncommitted changes (N files); snapshot them or use --force". Snapshot your work (or let the daemon do it) before switching.
-- Appends a `switch` entry to the reflog.
+- With uncommitted changes and no `--force`, `wt switch` refuses ("working tree has uncommitted changes (N files)"). When both branches point at the same snapshot, uncommitted changes are carried over untouched.
+- With `auto_snapshot.on_branch_switch = "snapshot"` and the daemon watching the worktree, `wt switch` first asks the daemon to auto-snapshot the tree, so the switch can proceed. `stash` is accepted but currently behaves like the default `refuse`. See [`on_branch_switch`](/docs/cli/configuration#branch-switches-with-uncommitted-changes).
+- Switching is refused while a merge is in progress. Appends a `switch` entry to the reflog.
 
 ## `wt merge`
 
 ```text
-wt merge SOURCE [-m MSG] [--no-ff] | --continue [-m MSG] | --abort
+Usage: wt merge [OPTIONS] <SOURCE|--continue|--abort>
+       wt merge <COMMAND>
 ```
 
 Merge `SOURCE` (a branch or any revision, for example `origin/main`) into the current branch using a three-way merge against their best common ancestor.
@@ -77,10 +81,17 @@ Merge `SOURCE` (a branch or any revision, for example `origin/main`) into the cu
 | Argument / flag | Description |
 |---|---|
 | `SOURCE` | Branch or revision to merge into the current branch. |
-| `-m MSG` | Message for the merge snapshot (with `SOURCE` or with `--continue`). |
+| `-m, --message <MSG>` | Message for the merge snapshot (with `SOURCE` or with `--continue`). |
 | `--no-ff` | Always create a merge snapshot, even when a fast-forward is possible. |
+| `-s, --strategy <STRATEGY>` | How conflicting changes are resolved: `manual` (default) writes conflict markers and stops; `ours` / `theirs` resolve every conflicting hunk and file in favour of that side while still combining non-conflicting changes. |
 | `--continue` | Finish a conflicted merge after resolving all conflicts. |
-| `--abort` | Abandon a conflicted merge and restore the pre-merge state. |
+| `--abort` | Abandon a conflicted merge and restore the pre-merge state (same as `wt merge abort`). |
+
+| Subcommand | Description |
+|---|---|
+| `resolve [PATH]... --ours\|--theirs\|--file <FILE>` | Resolve conflicted paths. `--ours` / `--theirs` take that side for conflicting hunks of a text file (non-conflicting changes from the other side are kept) and that side's version of binary or modify/delete conflicts; `--file F` uses the contents of `F`. `--all` resolves every unresolved conflict (with `--ours` or `--theirs`). |
+| `abort` | Abandon the merge in progress and restore the pre-merge state. |
+| `status` | Show the merge in progress and the state of each conflict. |
 
 ### Outcomes
 
@@ -91,7 +102,7 @@ Merge `SOURCE` (a branch or any revision, for example `origin/main`) into the cu
 | Merged | A new snapshot with two parents (current tip, `SOURCE`) is created. | `0` |
 | Conflicts | The working directory holds the partial merge; conflicts must be resolved. | `3` |
 
-The working tree must be clean before merging; otherwise `wt merge` fails.
+The working tree must be clean before merging; otherwise `wt merge` fails. In a shallow clone, a merge whose base lies beyond the shallow boundary fails with a hint to run `wt fetch --deepen N`.
 
 ### How paths are merged
 
@@ -106,49 +117,62 @@ Conflict kinds:
 | `content` | Both sides changed overlapping lines. | Conflict markers written into the file. |
 | `modify_delete` | One side modified the file, the other deleted it. | Resolve by keeping or deleting the file. |
 | `add_add` | Both sides added the path with different content. | Merged two-way; markers written if lines overlap. |
-| `binary` | A binary file changed on both sides. | Our version is kept. |
+| `binary` | A binary file changed on both sides. | Our version is kept until resolved. |
 
 ### Conflict markers
 
-Markers are diff3-style, labelled with the branch names:
+Markers are diff3-style and labelled with the side, the branch and a short snapshot id:
 
 ```text
-<<<<<<< main
+<<<<<<< ours (main 1a2b3c4d)
 let timeout = 30;
-||||||| base
+||||||| base (0f0f0f0f)
 let timeout = 10;
 =======
 let timeout = 60;
->>>>>>> feature/login
+>>>>>>> theirs (feature/login 5e6f7a8b)
 ```
 
-During a conflicted merge, `.wt/trees/<tree>/MERGE_STATE.json` stores the merge state (source branch and tip, target tip, base, conflicts, message) and `.wt/conflicts/<tree>.json` holds a machine-readable list of conflicts (each with `path` and `kind`) for editors and scripts. `wt status` shows the merge in progress.
+During a conflicted merge, `.wt/trees/<tree>/MERGE_STATE.json` stores the merge state (source branch and tip, target tip, base, conflicts, resolved paths, message) and `.wt/conflicts/<tree>.json` holds a machine-readable list of conflicts for editors and scripts. Each entry has `path`, `kind` and `hunks` (`ours_start`, `ours_len`, `theirs_start`, `theirs_len` per conflicting region):
+
+```json
+[{"path":"src/auth/login.rs","kind":"content",
+  "hunks":[{"ours_start":45,"ours_len":2,"theirs_start":45,"theirs_len":3}]},
+ {"path":"assets/logo.png","kind":"binary","hunks":[]}]
+```
 
 ### Resolving
 
 ```bash
 wt merge feature/login
-# exit code 3: edit the conflicted files and remove all markers
-wt status
+# exit code 3
+wt merge status
+wt merge resolve src/config.rs --theirs
+wt merge resolve assets/logo.png --ours
+# edit the remaining files and remove all markers
 wt merge --continue -m "Merge feature/login"
 ```
 
 ```bash
+# Take one side for everything that conflicts
+wt merge feature/login --strategy theirs
+wt merge resolve --all --ours
+
 # Or give up and return to the pre-merge state
-wt merge --abort
+wt merge abort
 ```
 
 **Notes**
 
-- `--continue` fails while any conflict markers remain. `wt snapshot -m MSG` also completes the merge once markers are gone.
-- Commands that cannot run during a pending merge fail with "a merge is in progress; resolve conflicts and run `wt merge --continue` or `wt merge --abort`", and the daemon does not auto-snapshot.
-- Strategies and examples: [Merge strategies](/guides/merge-strategies), algorithm details: [Merge and diff](/docs/protocol/merge-and-diff).
-- Server-side merge requests are managed via the [REST API](/docs/server/rest-api) and the [admin panel](/guides/admin-panel); there is no `wt` command for them.
+- `--continue` fails (exit code `3`) while conflict markers remain in paths that were not resolved with `wt merge resolve`. `wt snapshot -m MSG` also completes the merge once markers are gone.
+- Commands that cannot run during a pending merge fail with "a merge is in progress", and the daemon does not auto-snapshot the tree.
+- Merges never cross trees. Strategies and examples: [Merge strategies](/guides/merge-strategies); algorithm details: [Merge and diff](/docs/protocol/merge-and-diff).
+- Server-side merges of merge requests are fast-forward only; open, review and merge them with [`wt mr`](/docs/cli/merge-requests#wt-mr).
 
 ## `wt tag`
 
 ```text
-wt tag [list] | create NAME [REV] [-m MSG] | delete NAME
+Usage: wt tag [OPTIONS] [COMMAND]
 ```
 
 Tags are named, fixed pointers to a snapshot, used for releases.
@@ -156,12 +180,12 @@ Tags are named, fixed pointers to a snapshot, used for releases.
 | Subcommand | Description |
 |---|---|
 | `list` (default) | List tags: name, target snapshot, tagger, date, message. |
-| `create NAME [REV]` | Tag `REV` (default `HEAD`) as `NAME`. |
-| `delete NAME` | Delete the local tag `NAME`. |
+| `create <NAME> [REV]` | Tag `REV` (default `HEAD`) as `NAME`. |
+| `delete <NAME>` | Delete the local tag `NAME`. |
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-m MSG` | `create` | Tag message (annotation). |
+| `-m, --message <MSG>` | `create` | Tag message (makes an annotated tag). |
 
 ```bash
 wt tag
@@ -172,10 +196,10 @@ wt tag delete v1.0.0-rc1
 
 **Notes**
 
-- `wt push` uploads local tags the server does not have; `wt fetch` and `wt pull` download remote tags.
-- `wt tag delete` removes the tag locally only. There is no command to delete a tag on the server.
-- Creating a tag that already exists fails. Reflog entries: `tag.create`, `tag.delete`.
-- See [Tags and releases](/guides/tags-and-releases).
+- `wt push` uploads local tags whose target the server knows; `wt fetch` and `wt pull` download server tags. Tags are immutable on the server: pushing an existing name is refused.
+- `wt tag delete` removes the tag locally only and is not propagated. Delete a server tag with [`wt trees tag-delete`](/docs/cli/administration#wt-trees) (needs `tree:admin`); the next `wt fetch` otherwise brings a pushed tag back.
+- Servers can protect tags (who may create them, and whether they can be moved or deleted) with [`wt protect tag`](/docs/cli/merge-requests#wt-protect).
+- Releases are built on tags: see [`wt release`](/docs/cli/dependencies#wt-release) and [Tags and releases](/guides/tags-and-releases).
 
 <Callout type="info">
 A tag name can be used anywhere a revision is accepted, for example `wt diff v1.0.0 HEAD`.
