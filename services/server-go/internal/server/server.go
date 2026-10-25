@@ -36,6 +36,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
+	"github.com/seanfilimon/worktree/services/server-go/internal/sso"
 	"github.com/seanfilimon/worktree/services/server-go/internal/staged"
 	"github.com/seanfilimon/worktree/services/server-go/internal/syncsvc"
 )
@@ -130,6 +131,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		DataDir:           cfg.DataDir,
 
 		Security: iamSvc,
+		SSO:      sso.New(store, iamSvc, iamSvc, sso.Options{PublicURL: cfg.PublicURL, Logger: log}),
 	})
 
 	srv := newHTTPServer(mux(grpcServer, api), log)
