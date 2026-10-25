@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -39,6 +40,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
 	"github.com/seanfilimon/worktree/services/server-go/internal/meta"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
+	"github.com/seanfilimon/worktree/services/server-go/internal/opsmetrics"
 	"github.com/seanfilimon/worktree/services/server-go/internal/pathacl"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
@@ -98,7 +100,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	}
 	// Authorization (roles, teams, grants, service accounts, policies) is
 	// decided by the v0.4 engine; iamSvc handles authentication only.
-	authorizer := authz.New(store, authz.Options{})
+	// countingAuthz feeds wt_authz_decisions_total (§13.3).
+	authorizer := countingAuthz{authz.New(store, authz.Options{})}
 	bus := events.NewBus()
 	auditLog := audit.New(store, log)
 	lic := license.New(store)
@@ -122,8 +125,15 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	releases := release.New(release.Deps(v5))
 	ciSvc := ci.New(ci.Deps(v5))
 	signer := signing.New(signing.Deps(v5))
-	collector := gc.New(gc.Deps(v5))
-	limiter := limits.New(limits.Deps(v5))
+	collector := gc.New(gc.Deps{
+		Store: store, Objects: objects, History: history, Authz: authorizer, Bus: bus, Audit: auditLog, Logger: log,
+		Interval: cfg.GCInterval, Grace: cfg.GCGrace, StagedRetention: cfg.StagedRetention, AuditRetention: cfg.AuditRetention,
+	})
+	limiter := limits.New(limits.Deps{
+		Store: store, Objects: objects, History: history, Authz: authorizer, Bus: bus, Audit: auditLog, Logger: log,
+		Defaults:  domain.TenantLimits{MaxTrees: cfg.DefaultMaxTrees, MaxStorageBytes: cfg.DefaultMaxStorage},
+		RateLimit: cfg.RateLimit,
+	})
 	accessCfg := accesscfg.New(accesscfg.Deps(v5))
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
@@ -150,13 +160,14 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		PushChecks: []domain.PushChecker{
 			pathACL, // sec-paths (§13.1): path ACLs run first
 			rev,     // review-ci (§13.4): RequireLinear on direct pushes
+			limiter, // ops (§13.3): branch and storage quotas
 			signer,  // signing (§13.6): verifies signatures, sets Verified; keep last
 		},
 		AccessCfg: accessCfg,
 	})
 
 	// ---- gRPC ----
-	grpcServer, healthSrv := newGRPCServer(iamSvc, syncSvc, log)
+	grpcServer, healthSrv := newGRPCServer(iamSvc, syncSvc, log, grpcOps{limiter: limiter, audit: auditLog})
 
 	// ---- HTTP ----
 	api := httpapi.New(httpapi.Deps{
@@ -194,6 +205,14 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	})
 
 	srv := newHTTPServer(mux(grpcServer, api), log)
+	tlsCfg, err := tlsConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if tlsCfg != nil {
+		srv.TLSConfig = tlsCfg
+		srv.Protocols.SetHTTP2(true)
+	}
 
 	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
@@ -202,14 +221,36 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	addr := ln.Addr()
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(ln) }()
+	if tlsCfg != nil {
+		go func() { serveErr <- srv.ServeTLS(ln, "", "") }()
+	} else {
+		go func() { serveErr <- srv.Serve(ln) }()
+	}
 
+	// ---- background operations (§13.3) ----
+	stopGC := collector.Start(ctx)
+	stopUsage := limiter.Start(ctx)
+	stopMerges := opsmetrics.CountMerges(bus)
+	defer func() { stopMerges(); stopUsage(); stopGC() }()
+
+	scheme := "http"
+	if tlsCfg != nil {
+		scheme = "https"
+	}
 	log.Info("server started",
 		slog.String("addr", addr.String()),
+		slog.String("scheme", scheme),
+		slog.Bool("mtls", cfg.TLSClientCA != ""),
 		slog.String("version", cfg.Version),
 		slog.String("data", cfg.DataDir),
 		slog.Bool("admin_panel", cfg.AdminDir != ""),
 		slog.Bool("allow_registration", cfg.AllowRegistration))
+	if cfg.CleartextExposed() {
+		log.Warn("serving cleartext HTTP and gRPC on a non-loopback address; credentials travel unencrypted — use --tls-cert/--tls-key or a TLS-terminating proxy",
+			slog.String("addr", cfg.Addr))
+	}
+	auditLog.Record(ctx, audit.System(audit.ActionServerStart, "server", "", map[string]string{
+		"version": cfg.Version, "addr": addr.String(), "tls": strconv.FormatBool(tlsCfg != nil)}))
 	fmt.Fprintf(stdout, "worktree-server listening on %s\n", addr)
 	if cfg.OnListen != nil {
 		cfg.OnListen(addr)
@@ -223,6 +264,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	case <-ctx.Done():
 	}
 
+	auditLog.Record(context.WithoutCancel(ctx), audit.System(audit.ActionServerStop, "server", "", map[string]string{"version": cfg.Version}))
 	log.Info("shutting down", slog.Duration("timeout", cfg.ShutdownTimeout))
 	healthSrv.Shutdown() // report NOT_SERVING to health checkers
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
@@ -266,12 +308,14 @@ func shutdown(ctx context.Context, log *slog.Logger, srv *http.Server, g *grpc.S
 // newGRPCServer builds the gRPC server with the auth and panic-recovery
 // interceptors, 64 MiB message limits, the sync service and the standard
 // grpc.health.v1 service (reporting SERVING).
-func newGRPCServer(auth domain.Authenticator, sync syncpb.SyncServiceServer, log *slog.Logger) (*grpc.Server, *health.Server) {
+func newGRPCServer(auth domain.Authenticator, sync syncpb.SyncServiceServer, log *slog.Logger, ops grpcOps) (*grpc.Server, *health.Server) {
+	// After authentication: sync metrics + access.denied auditing, then
+	// rate limiting (§13.3).
 	g := grpc.NewServer(
 		grpc.MaxRecvMsgSize(maxGRPCMessage),
 		grpc.MaxSendMsgSize(maxGRPCMessage),
-		grpc.ChainUnaryInterceptor(recoverUnary(log), iam.UnaryInterceptor(auth)),
-		grpc.ChainStreamInterceptor(recoverStream(log), iam.StreamInterceptor(auth)),
+		grpc.ChainUnaryInterceptor(recoverUnary(log), iam.UnaryInterceptor(auth), observeUnary(ops.audit), rateLimitUnary(ops.limiter)),
+		grpc.ChainStreamInterceptor(recoverStream(log), iam.StreamInterceptor(auth), observeStream(ops.audit), rateLimitStream(ops.limiter)),
 	)
 	syncpb.RegisterSyncServiceServer(g, sync)
 	hs := health.NewServer()

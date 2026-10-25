@@ -214,7 +214,7 @@ func corsMiddleware(origins []string) func(http.Handler) http.Handler {
 				return
 			}
 			h.Set("Access-Control-Allow-Origin", origin)
-			h.Set("Access-Control-Expose-Headers", RequestIDHeader+", WWW-Authenticate, Content-Disposition")
+			h.Set("Access-Control-Expose-Headers", RequestIDHeader+", WWW-Authenticate, Content-Disposition, Retry-After, "+headerRateLimit+", "+headerRateRemaining)
 			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 				h.Add("Vary", "Access-Control-Request-Method")
 				h.Add("Vary", "Access-Control-Request-Headers")

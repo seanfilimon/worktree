@@ -91,7 +91,8 @@ func runIAMCases(t *testing.T, cases []endpointCase, mutate ...func(*Deps)) {
 				if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") || errCode(rec) == "" {
 					t.Fatalf("error response without JSON envelope (%s): %s", ct, rec.Body.String())
 				}
-				if n := len(f.audit.actions()); n > 0 && !strings.Contains(strings.Join(f.audit.actions(), ","), "failed") {
+				// ops (§13.3): 403s are audited as access.denied by design.
+				if n := len(nonDenialActions(f)); n > 0 && !strings.Contains(strings.Join(nonDenialActions(f), ","), "failed") {
 					t.Fatalf("failed request was audited: %v", f.audit.actions())
 				}
 			}

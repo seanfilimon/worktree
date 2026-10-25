@@ -93,6 +93,9 @@ type MetaStore interface {
 	// Audit (append-only)
 	AppendAudit(ctx context.Context, e *AuditEvent) error
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error) // newest first
+	// PruneAudit deletes every audit event recorded before the given
+	// instant and returns how many were removed (v0.5 §13.3 retention).
+	PruneAudit(ctx context.Context, before time.Time) (int, error)
 
 	// License rules (keyed by tree+path glob)
 	PutLicenseRule(ctx context.Context, r *LicenseRule) error

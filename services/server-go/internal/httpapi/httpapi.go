@@ -125,6 +125,9 @@ func New(d Deps) http.Handler {
 	// Middleware, outermost first: request id -> logging/metrics -> panic
 	// recovery -> CORS -> authentication -> router.
 	var h http.Handler = a.mux
+	// ops (§13.3): rate limiting runs inside authentication so that
+	// callers are limited per principal.
+	h = a.rateLimitMiddleware(h)
 	h = iam.Middleware(d.Auth)(h)
 	h = corsMiddleware(append([]string{defaultCORSOrigin}, d.CORSOrigins...))(h)
 	h = a.recoverMiddleware(h)
@@ -267,19 +270,28 @@ func (a *api) handleAPINotFound(w http.ResponseWriter, r *http.Request) error {
 	return notFoundf("no such endpoint: %s %s", r.Method, r.URL.Path)
 }
 
-// handleHealth answers GET /healthz.
+// handleHealth answers GET /healthz: "ok" with 200 when every probe (meta,
+// objects) passes, else "degraded" with 503 (§13.3).
 func (a *api) handleHealth(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, healthResponse{
+	checks, ok := a.healthChecks(r.Context())
+	resp := healthResponse{
 		Status:        "ok",
 		Version:       a.d.Version,
 		UptimeSeconds: int64(time.Since(a.d.StartedAt).Seconds()),
-	})
+		Checks:        checks,
+	}
+	status := http.StatusOK
+	if !ok {
+		resp.Status, status = "degraded", http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, resp)
 	return nil
 }
 
 type healthResponse struct {
-	Status        string `json:"status"`
-	Version       string `json:"version"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
+	Status        string            `json:"status"`
+	Version       string            `json:"version"`
+	UptimeSeconds int64             `json:"uptime_seconds"`
+	Checks        map[string]string `json:"checks"`
 }

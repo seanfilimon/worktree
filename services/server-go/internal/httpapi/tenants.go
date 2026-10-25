@@ -207,6 +207,14 @@ func (a *api) handlePutMember(w http.ResponseWriter, r *http.Request) error {
 	if err := a.checkOwnerChange(r, t.ID, cur, req.Role); err != nil {
 		return err
 	}
+	// ---- ops (§13.3): tenant MaxMembers quota for new members (409
+	// quota_exceeded); role changes of existing members are not limited ----
+	if cur == nil {
+		if err := a.checkMemberQuota(r.Context(), t); err != nil {
+			return err
+		}
+	}
+	// ---- end ops ----
 	m := &domain.Membership{TenantID: t.ID, AccountID: acct.ID, Role: req.Role, CreatedAt: time.Now().UTC()}
 	prev := ""
 	if cur != nil {

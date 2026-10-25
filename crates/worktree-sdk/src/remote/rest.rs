@@ -218,6 +218,12 @@ impl RestClient {
 
     // --- end deps-releases ---
 
+    /// Raw response bytes of a GET with query parameters (empty values are
+    /// omitted), e.g. the NDJSON audit export.
+    pub async fn get_bytes_query(&self, path: &str, query: &[(&str, String)]) -> Result<Vec<u8>> {
+        self.request(Method::GET, path, query, None::<&()>).await
+    }
+
     /// Subscribe to `GET /api/v1/events` and call `on_event(type, data)` for
     /// every event until it returns false or the stream ends.
     pub async fn events<F>(&self, query: &[(&str, String)], mut on_event: F) -> Result<()>

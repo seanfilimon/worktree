@@ -1037,7 +1037,13 @@ func (m *Memory) ListAudit(ctx context.Context, f domain.AuditFilter) ([]domain.
 	err := m.read(ctx, func() error {
 		out = []domain.AuditEvent{}
 		limit := auditLimit(&f)
-		for i := len(m.audit) - 1; i >= 0 && len(out) < limit; i-- {
+		start := len(m.audit) - 1
+		if !f.Until.IsZero() {
+			// First index at or after the exclusive upper bound.
+			start, _ = slices.BinarySearchFunc(m.audit, f.Until, func(e memAudit, u time.Time) int { return e.ev.At.Compare(u) })
+			start--
+		}
+		for i := start; i >= 0 && len(out) < limit; i-- {
 			e := &m.audit[i].ev
 			if !f.Since.IsZero() && e.At.Before(f.Since) {
 				break
@@ -1049,6 +1055,29 @@ func (m *Memory) ListAudit(ctx context.Context, f domain.AuditFilter) ([]domain.
 		return nil
 	})
 	return out, err
+}
+
+// PruneAudit implements domain.MetaStore: it deletes every event whose At
+// is before the given instant.
+func (m *Memory) PruneAudit(ctx context.Context, before time.Time) (int, error) {
+	if before.IsZero() {
+		return 0, nil
+	}
+	n := 0
+	err := m.write(ctx, func() error {
+		// m.audit is sorted by At: drop the leading run before the bound.
+		i := 0
+		for i < len(m.audit) && m.audit[i].ev.At.Before(before) {
+			i++
+		}
+		n = i
+		m.audit = slices.Delete(m.audit, 0, i)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // ---- license rules ----------------------------------------------------

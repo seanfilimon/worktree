@@ -1,13 +1,17 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/audit"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 )
 
@@ -66,6 +70,29 @@ func (a *api) handleAudit(w http.ResponseWriter, r *http.Request) error {
 			return badRequestf("since must be an RFC 3339 timestamp")
 		}
 	}
+	// v0.5 filters (§13.3): resource, exclusive upper bound, "<prefix>.*"
+	// actions (handled by the store) and the NDJSON export.
+	f.ResourceType = q.Get("resource_type")
+	f.ResourceID = q.Get("resource_id")
+	if s := q.Get("until"); s != "" {
+		if f.Until, err = time.Parse(time.RFC3339, s); err != nil {
+			return badRequestf("until must be an RFC 3339 timestamp")
+		}
+	}
+	if pre, ok := strings.CutSuffix(f.Action, ".*"); ok && pre == "" {
+		return badRequestf("action prefix must not be empty")
+	}
+	switch format := q.Get("format"); format {
+	case "", "json":
+	case "ndjson":
+		tenants := []string{f.TenantID}
+		if isScoped {
+			tenants = scoped
+		}
+		return a.exportAudit(w, r, f, tenants)
+	default:
+		return badRequestf("format must be json or ndjson")
+	}
 	if a.d.Audit == nil {
 		writeJSON(w, http.StatusOK, []domain.AuditEvent{})
 		return nil
@@ -93,6 +120,51 @@ func (a *api) handleAudit(w http.ResponseWriter, r *http.Request) error {
 		merged = merged[:f.Limit]
 	}
 	writeJSON(w, http.StatusOK, merged)
+	return nil
+}
+
+// exportAudit streams every event matching f as NDJSON (one JSON object
+// per line, no limit). With several tenants (a caller administering more
+// than one) their events follow each other, each tenant newest first.
+func (a *api) exportAudit(w http.ResponseWriter, r *http.Request, f domain.AuditFilter, tenants []string) error {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if a.d.Audit == nil {
+		return nil
+	}
+	bw := bufio.NewWriterSize(w, 64<<10)
+	enc := json.NewEncoder(bw)
+	rc := http.NewResponseController(w)
+	var lister audit.Lister = a.d.Store
+	if l, ok := a.d.Audit.(audit.Lister); ok {
+		lister = l
+	}
+	n := 0
+	for _, id := range tenants {
+		tf := f
+		tf.TenantID = id
+		err := audit.Each(r.Context(), lister, tf, func(e domain.AuditEvent) error {
+			if err := enc.Encode(e); err != nil {
+				return err
+			}
+			if n++; n%1000 == 0 {
+				if err := bw.Flush(); err != nil {
+					return err
+				}
+				_ = rc.Flush()
+			}
+			return nil
+		})
+		if err != nil {
+			// Headers are sent: all we can do is stop and log.
+			a.log.WarnContext(r.Context(), "audit export aborted", "error", err, "events", n)
+			_ = bw.Flush()
+			return nil
+		}
+	}
+	_ = bw.Flush()
 	return nil
 }
 
