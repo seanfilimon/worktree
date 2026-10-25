@@ -359,7 +359,10 @@ func (a *api) handleDeleteProtection(w http.ResponseWriter, r *http.Request) err
 
 // ---- license rules ----
 
-var licenseGrants = map[string]bool{"read-only": true, "modify": true, "redistribute": true}
+// licenseGrants are the accepted LicenseRule.Grant values; "" falls back to
+// the license default (proprietary: no access for non-members), available
+// only through the REST API (specs/licensing/LicenseCompliance.md §2).
+var licenseGrants = map[string]bool{"": true, "read-only": true, "modify": true, "redistribute": true}
 
 // handleListLicenses answers GET /api/v1/trees/{tenant}/{tree}/licenses.
 func (a *api) handleListLicenses(w http.ResponseWriter, r *http.Request) error {
@@ -393,7 +396,7 @@ func (a *api) handlePutLicense(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if !licenseGrants[rule.Grant] {
-		return badRequestf("grant must be one of read-only, modify, redistribute")
+		return badRequestf("grant must be one of read-only, modify, redistribute or \"\" (license default)")
 	}
 	if err := a.validateLicenseGrantee(r.Context(), t, &rule); err != nil {
 		return err

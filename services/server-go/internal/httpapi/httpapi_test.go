@@ -834,6 +834,13 @@ func TestProtectionAndLicenseEndpoints(t *testing.T) {
 				}
 				hasAudit(t, f, "license.update")
 			}},
+		{name: "put license default grant", method: "PUT", path: "/api/v1/trees/acme/web/licenses", as: "alice",
+			body: domain.LicenseRule{PathGlob: "blobs/**", SPDX: "LicenseRef-Proprietary", Grant: ""}, status: 200,
+			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
+				if r := decode[domain.LicenseRule](t, rec); r.Grant != "" || r.PathGlob != "blobs/**" {
+					t.Fatalf("rule = %+v", r)
+				}
+			}},
 		{name: "put license bad grant", method: "PUT", path: "/api/v1/trees/acme/web/licenses", as: "alice",
 			body: domain.LicenseRule{PathGlob: "**", SPDX: "MIT", Grant: "steal"}, status: 400, code: "bad_request"},
 		{name: "put license as viewer", method: "PUT", path: "/api/v1/trees/acme/web/licenses", as: "carol",
