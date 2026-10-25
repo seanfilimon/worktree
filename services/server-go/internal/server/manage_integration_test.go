@@ -134,10 +134,10 @@ func TestRunManageIntegration(t *testing.T) {
 	call("POST", "/api/v1/auth/password", erin, map[string]string{"current_password": "erin password 1", "new_password": "erin password 2"}, 204, nil)
 	call("GET", "/api/v1/auth/me", erin, nil, 200, nil)
 	call("GET", "/api/v1/auth/me", erinOther, nil, 401, nil)
-	var toks []json.RawMessage
-	call("GET", "/api/v1/auth/tokens", erin, nil, 200, &toks)
-	if len(toks) != 1 {
-		t.Fatalf("erin has %d tokens, want 1", len(toks))
+	var sessions []json.RawMessage
+	call("GET", "/api/v1/auth/sessions", erin, nil, 200, &sessions)
+	if len(sessions) != 1 {
+		t.Fatalf("erin has %d sessions, want 1 (the current one)", len(sessions))
 	}
 	login("erin", "erin password 1", 401)
 	erin2 := login("erin", "erin password 2", 200)
