@@ -1,25 +1,39 @@
 ---
 title: Merge and Diff
-description: Three-way merge semantics, merge base selection, conflict kinds and markers, persisted merge state, fast-forwards, and the diff algorithm and output format.
+description: Three-way merge semantics, strategies, merge base selection, conflict kinds, markers and hunks, persisted merge state and resolution, revert, and the diff algorithm with rename detection and word diffs.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Merging and diffing are implemented as pure functions (no I/O) in `worktree_sdk::merge` and `worktree_sdk::diff`. `Repository::merge` and `Repository::diff_*` combine them with the object store and working directory. This page describes the semantics that [`wt merge`](/docs/cli/branches#wt-merge) and [`wt diff`](/docs/cli/snapshots#wt-diff) expose.
+Merging and diffing are implemented as pure functions (no I/O) in `worktree_sdk::merge` and `worktree_sdk::diff`. `Repository::merge` and `Repository::diff_*` combine them with the object store and working directory. This page describes the semantics that [`wt merge`](/docs/cli/branches#wt-merge) and [`wt diff`](/docs/cli/snapshots#wt-diff) expose; the [Tree specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Tree.md) (§10) is normative.
+
+Merges always happen on the client. The server only fast-forwards merge requests and never creates merge snapshots; see [Reviews, CI and merges](/docs/cli/merge-requests).
 
 ## Merge overview
 
 `Repository::merge(tree, source, opts)` merges `source` (a branch or any revision, e.g. `origin/main`) into the tree's current branch:
 
-1. **Precondition.** The working tree must be clean; otherwise the merge fails with `DirtyWorkingTree`. A merge cannot start while another one is in progress (`MergeInProgress`).
-2. **Merge base.** The best common ancestor of the current tip and the source tip is computed (see below).
+1. **Precondition.** The working tree must be clean (`DirtyWorkingTree`), and no other merge may be in progress (`MergeInProgress`).
+2. **Merge base.** The best common ancestor of the current tip and the source tip is computed (see below). In a shallow history, a search that runs into missing snapshots fails and asks you to run `wt fetch --deepen N`.
 3. **Shortcut outcomes.**
-   - If the source is already contained in the current branch: `MergeOutcome::UpToDate`, nothing changes.
-   - If the current tip is an ancestor of the source and `no_fast_forward` is not set: `MergeOutcome::FastForward{to}`. The branch ref moves to the source tip and the working directory is checked out. No snapshot is created.
-4. **Three-way merge.** Otherwise (or with `--no-ff`), the manifests of base, ours (current tip), and theirs (source tip) are merged path by path, and text files changed on both sides are merged line by line.
-5. **Result.** If everything merged cleanly, a new snapshot with two parents (current tip, source tip) is created: `MergeOutcome::Merged{snapshot}`. Otherwise the partial result is written to the working directory and `MergeOutcome::Conflicts{conflicts}` is returned (`wt merge` exits with code `3`).
+   - The source is already contained in the current branch: `MergeOutcome::UpToDate`, nothing changes.
+   - The current tip is an ancestor of the source and `no_fast_forward` is not set: `MergeOutcome::FastForward{to}`. The branch ref moves to the source tip and the working directory is checked out (reflog `fast-forward`).
+4. **Three-way merge.** Otherwise (or with `--no-ff`), the manifests of base, ours (current tip) and theirs (source tip) are merged path by path, and text files changed on both sides are merged line by line.
+5. **Result.** If everything merged cleanly, a new snapshot with two parents `[ours, theirs]` is created: `MergeOutcome::Merged{snapshot}`. Otherwise the partial result is written to the working directory and `MergeOutcome::Conflicts{conflicts}` is returned (`wt merge` exits with code `3`).
 
-`MergeOptions` has `message` (merge snapshot message), `no_fast_forward`, and `author` (overrides the configured author).
+`MergeOptions` has `message` (merge snapshot message), `no_fast_forward`, `author` (overrides the configured author) and `strategy`.
+
+### Strategies
+
+`wt merge --strategy <manual|ours|theirs>` (`MergeStrategy`) decides only what happens to **conflicting** changes; non-conflicting changes from both sides are always combined.
+
+| Strategy | Conflicting text hunks | File-level conflicts (modify/delete, add/add, binary) |
+|---|---|---|
+| `manual` (default) | Conflict markers written; the merge stops for you to resolve. | Reported as conflicts. |
+| `ours` | Resolved with the current branch's lines. | The current branch's version is kept (or the file stays deleted). |
+| `theirs` | Resolved with the source's lines. | The source's version is taken. |
+
+With `ours` or `theirs` the merge always completes with a merge snapshot.
 
 ## Merge base
 
@@ -40,42 +54,46 @@ Merging and diffing are implemented as pure functions (no I/O) in `worktree_sdk:
 | Changed or added only on their side | `TakeTheirs` |
 | Changed only on our side | `KeepOurs` |
 | Deleted on one side, unchanged on the other | `Delete` |
-| Text modified on both sides | `MergeContent{base, ours, theirs}`: run the line merge on the blobs |
+| Text modified on both sides | `MergeContent{base, ours, theirs}`: run the line merge on the contents |
 | Added on both sides with identical content | `KeepOurs` |
 | Added on both sides with different content | `MergeContent` with `base: None` (two-way merge); reported as `add_add` if it conflicts |
 | Modified on one side, deleted on the other | `Conflict{kind: ModifyDelete}` |
-| Binary file changed on both sides | `Conflict{kind: Binary}`: our version is kept in the working tree |
+| Binary file changed on both sides | `Conflict{kind: Binary}`: our version stays in the working tree until resolved |
+
+Content and the executable bit merge independently: if one side only toggled the executable bit and the other changed the content, the result has both changes. Large chunked files are read through the same entry reader as any other file.
 
 ## Line-level merge
 
-`merge::merge_text(base, ours, theirs, labels)` is a line-based three-way merge with **diff3 semantics**:
+`merge::merge_text_with(base, ours, theirs, labels, strategy)` is a line-based three-way merge with **diff3 semantics**:
 
-- Non-overlapping changes from both sides are combined.
-- Identical changes made on both sides are taken once.
-- Overlapping, different changes produce a conflict region.
+- The base is aligned with each side; stretches changed on only one side take that side, identical changes are taken once, and different changes to the same stretch conflict. As in Git, edits to adjacent lines (with no unchanged line between them) conflict.
+- Lines both sides agree on at the start or end of a conflicting stretch are moved out of the markers (like Git's `zdiff3`); the base section always shows the full base text.
+- Marker lines use `\r\n` when the file does, so conflicts in Windows-style files stay consistent.
 
-It returns `TextMergeResult::Clean(text)` or `TextMergeResult::Conflicted{merged, conflicts}`. Each `ConflictRegion` records `start_line` (the 1-based line of `<<<<<<<` in the merged output) and the `ours`, `base`, and `theirs` lines.
+It returns `TextMergeResult::Clean(text)` or `TextMergeResult::Conflicted{merged, conflicts}`. Each `ConflictRegion` records its position and the `ours`, `base` and `theirs` lines.
 
 ### Conflict markers
 
-Conflicted files contain diff3-style markers. `MergeLabels` defaults to `ours` / `base` / `theirs`; `Repository::merge` labels the sides with the branch names:
+`Repository::merge` labels the sides with the branch (or revision) and a short snapshot id:
 
 ```text
-<<<<<<< main
+<<<<<<< ours (main 1a2b3c4d)
 let timeout = 30;
-||||||| base
+||||||| base (0f0f0f0f)
 let timeout = 10;
 =======
 let timeout = 60;
->>>>>>> feature/login
+>>>>>>> theirs (feature/login 5e6f7a8b)
 ```
 
 | Marker | Starts |
 |---|---|
-| `<<<<<<< <ours>` | Our side (the current branch). |
-| `\|\|\|\|\|\|\| <base>` | The common ancestor's version. |
+| `<<<<<<< ours (...)` | Our side (the current branch). |
+| `\|\|\|\|\|\|\| base (...)` | The common ancestor's version (`base` alone when the histories are unrelated). |
 | `=======` | Their side (the source). |
-| `>>>>>>> <theirs>` | End of the conflict region. |
+| `>>>>>>> theirs (...)` | End of the conflict region. |
+
+When the source was given as a snapshot id prefix, the label shows the id once, for example `theirs (5e6f7a8b)`.
 
 ### Conflict kinds
 
@@ -84,7 +102,7 @@ let timeout = 60;
 | `Content` | `content` | Both sides changed overlapping lines; markers written to the file. |
 | `ModifyDelete` | `modify_delete` | One side modified the file, the other deleted it. |
 | `AddAdd` | `add_add` | Both sides added the path with different content. |
-| `Binary` | `binary` | A binary file changed on both sides; ours is kept. |
+| `Binary` | `binary` | A binary file changed on both sides; ours is kept until resolved. |
 
 ## Merge state
 
@@ -98,35 +116,50 @@ While a conflicted merge awaits resolution, the repository persists:
   | `source_tip` | Snapshot id of the source. |
   | `target_tip` | Current branch tip before the merge (may be null for an empty branch). |
   | `base` | Merge base (null if unrelated). |
-  | `conflicts` | List of `{path, kind}`. |
+  | `conflicts` | List of `ConflictInfo{path, kind, hunks}`. |
   | `message` | Message for the eventual merge snapshot. |
+  | `resolved` | Paths resolved with `wt merge resolve` (not re-checked for markers). |
 
-- `.wt/conflicts/<tree>.json`, the machine-readable conflict list (`path` and `kind` per entry) for editors and scripts.
+- `.wt/conflicts/<tree>.json`, the machine-readable conflict list for editors and scripts. Each text conflict carries `hunks`, one `{ours_start, ours_len, theirs_start, theirs_len}` per conflicting region:
 
-`Repository::merge_state` returns it, and `wt status` reports the merge in progress. While it exists, the daemon does not auto-snapshot the worktree and commands that would conflict with the merge fail with `MergeInProgress`.
+  ```json
+  [{"path": "src/auth/login.rs", "kind": "content",
+    "hunks": [{"ours_start": 45, "ours_len": 2, "theirs_start": 45, "theirs_len": 3}]},
+   {"path": "assets/logo.png", "kind": "binary", "hunks": []}]
+  ```
 
-Resolving a merge:
+`Repository::merge_state` returns the raw state and `Repository::merge_status` (`wt merge status`) adds a per-path `resolved` flag (explicitly resolved, or a text conflict whose markers are gone). While a merge is in progress the daemon does not auto-snapshot that tree, `wt switch` and `wt pull` are refused, and other conflicting commands fail with `MergeInProgress`.
+
+### Resolving
 
 | Action | API | CLI |
 |---|---|---|
-| Finish after removing all markers: creates the two-parent merge snapshot. Fails with `MergeConflict` while markers remain. | `continue_merge(tree, message)` | `wt merge --continue [-m MSG]` |
+| Resolve one path in favour of a side: conflicting hunks of a text file take that side (the other side's non-conflicting changes are kept); binary and modify/delete conflicts take that side's version. | `resolve_conflict(tree, path, &ConflictResolution::Ours)` / `Theirs` | `wt merge resolve --ours PATH...` / `--theirs` |
+| Resolve one path with given content. | `resolve_conflict(tree, path, &ConflictResolution::Content(bytes))` | `wt merge resolve --file FILE PATH` |
+| Resolve every unresolved conflict. | `resolve_all_conflicts(tree, &resolution)` (`Ours` / `Theirs` only) | `wt merge resolve --all --ours` |
+| Finish once nothing is unresolved: creates the two-parent merge snapshot. Fails with `MergeConflict` while markers remain. | `continue_merge(tree, message)` | `wt merge --continue [-m MSG]` |
 | Snapshot normally: completes the merge with two parents once all markers are gone. | `snapshot(tree, opts)` | `wt snapshot -m MSG` |
-| Give up: restores the pre-merge head into the working tree and clears the merge state. | `abort_merge(tree)` | `wt merge --abort` |
+| Give up: restores the pre-merge head into the working tree and clears the merge state. | `abort_merge(tree)` | `wt merge abort` (or `wt merge --abort`) |
 
 <Callout type="info">
   `wt pull` uses the same machinery: when `origin/<branch>` cannot be fast-forwarded, it runs `Repository::merge` and may leave a conflicted merge to resolve.
 </Callout>
 
+## Revert
+
+`Repository::revert_with(tree, rev, &RevertOptions{message, parent})` (`wt revert REV [-m MSG] [--parent N]`) creates a **new** snapshot on the current branch that undoes `rev`'s changes. The new snapshot records `reverts = <rev id>`, and its default message is `Revert "<subject>"`. For a merge snapshot you must pick the parent (1-based) whose line of history is kept; the changes the merge brought relative to that parent are undone. Reverting needs a clean working tree and uses the three-way merge machinery: if undoing the changes conflicts with later work, the revert fails with `MergeConflict` naming the paths and nothing is written (no merge is left in progress).
+
 ## Diff
 
 ### Algorithm
 
-- `diff::diff_lines(old, new, context)` computes a line diff (Myers or histogram) and groups it into `Hunk`s with `context` lines of surrounding context. A missing trailing newline is handled.
+- `diff::diff_lines(old, new, context)` computes a line diff (Myers) and groups it into `Hunk`s with `context` lines of surrounding context. A missing trailing newline is handled.
 - Each `Hunk` has `old_start`, `old_len`, `new_start`, `new_len` and `lines` (`DiffLine::Context`, `Added`, or `Removed`). Line numbers are 1-based; a zero-length side has `start` = the line before the hunk (0 at the start of the file), as in GNU diff.
 - `diff::diff_stat(old, new)` counts added and removed lines (`DiffStat{added, removed}`).
+- `diff::similarity(old, new)` is the line similarity in percent (twice the common lines over the total; only identical texts score 100), used for rename detection.
 - `diff::is_binary(data)` treats content as binary if it has a NUL byte in the first 8 KiB or is not valid UTF-8. Binary files are reported as changed without a patch.
 
-### Unified diff output
+### Output formats
 
 `diff::unified_diff(old_path, new_path, old, new, context)` produces standard unified diff text, or an empty string if the inputs are equal:
 
@@ -143,6 +176,18 @@ Resolving a merge:
 
 Added files use `--- /dev/null` and deleted files `+++ /dev/null`.
 
+`diff::word_diff` (`wt diff --word-diff`) keeps the same headers and `@@` lines but prints unchanged lines without a prefix and marks changes inline, like `git diff --word-diff=plain`:
+
+```text
+    [-timeout-]{+timeout_secs+}: u32,
+```
+
+Words are runs of letters, digits and underscores, runs of whitespace, or single punctuation characters.
+
+### Rename detection
+
+With `wt diff -M` / `--find-renames[=PCT]` (`DiffOptions::find_renames`), a deleted and an added file are paired as a rename when their content is identical or at least `PCT` percent similar (default 50). The pair is reported once, as `renamed: OLD -> NEW` in human output and `R<similarity> OLD NEW` with `--name-status`; in `FileDiff`, `kind` is `modified`, `path` is the new path, `old_path` is set and `similarity` holds the percentage.
+
 ### Repository diffs
 
 | API | CLI | Compares |
@@ -156,16 +201,19 @@ Added files use `--- /dev/null` and deleted files `+++ /dev/null`.
 | Field | Default | CLI | Meaning |
 |---|---|---|---|
 | `context` | `3` | | Lines of context in patches. |
-| `name_only` | `false` | `--name-only` | Skip patch generation. |
-| `paths` | empty (all) | `PATH...` | Restrict to these paths (prefix match, `/`-separated, relative to the tree root). |
+| `name_only` | `false` | `--name-only`, `--name-status` | Skip patch generation. |
+| `paths` | empty (all) | `PATH...` or `-- PATH...` | Restrict to these paths (prefix match, `/`-separated, relative to the tree root). |
+| `find_renames` | `None` | `-M`, `--find-renames[=PCT]` | Detect renames at this similarity percentage. |
+| `word_diff` | `false` | `--word-diff` | Mark changed words inline instead of whole lines. |
 
 Each result is a `FileDiff`:
 
 | Field | Meaning |
 |---|---|
-| `path` | `/`-separated path relative to the tree root. |
+| `path` | `/`-separated path relative to the tree root (the new path for a rename). |
 | `kind` | `added`, `modified`, or `deleted`. |
-| `old_hash`, `new_hash` | Blob hashes on each side (absent for added / deleted). |
+| `old_hash`, `new_hash` | Content hashes on each side (absent for added / deleted). |
 | `binary` | Whether the content is binary. |
-| `patch` | Unified diff text; `None` when `name_only` or binary. |
+| `patch` | Unified (or word) diff text; `None` when `name_only` or binary. |
 | `added`, `removed` | Line counts (used by `wt diff --stat`). |
+| `old_path`, `similarity` | Set for a detected rename. |

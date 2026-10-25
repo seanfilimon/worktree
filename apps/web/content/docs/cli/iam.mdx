@@ -1,0 +1,256 @@
+---
+title: Access and Identity
+description: Manage declarative access files, teams, custom roles, policies, tree grants, service accounts, tokens, sessions, two-factor authentication, invitations, the access simulator and single sign-on from the wt CLI.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+These commands talk to the server's REST API (and, for `wt access`, the `SyncAccessConfig` RPC). They accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. A `TREE` argument is written `tenant/tree`; inside a worktree it defaults to the origin tenant plus the current tree's remote name. Most commands take the tenant slug as their first argument. Reads need `iam:read` (maintainer and above), changes need `iam:admin` (admin and above). Destructive commands ask for confirmation and require `--yes` when stdin is not a terminal. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#identity-and-access).
+
+## How access is decided
+
+For every request the server evaluates principal, action and resource: disabled identities are denied, token scopes must cover the action, server admins are allowed, suspended tenants refuse writes, then roles, grants and visibility are collected and enabled policies applied (an explicit **deny** beats every allow). Anything not allowed is denied. Details: [Access control](/docs/server/access-control) and the [IAM specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/IAM.md).
+
+### Built-in roles
+
+| Action | viewer | developer | maintainer | admin | owner |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `tenant:read`, `tree:read` | yes | yes | yes | yes | yes |
+| `tree:write`, `branch:create`, `branch:push`, `mr:create`, `release:create`, `ci:report` | | yes | yes | yes | yes |
+| `branch:delete`, `mr:approve`, `mr:merge`, `tree:create`, `iam:read`, `release:delete` | | | yes | yes | yes |
+| `tree:admin`, `tenant:admin`, `iam:admin` | | | | yes | yes |
+
+Only owners (and server admins) can assign the `owner` role, and a tenant always keeps at least one owner. `server:admin` is never granted by a role. `wt iam actions` lists the full catalog.
+
+### Syntax used by policies
+
+| Kind | Forms |
+|---|---|
+| Principals | `user:<name>`, `team:<slug>`, `role:<role>`, `sa:<name>`, `sa:<tenant>/<name>`, `tenant:<slug>`, `authenticated`, `anonymous`, `*` (names may contain `*`) |
+| Resources | `*`, `wt:tenant/<t>`, `wt:tree/<t>/<tree>`, `wt:branch/<t>/<tree>/<branch>`, `wt:path/<t>/<tree>/<path>`; `*` within a segment, `**` across segments |
+| Conditions | `ip_ranges`, `require_mfa`, `not_before`, `not_after`, `time_window` |
+
+## `wt access`
+
+Keep custom roles and policies as TOML files in the worktree and apply them like code. The file format is described in [Declarative access](/docs/server/declarative-access).
+
+```text
+wt access validate [--dir <DIR>] [--tree-doc]
+wt access plan [--dir <DIR>] [--tree-doc] [--tenant <T>]
+wt access apply [--dir <DIR>] [--tree-doc] [--tenant <T>] [--yes]
+wt access pull [--dir <DIR>] [--tree-doc] [--tenant <T>] [--yes]
+```
+
+| Command | Effect |
+|---|---|
+| `validate` | Parses and checks the files locally (syntax, actions, principals, resources). No server. |
+| `plan` | Dry run on the server: prints one line per role or policy to `create`, `update` or `delete`, plus warnings for translated permission aliases. |
+| `apply` | Prints the plan, asks for confirmation, then makes the server's config-managed roles and policies match the files. |
+| `pull` | Writes the last applied document back as TOML; asks before overwriting files that differ unless `--yes`. |
+
+- Without `--tree-doc` the commands use the tenant document in `.wt/access/` (`roles.toml`, `policies.toml`) at the worktree root. With `--tree-doc` they use the selected tree's `<tree>/.wt-tree/access/policies.toml`, which may contain only deny statements. `--dir` points at another directory.
+- `--tenant` defaults to the tenant of the worktree's origin remote.
+- Each document is applied separately: run `apply` once for the tenant document and once per tree document (`wt --tree payments access apply --tree-doc`).
+
+```bash
+wt access validate
+wt access plan
+wt access apply --yes
+wt --tree payments access plan --tree-doc
+```
+
+## `wt team`
+
+```text
+wt team list <TENANT>
+wt team create [--name <NAME>] [--description <DESCRIPTION>] <TENANT> <SLUG>
+wt team show <TENANT> <SLUG>
+wt team update [--name <NAME>] [--description <DESCRIPTION>] <TENANT> <SLUG>
+wt team delete [--yes] <TENANT> <SLUG>
+wt team add [--maintainer] <TENANT> <SLUG> <USER>
+wt team remove [--yes] <TENANT> <SLUG> <USER>
+```
+
+Teams have no tenant-wide role: they get access through tree grants and `team:<slug>` policy statements. Team maintainers (`--maintainer`) may manage the team's membership without `iam:admin`. Deleting a team removes its memberships and grants.
+
+## `wt role`
+
+```text
+wt role list <TENANT>
+wt role create [--description <DESCRIPTION>] --permission <ACTION>... <TENANT> <NAME>
+wt role show <TENANT> <NAME>
+wt role update [--permission <ACTION>...] [--description <DESCRIPTION>] <TENANT> <NAME>
+wt role delete [--yes] <TENANT> <NAME>
+```
+
+```bash
+wt role create acme reviewer --permission tree:read --permission mr:create --permission mr:approve
+wt tenant set-role acme carol reviewer
+```
+
+Permissions are catalog actions or `<area>:*` (not `*` or `server:*`). `--permission` on `update` replaces the list. A role still assigned cannot be deleted. Custom roles are assigned like built-in ones: memberships, grants, service accounts and invitations.
+
+## `wt policy`
+
+```text
+wt policy list <TENANT>
+wt policy show <TENANT> <ID>
+wt policy create --file <FILE> <TENANT>
+wt policy update --file <FILE> <TENANT> <ID>
+wt policy delete [--yes] <TENANT> <ID>
+wt policy validate --file <FILE> <TENANT>
+wt policy enable <TENANT> <ID>
+wt policy disable <TENANT> <ID>
+wt policy simulate [--only] --file <FILE> --principal <PRINCIPAL> --action <ACTION> [--tree <TREE>] [--branch <BRANCH>] [--path <PATH>] [--ip <IP>] [--mfa] <TENANT>
+```
+
+Policy files are JSON (`-` reads stdin):
+
+```json
+{
+  "name": "protect-main",
+  "enabled": true,
+  "statements": [
+    {
+      "sid": "no-contractor-pushes-to-main",
+      "effect": "deny",
+      "actions": ["branch:push"],
+      "resources": ["wt:branch/acme/*/main"],
+      "principals": ["team:contractors"]
+    }
+  ]
+}
+```
+
+`simulate` is a dry run of a policy change: it evaluates the request with and without the file's policies (which replace tenant policies of the same name, or are added) and saves nothing; `--only` evaluates the file's policies alone. Policies created by `wt access apply` are read-only here (`409 managed_by_config`).
+
+```bash
+wt policy validate acme --file protect-main.json
+wt policy simulate acme --file protect-main.json --principal user:bob --action branch:push --tree web --branch main
+wt policy create acme --file protect-main.json
+```
+
+## `wt grant`
+
+```text
+wt grant list <TREE>
+wt grant set --role <ROLE> <--user <USER>|--team <SLUG>|--sa <NAME>|--tenant <SLUG>> <TREE>
+wt grant remove [--yes] <--user <USER>|--team <SLUG>|--sa <NAME>|--tenant <SLUG>> <TREE>
+```
+
+A grant gives one subject a role on one tree, replacing that subject's previous grant. Grants cover tree-scoped actions only (`tree:*`, `branch:*`, `mr:*`, `release:*`, `ci:report`) and can only raise access; restrict with a policy deny. `--tenant` grants every member and service account of **another** tenant access to this tree (cross-tenant collaboration).
+
+```bash
+wt grant set acme/api --team backend --role developer
+wt grant set acme/api --tenant partner --role viewer
+```
+
+## `wt sa`
+
+```text
+wt sa list <TENANT>
+wt sa create [--description <DESCRIPTION>] --role <ROLE> <TENANT> <NAME>
+wt sa show <TENANT> <NAME>
+wt sa update [--role <ROLE>] [--description <DESCRIPTION>] [--disable | --enable] <TENANT> <NAME>
+wt sa delete [--yes] <TENANT> <NAME>
+wt sa key-create [--name <NAME>] [--ttl-hours <N>] [--scope <SCOPE>]... <TENANT> <NAME>
+wt sa key-delete [--yes] <TENANT> <NAME> <KEY_ID>
+```
+
+Service accounts are non-human identities of one tenant (principal `sa:<tenant>/<name>`). Their role may be any role except `owner`. A key is a `wt_...` bearer token shown **once**; `--scope` limits it to action patterns (`tree:read`, `tree:*`, `ci:report`), `--ttl-hours` makes it expire. Disabling the account stops all its keys.
+
+```bash
+wt sa create acme ci --role developer --description "CI pipeline"
+wt sa key-create acme ci --name github-actions --ttl-hours 720 --scope tree:read --scope ci:report
+```
+
+## `wt token`
+
+```text
+wt token list
+wt token create [--ttl-hours <N>] [--scope <SCOPE>]... <NAME>
+wt token revoke [--yes] <ID>
+```
+
+Personal API tokens, shown once. A scoped token can do at most what its scopes cover: `branch:push` (or `branch:*`) can push but not stage or tag, `tree:write` covers all three.
+
+## `wt session`
+
+```text
+wt session list
+wt session revoke [--yes] <ID>
+wt session revoke-others [--yes]
+```
+
+Lists your sign-in sessions with last use, IP, user agent and whether a second factor was used; the session this CLI uses is marked current.
+
+## `wt mfa`
+
+```text
+wt mfa status
+wt mfa enable
+wt mfa disable [--password-stdin]
+wt mfa recovery-codes
+```
+
+`enable` shows a QR code and secret, asks for a code from your authenticator app, and prints 10 single-use recovery codes. `disable` asks for your password; `recovery-codes` replaces the codes and asks for a current code. Afterwards `wt login` prompts for a code or reads `--mfa-code` / `WT_MFA_CODE`. Policies can require MFA with `require_mfa`.
+
+## `wt invite`
+
+```text
+wt invite list <TENANT>
+wt invite create [--role <ROLE>] [--team <SLUG>] <--email <EMAIL>|--user <USER>> <TENANT>
+wt invite revoke [--yes] <TENANT> <ID>
+wt invite show <CODE>
+wt invite accept <CODE>
+```
+
+`create` prints a one-time `wti_...` code, valid for 7 days. Accepting adds the membership (default role `developer`) and, with `--team`, the team membership for the signed-in account; an invitation that names an email or username can only be accepted by that account. Accepting never downgrades an existing role.
+
+```bash
+wt invite create acme --user carol --role viewer --team backend
+wt invite accept wti_...      # as carol
+```
+
+## `wt iam`
+
+```text
+wt iam actions
+wt iam effective [--principal <PRINCIPAL>] <--tenant <TENANT>|--tree <TREE>>
+wt iam simulate [--tree <TREE>] [--branch <BRANCH>] [--path <PATH>] [--ip <IP>] [--mfa] --principal <PRINCIPAL> --action <ACTION> --tenant <TENANT>
+```
+
+- `actions` lists every action with its area and description.
+- `effective` shows the role, team roles, grants and resulting permissions of a principal (default: you). Statements with IP conditions are skipped because they need a concrete request.
+- `simulate` evaluates one request and explains every contributing reason (`tenant_role`, `team_role`, `tree_grant`, `policy`, `token_scope`, `owner_protected`, ...).
+
+Principals are written `user:<name>` or `sa:<tenant>/<name>`.
+
+```bash
+wt iam simulate --principal user:bob --action branch:push --tenant acme --tree acme/web --branch main
+wt iam effective --tree acme/web --principal sa:acme/ci
+```
+
+## `wt sso`
+
+```text
+wt sso show
+wt sso set [--enabled <BOOL>] [--name <NAME>] [--issuer <URL>] [--client-id <ID>] [--client-secret-stdin]
+           [--redirect-url <URL>] [--scope <SCOPE>]... [--allowed-domain <DOMAIN>]...
+           [--auto-create <BOOL>] [--link-by-email <BOOL>] [--username-claim <CLAIM>]
+```
+
+OpenID Connect single sign-on for the whole server (server admins only). Unset options keep their value; `--scope` and `--allowed-domain` replace their lists.
+
+```bash
+printf '%s' "$CLIENT_SECRET" | wt sso set --enabled true --name Okta --issuer https://acme.okta.com \
+  --client-id wt-server --client-secret-stdin \
+  --redirect-url https://wt.example.com/api/v1/auth/sso/callback \
+  --allowed-domain acme.com --auto-create true
+```
+
+<Callout type="warn">
+`--link-by-email` is off by default. Turn it on only if local account emails are trustworthy: W0rkTree does not verify them, so linking by email could let an IdP identity take over an existing account.
+</Callout>
+
+The flow uses PKCE, state and nonce and accepts RS256 and ES256 ID tokens. See [Security](/docs/security).

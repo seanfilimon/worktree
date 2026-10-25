@@ -1,14 +1,14 @@
 ---
 title: REST API Reference
-description: Complete reference for the worktree-server REST API, including authentication, every endpoint, request and response bodies, and errors.
+description: Reference for the worktree-server REST API - authentication, errors, the core endpoints with request and response bodies, and a catalogue of every endpoint group.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-The REST API is served under `/api/v1` on the same port as gRPC (default `http://localhost:7420`). Requests and responses are JSON unless noted. JSON field names are exactly the field names shown here. The admin panel uses this API; anything it can do, you can script.
+The REST API is served under `/api/v1` on the same port as gRPC (default `http://localhost:7420`). Requests and responses are JSON unless noted, and JSON field names are the `json` tags of the Go types in `services/server-go/internal/domain`. The admin panel and the server-side `wt` commands (`wt mr`, `wt trees`, `wt iam`, `wt admin`, ...) use this API; anything they can do, you can script.
 
-`wt` itself uses gRPC for push, pull, stage, and tags (see [Sync protocol](/docs/protocol/sync-protocol)). Merge requests, branch protections, license rules, tenants, and members are managed only through this API and the admin panel in v0.2.0.
+`wt` uses gRPC for push, pull, stage, tags and access-config sync (see [Sync protocol](/docs/protocol/sync-protocol)). This page documents the conventions and the core endpoints in detail; the [catalogue](#endpoint-catalogue) lists every other group with a link to the page that explains it. The complete route list is in the [Server specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md).
 
 ## Conventions
 
@@ -20,9 +20,9 @@ Send a bearer token in the `Authorization` header:
 Authorization: Bearer <token>
 ```
 
-Tokens come from `POST /api/v1/auth/login` (session token, valid 30 days), `POST /api/v1/auth/register`, or `POST /api/v1/auth/tokens` (personal API token). The same token works for gRPC, so a token from `wt login` (stored in `$WT_HOME/credentials.toml`) is valid here too.
+Tokens come from `POST /api/v1/auth/login` (a session, valid 30 days), `POST /api/v1/auth/register`, `POST /api/v1/auth/tokens` (a personal API token) or service-account keys. The same token works for gRPC, so a token from `wt login` (stored in `$WT_HOME/credentials.toml`) is valid here too. `GET` requests may pass the token as `?access_token=` instead, for clients such as `EventSource` that cannot set headers.
 
-Requests without a token are anonymous. Anonymous callers can reach `/healthz`, `/metrics`, the register and login endpoints, and read endpoints of `public` trees. Everything else returns `401 unauthenticated`. Authorization rules are described in [Access control](/docs/server/access-control); the **Auth** column below names the check each endpoint performs.
+Requests without a token are anonymous; they can reach `/healthz`, `/metrics`, registration, login, invitation previews, the action catalogue and read endpoints of `public` trees. A request with an **invalid** token is rejected with `401` and `WWW-Authenticate: Bearer realm="worktree"`; it is never downgraded to anonymous. Authorization is described in [Access control](/docs/server/access-control); the **Auth** columns below name the check each endpoint performs.
 
 ### Errors
 
@@ -32,14 +32,25 @@ Every error uses the same envelope:
 {"error":{"code":"not_found","message":"tree acme/payments not found"}}
 ```
 
-| `code` | HTTP status | Typical cause |
+| `code` | HTTP | Typical cause |
 |---|---|---|
-| `bad_request` | 400 | Malformed JSON, missing required field, invalid slug, role, visibility, or glob. |
-| `unauthenticated` | 401 | Missing, invalid, expired, or revoked token; wrong password; disabled account. |
-| `forbidden` | 403 | Authenticated but not allowed; registration disabled; a protection, approval, or license rule denies the operation. |
-| `not_found` | 404 | Tenant, tree, branch, snapshot, merge request, or path does not exist, or is not visible to the caller. |
-| `conflict` | 409 | Name already taken (tenant slug, username, tree name); merge request cannot fast-forward. |
-| `internal` | 500 | Unexpected server error. Details are in the server log. |
+| `bad_request` | 400 | Malformed JSON, unknown field, missing or invalid value. |
+| `unauthenticated` | 401 | Missing, invalid, expired or revoked token; wrong password; disabled account. |
+| `forbidden` | 403 | Authenticated but not allowed; registration disabled. |
+| `path_denied` | 403 | A policy denies reading that path. |
+| `branch_protection`, `license_violation`, `access_denied`, `review_required`, `signature_required`, `ci_checks_failed` | 403 | A protection, license or policy rule refuses the operation. |
+| `not_found` | 404 | Unknown resource or API path, or not visible to the caller. |
+| `method_not_allowed` | 405 | Wrong method; the `Allow` header lists the right ones. |
+| `conflict` | 409 | Name already taken; concurrent update. |
+| `quota_exceeded`, `merge_blocked`, `linked_group`, `managed_by_config`, `last_owner` | 409 | Tenant quota reached; merge request not mergeable; member of a linked group; object managed by declarative config; last owner of a tenant. |
+| `payload_too_large` | 413 | JSON body over 1 MiB (release assets: 64 MiB). |
+| `unsupported_media_type` | 415 | Body is not `application/json`. |
+| `rate_limited` | 429 | Rate limit reached; see `Retry-After`. |
+| `license_restricted` | 451 | A license rule withholds the content from the caller. |
+| `internal` | 500 | Unexpected error; logged with the `X-Request-Id`, no details returned. |
+| `not_implemented` | 501 | The feature's service is not configured. |
+
+Every response carries `X-Request-Id`. Responses containing secrets send `Cache-Control: no-store`.
 
 ### Path parameters
 
@@ -48,15 +59,17 @@ Every error uses the same envelope:
 | `{tenant}` | Tenant slug (lowercase `a-z`, `0-9`, `-`). A user's personal tenant slug is their username. |
 | `{tree}` | Tree name, unique within the tenant. |
 | `{username}` | Account username. |
-| `{id}` | Snapshot id (UUID) or API token id, depending on the endpoint. |
-| `{n}` | Merge request number (per tree, starting at 1). |
+| `{id}` | Snapshot id (UUID), token id, policy id, ... depending on the endpoint. |
+| `{n}` | Merge request or TODO number (per tree, starting at 1). |
+| `REV` | Where an endpoint takes a revision: a snapshot id or unique prefix of at least 4 characters, a branch or a tag. |
 
 ### Formats
 
 - Timestamps are RFC 3339 strings in UTC, for example `"2026-10-20T14:03:11Z"`.
-- Ids of tenants, accounts, trees, snapshots, merge requests, tokens, and audit events are UUID strings.
+- Ids of tenants, accounts, trees, snapshots, merge requests and tokens are UUID strings.
 - Content hashes (`manifest_hash`, file `hash`) are 64-character lowercase hex BLAKE3-256 digests.
-- List endpoints return a JSON array; an empty result is `[]`.
+- Bodies are strict: unknown fields are rejected and exactly one JSON value is accepted.
+- List endpoints return a JSON array (or an object with a named array where noted); an empty result is `[]`.
 
 The curl examples assume:
 
@@ -86,11 +99,14 @@ $TOKEN = '...'   # from login
 |---|---|---|---|
 | `POST` | `/api/v1/auth/register` | none (registration must be enabled) | `201` |
 | `POST` | `/api/v1/auth/login` | none | `200` |
+| `POST` | `/api/v1/auth/login/mfa` | MFA token | `200` |
 | `POST` | `/api/v1/auth/logout` | token | `204` |
 | `GET` | `/api/v1/auth/me` | token | `200` |
 | `GET` | `/api/v1/auth/tokens` | token | `200` |
 | `POST` | `/api/v1/auth/tokens` | token | `200` |
 | `DELETE` | `/api/v1/auth/tokens/{id}` | token | `204` |
+
+Sessions, MFA enrollment, password changes, signing keys, SSO and invitations are listed in the [catalogue](#endpoint-catalogue).
 
 ### `POST /api/v1/auth/register`
 
@@ -118,7 +134,7 @@ Response `201`:
 }
 ```
 
-The token format shown is illustrative; treat tokens as opaque strings.
+Treat tokens as opaque strings.
 
 ### `POST /api/v1/auth/login`
 
@@ -130,7 +146,13 @@ curl -s -X POST $WT/api/v1/auth/login \
   -d '{"username":"alice","password":"correct horse battery staple"}'
 ```
 
-Response `200`: same shape as register, `{"token": "...", "account": {...}}`. A wrong password or disabled account returns `401 unauthenticated`.
+Response `200`: `{"token": "...", "account": {...}}`, the same shape as register. For an account with two-factor authentication, the response is a challenge instead:
+
+```json
+{"mfa_required": true, "mfa_token": "wtm_...", "account": {"username": "alice"}}
+```
+
+Exchange it within 5 minutes with `POST /api/v1/auth/login/mfa` and `{"mfa_token": "wtm_...", "code": "123456"}` (a TOTP code or a recovery code) for the session. A wrong password or a disabled account returns `401 unauthenticated`; repeated failures lock the (username, client IP) pair for a few minutes.
 
 ### `POST /api/v1/auth/logout`
 
@@ -167,7 +189,7 @@ Returns the caller's account and tenant memberships.
 
 ### `GET /api/v1/auth/tokens`
 
-Lists the caller's API tokens. Token secrets are never returned.
+Lists the caller's API tokens. Secrets are never returned.
 
 ```json
 [
@@ -177,37 +199,26 @@ Lists the caller's API tokens. Token secrets are never returned.
     "name": "ci",
     "created_at": "2026-10-20T16:00:00Z",
     "expires_at": "2026-11-19T16:00:00Z",
-    "last_used_at": "2026-10-21T08:12:45Z"
+    "last_used_at": "2026-10-21T08:12:45Z",
+    "kind": "api",
+    "scopes": ["tree:read", "ci:report"]
   }
 ]
 ```
 
-`expires_at` and `last_used_at` are omitted when not set.
+`expires_at`, `last_used_at` and `scopes` are omitted when not set.
 
 ### `POST /api/v1/auth/tokens`
 
-Creates a personal API token. `ttl_hours` is optional; omit it for a token without an expiry.
+Creates a personal API token. `ttl_hours` is optional (omit it for no expiry); `scopes` optionally restricts the token to action patterns such as `tree:read`, `tree:*` or `ci:report`. A token cannot be scoped to something the caller may not do.
 
 ```bash
 curl -s -X POST $WT/api/v1/auth/tokens \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"ci","ttl_hours":720}'
+  -d '{"name":"ci","ttl_hours":720,"scopes":["tree:read","ci:report"]}'
 ```
 
-Response:
-
-```json
-{
-  "token": "wt_Xk91...",
-  "api_token": {
-    "id": "c0ffee00-1234-4abc-9def-0123456789ab",
-    "account_id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
-    "name": "ci",
-    "created_at": "2026-10-20T16:00:00Z",
-    "expires_at": "2026-11-19T16:00:00Z"
-  }
-}
-```
+Response `200`: `{"token": "wt_Xk91...", "api_token": {...}}`. CLI: `wt token create ci --ttl-hours 720 --scope tree:read --scope ci:report`.
 
 <Callout type="warn">
   The raw `token` is returned only once. The server stores only its SHA-256 hash and cannot show it again.
@@ -224,13 +235,15 @@ Revokes one of the caller's tokens. Response `204`.
 | `GET` | `/api/v1/tenants` | token | `200` |
 | `POST` | `/api/v1/tenants` | token | `201` |
 | `GET` | `/api/v1/tenants/{tenant}` | `tenant:read` | `200` |
+| `PATCH` | `/api/v1/tenants/{tenant}` | `tenant:admin` (`plan`: server admin) | `200` |
 | `GET` | `/api/v1/tenants/{tenant}/members` | `tenant:read` | `200` |
 | `PUT` | `/api/v1/tenants/{tenant}/members/{username}` | `tenant:admin` | `200` |
 | `DELETE` | `/api/v1/tenants/{tenant}/members/{username}` | `tenant:admin` | `204` |
+| `GET` | `/api/v1/tenants/{tenant}/usage` | `tenant:read` | `200` |
 
 ### `GET /api/v1/tenants`
 
-Returns the tenants visible to the caller, as an array of tenant objects.
+Returns the tenants visible to the caller.
 
 ```json
 [
@@ -238,23 +251,17 @@ Returns the tenants visible to the caller, as an array of tenant objects.
 ]
 ```
 
-`kind` is `user` (personal tenant) or `org`. `plan` is one of `free`, `pro`, `enterprise`; it is informational in v0.2.0 (plan quotas are on the Roadmap).
+`kind` is `user` (personal) or `org`. `plan` is a label (`free`, `pro`, `enterprise`). `status`, `status_reason` and `limits` appear when set (see [Operations](/docs/server/operations#tenant-status)).
 
 ### `POST /api/v1/tenants`
 
-Creates an organization tenant. The caller becomes its `owner`. `slug` must be lowercase `[a-z0-9-]` and unique; `409 conflict` if taken.
+Creates an organization tenant; the caller becomes its `owner`. `slug` must be lowercase `[a-z0-9-]` and unique (`409 conflict` if taken).
 
 ```bash
 curl -s -X POST $WT/api/v1/tenants \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"slug":"acme","name":"Acme Corp"}'
 ```
-
-Response `201`: the tenant object (`kind` is `org`).
-
-### `GET /api/v1/tenants/{tenant}`
-
-Returns one tenant object.
 
 ### `GET /api/v1/tenants/{tenant}/members`
 
@@ -269,7 +276,7 @@ Returns one tenant object.
 
 ### `PUT /api/v1/tenants/{tenant}/members/{username}`
 
-Adds an existing account to the tenant or changes its role. `role` is one of `owner`, `admin`, `maintainer`, `developer`, `viewer`.
+Adds an existing account to the tenant or changes its role: a built-in role (`owner`, `admin`, `maintainer`, `developer`, `viewer`) or a custom role of the tenant. Only owners can assign `owner`. Fails with `409 quota_exceeded` when the tenant's member limit is reached, and with `409 last_owner` when it would demote the last owner.
 
 ```bash
 curl -s -X PUT $WT/api/v1/tenants/acme/members/bob \
@@ -277,11 +284,9 @@ curl -s -X PUT $WT/api/v1/tenants/acme/members/bob \
   -d '{"role":"developer"}'
 ```
 
-Response: the member, `{"account": {...}, "role": "developer"}`.
-
 ### `DELETE /api/v1/tenants/{tenant}/members/{username}`
 
-Removes the membership. Response `204`.
+Removes the membership (`409 last_owner` for the last owner). Response `204`.
 
 ## Trees
 
@@ -293,7 +298,7 @@ Removes the membership. Response `204`.
 | `PATCH` | `/api/v1/trees/{tenant}/{tree}` | `tree:admin` | `200` |
 | `DELETE` | `/api/v1/trees/{tenant}/{tree}` | `tree:admin` | `204` |
 
-Trees are also created implicitly the first time `wt push` targets a tree that does not exist yet, when the caller is allowed to create it.
+Trees are also created implicitly the first time `wt push` targets a tree that does not exist yet, when the caller has `tree:create`. Such trees are `private` with default branch `main`.
 
 ### Tree summary
 
@@ -326,21 +331,19 @@ curl -s -X POST $WT/api/v1/tenants/acme/trees \
   -d '{"name":"payments","description":"Payment service","visibility":"private","default_branch":"main"}'
 ```
 
-`name` is required. `visibility` is `private`, `internal`, or `public`. Response `201`: the tree object (not a summary). A `tree.created` event is published and a `tree.create` audit entry is written.
+`name` is required. `visibility` is `private`, `internal` or `public`. Response `201`: the tree object. Publishes `tree.created` and audits `tree.create`. `409 quota_exceeded` when the tenant's tree limit is reached. CLI: `wt trees create acme/payments --visibility private`.
 
 ### `PATCH /api/v1/trees/{tenant}/{tree}`
 
-Updates any subset of `description`, `visibility`, `default_branch`. Fields you omit are unchanged.
+Updates any subset of `description`, `visibility`, `default_branch`.
 
 ```json
 {"visibility":"internal"}
 ```
 
-Response: the updated tree object.
-
 ### `DELETE /api/v1/trees/{tenant}/{tree}`
 
-Deletes the tree and its metadata. Response `204`.
+Deletes the tree and its metadata and publishes `tree.deleted`. Objects that are no longer reachable are removed later by [garbage collection](/docs/server/operations#garbage-collection). Response `204`.
 
 ## History
 
@@ -350,7 +353,7 @@ All endpoints in this group require `tree:read`, which anonymous callers have on
 |---|---|---|---|
 | `GET` | `/api/v1/trees/{tenant}/{tree}/branches` | none | `[branch]` |
 | `GET` | `/api/v1/trees/{tenant}/{tree}/snapshots` | `branch`, `limit` (default 50) | `[snapshot]`, newest first |
-| `GET` | `/api/v1/trees/{tenant}/{tree}/snapshots/{id}` | none | `{snapshot, files}` |
+| `GET` | `/api/v1/trees/{tenant}/{tree}/snapshots/{id}` | none | `{snapshot, files, restricted_count}` |
 | `GET` | `/api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}` | none | raw file bytes |
 | `GET` | `/api/v1/trees/{tenant}/{tree}/tags` | none | `[tag]` |
 | `GET` | `/api/v1/trees/{tenant}/{tree}/staged` | `branch` (optional) | `[staged]` |
@@ -370,7 +373,7 @@ All endpoints in this group require `tree:read`, which anonymous callers have on
 ]
 ```
 
-`tip` is a snapshot id, or `""` for an empty branch. `protected` is `true` when a [branch protection](/docs/server/branch-protection) rule matches the branch.
+`tip` is a snapshot id, or `""` for an empty branch. `protected` is `true` when a [branch protection](/docs/server/branch-protection) rule matches.
 
 ### Snapshots
 
@@ -387,56 +390,48 @@ curl -s "$WT/api/v1/trees/acme/payments/snapshots?branch=main&limit=2" \
     "branch_name": "main",
     "parents": ["0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d"],
     "manifest_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-    "author": "alice",
+    "author": "Alice <alice@example.com>",
     "message": "Add refund endpoint",
     "created_at": "2026-10-21T09:28:40Z",
     "auto_generated": false,
     "pushed_by": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
-    "pushed_at": "2026-10-21T09:30:00Z"
+    "pushed_at": "2026-10-21T09:30:00Z",
+    "signing_key_id": "2c0d7a4e-9b1f-4e8a-8f3d-6a5b4c3d2e1f",
+    "signature": "aW7c...",
+    "verified": true
   }
 ]
 ```
 
-Pass `branch` to select the branch whose history is walked (the tree's `default_branch` is the natural choice). `pushed_by` is an account id. `auto_generated` is `true` for daemon auto-snapshots (message `auto: N files changed`).
+`pushed_by` is an account id. `auto_generated` is `true` for daemon auto-snapshots. The optional fields `dependencies` (see [TODOs](/docs/cli/dependencies#wt-todo)), `reverts` (the snapshot a revert undoes), `signature` (base64), `signing_key_id` and `verified` (the server verified the Ed25519 signature on push; see [signing](/docs/cli/signing)) appear when set.
 
 ### Snapshot detail
 
-`GET /api/v1/trees/{tenant}/{tree}/snapshots/{id}` returns the snapshot and the full file list of its manifest:
+`GET /api/v1/trees/{tenant}/{tree}/snapshots/{id}` returns the snapshot and the file list of its manifest:
 
 ```json
 {
-  "snapshot": {
-    "id": "7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a",
-    "tree_id": "e5f6a7b8-c9d0-4e1f-a2b3-c4d5e6f7a8b9",
-    "branch_name": "main",
-    "parents": ["0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d"],
-    "manifest_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-    "author": "alice",
-    "message": "Add refund endpoint",
-    "created_at": "2026-10-21T09:28:40Z",
-    "auto_generated": false,
-    "pushed_by": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
-    "pushed_at": "2026-10-21T09:30:00Z"
-  },
+  "snapshot": {"id": "7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a", "...": "..."},
   "files": [
     {"path": "README.md", "hash": "4f1a...e09c", "size": 1832, "executable": false},
     {"path": "scripts/deploy.sh", "hash": "9b02...71aa", "size": 410, "executable": true}
-  ]
+  ],
+  "restricted_count": 0
 }
 ```
 
-Hashes are shortened here for readability; the API returns the full 64 hex characters.
+Hashes are shortened here; the API returns the full 64 hex characters. Paths the caller may not read (policy path denies, license rules) are left out of `files` and counted in `restricted_count`.
 
 ### Blob
 
-`GET /api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}` returns the raw bytes of one file at a snapshot. `{path...}` is the `/`-separated file path and may contain slashes.
+`GET /api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}` returns the raw bytes of one file at a snapshot; chunked large files are reassembled. `{path...}` may contain slashes.
 
 ```bash
 curl -s "$WT/api/v1/trees/acme/payments/blob/7a1d5c2e-4b3f-4e6a-9c8d-2f1e0d9c8b7a/scripts/deploy.sh" \
   -H "Authorization: Bearer $TOKEN" -o deploy.sh
 ```
 
-Reads are subject to [license rules](/docs/server/licensing): a rule that does not permit the caller to read the path rejects the request with `403 forbidden`.
+A path denied by a policy answers `403 path_denied`; a path withheld by a [license rule](/docs/server/licensing) answers `451 license_restricted`. Blob responses send `X-Content-Type-Options: nosniff`.
 
 ### Tags
 
@@ -453,11 +448,11 @@ Reads are subject to [license rules](/docs/server/licensing): a rule that does n
 ]
 ```
 
-Tags reach the server through the gRPC `PushTag` call made by `wt`; see the [tags guide](/guides/tags-and-releases).
+Tags reach the server through `wt push` (gRPC `PushTag`) or `POST {tree}/tags {name, target, message?}` (`tree:write`, `target` is a REV); `DELETE {tree}/tags/{name}` needs `tree:admin`. [Tag protections](/docs/server/branch-protection#tag-protection) apply. See the [tags guide](/guides/tags-and-releases).
 
 ### Staged snapshots
 
-`GET /api/v1/trees/{tenant}/{tree}/staged?branch=main` lists team-visible work in progress. Omit `branch` for all branches.
+`GET /api/v1/trees/{tenant}/{tree}/staged?branch=main` lists team-visible work in progress, newest first. Omit `branch` for all branches.
 
 ```json
 [
@@ -478,7 +473,7 @@ Tags reach the server through the gRPC `PushTag` call made by `wt`; see the [tag
 ]
 ```
 
-There is at most one staged snapshot per tree, account, and branch. See the [staged visibility guide](/guides/staged-visibility).
+There is at most one staged snapshot per tree, account and branch. `GET {tree}/staged/summary` aggregates them per branch and reports **overlaps** (files staged by two or more accounts). `DELETE {tree}/staged?branch=` removes your own entry (`tree:admin` may add `account=`). See the [staged visibility guide](/guides/staged-visibility).
 
 ## Protections
 
@@ -487,13 +482,14 @@ There is at most one staged snapshot per tree, account, and branch. See the [sta
 | `GET` | `/api/v1/trees/{tenant}/{tree}/protections` | `tree:read` | `200` |
 | `PUT` | `/api/v1/trees/{tenant}/{tree}/protections` | `tree:admin` | `200` |
 | `DELETE` | `/api/v1/trees/{tenant}/{tree}/protections?pattern=` | `tree:admin` | `204` |
+| `GET`, `PUT`, `DELETE` | `/api/v1/trees/{tenant}/{tree}/tag-protections` (`DELETE ?pattern=`) | `tree:read` / `tree:admin` | `200` / `204` |
 
-The body of `PUT` is a branch protection. Rules are keyed by `pattern`: putting a rule with an existing pattern replaces it. `tree_id` is filled in by the server.
+The body of `PUT` is a branch protection, keyed by `pattern`: putting an existing pattern replaces it. `tree_id` is filled in by the server.
 
 ```bash
 curl -s -X PUT $WT/api/v1/trees/acme/payments/protections \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"pattern":"main","no_direct_push":true,"required_approvals":1,"allowed_pushers":[],"no_delete":true}'
+  -d '{"pattern":"main","no_direct_push":true,"required_approvals":1,"allowed_pushers":[],"no_delete":true,"require_ci_pass":true,"required_checks":["ci/build"],"require_signed":false,"require_linear":true,"block_on_todos":false}'
 ```
 
 Response (also the element type of `GET`):
@@ -505,18 +501,21 @@ Response (also the element type of `GET`):
   "no_direct_push": true,
   "required_approvals": 1,
   "allowed_pushers": [],
-  "no_delete": true
+  "no_delete": true,
+  "require_ci_pass": true,
+  "required_checks": ["ci/build"],
+  "require_linear": true
 }
 ```
 
-Delete a rule by pattern (URL-encode it, for example `release%2F*`):
+`require_ci_pass`, `required_checks`, `require_signed`, `require_linear` and `block_on_todos` are omitted when false or empty. Delete a rule by pattern (URL-encode it, for example `release%2F*`):
 
 ```bash
 curl -s -X DELETE "$WT/api/v1/trees/acme/payments/protections?pattern=release%2F*" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Semantics are described in [Branch protection](/docs/server/branch-protection).
+Tag protections have `pattern`, `no_delete`, `no_move` and `allowed_taggers`. Semantics are described in [Branch protection](/docs/server/branch-protection).
 
 ## Licenses
 
@@ -526,7 +525,7 @@ Semantics are described in [Branch protection](/docs/server/branch-protection).
 | `PUT` | `/api/v1/trees/{tenant}/{tree}/licenses` | `tree:admin` | `200` |
 | `DELETE` | `/api/v1/trees/{tenant}/{tree}/licenses?path_glob=` | `tree:admin` | `204` |
 
-The body of `PUT` is a license rule, keyed by `path_glob` (putting an existing glob replaces the rule). `grant` is `read-only`, `modify`, or `redistribute`.
+The body of `PUT` is a license rule, keyed by `path_glob` (putting an existing glob replaces it). `grant` is `read-only`, `modify`, `redistribute` or `""` (license default); `grantee` (tenant slug) and `expires_at` (RFC 3339) are optional.
 
 ```bash
 curl -s -X PUT $WT/api/v1/trees/acme/payments/licenses \
@@ -557,11 +556,15 @@ Semantics are described in [Licensing](/docs/server/licensing).
 | `GET` | `/api/v1/trees/{tenant}/{tree}/merge-requests?state=` | `tree:read` | `200` |
 | `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests` | `mr:create` | `201` |
 | `GET` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}` | `tree:read` | `200` |
-| `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}/approve` | `mr:approve` | `200` |
-| `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}/merge` | `mr:merge` | `200` |
-| `POST` | `/api/v1/trees/{tenant}/{tree}/merge-requests/{n}/close` | see below | `200` |
+| `POST` | `.../merge-requests/{n}/approve` | `mr:approve` | `200` |
+| `POST` | `.../merge-requests/{n}/review` | `mr:approve` (`commented`: `tree:read`) | `200` |
+| `GET` | `.../merge-requests/{n}/checks` | `tree:read` | `200` |
+| `POST` | `.../merge-requests/{n}/merge` | `mr:merge` | `200` |
+| `POST` | `.../merge-requests/{n}/close` | author or `mr:merge` | `200` |
+| `GET`, `POST` | `.../merge-requests/{n}/comments` | `tree:read` | `200` / `201` |
+| `PATCH`, `DELETE` | `.../merge-requests/{n}/comments/{id}` | comment author or `tree:admin` | `200` / `204` |
 
-`state` filters the list: `open`, `merged`, or `closed`; omit it for all merge requests.
+`state` filters the list: `open`, `merged` or `closed`; omit it for all.
 
 ### `POST .../merge-requests`
 
@@ -571,7 +574,7 @@ curl -s -X POST $WT/api/v1/trees/acme/payments/merge-requests \
   -d '{"title":"Add refund endpoint","description":"Implements POST /refunds","source_branch":"feature/refunds","target_branch":"main"}'
 ```
 
-Response `201`, and the shape returned by every merge request endpoint:
+Response `201`, the shape returned by every merge request endpoint:
 
 ```json
 {
@@ -591,43 +594,49 @@ Response `201`, and the shape returned by every merge request endpoint:
 }
 ```
 
-After a merge, `state` is `merged` and the optional fields `merged_at` and `merged_snapshot` (the new target tip) are present. Each approval looks like `{"account_id": "...", "username": "alice", "at": "2026-10-21T12:30:00Z"}`.
+After a merge, `state` is `merged` and `merged_at` and `merged_snapshot` (the new target tip) are present; `linked_group` appears for members of a linked group. Each review entry in `approvals` looks like `{"account_id": "...", "username": "alice", "at": "...", "snapshot_id": "...", "decision": "approved", "body": "..."}`.
 
-### `POST .../merge-requests/{n}/approve`
+### `POST .../merge-requests/{n}/review`
 
-Records the caller's approval. No body. Returns the merge request.
+```json
+{"decision": "changes_requested", "body": "Needs a test"}
+```
+
+`decision` is `approved`, `changes_requested` or `commented`. `/approve` (no body) is shorthand for `approved`; authors cannot approve their own merge request. An approval records the source tip and goes stale when the source moves.
+
+### `GET .../merge-requests/{n}/checks`
+
+Merge readiness: `{"mergeable", "blockers": [{"kind", "message"}], "approvals": {"required", "current", "stale"}, "ci": {"state", "required", "missing"}, "todos": {"blocking_open"}}`. See [Branch protection](/docs/server/branch-protection#merge-requests).
 
 ### `POST .../merge-requests/{n}/merge`
 
-Fast-forwards the target branch to the source branch's tip. No body. Returns the merged merge request. Fails with:
-
-- `409 conflict` when the target tip is not an ancestor of the source tip. Merge the target into the source locally (`wt merge`), push the source branch, and retry.
-- an error when the merge request has fewer approvals than the `required_approvals` of the protection rules matching the target branch (`review_required`).
+Fast-forwards the target branch to the source tip. No body. Returns the merged merge request. Refusals, in order of precedence: `409 linked_group` for a member of a linked group, `403 review_required` for missing approvals, `409 merge_blocked` naming the blockers (change requests, CI, TODOs, linearity), and `409 conflict` when the target is not an ancestor of the source. Merge the target into the source locally (`wt merge`), push, and retry when it has diverged.
 
 ### `POST .../merge-requests/{n}/close`
 
-Closes an open merge request without merging. No body. Returns the closed merge request. Intended for the author or a caller allowed to merge.
-
-The full lifecycle is described in [Branch protection](/docs/server/branch-protection#merge-requests).
+Closes an open merge request without merging. No body.
 
 ## Audit
 
 | Method | Path | Auth | Success |
 |---|---|---|---|
-| `GET` | `/api/v1/audit?tenant=&action=&limit=` | `tenant:admin` on `tenant`, or server admin | `200` |
+| `GET` | `/api/v1/audit` | `tenant:admin` on `tenant`, or server admin | `200` |
 
 | Query | Meaning |
 |---|---|
-| `tenant` | Tenant slug to filter on. |
-| `action` | Exact action name, for example `branch.push`. |
-| `limit` | Maximum entries (default 100). |
+| `tenant` | Tenant slug. Without it, server admins see every event and others the tenants they administer. |
+| `action` | Exact action such as `branch.push`, or a prefix such as `iam.*`. |
+| `resource_type`, `resource_id` | Only events on this resource. |
+| `since`, `until` | RFC 3339 bounds (`until` exclusive). |
+| `limit` | Maximum entries, default 100, at most 1000. |
+| `format=ndjson` | Stream every match as `application/x-ndjson`, with no limit. |
 
 Entries are returned newest first:
 
 ```json
 [
   {
-    "id": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+    "id": "0192f1a4-5b6c-7d8e-9f0a-1b2c3d4e5f60",
     "tenant_id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
     "actor_id": "3f2b9c1e-8a4d-4f6e-9b7a-1c2d3e4f5a6b",
     "actor": "alice",
@@ -641,13 +650,14 @@ Entries are returned newest first:
 ]
 ```
 
-`actor` is a username, `anonymous`, or `system`. `details` and `remote_addr` are omitted when empty. The `resource_type`, `resource_id`, and `details` values shown are illustrative. See [Monitoring](/docs/server/monitoring#audit-log).
+`actor` is a username, `anonymous` or `system`. `details` and `remote_addr` are omitted when empty, and secret-looking values are redacted. The values shown are illustrative. See [Monitoring](/docs/server/monitoring#audit-log).
 
 ## Events
 
 | Method | Path | Auth | Success |
 |---|---|---|---|
-| `GET` | `/api/v1/events?tenant=&tree=` | token (events are limited to what the caller may read) | `200`, `text/event-stream` |
+| `GET` | `/api/v1/events?tenant=&tree=&types=` | token (limited to what the caller may read) | `200`, `text/event-stream` |
+| `GET` | `/api/v1/events/recent?tenant=&tree=&limit=` | same | `200` |
 
 See [Events](/docs/server/events) for the stream format and event types.
 
@@ -658,8 +668,15 @@ All admin endpoints require a server admin (`is_admin: true`).
 | Method | Path | Success |
 |---|---|---|
 | `GET` | `/api/v1/admin/stats` | `200` |
+| `GET` | `/api/v1/admin/system` | `200` |
 | `GET` | `/api/v1/admin/accounts` | `200` |
+| `POST` | `/api/v1/admin/accounts` | `201` |
 | `PATCH` | `/api/v1/admin/accounts/{username}` | `200` |
+| `POST` | `/api/v1/admin/accounts/{username}/password`, `.../reset-code` | `204` / `200` |
+| `GET`, `PUT` | `/api/v1/admin/sso` | `200` |
+| `POST`, `GET` | `/api/v1/admin/gc` (`POST ?dry_run=true`) | `200` |
+| `GET`, `PUT` | `/api/v1/admin/tenants/{tenant}/limits` | `200` |
+| `PATCH` | `/api/v1/admin/tenants/{tenant}` (`status`, `status_reason`) | `200` |
 
 ### `GET /api/v1/admin/stats`
 
@@ -676,9 +693,9 @@ All admin endpoints require a server admin (`is_admin: true`).
 }
 ```
 
-### `GET /api/v1/admin/accounts`
+### `POST /api/v1/admin/accounts`
 
-Returns every account as an array of account objects.
+Creates an account regardless of `--allow-registration`: `{"username", "email", "password", "is_admin"}`. CLI: `wt admin account-create`.
 
 ### `PATCH /api/v1/admin/accounts/{username}`
 
@@ -690,18 +707,45 @@ curl -s -X PATCH $WT/api/v1/admin/accounts/mallory \
   -d '{"disabled":true}'
 ```
 
+GC, limits and tenant status are described in [Operations](/docs/server/operations).
+
+## Endpoint catalogue
+
+Every other endpoint group, all under `/api/v1`. `{t}` = `/tenants/{tenant}`, `{tree}` = `/trees/{tenant}/{tree}`.
+
+| Group | Endpoints | See |
+|---|---|---|
+| Account security | `POST /auth/password`, `POST /auth/password-reset`, `GET /auth/sessions`, `DELETE /auth/sessions/{id}`, `POST /auth/sessions/revoke-others`, `GET /auth/mfa`, `POST /auth/mfa/totp/enroll`, `POST /auth/mfa/totp/confirm`, `POST /auth/mfa/recovery-codes`, `DELETE /auth/mfa/totp` | [Access control](/docs/server/access-control#tokens), [`wt session`, `wt mfa`](/docs/cli/iam) |
+| SSO | `GET /auth/providers`, `GET /auth/sso/start`, `GET /auth/sso/callback` | [Security](/docs/security) |
+| Signing keys | `GET\|POST /auth/keys`, `DELETE /auth/keys/{id}`, `GET /accounts/{username}/keys` | [`wt identity`](/docs/cli/signing#wt-identity) |
+| Invitations | `GET\|POST {t}/invitations`, `DELETE {t}/invitations/{id}`, `GET /invitations/{code}`, `POST /invitations/{code}/accept` | [`wt invite`](/docs/cli/iam) |
+| IAM | `{t}/teams[/{team}[/members/{username}]]`, `{t}/roles[/{name}]`, `{t}/policies[/{id}]`, `POST {t}/policies/validate`, `{t}/service-accounts[/{name}[/keys[/{id}]]]`, `GET\|PUT\|DELETE {tree}/grants`, `GET /iam/actions`, `POST /iam/simulate`, `GET /iam/effective` | [Access control](/docs/server/access-control) |
+| Declarative access | `GET {t}/access-config`, `POST {t}/access-config/plan`, `POST {t}/access-config/apply`, same under `{tree}/access-config` | [Declarative access](/docs/server/declarative-access) |
+| Branches and tags | `POST {tree}/branches {name, from?}`, `DELETE {tree}/branches/{name...}`, `POST {tree}/tags`, `DELETE {tree}/tags/{name...}` | [`wt trees`](/docs/cli/administration#wt-trees) |
+| Insights | `GET {tree}/compare?to=&from=&context=`, `GET {tree}/history?path=&branch=&limit=`, `GET {tree}/stats?branch=&days=`, `GET {tree}/staged/summary`, `GET /search?q=&limit=` | [`wt trees`](/docs/cli/administration#wt-trees) |
+| Archives | `GET {tree}/archive/{snapshot}?format=tar.gz\|zip` (license-aware, adds `LICENSES/NOTICE`) | [Licensing](/docs/server/licensing) |
+| CI | `POST {tree}/ci/status {snapshot, context, state, description?, target_url?}` (`ci:report`), `GET {tree}/ci/status?snapshot=\|branch=` | [`wt ci`](/docs/cli/merge-requests#wt-ci) |
+| Linked groups | `GET\|POST {t}/linked-groups`, `GET\|DELETE {t}/linked-groups/{id}`, `POST {t}/linked-groups/{id}/merge` | [Branch protection](/docs/server/branch-protection#linked-merge-requests) |
+| TODOs and dependencies | `GET\|POST {tree}/todos`, `GET\|PATCH {tree}/todos/{n}`, `POST {tree}/todos/{n}/claim\|complete\|cancel`, `GET {tree}/dependencies?branch=` | [`wt todo`](/docs/cli/dependencies#wt-todo) |
+| Releases | `GET\|POST {tree}/releases`, `GET\|PATCH\|DELETE {tree}/releases/{tag}`, `PUT\|GET\|DELETE {tree}/releases/{tag}/assets/{name}` (raw body up to 64 MiB) | [`wt release`](/docs/cli/dependencies#wt-release) |
+| Staged | `GET {tree}/staged/summary`, `DELETE {tree}/staged?branch=&account=` | [Staged snapshots](#staged-snapshots) |
+
 ## Health and metrics
 
-These endpoints have no `/api/v1` prefix and need no token.
+These endpoints have no `/api/v1` prefix, need no token and are never rate limited.
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET` | `/healthz` | `{"status":"ok","version":"0.2.0","uptime_seconds":3600}` |
+| `GET` | `/healthz` | `{"status":"ok","version":"0.2.0-dev","uptime_seconds":3600,"checks":{"meta":"ok","objects":"ok"}}`; `503` with `"degraded"` when a probe fails |
 | `GET` | `/metrics` | Prometheus text exposition format |
 | `GET` | `/admin/...` | Static admin panel (when `--admin-dir` is set), `index.html` fallback |
 
 See [Monitoring](/docs/server/monitoring).
 
+## Rate limits
+
+Requests are limited per principal (or per IP for anonymous callers), 1,200 per minute by default. Over the limit the server answers `429 rate_limited` with `Retry-After`, `X-RateLimit-Limit` and `X-RateLimit-Remaining`. See [Rate limiting](/docs/server/operations#rate-limiting).
+
 ## CORS
 
-Browser requests are allowed from `http://localhost:5173` (the admin panel's Vite dev server) and from every origin listed in `WT_CORS_ORIGINS`. The admin panel served at `/admin/` is same-origin and needs no CORS configuration.
+Browser requests are allowed from `http://localhost:5173` (the admin panel's Vite dev server) and from the origins in `--cors-origins` / `WT_CORS_ORIGINS` (`*` allows any). The admin panel served at `/admin/` is same-origin and needs no CORS configuration.

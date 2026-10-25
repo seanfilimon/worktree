@@ -7,10 +7,10 @@ import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-W0rkTree v0.2.0 is built from source. The repository contains everything: the Rust workspace (`wt`, `worktree-bg`, the SDK, the protocol crate, the Git bridge), the Go server in `services/server-go`, and the admin panel in `apps/admin`.
+W0rkTree is built from source. The repository contains everything: the Rust workspace (`wt`, `worktree-bg`, the SDK, the protocol crate, the Git bridge), the Go server in `services/server-go`, and the admin panel in `apps/admin`.
 
 <Callout type="warn" title="Roadmap">
-  Prebuilt binaries and package-manager installs (Homebrew, winget, crates.io, npm, install scripts) are not available in v0.2.0. Build from source as described below.
+  Prebuilt binaries and package-manager installs (Homebrew, winget, crates.io, npm, install scripts) are not available yet. Build from source as described below. For the server, the repository also has a `Dockerfile.server` and a `docker-compose.yml`; see [Containers](/docs/server/deployment#containers).
 </Callout>
 
 ## Prerequisites
@@ -142,7 +142,7 @@ curl.exe http://localhost:7420/healthz
 </Tab>
 </Tabs>
 
-`/healthz` returns JSON of the form `{"status":"ok","version":"...","uptime_seconds":N}`. Omit `--admin-dir` if you did not build the admin panel. Data is written to `./wt-data` by default.
+`/healthz` returns JSON of the form `{"status":"ok","version":"...","uptime_seconds":N,"checks":{"meta":"ok","objects":"ok"}}` (HTTP `503` with `"status":"degraded"` when a storage probe fails). Omit `--admin-dir` if you did not build the admin panel. Data is written to `./wt-data` by default.
 
 Then try a worktree end to end:
 
@@ -163,7 +163,7 @@ Windows is a first-class platform; W0rkTree is developed on it.
 
 - **Shell.** All commands work in PowerShell. Where shell syntax differs (environment variables, paths, quoting), the docs show a PowerShell variant. Use `curl.exe` rather than the `curl` alias of older Windows PowerShell versions.
 - **PATH.** `cargo install` places `wt.exe` and `worktree-bg.exe` in `%USERPROFILE%\.cargo\bin`. If `wt` is not found, add that directory to your user `PATH` and open a new terminal.
-- **Per-user state.** `$WT_HOME` defaults to `%USERPROFILE%\.wt` and holds `credentials.toml`, `bg.json`, `bg.toml`, and `bg.log`. Override it with an environment variable:
+- **Per-user state.** `$WT_HOME` defaults to `%USERPROFILE%\.wt` and holds `credentials.toml`, the user `config.toml`, signing keys in `keys\`, and the daemon files `bg.json`, `bg.toml` and `bg.log`. Override it with an environment variable:
 
 ```powershell
 $env:WT_HOME = "$env:USERPROFILE\.wt-test"
@@ -213,4 +213,5 @@ cargo test --workspace
 
 - [Quick start](/guides/quick-start): create a worktree and push it.
 - [CLI reference](/docs/cli): every command and flag.
-- [Server deployment](/docs/server/deployment): reverse proxy, TLS, and running as a service.
+- [Local configuration](/docs/cli/configuration): user, worktree and tree settings, hooks, and secret scanning.
+- [Server deployment](/docs/server/deployment): TLS, reverse proxies, and running as a service.

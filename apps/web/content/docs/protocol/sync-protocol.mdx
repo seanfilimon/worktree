@@ -1,149 +1,185 @@
 ---
 title: Sync Protocol
-description: The worktree.sync.v1.SyncService gRPC API — every RPC, authentication, and the exact push, pull, stage, and tag flows used by wt and worktree-bg.
+description: The worktree.sync.v1.SyncService gRPC API — all 16 RPCs, authentication, and the push, pull, stage, watch, tag and access-config flows used by wt and worktree-bg.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Clients synchronize with the server through one gRPC service, `worktree.sync.v1.SyncService`, defined in `crates/worktree-protocol/proto/sync.proto`. The Rust client in `worktree_sdk::remote` and the Go server in `services/server-go/internal/syncsvc` both implement this file; it is the contract between them.
+Clients synchronize with the server through one gRPC service, `worktree.sync.v1.SyncService`, defined in `crates/worktree-protocol/proto/sync.proto`. The Rust client in `worktree_sdk::remote` and the Go server in `services/server-go/internal/syncsvc` both implement this file; it is the contract between them. This page summarizes the [Sync specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/Sync.md), which is normative.
 
 ## Transport
 
 | Property | Value |
 |---|---|
-| Protocol | gRPC over cleartext HTTP/2 (h2c) |
-| Port | The server's single port, default `7420`. gRPC requests (`content-type: application/grpc*`) share the listener with REST, SSE, and the admin panel. |
-| Base URL | The remote URL, e.g. `http://localhost:7420`; the same URL is used for REST authentication. |
-| Max message size | 64 MiB in both directions |
-| TLS | Not built in. Terminate TLS at a reverse proxy that forwards HTTP/2 (h2c) to the server. See [Deployment](/docs/server/deployment). |
+| Protocol | gRPC over HTTP/2: cleartext h2c by default, or TLS (ALPN `h2`) when the server runs with `--tls-cert`/`--tls-key`. `--tls-client-ca` adds optional mTLS. |
+| Port | The server's single port, default `7420`. Requests that are HTTP/2 with `content-type: application/grpc*` go to gRPC; everything else goes to REST, SSE and the admin panel. |
+| Base URL | The remote URL, `http://host:7420` or `https://host:7420`; the same URL is used for REST. The SDK uses TLS for `https://` URLs. |
+| Max message size | 64 MiB in both directions. One object may be at most 64 MiB; files over 8 MiB are [chunked](/docs/protocol/large-files#chunked-large-files). |
+| Health | `grpc.health.v1.Health` reports `SERVING` until shutdown begins. |
 
-<Callout type="warn" title="Roadmap">
-  QUIC transport, built-in TLS, and chunked (FastCDC) large-file transfer are not part of v0.2.0. Each object travels whole in one `ObjectData` message, so a single object must fit within the 64 MiB message limit.
-</Callout>
+Messages are plain protobuf inside gRPC framing: no custom envelope, no compression, no packs or deltas.
 
 ## Authentication
 
-Tokens are obtained over REST (`POST /api/v1/auth/login` or `/register`, or a personal API token from `/api/v1/auth/tokens`) and sent on every gRPC call as metadata:
+Tokens come from REST (`POST /api/v1/auth/login`, followed by `/auth/login/mfa` for accounts with two-factor authentication, an SSO session, a personal API token, or a service-account key) and are sent on every call as metadata:
 
 ```text
 authorization: Bearer <token>
 ```
 
-The server resolves the caller from the token; the `account_id` fields in request messages are informational and do not grant identity. Calls without a token are anonymous and are allowed only for `Ping` and reads of `public` trees. Every other call is authorized against the caller's tenant role and the tree's visibility; for example `Push`, `Stage`, and `PushTag` require `tree:write`. See [Access control](/docs/server/access-control).
+The server resolves the caller from the token; `tenant_id`, `account_id` and `tagger` fields in requests are ignored. Calls without a token are anonymous and may only `Ping` and read `public` trees. A token that is present but invalid fails with `Unauthenticated`; it is never downgraded to anonymous. Every other call is authorized by the IAM engine (roles, grants, visibility, policies, token scopes). See [Access control](/docs/server/access-control).
 
 ## RPCs
 
-| RPC | Request → Response | Purpose |
-|---|---|---|
-| `Ping` | `PingRequest` → `PingResponse` | Liveness and identity probe. Returns `server_version`, and `account_id`, `username`, `tenant_slug` when the bearer token is valid. Used by `wt whoami`. |
-| `ResolveTree` | `ResolveTreeRequest` → `TreeInfo` | Look up a tree by `tenant_slug` + `tree_name`. With `create_if_missing`, creates it (requires `tree:create`) and sets `created = true`. Returns `tree_id`, `tenant_id`, `tenant_slug`, `name`, `default_branch`. |
-| `ListBranches` | `ListBranchesRequest` → `ListBranchesResponse` | Every branch of a tree with its `tip`, `protected` flag, and `updated_at`. |
-| `Pull` | `PullRequest` → `PullResponse` | Delta sync of one branch: snapshots the client is missing and the objects they reference. |
-| `Negotiate` | `NegotiateRequest` → `ObjectTransferPlan` | Have/want negotiation: the client lists candidate hashes in `have`; the server answers with `objects_to_send`, the hashes it does not have, and their `total_size`. |
-| `UploadObjects` | stream `ObjectData` → `UploadObjectsResponse` | Client-streaming upload of manifests and blobs. The server verifies `BLAKE3(data) == hash` for every object, dedups, and reports `received`, `stored` (newly stored), and `rejected` (hash mismatches). |
-| `DownloadObjects` | `WantMessage` → stream `ObjectData` | Server-streaming download of the requested hashes. Unknown hashes are skipped. |
-| `Push` | `PushRequest` → `PushResponse` | Advance a branch tip with conflict detection and policy checks. |
-| `Stage` | `StageUploadRequest` → `StageUploadResponse` | Upload a staged (team-visible WIP) snapshot summary. |
-| `ListStaged` | `ListStagedRequest` → `ListStagedResponse` | Staged snapshots of a tree visible to the caller, optionally for one `branch_name`. Used by `wt status --team`. |
-| `PushTag` | `PushTagRequest` → `PushTagResponse` | Create a tag on the server from a `TagRecord`. |
-| `ListTags` | `ListTagsRequest` → `ListTagsResponse` | All tags of a tree. |
-| `SyncAccessConfig` | `AccessConfigSyncRequest` → `AccessConfigSyncResponse` | Upload a raw access-config document (roles, policies, tenant access, branch protection, or license) for a tenant. The server stores it; v0.2.0 does not enforce it. |
+| RPC | Request → Response | Auth | Purpose |
+|---|---|---|---|
+| `Ping` | `PingRequest` → `PingResponse` | anonymous OK | `server_version`, plus `account_id`, `username`, `tenant_slug` when the token is valid. Used by `wt whoami`. |
+| `ResolveTree` | `ResolveTreeRequest` → `TreeInfo` | `tree:read`; creating needs `tree:create` | Look up a tree by `tenant_slug` + `tree_name`. With `create_if_missing` it creates a **private** tree with default branch `main`. |
+| `ListBranches` | `ListBranchesRequest` → `ListBranchesResponse` | `tree:read` | Every branch with `tip`, `protected` and `updated_at`, sorted by name. |
+| `ListTags` | `ListTagsRequest` → `ListTagsResponse` | `tree:read` | Every tag of the tree. |
+| `PushTag` | `PushTagRequest` → `PushTagResponse` | `tree:write` | Create a tag on a snapshot of the tree. |
+| `Negotiate` | `NegotiateRequest` → `ObjectTransferPlan` | authenticated | Upload negotiation: `objects_to_send` = the `have` hashes the server does not store. |
+| `UploadObjects` | stream `ObjectData` → `UploadObjectsResponse` | authenticated | Verify and store blobs, manifests and chunk lists. |
+| `DownloadObjects` | `WantMessage` → stream `ObjectData` | `tree:read` on the tree in `x-wt-tree-id` | Stream wanted objects reachable from that tree. |
+| `Push` | `PushRequest` → `PushResponse` | `tree:write` + `branch:push` | Move a branch tip forward. |
+| `Pull` | `PullRequest` → `PullResponse` | `tree:read` | The snapshots and objects a client is missing for one branch. |
+| `Stage` | `StageUploadRequest` → `StageUploadResponse` | `tree:write` | Record the caller's staged (WIP) snapshot. |
+| `ListStaged` | `ListStagedRequest` → `ListStagedResponse` | `tree:read` | Live staged snapshots, newest first. |
+| `Unstage` | `UnstageRequest` → `UnstageResponse` | `tree:write` | Discard the caller's staged entry for a branch. |
+| `WatchBranches` | `WatchBranchesRequest` → stream `BranchEvent` | `tree:read` on every tree | Branch updates as they happen. |
+| `SyncAccessConfig` | `AccessConfigSyncRequest` → `AccessConfigSyncResponse` | tenant or tree IAM admin | Plan or apply a declarative access document. |
+| `GetAccessConfig` | `GetAccessConfigRequest` → `GetAccessConfigResponse` | IAM read | Read back the last applied document. |
 
-<Callout type="warn" title="Roadmap">
-  Declarative access policies sent through `SyncAccessConfig` are stored but not enforced in v0.2.0. Authorization uses tenant roles and tree visibility only.
-</Callout>
-
-`SyncEnvelope`, `SyncMessageType`, and `SyncState` are defined in the file for parity with the Rust domain types. They are not sent on the wire by any RPC.
+`SyncEnvelope`, `SyncMessageType`, `HaveMessage` framing and `SyncState` exist in the file for parity with Rust domain types; no RPC sends them.
 
 ### Object messages
 
 ```text
 ObjectData   { hash: ContentHash, kind: ObjectKind, data: bytes }
-ObjectKind   OBJECT_KIND_BLOB = 1 | OBJECT_KIND_MANIFEST = 2
+ObjectKind   OBJECT_KIND_BLOB | OBJECT_KIND_MANIFEST | OBJECT_KIND_CHUNK_LIST
 ContentHash  { value: bytes }   // 32 raw bytes of BLAKE3-256
 ```
 
 Snapshots are never objects; they travel as `SnapshotRecord` messages inside `Push` and `Pull`. See [Object model](/docs/protocol/object-model).
 
+- **Upload.** The client streams batches of at most 1,024 objects or 128 MiB. The server checks every object: the hash equals `BLAKE3(data)`, `data` is at most 64 MiB, manifests and chunk lists decode and validate. Failures are listed in `rejected` without aborting the stream. Uploads are not tree-scoped; authorization happens when a push references the objects.
+- **Download.** Non-admin callers must send gRPC metadata `x-wt-tree-id` (otherwise `FailedPrecondition`; the SDK always sends it). The server serves only objects reachable from that tree's branches and tags, skips unknown or unreachable hashes silently, and refuses the content of [restricted paths](/docs/protocol/large-files#restricted-paths). The client verifies every hash before storing.
+
 ## Push flow
 
 `wt push` (`worktree_sdk::remote::push`) runs these steps for one branch of one tree:
 
-1. **Resolve the tree.** `ResolveTree{tenant_slug, tree_name, create_if_missing: true}`. The tenant comes from `[remote.<name>].tenant`; the tree name is the local tree's remote name. The returned `tree_id` is used for the rest of the flow.
-2. **Learn the remote tip.** `Pull` or `ListBranches` tells the client the branch's current tip on the server. The client computes the local snapshots the server does not have yet (the chain from the remote tip to the local tip).
-3. **Upload missing objects.** The client collects the manifests and blobs referenced by those snapshots and calls `Negotiate` with `have` = the candidate hashes. The response's `objects_to_send` lists the hashes the server is missing. The client streams exactly those through `UploadObjects`.
-4. **Push.** `Push{tenant_id, tree_id, branch_id, branch_name, old_tip, new_tip, snapshot_chain, snapshots}`. `old_tip` is the last known remote tip (unset for a new branch), `snapshot_chain` lists the ids being added, and `snapshots` carries the full `SnapshotRecord` for each of them, **oldest first**.
+1. **Session.** Read `[remote.<name>]` and the saved credential, then `ResolveTree{tenant_slug, tree_name, create_if_missing: true}`. The tree name is the local tree's remote name. The local tree is linked to the server tree id on first contact.
+2. **Remote tip.** `ListBranches`. If the server tip equals the local tip, only tags are pushed. If the server tip is unknown locally or not an ancestor of the local tip, the push is refused locally before uploading anything ("fetch and merge first").
+3. **Upload.** Collect the new chain (ancestry of the local tip minus everything reachable from known server tips) and its objects: manifests, blobs, and for chunked files the chunk list plus every chunk. `Negotiate` in batches of 2,048 hashes, then `UploadObjects` for what the server lacks.
+4. **Push.** `Push{tree_id, branch_id, branch_name, old_tip, new_tip, snapshot_chain, snapshots}` with full records, **oldest first**.
+5. **After acceptance.** Update `refs/remotes/<remote>/<branch>`, append a `push` reflog entry, and push local tags whose targets the server now has (`ListTags`, then `PushTag`).
 
-The server then checks, in order:
+The server validates in this order; the first failure wins:
 
-| Check | Failure |
-|---|---|
-| Caller has `tree:write` on the tree | `access_denied` |
-| Branch protection for a direct push (`review.CheckPush`) | `branch_protection` or `review_required` |
-| License rules on the paths the push changes (`license.CheckPush`) | `license_violation` |
-| Every referenced manifest and blob is present in the object store | push rejected |
-| Every snapshot's parents are known (already stored, or in this request) | push rejected |
-| `new_tip` descends from the server's current tip for the branch | `conflict_detected` with `server_tip` |
-| Compare-and-swap of the branch tip from the expected old value | `conflict_detected` with `server_tip` |
+| Step | Check | Failure |
+|---|---|---|
+| 1 | Request shape: authentication, valid branch name, well-formed tip, at most 100,000 records, existing tree | `InvalidArgument` / `NotFound` |
+| 2 | `tree:write` on the tree, then `branch:push` on the branch (policies can deny one branch) | `access_denied` |
+| 3 | Branch protection: `no_direct_push`, `allowed_pushers` | `branch_protection` |
+| 4 | Snapshot records: well formed, this tree's id, parents known, no cycles, every new record an ancestor of `new_tip` | `InvalidArgument` / `FailedPrecondition` |
+| 5 | Objects: every referenced manifest and blob stored, and for chunked entries the chunk list and every chunk | `FailedPrecondition` ("N referenced object(s) are missing") |
+| 6 | Fast-forward: `new_tip` descends from the current server tip | `conflict_detected{server_tip}` |
+| 7 | License `CheckPush` on every changed path | `license_violation{path, license}` |
+| 8 | Push checks, in order: path ACL (`tree:write` per changed path), tenant quotas (storage, branches per tree), signatures (every signed snapshot must verify; `require_signed` branches need every new snapshot verified). `require_linear` protection rejects merge snapshots. | `access_denied`, `quota_exceeded{limit}`, `access_denied` (kind `signature_required`) |
+| 9 | Commit: store records parents first (stamped `pushed_by`, `pushed_at`, `verified`), then move the tip by compare-and-swap | `conflict_detected{current}` if another push won |
 
-On success the server stores the snapshot records (immutable from then on), moves the branch tip, clears the pusher's staged snapshot for that branch, publishes a `branch.pushed` event, and writes a `branch.push` audit entry. The response is `PushResponse{accepted: true, new_tip}`.
-
-The client then updates `refs/remotes/<remote>/<branch>` and pushes local tags the server does not have: it calls `ListTags` and sends each missing tag with `PushTag`.
+On success the pusher's staged entry for the branch is cleared (`staged.cleared`, reason `pushed`), `branch.pushed` is published and `branch.push` is audited. Every rejection is audited as `branch.push_rejected`. Re-pushing the current tip is an idempotent success.
 
 ### Push rejections
 
 A rejected push returns `PushResponse{accepted: false, rejection_reason}` and changes nothing on the server. `PushRejection` is a `oneof`:
 
-| Variant | Payload | Meaning |
+| Variant | Payload | Produced by |
 |---|---|---|
-| `conflict_detected` | `server_tip` | The server tip moved since the client's last pull; `new_tip` does not descend from it. Pull, merge, and push again. |
-| `branch_protection` | `rule` | A [protection rule](/docs/server/branch-protection) forbids this direct push. |
-| `access_denied` | `reason` | The caller lacks the required permission. |
-| `license_violation` | `path`, `license` | A changed path is covered by a [license rule](/docs/server/licensing) that does not allow the caller to modify it. |
-| `review_required` | `required`, `current` | The protection rule requires more approvals than the push has. |
-| `ci_checks_failed` | `checks` | Defined in the schema; CI gates are on the Roadmap and v0.2.0 never produces it. |
-| `quota_exceeded` | `limit` | Defined in the schema; plan quotas are on the Roadmap. |
+| `conflict_detected` | `server_tip` | The fast-forward check or a lost compare-and-swap. Pull, merge, and push again. |
+| `branch_protection` | `rule` | `no_direct_push`, `allowed_pushers`, `require_linear` ([branch protection](/docs/server/branch-protection)). |
+| `access_denied` | `reason` | `tree:write` / `branch:push` refusals, path-policy denies, invalid or missing signatures (`signature_required`), and any other denial kind. |
+| `license_violation` | `path`, `license` | A changed path whose [license rule](/docs/server/licensing) does not let you modify it. |
+| `review_required` | `required`, `current` | Mapped from a `review_required` denial; `current` is always 0 because a direct push carries no approvals. |
+| `quota_exceeded` | `limit` | A [tenant quota](/docs/server/operations#quotas). |
+| `ci_checks_failed` | `checks` | Defined but not produced: CI gates apply to merge-request merges, not to pushes. |
 
-The SDK maps any rejection to `SdkError::PushRejected`, and `wt push` exits with code `1`.
+The SDK maps every rejection to `SdkError::PushRejected` with a readable message (`remote::rejection_message`), and `wt push` exits with code `1`.
 
 <Callout type="info" title="No force push">
-  There is no way to move a server branch to a snapshot that does not descend from its current tip. History on the server only grows.
+  There is no way to move a server branch to a snapshot that does not descend from its current tip. History on the server only grows; tips move only by fast-forward pushes, fast-forward merge-request merges, and the REST branch create and delete endpoints.
 </Callout>
 
 ## Pull flow
 
-`wt fetch` and `wt pull` (`worktree_sdk::remote::fetch` / `pull`) use the same delta protocol per branch:
+`wt fetch`, `wt pull` and `wt clone` (`worktree_sdk::remote::fetch` / `pull` / `clone`) use one delta protocol per branch:
 
-1. `ResolveTree{create_if_missing: false}` to get the `tree_id`, then `ListBranches` to learn every remote branch and its tip.
-2. For each branch: `Pull{tenant_id, tree_id, branch_id, current_tip, depth}`, where `branch_id` carries the branch name and `current_tip` is the client's remote-tracking tip for that branch (unset if it has none).
-3. The server answers with `PullResponse{has_updates, new_tip, snapshot_chain, snapshots, objects_to_fetch}`:
-   - `snapshot_chain` and `snapshots` are the snapshots reachable from the server tip that the client is missing, **oldest first** (parents before children). `depth`, when set, limits how many are returned.
-   - `objects_to_fetch` lists every manifest and blob hash referenced by those snapshots.
-4. The client calls `DownloadObjects(want = the hashes from objects_to_fetch it does not already have)` and stores each streamed object after verifying its hash.
-5. The client writes the snapshot records, updates `refs/remotes/<remote>/<branch>`, and fetches tags with `ListTags`.
+1. `ResolveTree{create_if_missing: false}`, then `ListBranches` for every remote branch and its tip.
+2. For each branch whose tip changed: `Pull{tree_id, branch_id, current_tip, depth}`, where `branch_id` carries the branch name, `current_tip` is the last remote-tracking tip, and `depth` limits the count for [shallow sync](/docs/protocol/large-files#shallow-sync).
+3. The server answers `PullResponse{has_updates, new_tip, snapshot_chain, snapshots, objects_to_fetch, stubbed_paths}`:
+   - snapshots reachable from the server tip but not from `current_tip`, **oldest first** (parents before children; an unknown `current_tip` means full history);
+   - `objects_to_fetch`: every manifest, blob, chunk list and chunk those snapshots reference, except the content of stubbed paths;
+   - `stubbed_paths`: paths of the new tip the caller may not read (audited once as `license.denied`).
+4. `DownloadObjects` for the hashes the client lacks (batches of 2,048), verified before storing. Snapshot records are written after their objects, then `refs/remotes/<remote>/<branch>` moves. Branches deleted on the server lose their remote ref. Tags are fetched with `ListTags`.
 
-`fetch` stops there and never touches local branches or working files. `pull` then integrates `<remote>/<branch>` into the local branch: a fast-forward plus checkout when possible, otherwise a three-way [merge](/docs/protocol/merge-and-diff). `wt clone` resolves the tree, fetches every branch, creates local branches for them, and checks out the default branch.
-
-<Callout type="warn" title="Roadmap">
-  `PullRequest.depth` exists in the protocol, but the CLI has no shallow-clone flag in v0.2.0.
-</Callout>
+`fetch` never touches local branches or working files. `pull` then integrates `<remote>/<branch>`: nothing if up to date, a fast-forward plus checkout if behind (refused on a dirty working tree), otherwise a local three-way [merge](/docs/protocol/merge-and-diff) on the current branch. `clone` initializes the worktree, configures `origin`, fetches every branch, creates local branches for them and checks out the default branch.
 
 ## Staged snapshot upload
 
-`wt stage`, and the daemon after each auto-snapshot when `[sync].auto_stage = true`, upload the working state as team-visible WIP (`worktree_sdk::remote::stage`):
+`wt stage`, and the daemon after each auto-snapshot when `[sync] auto_stage = true`, upload the working state as team-visible WIP (`worktree_sdk::remote::stage`):
 
-1. Build a manifest from the working directory, storing blobs locally.
-2. Resolve the tree, then `Negotiate` + `UploadObjects` for the manifest and blobs the server is missing.
-3. `Stage{tenant_id, tree_id, branch_id, branch_name, snapshot_id, files_changed, files_added, files_modified, files_deleted, message}`, where the file lists and counts summarize the working state against the branch head.
+1. Build the working-tree manifest and compare it with the shared branch head (the server tip if known locally, else the last fetched remote-tracking tip).
+2. `Negotiate` and `UploadObjects` the manifest and everything it references, chunk lists and chunks included.
+3. `Stage{tree_id, branch_name, snapshot_id, files_changed, files_added, files_modified, files_deleted, message?}`. When the working tree equals the branch head, the head snapshot's id is used; otherwise a fresh UUID names the WIP.
 
-The server requires `tree:write`, keeps **at most one** staged snapshot per (tree, account, branch) — a newer stage replaces the older one — and publishes a `snapshot.staged` event. A successful push of that branch clears the entry. `ListStaged{tree_id, branch_name?}` returns `StagedInfo` records (`snapshot_id`, `author`, `branch_name`, `files_changed`, counts, `message`, `staged_at`). Staged snapshots never become part of branch history. See [Staged visibility](/guides/staged-visibility).
+The server keeps **one entry per (tree, account, branch)** (a newer stage replaces it), stores at most 1,000 paths per entry, and publishes `snapshot.staged`. The entry is cleared by a push of that branch by the same account, by `Unstage` (`wt stage --discard`, `wt unstage`) or REST `DELETE {tree}/staged?branch=`, or after `--staged-retention` (default 168 h). `ListStaged{tree_id, branch_name?}` returns live entries; `GET {tree}/staged/summary` adds per-branch activity and **overlaps** (the same file staged by several people). See [Staged visibility](/guides/staged-visibility).
+
+## Branch watching
+
+`WatchBranches{tree_ids}` streams `BranchEvent{tree_id, branch_name, old_tip?, new_tip?, actor, at}` for every `branch.pushed` (including merge-request merges), `branch.created` and `branch.deleted` on the listed trees until the client disconnects. `new_tip` is unset for a deleted branch. Events come from the server's in-process bus, which drops events for slow subscribers, so clients treat each event as a hint and fetch.
+
+The daemon opens one stream per watched worktree when `sync.auto_fetch = true` (the default), fetches on every event, fetches every `sync.interval_secs` (default 300) as a fallback, and reconnects with backoff from 1 s to 5 min. See [`wt daemon`](/docs/cli/daemon#wt-daemon).
 
 ## Tags
 
-Tags travel as `TagRecord{name, target, message?, tagger, created_at}`, where `target` is a snapshot id. `PushTag{tree_id, tag}` creates one tag (requires `tree:write`) and returns `accepted` or an `error`; the server publishes `tag.pushed`. `ListTags{tree_id}` returns all tags. The client pushes tags after the branch push, so their target snapshots are already on the server.
+Tags travel as `TagRecord{name, target, message?, tagger, created_at}`, where `target` is a snapshot id stored in the tree. `PushTag` creates one tag: an existing name or an unknown target returns `accepted = false` with an error, tag protections (`no_move`, `allowed_taggers`) apply, and messages are capped at 64 KiB. Success publishes `tag.pushed`. There is no tag-delete RPC: server tags are deleted over REST (`DELETE {tree}/tags/{name}`, `tree:admin`, honouring `no_delete`) or with `wt trees tag-delete`; a local `wt tag delete` is not propagated.
+
+## Access config sync
+
+`wt access plan` and `wt access apply` compile the declarative TOML files into canonical JSON (`{"roles": [...], "policies": [...]}`) and call `SyncAccessConfig{tenant_id, config_type: ACCESS_CONFIG_TYPE_POLICIES, content, config_hash?, tree_id?, dry_run}`:
+
+- `content` is at most 1 MiB; `config_hash`, when set, must equal `BLAKE3(content)`. `tenant_id` may be an id or a slug.
+- The server validates statements, permissions and references, refuses privilege escalation, and returns the plan in `changes[]`. Unless `dry_run` is set it replaces the config-managed roles and policies atomically and publishes `access.applied`.
+- Tree documents (`tree_id` set) may contain deny statements only.
+- Validation problems return `accepted = false` with up to 20 `validation_errors`, not a gRPC error.
+
+`wt access pull` uses `GetAccessConfig` to write the last applied document back as TOML. See [Declarative access](/docs/server/declarative-access).
+
+## Errors
+
+Policy refusals of `Push`, `Stage`, `PushTag` and `SyncAccessConfig` are reported in the response body. Transport-level failures are gRPC status codes:
+
+| Code | When |
+|---|---|
+| `Unauthenticated` | Missing token where one is needed, invalid or expired token, or an anonymous caller refused by authorization. |
+| `PermissionDenied` | An authenticated caller lacks the permission. Audited as `access.denied`. |
+| `InvalidArgument` | Malformed ids, names or hashes, more than 1,000,000 hashes in one request, too many snapshots. |
+| `NotFound` | Unknown tenant, tree or branch. |
+| `FailedPrecondition` | Missing objects or parents, conflicting snapshot content, unscoped `DownloadObjects` by a non-admin. |
+| `ResourceExhausted` | [Rate limit](/docs/server/operations#rate-limiting) exceeded. |
+| `Unimplemented` | The feature's service is not configured. |
+| `Internal` | Unexpected failure; details are only in the server log. |
+
+Every operation is idempotent: uploads are content-addressed, re-pushing the same tip succeeds, re-staging replaces the entry, and re-pushing an existing tag is refused without side effects. Clients retry network errors and `ResourceExhausted`, never `PermissionDenied` or push rejections.
+
+<Callout type="info" title="Not built yet">
+  A QUIC transport, wire compression, pack files and delta transfer, resumable uploads, an offline queue, and tag deletion over gRPC are not built (see the [roadmap](/roadmap)).
+</Callout>
 
 ## Related
 
-- [Object model](/docs/protocol/object-model): hash rules, manifests, and snapshot records.
+- [Object model](/docs/protocol/object-model): hash rules, manifests, chunk lists and snapshot records.
+- [Large files and shallow sync](/docs/protocol/large-files): chunking, `--depth`, restricted paths.
 - [`wt push`](/docs/cli/remote#wt-push), [`wt pull`](/docs/cli/remote#wt-pull), [`wt stage`](/docs/cli/remote#wt-stage): the CLI side of these flows.
 - [Remote API](/docs/sdk/remote): the Rust functions that implement them.

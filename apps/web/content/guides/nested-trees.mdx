@@ -131,5 +131,5 @@ If everything always ships together, a single tree with directories is simpler.
 ## Not in v0.2.0
 
 <Callout type="warn" title="Roadmap">
-Linked branches across trees (switching several trees together), a cross-tree dependency graph and automatic cross-tree TODOs are planned but not shipped. In v0.2.0 trees are fully independent: coordinate them with matching branch names and tags by convention. See the [roadmap](/roadmap).
+Switching several trees together and reassembling a multi-tree worktree from the server are planned but not shipped. Trees can already be coordinated on the server: snapshot dependencies create TODOs in other trees (`wt snapshot --depend`, `wt deps graph`), and merge requests of several trees can be linked so they merge together (`wt mr link`). See [Dependencies, TODOs and releases](/docs/cli/dependencies) and the [roadmap](/roadmap).
 </Callout>

@@ -6,44 +6,82 @@ description: Every command-line flag and environment variable accepted by worktr
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-The server is configured with command-line flags and environment variables. There is no configuration file.
+The server is configured with command-line flags and `WT_*` environment variables only. There is no configuration file. Run `worktree-server --help` for the list below, and `worktree-server --version` to print the version.
 
 ## Flags and environment variables
 
+### Core
+
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
-| `--addr` | `WT_ADDR` | `:7420` | Listen address. One port serves gRPC (h2c), REST, SSE, `/healthz`, `/metrics`, and `/admin/`. Use `127.0.0.1:7420` to listen on loopback only (recommended behind a reverse proxy). |
-| `--data` | `WT_DATA` | `./wt-data` | Data directory. Holds `meta.db` (bbolt metadata) and `objects/` (content-addressed blobs and manifests). Created if missing. See [Storage](/docs/server/storage). |
+| `--addr` | `WT_ADDR` | `:7420` | Listen address. One port serves gRPC, REST, SSE, `/healthz`, `/metrics` and `/admin/`. Use `127.0.0.1:7420` to listen on loopback only (recommended behind a reverse proxy). |
+| `--data` | `WT_DATA` | `./wt-data` | Data directory holding `meta.db` (bbolt metadata) and `objects/`. Created if missing. See [Storage](/docs/server/storage). |
 | `--admin-user` | `WT_ADMIN_USER` | `admin` | Username of the server admin account managed at startup. |
-| `--admin-password` | `WT_ADMIN_PASSWORD` | unset | When set, the server ensures the admin account exists at startup: it is created if missing, or promoted to server admin if it already exists. When unset, no admin account is managed. |
-| `--admin-dir` | `WT_ADMIN_DIR` | unset | Directory containing the static admin panel build (normally `apps/admin/dist`). Served at `/admin/` with `index.html` fallback. When unset, the panel is not served. |
-| `--allow-registration` | `WT_ALLOW_REGISTRATION` | `true` | Allow self-service account creation through `POST /api/v1/auth/register` (and `wt register`). |
-| `--log-level` | none | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. |
+| `--admin-password` | `WT_ADMIN_PASSWORD` | unset | When set, the server ensures the admin account exists at startup: it is created if missing; an existing account is made server admin and its password is reset to this value when it differs (existing tokens stay valid). |
+| `--admin-dir` | `WT_ADMIN_DIR` | unset | Static admin panel build (normally `apps/admin/dist`) served at `/admin/` with `index.html` fallback. When unset, the panel is not served. |
+| `--allow-registration` | `WT_ALLOW_REGISTRATION` | `true` | Allow self-service registration (`POST /api/v1/auth/register`, `wt register`). Server admins can always create accounts with `wt admin account-create`. |
+| `--public-url` | `WT_PUBLIC_URL` | unset | External base URL of the server; the default SSO redirect URL is `<public-url>/api/v1/auth/sso/callback`. |
+| `--shutdown-timeout` | `WT_SHUTDOWN_TIMEOUT` | `15s` | Bound on graceful shutdown. |
 
-Additional environment variable:
+### Logging and HTTP
 
-| Environment variable | Default | Description |
-|---|---|---|
-| `WT_CORS_ORIGINS` | unset | Extra browser origins allowed by CORS, as a comma-separated list (for example `https://admin.example.com`). `http://localhost:5173` (the Vite dev server for the admin panel) is always allowed. |
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--log-level` | `WT_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `--log-format` | `WT_LOG_FORMAT` | `text` | `text` or `json` (Go `log/slog` to stderr). |
+| `--cors-origins` | `WT_CORS_ORIGINS` | unset | Comma-separated extra browser origins; `*` allows any origin. `http://localhost:5173` (the admin panel's Vite dev server) is always allowed. |
+| `--trusted-proxies` | `WT_TRUSTED_PROXIES` | unset | Comma-separated reverse-proxy IPs or CIDRs whose `X-Forwarded-For` names the client. The client IP feeds policy IP conditions, rate limits and audit records. See [Trusted proxies](/docs/server/operations#trusted-proxies). |
 
-### Precedence
+### TLS
 
-A flag given on the command line overrides the matching environment variable, which overrides the built-in default.
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--tls-cert` | `WT_TLS_CERT` | unset | PEM certificate file. With `--tls-key`, the port serves HTTPS and gRPC over TLS (ALPN `h2`). |
+| `--tls-key` | `WT_TLS_KEY` | unset | PEM private key for `--tls-cert`. |
+| `--tls-client-ca` | `WT_TLS_CLIENT_CA` | unset | PEM CA bundle; client certificates signed by it are required (mTLS). |
 
-### Boolean flags
+See [TLS](/docs/server/operations#tls).
 
-`--allow-registration` is a boolean flag. Turn it off with an explicit value: `--allow-registration=false`. The environment variable accepts `true` or `false`.
+### Garbage collection and retention
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--gc-interval` | `WT_GC_INTERVAL` | `24h` | Period of automatic garbage collection; `0` disables the ticker (GC can still run on demand). |
+| `--gc-grace` | `WT_GC_GRACE` | `720h` | How long an unreachable object stays marked before it is deleted. |
+| `--staged-retention` | `WT_STAGED_RETENTION` | `168h` | Staged snapshots older than this expire; `0` keeps them. |
+| `--audit-retention` | `WT_AUDIT_RETENTION` | `0` | Audit events older than this are deleted by GC; `0` keeps them forever. |
+
+See [Garbage collection](/docs/server/operations#garbage-collection).
+
+### Limits
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--rate-limit` | `WT_RATE_LIMIT` | `1200` | Requests per minute per principal (or per IP for anonymous callers); `0` disables rate limiting. |
+| `--default-max-trees` | `WT_DEFAULT_MAX_TREES` | `0` | Default maximum trees per tenant; `0` is unlimited. |
+| `--default-max-storage` | `WT_DEFAULT_MAX_STORAGE` | `0` | Default maximum stored bytes per tenant; `0` is unlimited. |
+
+Per-tenant overrides are set with `wt admin limits`. See [Quotas](/docs/server/operations#quotas) and [Rate limiting](/docs/server/operations#rate-limiting).
+
+### Precedence and syntax
+
+- A flag on the command line overrides the matching environment variable, which overrides the default.
+- Durations use Go syntax: `90s`, `15m`, `24h`, `720h`.
+- `--allow-registration` is a boolean flag; turn it off with an explicit value, `--allow-registration=false`. The environment variable accepts `true` or `false`.
+- Invalid values make the server exit with code `2`; a runtime error exits with `1`.
 
 ### Fixed settings
 
-These values are not configurable in v0.2.0:
-
 | Setting | Value |
 |---|---|
-| Session token lifetime (tokens issued by login) | 30 days |
+| Session token lifetime (password, MFA or SSO login) | 30 days |
 | gRPC maximum message size | 64 MiB, both directions |
+| REST JSON request body | 1 MiB (`413 payload_too_large`) |
+| Release asset upload | 64 MiB |
 | SSE heartbeat interval | 15 seconds |
-| Default audit query limit | 100 entries |
+| Audit query page | 100 events by default, at most 1000 (`format=ndjson` has no limit) |
+
+Single sign-on is not a flag: a server admin configures it at runtime with [`wt sso set`](/docs/cli/iam#wt-sso) or `PUT /api/v1/admin/sso`. Encryption at rest is not built yet (see the [roadmap](/roadmap)); use volume encryption.
 
 ## Examples
 
@@ -72,13 +110,18 @@ These values are not configurable in v0.2.0:
 <Tab value="bash">
 
 ```bash
-export WT_ADDR=127.0.0.1:7420
+export WT_ADDR=:7420
 export WT_DATA=/var/lib/worktree/data
 export WT_ADMIN_USER=root
 export WT_ADMIN_PASSWORD='use-a-long-random-secret'
 export WT_ADMIN_DIR=/opt/worktree/admin
 export WT_ALLOW_REGISTRATION=false
-export WT_CORS_ORIGINS=https://git.example.com
+export WT_TLS_CERT=/etc/worktree/tls/fullchain.pem
+export WT_TLS_KEY=/etc/worktree/tls/privkey.pem
+export WT_PUBLIC_URL=https://wt.example.com
+export WT_LOG_FORMAT=json
+export WT_AUDIT_RETENTION=8760h
+export WT_DEFAULT_MAX_STORAGE=10737418240
 ./worktree-server
 ```
 
@@ -86,13 +129,16 @@ export WT_CORS_ORIGINS=https://git.example.com
 <Tab value="PowerShell">
 
 ```powershell
-$env:WT_ADDR = '127.0.0.1:7420'
+$env:WT_ADDR = ':7420'
 $env:WT_DATA = 'D:\worktree\data'
 $env:WT_ADMIN_USER = 'root'
 $env:WT_ADMIN_PASSWORD = 'use-a-long-random-secret'
 $env:WT_ADMIN_DIR = 'D:\worktree\admin'
 $env:WT_ALLOW_REGISTRATION = 'false'
-$env:WT_CORS_ORIGINS = 'https://git.example.com'
+$env:WT_TLS_CERT = 'D:\worktree\tls\fullchain.pem'
+$env:WT_TLS_KEY = 'D:\worktree\tls\privkey.pem'
+$env:WT_PUBLIC_URL = 'https://wt.example.com'
+$env:WT_LOG_FORMAT = 'json'
 .\worktree-server.exe
 ```
 
@@ -110,7 +156,3 @@ The server listens on `127.0.0.1:9000` because the flag wins over `WT_ADDR`.
 <Callout type="warn" title="Secrets">
   Prefer `WT_ADMIN_PASSWORD` over `--admin-password` outside local testing; command-line arguments are visible to other users in process listings. With systemd, load it from an `EnvironmentFile` readable only by the service user. See [Deployment](/docs/server/deployment).
 </Callout>
-
-## Not configurable in v0.2.0
-
-TLS certificates, rate limits and plan quotas, OAuth/SSO providers, and encryption at rest are not available in v0.2.0. They are on the Roadmap. Terminate TLS at a reverse proxy instead.

@@ -1,0 +1,201 @@
+---
+title: Declarative Access
+description: Keep custom roles and policies as TOML files in the worktree, review them like code, and apply them to a tenant or tree with wt access validate, plan, apply and pull.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+Custom roles and policies can live as TOML files in the worktree. You review changes to them like code and apply them to a server tenant in the style of Terraform: validate locally, show a plan, apply. The files describe the same objects as the IAM REST API (see [Access control](/docs/server/access-control)); applying a document replaces only the roles and policies that earlier applies of the same document created. See the [Declarative Access specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/DeclarativeAccess.md).
+
+## Files
+
+| File | Scope | May contain |
+|---|---|---|
+| `.wt/access/roles.toml` | tenant | `[[role]]` |
+| `.wt/access/policies.toml` | tenant | `[[policy]]` with allow and deny statements |
+| `<tree>/.wt-tree/access/policies.toml` | one tree | `[[policy]]` with **deny statements only** |
+
+The tenant is the tenant of the worktree's origin remote, or `--tenant`. A tree document applies to the server tree the local tree is linked to and is selected with `--tree-doc` (together with the global `--tree NAME`). `wt tree init-config` scaffolds `.wt-tree/access/`.
+
+<Callout type="info">
+  `.wt/` and `.wt-tree/` are never snapshotted, so these files are not pushed or cloned with the tree. Keep a copy under version control elsewhere if you want history, and use `wt access pull` to recreate them from the server.
+</Callout>
+
+## Format
+
+```toml
+# .wt/access/roles.toml
+[[role]]
+name = "release-manager"
+description = "Cut releases"
+permissions = ["tree:read", "release:*", "mr:merge"]
+```
+
+```toml
+# .wt/access/policies.toml
+[[policy]]
+name = "protect-main"
+description = "Only maintainers push to main"
+enabled = true
+
+[[policy.statement]]
+sid = "no-direct-main"
+effect = "deny"                 # allow | deny
+principals = ["role:developer", "team:contractors", "user:bob", "tenant:partner"]
+actions = ["branch:push"]
+resources = ["wt:branch/acme/web/main"]
+conditions = { mfa = true }
+```
+
+- **Roles**: `name` (2-40 characters `[a-z0-9-]`, not a built-in role), optional `description`, `permissions` (catalog actions or `<area>:*`; `*` and `server:*` are not allowed).
+- **Policies**: `name`, optional `description`, `enabled` (default `true`) and one or more `[[policy.statement]]` tables.
+- **Statements**: `sid` (optional), `effect`, `principals` (`user:`, `team:`, `role:`, `sa:`, `tenant:`, `authenticated`, `anonymous`, `*`), `actions` (catalog actions, `<area>:*`, `*`), `resources` (`*`, `wt:tenant/...`, `wt:tree/...`, `wt:branch/...`, `wt:path/...` with `*` and `**`) and `conditions`.
+
+| Condition key | Holds when |
+|---|---|
+| `ip_ranges` | The client IP is in one of the CIDRs. |
+| `mfa` | The session was created after a second factor (`require_mfa` in JSON). |
+| `not_before`, `not_after` | The request time is inside these RFC 3339 bounds. |
+| `time_window` | `{ days = ["mon", "fri"], start = "09:00", end = "18:00", timezone = "Europe/Berlin" }` matches. |
+
+Permission names from the earlier protocol model are accepted and translated; `wt access plan` warns about each: `sync:push` becomes `branch:push`, `snapshot:create` becomes `tree:write`, `branch:merge` becomes `mr:merge`, `tree:delete` becomes `tree:admin`.
+
+## Workflow
+
+<Steps>
+<Step>
+
+### Validate locally
+
+```bash
+wt access validate
+wt access validate --dir ./access-staging
+wt --tree payments access validate --tree-doc
+```
+
+Checks TOML syntax and schema, action names, principal and resource syntax, conditions (CIDRs, ordered timestamps, `HH:MM`, `mon`..`sun`, IANA timezones), duplicate and built-in names, and that tree documents contain no allow statements. Errors carry an `E2xxx` code, the file and the offending role, policy or statement. No server is contacted.
+
+</Step>
+<Step>
+
+### Plan
+
+```bash
+wt access plan
+wt access plan --tenant acme
+```
+
+The SDK compiles the TOML to canonical JSON (`{"roles": [...], "policies": [...]}`) and sends a dry run. The plan has one line per affected object:
+
+```text
+role release-manager: create
+policy protect-main: update (2 statements)
+policy legacy-readers: delete
+```
+
+</Step>
+<Step>
+
+### Apply
+
+```bash
+wt access apply
+wt access apply --tenant acme --yes
+wt --tree payments access apply --tree-doc --yes
+```
+
+`apply` prints the plan and asks for confirmation; `--yes` is required when stdin is not a terminal (CI).
+
+</Step>
+<Step>
+
+### Pull
+
+```bash
+wt access pull
+wt access pull --tenant acme --yes
+```
+
+Writes the last applied document back as TOML (`--yes` overwrites local files that differ). Use it to bring a tenant under file-based management, or to restore the files on another machine.
+
+</Step>
+</Steps>
+
+## What the server does on apply
+
+1. **Authorize**: the caller needs `iam:admin` on the tenant.
+2. **Validate** again (a client can be modified): statements, permissions, and that every `team:`, `user:`, `role:` and `tenant:` reference exists. Tree documents must be deny-only.
+3. **Refuse escalation**: every permission granted by a role or an allow statement must be among the caller's own effective permissions. Tenant owners and server admins are exempt.
+4. **Plan**: compare with the roles and policies this document manages (`create`, `update`, `delete`). A dry run stops here.
+5. **Replace atomically**, marking the objects `managed_by: "config"` (updated policies get `version + 1`), store the document, audit `access.applied` with the plan and publish the `access.applied` event.
+
+Validation failures return `accepted: false` with up to 20 errors and change nothing.
+
+Roles and policies managed by config are **read-only** in the REST API and the admin panel: `PUT`, `PATCH` and `DELETE` on them answer `409 managed_by_config`, unless a tenant owner adds `?force=true`. A forced edit is overwritten by the next apply. Objects created through the REST API or the admin panel are never touched by an apply.
+
+## REST
+
+```text
+GET  /api/v1/tenants/{t}/access-config                    -> last applied document, or 404
+POST /api/v1/tenants/{t}/access-config/plan   {"content": <canonical JSON>} -> {accepted, errors, changes}
+POST /api/v1/tenants/{t}/access-config/apply  {"content": <canonical JSON>} -> {accepted, errors, changes}
+GET|POST /api/v1/trees/{t}/{tree}/access-config[/plan|/apply]                (tree documents)
+POST /api/v1/iam/simulate {..., "candidate_policies": [Policy]}               (dry-run a policy change)
+```
+
+The CLI uses the gRPC calls `SyncAccessConfig` (plan and apply) and `GetAccessConfig` (pull); the REST routes take the same canonical JSON. The admin panel's tenant IAM **Access config** tab shows the last applied document and runs plan and apply on pasted JSON.
+
+## Recovery and lockout
+
+- **Owners cannot lock themselves out.** Deny statements never apply to tenant owners for `iam:*` and `tenant:admin` (decision reason `owner_protected`), so an owner can always re-apply a fix.
+- **Last owner.** A tenant always keeps at least one owner (`409 last_owner`).
+- **Server admins** are not subject to policies.
+- **Rollback**: restore the previous files and run `wt access apply` again.
+- **Dry runs first**: `wt access plan`, and `wt policy simulate --file policy.json ...` or `POST /iam/simulate` with `candidate_policies` to see how a change decides one request. See [`wt iam`](/docs/cli/iam#wt-iam).
+
+## Examples
+
+**Protected release branches in an open-source tenant**
+
+```toml
+# .wt/access/policies.toml (tenant "oss")
+[[policy]]
+name = "release-branches"
+[[policy.statement]]
+sid = "developers-do-not-push-release"
+effect = "deny"
+principals = ["role:developer", "role:viewer"]
+actions = ["branch:push", "branch:delete"]
+resources = ["wt:branch/oss/*/release/**"]
+
+[[policy]]
+name = "release-managers"
+[[policy.statement]]
+effect = "allow"
+principals = ["team:release-managers"]
+actions = ["release:*", "mr:merge"]
+resources = ["wt:tenant/oss"]
+```
+
+Deny overrides allow, so to exempt a group from a deny, narrow the deny's principals instead of adding an allow. A developer who is also in `release-managers` still matches `role:developer` and is still denied the push; give such people a maintainer or custom role.
+
+**Restricting a sensitive directory in one tree**
+
+```toml
+# payments/.wt-tree/access/policies.toml
+[[policy]]
+name = "payments-secrets"
+[[policy.statement]]
+effect = "deny"
+principals = ["tenant:contractor-co", "role:viewer"]
+actions = ["tree:read", "tree:write"]
+resources = ["wt:path/acme/payments/config/secrets/**"]
+```
+
+```bash
+wt --tree payments access plan --tree-doc
+wt --tree payments access apply --tree-doc --yes
+```
+
+Contractors and viewers receive the rest of the tree on pull. Files under `config/secrets/` are stubbed for them (not checked out, reported as restricted by `wt status`), REST reads answer `403 path_denied`, and pushes touching those paths are rejected.

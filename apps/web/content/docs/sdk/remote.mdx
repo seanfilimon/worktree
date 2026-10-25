@@ -1,13 +1,13 @@
 ---
 title: Remote API
-description: The worktree_sdk::remote module — saved credentials, login and registration, ping, push, fetch, pull, clone, and staged snapshots, with their report types.
+description: The worktree_sdk::remote module — saved credentials, login with MFA and registration, ping, push, fetch, pull, clone with shallow options, staged snapshots, branch watching, declarative access, and the low-level gRPC and REST clients.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`worktree_sdk::remote` is the client for the W0rkTree server. It speaks the gRPC `worktree.sync.v1.SyncService` over h2c and the REST auth endpoints, both on the same base URL (for example `http://localhost:7420`). The `wt` remote commands and the daemon's auto-staging are built on these functions. The wire-level flows are described in [Sync protocol](/docs/protocol/sync-protocol).
+`worktree_sdk::remote` is the client for the W0rkTree server. It speaks the gRPC `worktree.sync.v1.SyncService` and the REST API on the same base URL (for example `http://localhost:7420`, or `https://...` for a server with TLS). The `wt` remote commands, the daemon's auto-staging and background fetch are built on these functions. The wire-level flows are described in [Sync protocol](/docs/protocol/sync-protocol).
 
-All network functions are `async` (Tokio) and return `worktree_sdk::Result<T>`. Functions that take a `remote` name look up `[remote.<name>]` (`url`, `tenant`) in the worktree's `config.toml` (`RemoteNotConfigured` if missing) and use the saved credential for that URL.
+All network functions are `async` (Tokio) and return `worktree_sdk::Result<T>`. Functions that take a `remote` name look up `[remote.<name>]` (`url`, `tenant`) in the worktree's `config.toml` (`RemoteNotConfigured` if missing) and use the saved credential for that URL. Server URLs are normalized (`normalize_server_url`: scheme required, trailing `/` removed).
 
 ## Credentials
 
@@ -20,12 +20,13 @@ pub struct Credential {
 pub fn load_credential(server: &str) -> Result<Option<Credential>>
 pub fn save_credential(server: &str, cred: &Credential) -> Result<()>
 pub fn remove_credential(server: &str) -> Result<()>
+pub fn logged_in_username(server: &str) -> Option<String>
 ```
 
-Credentials live in `$WT_HOME/credentials.toml`, keyed by the normalized server URL (no trailing slash). These functions are synchronous. `wt logout` calls `remove_credential`. When no credential exists, remote calls are made anonymously, which the server allows only for `Ping` and reads of public trees; operations that need an identity fail with `NotLoggedIn`.
+Credentials live in `$WT_HOME/credentials.toml`, keyed by the normalized server URL; `CredentialStore` gives access to another location (useful in tests). These functions are synchronous. When no credential exists, calls are made anonymously, which the server allows only for `Ping` and reads of public trees; write flows fail with `NotLoggedIn`.
 
 <Callout type="warn">
-  The token is a bearer credential stored in plain text. Keep `$WT_HOME` private; in tests, point `WT_HOME` at a temporary directory. See [Security](/docs/security#local-credential-file).
+  The token is a bearer credential stored in plain text (mode 0600 on Unix). Keep `$WT_HOME` private; in tests, point `WT_HOME` at a temporary directory. See [Security](/docs/security#local-credential-file).
 </Callout>
 
 ## Login and registration
@@ -39,16 +40,36 @@ pub struct LoginInfo {
     pub token: String,
 }
 
+pub enum LoginOutcome {
+    LoggedIn(LoginInfo),          // credential saved
+    MfaRequired(MfaChallenge),    // nothing saved yet
+}
+
+pub struct MfaChallenge { pub server: String, pub username: String, pub mfa_token: String }
+
 pub async fn login(server: &str, username: &str, password: &str) -> Result<LoginInfo>
+pub async fn login_start(server: &str, username: &str, password: &str) -> Result<LoginOutcome>
+pub async fn login_mfa(challenge: &MfaChallenge, code: &str) -> Result<LoginInfo>
 pub async fn register(server: &str, username: &str, email: &str, password: &str) -> Result<LoginInfo>
 ```
 
 | Function | Behavior |
 |---|---|
-| `login` | `POST /api/v1/auth/login`; saves the credential on success. The returned session token lasts 30 days by default. |
+| `login` | `POST /api/v1/auth/login`; saves the credential on success. Accounts with two-factor authentication fail with `PermissionDenied` mentioning MFA; use `login_start` for them. |
+| `login_start` | The first login step: either a saved session, or an `MfaChallenge` whose `mfa_token` is valid for 5 minutes. |
+| `login_mfa` | `POST /api/v1/auth/login/mfa` with a TOTP or recovery code; saves the credential. |
 | `register` | `POST /api/v1/auth/register`; creates the account and its personal tenant (slug = username) and saves the credential. Fails if the server has registration disabled. |
 
-`tenant` is the account's personal tenant slug.
+Session tokens last 30 days by default. `tenant` is the account's personal tenant slug.
+
+```rust
+use worktree_sdk::remote::{self, LoginOutcome};
+
+let info = match remote::login_start(server, "ada", &password).await? {
+    LoginOutcome::LoggedIn(info) => info,
+    LoginOutcome::MfaRequired(challenge) => remote::login_mfa(&challenge, &totp_code).await?,
+};
+```
 
 ## Ping
 
@@ -62,7 +83,7 @@ pub struct PingInfo {
 pub async fn ping(server: &str) -> Result<PingInfo>
 ```
 
-gRPC `Ping` with the saved credential, if any. `username` and `tenant` are `None` when the call is anonymous or the token is invalid. Used by `wt whoami`.
+gRPC `Ping` with the saved credential, if any. `username` and `tenant` are `None` when the call is anonymous. Used by `wt whoami`.
 
 ## Push
 
@@ -80,16 +101,9 @@ pub struct PushReport {
 pub async fn push(repo: &Repository, tree: &str, remote: &str, branch: Option<&str>) -> Result<PushReport>
 ```
 
-Pushes `branch` (default: the current branch) of `tree` to `remote`:
+Pushes `branch` (default: the current branch) of `tree` to `remote`: `ResolveTree` with `create_if_missing`, a local fast-forward check against the server tip, `Negotiate` + `UploadObjects` for the missing manifests, blobs, chunk lists and chunks, then `Push`. A `PushRejection` from the server maps to `SdkError::PushRejected`; `remote::rejection_message` renders the readable reason (conflict with the server tip, branch protection, license violation, quota, signature, path policy). On success it updates `refs/remotes/<remote>/<branch>`, appends a `push` reflog entry, and pushes local tags that are not on the server. `up_to_date` is true when there was nothing to send.
 
-1. `ResolveTree` with `create_if_missing`.
-2. Pull-style negotiation of the snapshots the server is missing.
-3. `UploadObjects` for missing manifests and blobs.
-4. `Push` with `old_tip` set to the last known remote tip.
-
-A `PushRejection` from the server maps to `SdkError::PushRejected` (the message names the reason, such as a conflict with the server tip, branch protection, or a license violation). On success it updates `refs/remotes/<remote>/<branch>` and also pushes local tags that are not on the server. `up_to_date` is true when there was nothing to send.
-
-## Fetch
+## Fetch, pull and clone
 
 ```rust
 pub struct FetchReport {
@@ -101,32 +115,31 @@ pub struct FetchReport {
     pub tags_received: usize,
 }
 
-pub async fn fetch(repo: &Repository, tree: &str, remote: &str) -> Result<FetchReport>
-```
+pub struct FetchOptions {
+    pub depth: Option<u32>,   // at most this many new snapshots per branch
+    pub deepen: Option<u32>,  // extend a shallow history by this many
+}
 
-Downloads the new snapshots, objects, and tags of **all** remote branches and updates `refs/remotes/<remote>/*`. It never touches local branches or working files.
-
-## Pull
-
-```rust
 pub struct PullReport {
     pub fetch: FetchReport,
     pub branch: String,
     pub outcome: MergeOutcome,
 }
 
+pub async fn fetch(repo: &Repository, tree: &str, remote: &str) -> Result<FetchReport>
+pub async fn fetch_with_options(repo: &Repository, tree: &str, remote: &str, opts: FetchOptions) -> Result<FetchReport>
 pub async fn pull(repo: &Repository, tree: &str, remote: &str, branch: Option<&str>) -> Result<PullReport>
-```
-
-Fetches, then integrates `<remote>/<branch>` into the local branch (default: the current branch): a fast-forward plus checkout when possible, otherwise `Repository::merge`. `outcome` is the resulting `MergeOutcome`; `MergeOutcome::Conflicts` leaves a conflicted merge to resolve with `continue_merge` or `abort_merge` (see [Merge and diff](/docs/protocol/merge-and-diff#merge-state)).
-
-## Clone
-
-```rust
+pub async fn pull_with_options(repo: &Repository, tree: &str, remote: &str, branch: Option<&str>, opts: FetchOptions) -> Result<PullReport>
 pub async fn clone(server: &str, tenant: &str, tree_name: &str, dest: &Path) -> Result<Repository>
+pub async fn clone_with_options(server: &str, tenant: &str, tree_name: &str, dest: &Path, opts: FetchOptions) -> Result<Repository>
 ```
 
-Clones `<tenant>/<tree_name>` from `server` into `dest`, which must not exist or must be empty. It initializes the worktree, sets `[remote.origin]`, sets the tree id and remote name to match the server, fetches, creates a local branch for every remote branch, and checks out the default branch.
+| Function | Behavior |
+|---|---|
+| `fetch` | Downloads the new snapshots, objects and tags of **all** remote branches and updates `refs/remotes/<remote>/*`. Never touches local branches or working files. Records `stubbed_paths` the server withheld. |
+| `pull` | Fetches, then integrates `<remote>/<branch>` into the local branch (default: the current branch): a fast-forward plus checkout when possible, otherwise `Repository::merge`. `MergeOutcome::Conflicts` leaves a conflicted merge to resolve (see [Merge and diff](/docs/protocol/merge-and-diff#merge-state)). |
+| `clone` | Clones `<tenant>/<tree_name>` into `dest`, which must not exist or must be empty: initializes the worktree, sets `[remote.origin]`, links the tree id and remote name to the server tree, fetches, creates a local branch for every remote branch, and checks out the default branch. |
+| `*_with_options` | The same with [shallow sync](/docs/protocol/large-files#shallow-sync) options (`wt clone --depth`, `wt fetch --depth / --deepen`, `wt pull --depth`). |
 
 ## Staged snapshots
 
@@ -145,19 +158,71 @@ pub struct StagedInfo {
 
 pub async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result<StagedInfo>
 pub async fn list_staged(repo: &Repository, tree: &str, remote: &str, branch: Option<&str>) -> Result<Vec<StagedInfo>>
+pub async fn unstage(repo: &Repository, tree: &str, remote: &str, branch: Option<&str>) -> Result<bool>
 ```
 
 | Function | Behavior |
 |---|---|
-| `stage` | Uploads the working state as a staged snapshot: builds a manifest from the working directory, uploads missing objects, and sends `Stage` with the change summary against head. Returns what was staged. The server keeps one staged snapshot per (tree, account, branch); a newer stage replaces it and a push clears it. |
+| `stage` | Uploads the working state as a staged snapshot: builds a manifest from the working directory, uploads missing objects, and sends `Stage` with the change summary against the shared branch head (the server tip, else the last fetched remote-tracking tip). Requires a login; creates the server tree if needed. |
 | `list_staged` | Team-wide staged snapshots for `tree`, optionally limited to one branch. Used by `wt status --team`. |
+| `unstage` | Removes your staged snapshot for `branch` (every branch when `None`); `true` if one existed. Used by `wt unstage` and `wt stage --discard`. |
+
+## Branch watching
+
+```rust
+pub struct BranchEvent {
+    pub tree_id: String,             // server tree id
+    pub branch: String,
+    pub old_tip: Option<String>,
+    pub new_tip: Option<String>,     // None when the branch was deleted
+    pub actor: String,
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub struct TreeWatch {
+    pub stream: BranchEventStream,   // stream.next().await -> Result<Option<BranchEvent>>
+    pub trees: BTreeMap<String, String>,  // server tree id -> local tree name
+}
+
+pub async fn watch_trees(repo: &Repository, trees: &[String], remote: &str) -> Result<TreeWatch>
+```
+
+`watch_trees` resolves the given local trees on `remote`, skips trees that do not exist on the server (`TreeNotFound` if none does), and opens one `WatchBranches` stream. Treat each event as a hint and call `fetch`; the daemon does exactly that, with a periodic fallback fetch and reconnect backoff. Anonymous watching works for public trees.
+
+```rust
+let mut watch = remote::watch_trees(&repo, &[tree.clone()], "origin").await?;
+while let Some(ev) = watch.stream.next().await? {
+    let local = &watch.trees[&ev.tree_id];
+    println!("{} moved {} by {}", local, ev.branch, ev.actor);
+    remote::fetch(&repo, local, "origin").await?;
+}
+```
+
+## Declarative access
+
+`remote::access` sends compiled `.wt/access` documents (see [Declarative access](/docs/server/declarative-access)):
+
+```rust
+pub struct AccessTarget { pub tenant: String, pub tree: Option<String> }  // AccessTarget::tenant("acme")
+
+pub async fn plan(server: &str, target: &AccessTarget, document_json: &str) -> Result<AccessPlan>
+pub async fn apply(server: &str, target: &AccessTarget, document_json: &str) -> Result<AccessPlan>
+pub async fn pull(server: &str, target: &AccessTarget) -> Result<Option<PulledDocument>>
+```
+
+`document_json` is the canonical JSON produced by `worktree_protocol::access::declarative::compile` from the parsed TOML (`parse_roles`, `parse_policies`). `AccessPlan` holds `accepted`, `errors`, `changes` (for example `policy protect-main: update (2 statements)`) and `dry_run`. `pull` returns the last applied document, or `None`. `sync_with` and `pull_with` take an existing `SyncClient`.
+
+## Low-level clients
+
+- `SyncClient` (`remote::client`) is the typed gRPC client: `connect(server, token)`, `connect_with_store`, and one method per RPC (`resolve_tree`, `list_branches`, `list_tags`, `push_tag`, `pull`, `push`, `stage`, `list_staged`, `unstage`, `watch_branches`, `sync_access_config`, `get_access_config`, `missing_objects`, `upload_objects`, `download_objects`). It sends `x-wt-tree-id` (`TREE_ID_METADATA_KEY`) on downloads, batches transfers, and uses TLS for `https://` URLs.
+- `RestClient` (`remote::rest`) calls the REST API with the saved credential: `get`, `get_query`, `post`, `put`, `patch`, `delete`, `get_bytes`, `put_bytes`, and `events` (SSE). `RestClient::resolve` picks the server the way `wt` does: `--server` / `WT_SERVER`, else the worktree's origin, else the only saved login.
 
 ## Example
 
 ```rust
 use std::path::Path;
 
-use worktree_sdk::{remote, MergeOutcome, Repository, Result};
+use worktree_sdk::{remote, MergeOutcome, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -166,7 +231,8 @@ async fn main() -> Result<()> {
     let me = remote::login(server, "ada", &password).await?;
     println!("logged in as {} (tenant {})", me.username, me.tenant);
 
-    let repo = remote::clone(server, "ada", "my-project", Path::new("my-project")).await?;
+    let opts = remote::FetchOptions { depth: Some(50), ..Default::default() };
+    let repo = remote::clone_with_options(server, "ada", "my-project", Path::new("my-project"), opts).await?;
     let tree = repo.root_tree()?.name;
 
     // ... edit files, then share work in progress

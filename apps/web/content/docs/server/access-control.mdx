@@ -1,117 +1,219 @@
 ---
 title: Access Control
-description: Accounts, personal and organization tenants, membership roles, tree visibility, authorization actions, and tokens.
+description: Accounts, tenants, built-in and custom roles, teams, tree grants, visibility, allow/deny policies, tokens, service accounts, MFA, SSO and how the server decides each request.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Every request to the server, over gRPC or REST, is made either anonymously or as an authenticated account. The server decides what the caller may do from three things: the caller's **membership role** in the tenant that owns the resource, the tree's **visibility**, and whether the caller is a **server admin**.
+Every request to the server, over gRPC or REST, is made anonymously or as an authenticated principal (an account or a service account), and every operation is checked as one **action** (such as `tree:write` or `mr:merge`) on a resource (a tenant, tree, branch or path). Everything below is available from the [`wt` CLI](/docs/cli/iam), the [REST API](/docs/server/rest-api) and the admin panel. The full model is in the [IAM](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/IAM.md) and [Tenant Model](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/TenantModel.md) specifications.
+
+## How a decision is made
+
+1. A disabled account or service account is denied.
+2. Token scopes: a scoped token may only perform actions its scopes cover. This binds server admins too.
+3. A server admin is allowed (policies are not consulted).
+4. Tenant status: a `suspended` tenant denies every write, a `deactivated` tenant denies everything.
+5. Roles are collected: the tenant membership role, the service account's own role, direct tree grants, team grants and tenant grants on the tree. Tree visibility adds `tree:read`.
+6. Enabled policies of the tenant are applied: a matching **deny** overrides every allow; a matching **allow** grants the action even without a role.
+7. Otherwise the request is denied (`implicit_deny`).
+
+`branch:push` is evaluated as `tree:write` plus a deny pass over the branch, so a policy can block pushes to one branch. Ask the server to explain any decision:
+
+```bash
+wt iam simulate --principal user:bob --action branch:push --tenant acme --tree acme/web --branch main
+wt iam effective --tenant acme --principal user:bob
+```
+
+The simulator lists every contributing reason (`tenant_role`, `team_role`, `tree_grant`, `custom_role`, `service_account`, `visibility`, `token_scope`, `policy`, `tenant_suspended`, `owner_protected`, ...). The admin panel has the same as the **Access simulator** page.
 
 ## Accounts
 
-An account has a unique `username`, an `email`, an optional `display_name`, and two flags: `is_admin` (server admin) and `disabled`. Passwords are hashed with **argon2id**; the hash is never returned by the API.
+An account has a unique `username` (`^[a-z0-9][a-z0-9-]{1,38}$`, some names are reserved), an `email` (not verified), a `display_name`, and the flags `is_admin` (server admin) and `disabled`. Passwords are hashed with argon2id.
 
 Accounts are created by:
 
-- self-service registration: `wt register` or `POST /api/v1/auth/register`, when registration is enabled (the default);
-- the server itself at startup for the admin account, when `--admin-password` / `WT_ADMIN_PASSWORD` is set (see [Configuration](/docs/server/configuration)).
+- self-service registration (`wt register`, `POST /api/v1/auth/register`) when `--allow-registration` is on (the default);
+- a server admin, regardless of that setting: `wt admin account-create USERNAME --email EMAIL [--admin] [--password-stdin]` or `POST /api/v1/admin/accounts`;
+- the server at startup for the account named by `--admin-user`, when `--admin-password` is set;
+- the first SSO login, when SSO `auto_create` is on.
 
-### Disabled accounts
-
-A server admin can set `disabled: true` with `PATCH /api/v1/admin/accounts/{username}`. A disabled account cannot authenticate: logins and requests with its tokens fail with `401 unauthenticated`. Setting `disabled: false` restores access. Accounts are not deleted.
-
-### Registration toggle
-
-Run the server with `--allow-registration=false` (or `WT_ALLOW_REGISTRATION=false`) to reject `POST /api/v1/auth/register` with `403 forbidden`.
-
-<Callout type="info">
-  v0.2.0 has no admin endpoint that creates accounts for other people. On a server with registration disabled, new users can be onboarded by enabling registration temporarily, or by running with a different `--admin-user` and `--admin-password` to create an additional admin account.
-</Callout>
+A server admin disables an account with `wt admin account-set USERNAME --disabled true` (`PATCH /api/v1/admin/accounts/{username}`); it takes effect on the next request because the account is re-read every time. Accounts are not deleted. Admins also set passwords (`wt admin password`, which revokes the account's tokens) and issue one-time reset codes (`wt admin reset-code`, redeemed with `wt password-reset`).
 
 ## Tenants
 
-A tenant is the owner of trees. There are two kinds:
+A tenant owns trees.
 
 | Kind | Created by | Slug |
 |---|---|---|
-| `user` (personal) | Automatically on registration; the new account is its `owner`. | Equal to the username. |
-| `org` | `POST /api/v1/tenants` with `slug` and `name`; the caller becomes `owner`. | Chosen at creation: lowercase `[a-z0-9-]`, unique. |
+| `user` (personal) | Automatically on registration; the account is its `owner`. | The username. |
+| `org` | `wt tenant create SLUG [--name N]` or `POST /api/v1/tenants`; the caller becomes `owner`. | Lowercase `[a-z0-9-]`, unique. |
 
-Remotes name the tenant explicitly, for example `wt remote add origin http://localhost:7420 --tenant acme`, and clones use `TENANT/TREE`, for example `wt clone http://localhost:7420 acme/payments`. See the [multi-tenancy guide](/guides/multi-tenancy).
+- `plan` (`free`, `pro`, `enterprise`) is a label set by a server admin (`wt tenant plan`); it does not change limits.
+- `status` is `active`, `suspended` (read-only: writes are denied with reason `tenant_suspended`; nothing is revoked) or `deactivated` (all access denied). Server admins set it with `wt tenant suspend|resume|deactivate TENANT [--reason TEXT]`. See [Operations](/docs/server/operations#tenant-status).
+- Limits (trees, storage, branches per tree, members, requests per minute) are server defaults plus per-tenant overrides. See [Quotas](/docs/server/operations#quotas).
 
-Each tenant also has a `plan` (`free`, `pro`, or `enterprise`). It is informational in v0.2.0; plan quotas and rate limiting are on the Roadmap.
+Remotes name the tenant explicitly (`wt remote add origin http://localhost:7420 --tenant acme`) and clones use `TENANT/TREE`. See the [multi-tenancy guide](/guides/multi-tenancy).
 
-## Memberships and roles
+## Tenants and members
 
-An account's access to a tenant comes from a membership with one of five roles, ordered from most to least privileged:
+Members are managed with [`wt tenant`](/docs/cli/administration#wt-tenant) or `GET`, `PUT` and `DELETE` on `/api/v1/tenants/{tenant}/members/{username}` (needs `tenant:admin`):
 
-| Role | Intended for |
+```bash
+wt tenant add-member acme bob --role developer
+wt tenant set-role acme bob maintainer
+wt tenant members acme
+wt tenant remove-member acme bob
+```
+
+Invitations let people join without an admin knowing their username in advance:
+
+```bash
+wt invite create acme --email carol@example.com --role viewer --team backend   # prints a one-time wti_ code
+wt invite accept wti_...                                                       # run as carol
+```
+
+Invitations last 7 days by default, are single use and, when they name an email or username, can only be accepted by that account. Only owners can grant or revoke `owner`, and a tenant always keeps at least one owner (`409 last_owner`).
+
+## Built-in roles
+
+The five built-in roles form a strict hierarchy, `owner ⊃ admin ⊃ maintainer ⊃ developer ⊃ viewer`:
+
+| Action | viewer | developer | maintainer | admin | owner |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `tenant:read`, `tree:read` | yes | yes | yes | yes | yes |
+| `tree:write`, `branch:create`, `branch:push`, `mr:create`, `release:create`, `ci:report` | | yes | yes | yes | yes |
+| `branch:delete`, `mr:approve`, `mr:merge`, `tree:create`, `iam:read`, `release:delete` | | | yes | yes | yes |
+| `tree:admin`, `tenant:admin`, `iam:admin` | | | | yes | yes |
+| `server:admin` | | | | | |
+
+| Action | Covers |
 |---|---|
-| `owner` | Full control of the tenant, including its members and settings. |
-| `admin` | Administers trees (protections, licenses, settings, deletion) and the tenant's members. |
-| `maintainer` | Writes to trees and runs the branch lifecycle, including approving and merging merge requests. |
-| `developer` | Contributes: push, stage, tag, create branches, open merge requests. |
-| `viewer` | Read-only access to the tenant's trees, branches, snapshots, and staged work. |
+| `tree:read` | Browse, clone, pull, download; staged snapshots, protections, licenses, merge requests. |
+| `tree:write` | Push, stage, create tags. |
+| `tree:create` | Create trees, by REST or by a first push. |
+| `tree:admin` | Tree settings, branch and tag protection, license rules, tag deletion, tree deletion. |
+| `mr:merge` | Merge and close merge requests (also linked groups). |
+| `release:create`, `release:delete` | Create and edit releases and assets; delete them. |
+| `ci:report` | Report CI check results. |
+| `iam:read`, `iam:admin` | View or manage teams, roles, policies, grants, service accounts and invitations. |
+| `server:admin` | `/api/v1/admin/*` and server-wide audit queries; server admins only. |
 
-Members are managed with `GET`, `PUT`, and `DELETE` on `/api/v1/tenants/{tenant}/members/{username}` (requires `tenant:admin`) or in the admin panel. See the [REST API](/docs/server/rest-api#tenants-and-members).
+`owner` grants the same actions as `admin`; owners additionally assign the owner role, are protected by the lockout guard and may force edits of config-managed objects. List the catalog with `wt iam actions`.
 
-## Authorization actions
+## Custom roles
 
-Every operation is checked as one action against a tenant and, where relevant, a tree.
+```bash
+wt role create acme reviewer --permission tree:read --permission mr:create --permission mr:approve
+wt tenant set-role acme carol reviewer
+```
 
-| Action | Covers | Minimum role (typical) |
-|---|---|---|
-| `tree:read` | Read branches, snapshots, files, tags, staged snapshots, protections, licenses, merge requests; pull and clone. | `viewer`, or per [visibility](#tree-visibility) |
-| `tree:write` | Push, stage, tag. | `developer` |
-| `branch:create` | Create a branch on the server by pushing it. | `developer` |
-| `mr:create` | Open a merge request. | `developer` |
-| `mr:approve` | Approve a merge request. | `maintainer` |
-| `mr:merge` | Merge a merge request. | `maintainer` |
-| `branch:delete` | Delete a server branch (subject to `no_delete`). | `maintainer` |
-| `tree:create` | Create a tree in the tenant, by REST or by a first push. | `admin` |
-| `tree:admin` | Branch protections, license rules, tree settings, tree deletion. | `admin` |
-| `tenant:read` | See the tenant and its member list. | `viewer` |
-| `tenant:admin` | Manage members and tenant settings. | `admin` |
-| `server:admin` | `/api/v1/admin/*`, server-wide audit queries. | Server admin only |
+Permissions are catalog actions or `<area>:*` (never `*` or `server:*`). A custom role is assigned exactly like a built-in one: membership, grants, service accounts, invitations. Deleting a role that is still assigned answers `409`.
 
-The minimum roles follow the built-in role definitions in `worktree-protocol` (`iam::role`): each role includes the permissions of the roles below it. On your personal tenant you are `owner`, so you can create and administer your own trees.
+## Teams
 
-Policy checks run after authorization: a push that passes `tree:write` can still be rejected by [branch protection](/docs/server/branch-protection) or [license rules](/docs/server/licensing).
+Teams group tenant members. A team has no tenant-wide role; its access comes from tree grants and from policy statements that name `team:<slug>`. Team maintainers (`--maintainer`) may manage the team's membership without `iam:admin`.
+
+```bash
+wt team create acme backend --name "Backend"
+wt team add acme backend bob
+wt team show acme backend
+```
+
+## Tree grants
+
+A grant gives a subject a role on one tree, and can lift access above the tenant role (it never lowers it; use a policy deny for that):
+
+```bash
+wt grant set acme/api --team backend --role developer
+wt grant set acme/api --user dave --role maintainer
+wt grant set acme/api --sa ci --role developer
+wt grant set acme/api --tenant partner --role viewer      # every member of tenant "partner"
+wt grant list acme/api
+```
+
+Grants cover tree-scoped actions only (`tree:*` except `tree:create`, `branch:*`, `mr:*`, `release:*`, `ci:report`). A grant to another tenant's users or to a whole tenant (`subject_type: "tenant"`) is how cross-tenant collaboration works. REST: `GET|PUT|DELETE /api/v1/trees/{tenant}/{tree}/grants`.
 
 ## Tree visibility
 
 | Visibility | Who can read (`tree:read`) |
 |---|---|
-| `private` | Members of the owning tenant only. |
-| `internal` | Any authenticated account on the server. |
-| `public` | Anyone, including anonymous requests. |
+| `private` (default) | Tenant members per role, and grantees. |
+| `internal` | Additionally any signed-in principal on the server. |
+| `public` | Additionally anyone, including anonymous requests. |
 
-Visibility only widens **read** access. Writing always requires a membership with a sufficient role. Anonymous gRPC calls are allowed only for `Ping` and reads of public trees. Change visibility with `PATCH /api/v1/trees/{tenant}/{tree}` (`tree:admin`).
+Visibility widens read access only; a policy deny still overrides it. Anonymous gRPC calls are limited to `Ping` and reads of public trees. Change it with `wt trees update acme/web --visibility internal` (`tree:admin`).
 
-## Server admins
+## Policies
 
-An account with `is_admin: true` is a server admin. Server admins pass every authorization check and can use the admin endpoints: server statistics, the account list, and `PATCH /api/v1/admin/accounts/{username}` to grant or revoke `is_admin` and to disable accounts. The account named by `--admin-user` (default `admin`) is made a server admin at startup when `--admin-password` is set.
+A policy is a named list of allow and deny statements for one tenant:
+
+```json
+{
+  "name": "protect-main",
+  "enabled": true,
+  "statements": [
+    {
+      "sid": "no-contractor-pushes-to-main",
+      "effect": "deny",
+      "actions": ["branch:push"],
+      "resources": ["wt:branch/acme/*/main"],
+      "principals": ["team:contractors", "tenant:partner"],
+      "conditions": { "require_mfa": true, "ip_ranges": ["10.0.0.0/8"] }
+    }
+  ]
+}
+```
+
+| Field | Values |
+|---|---|
+| `resources` | `*`, `wt:tenant/<t>`, `wt:tree/<t>/<tree>`, `wt:branch/<t>/<tree>/<branch>`, `wt:path/<t>/<tree>/<path>`. `*` matches within a segment, a `**` segment any depth. A statement on a resource also covers its descendants. |
+| `principals` | `*`, `authenticated`, `anonymous`, `user:<name>`, `team:<slug>`, `role:<role>`, `sa:<name>`, `sa:<tenant>/<name>`, `tenant:<slug>`. Names may contain `*`. |
+| `conditions` | All set conditions must hold: `ip_ranges`, `require_mfa`, `not_before`/`not_after`, `time_window` (`days`, `start`, `end`, `timezone`). Undecidable conditions fail closed. |
+
+```bash
+wt policy validate acme --file protect-main.json
+wt policy create acme --file protect-main.json
+wt policy simulate acme --file protect-main.json --principal user:bob --action branch:push --tree web --branch main
+wt policy disable acme <ID>
+```
+
+- **Deny overrides allow**, including allows from roles, grants and visibility.
+- **Path rules**: `tree:read` denies on `wt:path/...` stub those files on pull and answer `403 path_denied` on REST reads; `tree:write` denies reject pushes that touch them.
+- **Lockout guard**: deny statements never take `iam:*` or `tenant:admin` away from a tenant owner.
+- The client IP for `ip_ranges` is the socket peer, or the `X-Forwarded-For` client when the peer is a [trusted proxy](/docs/server/operations#trusted-proxies). SSO sessions count as MFA when the identity provider asserts a second factor in the `amr` claim.
+
+Policies can also be kept as TOML files and applied with `wt access apply`; see [Declarative access](/docs/server/declarative-access).
 
 ## Tokens
 
-All authentication uses bearer tokens, sent as `authorization: Bearer <token>` in gRPC metadata or `Authorization: Bearer <token>` on REST.
+All authentication uses bearer tokens (`wt_...`), sent as `authorization: Bearer <token>` in gRPC metadata or `Authorization: Bearer <token>` on REST. The server stores only their SHA-256 hash, so a token is shown once.
 
-| Token | Obtained from | Lifetime |
+| Kind | Obtained from | Lifetime |
 |---|---|---|
-| Session token | `wt login`, `POST /api/v1/auth/login`, or `POST /api/v1/auth/register` | 30 days |
-| Personal API token | `POST /api/v1/auth/tokens` with a `name` and optional `ttl_hours`, or the admin panel's Settings page | `ttl_hours`, or no expiry when omitted |
+| `session` | `wt login`, `POST /api/v1/auth/login` (plus `/auth/login/mfa`), SSO | 30 days |
+| `api` | `wt token create NAME [--ttl-hours N] [--scope S]...`, `POST /api/v1/auth/tokens` | `ttl_hours`, or no expiry |
+| `service` | `wt sa key-create TENANT NAME [--ttl-hours N] [--scope S]...` | `ttl_hours`, or no expiry |
 
-- The server stores only the hex SHA-256 hash of each token, never the raw value, so a token is shown once at creation.
-- `last_used_at` records when an API token was last used.
-- `POST /api/v1/auth/logout` revokes the token that made the request; `DELETE /api/v1/auth/tokens/{id}` revokes a specific API token. `wt logout` removes the local credential.
-- `wt login` stores its token in `$WT_HOME/credentials.toml` (default `~/.wt`). The daemon uses the same credential to auto-stage. See [`wt login`](/docs/cli/remote#wt-login).
+- **Scopes** are action patterns (`tree:read`, `tree:*`, `ci:report`, `*`); a scoped token can do at most what its scopes cover, and only what the identity is allowed anyway.
+- **Sessions** record `last_ip`, `user_agent` and `mfa`: `wt session list`, `wt session revoke ID`, `wt session revoke-others`. `wt logout` forgets the local credential.
+- `wt login` stores its token in `$WT_HOME/credentials.toml` (default `~/.wt`); the daemon uses the same credential to stage and fetch.
 
-Use an API token with a TTL for CI and scripts instead of a session token.
+Use a scoped API token or service-account key with a TTL for CI and scripts instead of a session token.
 
-## Not in v0.2.0
+## Service accounts
 
-<Callout type="warn" title="Roadmap">
-  Declarative TOML access policies (RBAC/ABAC rules synced from the repository) are not enforced in v0.2.0; the server stores access-config documents sent by clients but authorization uses only the role and visibility model above. OAuth/SSO sign-in is also on the Roadmap.
-</Callout>
+Non-human identities that belong to one tenant and act there with their own role (any role except `owner`), plus any grants made to them:
 
-See also the [security overview](/docs/security).
+```bash
+wt sa create acme ci --role developer --description "CI pipeline"
+wt sa key-create acme ci --name github-actions --ttl-hours 720 --scope tree:read --scope ci:report
+```
+
+The principal name is `sa:acme/ci`. `wt sa update acme ci --disable` stops all its keys.
+
+## Two-factor authentication and SSO
+
+- **TOTP** (RFC 6238, 6 digits, 30 s): `wt mfa enable` shows a QR code, asks for a code and prints 10 single-use recovery codes. With MFA on, password login returns `{"mfa_required": true, "mfa_token": ...}` and `wt login` asks for a code (or reads `--mfa-code` / `WT_MFA_CODE`). Policies can require it with `require_mfa`.
+- **SSO** (OpenID Connect with PKCE, state and nonce, RS256/ES256 ID tokens) is configured by a server admin with `wt sso set` or `PUT /api/v1/admin/sso`; the login page then offers the provider. Linking first-time identities to existing accounts by email (`--link-by-email true`) is off by default because local emails are not verified.
+
+See [Security](/docs/security) for hashing, lockouts and token handling, and the [`wt` access commands](/docs/cli/iam) for every flag.

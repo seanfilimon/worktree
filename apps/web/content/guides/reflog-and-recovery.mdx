@@ -161,7 +161,7 @@ An archived name cannot be reused for a new branch until it is restored. The cur
 wt tag create v1.2.0 3b8f02aa -m "Release 1.2.0"
 ```
 
-If the tag had been pushed, the server still has it: there is no command to delete a tag on the server, and `wt fetch` downloads remote tags.
+If the tag had been pushed, the server still has it and `wt fetch` downloads it again; a tree admin can delete it on the server with `wt trees tag-delete` (unless a tag protection forbids it).
 
 ## What the server guarantees
 
@@ -170,12 +170,12 @@ If the tag had been pushed, the server still has it: there is no command to dele
 | Immutable snapshots | A stored snapshot never changes; re-sending the same id with different content is rejected. |
 | No lost pushes | A push must descend from the current server tip, and tips move by compare-and-swap, so concurrent pushes cannot overwrite each other. |
 | No force push | There is no way to move a server branch backwards or to an unrelated snapshot. |
-| Branch deletion | Not available from `wt`. Protection rules can additionally forbid deletion with `no_delete`. See [Branch protection](/docs/server/branch-protection). |
+| Branch deletion | Only explicit server deletion (`wt trees branch-delete`, `branch:delete`), which protection rules can forbid with `no_delete`. See [Branch protection](/docs/server/branch-protection). |
 | Audit trail | Security-relevant actions (pushes, membership changes, protection changes and others) are appended to an append-only audit log. See [Monitoring](/docs/server/monitoring#audit-log). |
 | Verified objects | Every uploaded object is checked against its BLAKE3 hash. |
 
 <Callout type="warn" title="Limits of the guarantees">
 - **Deleting a server tree** (`DELETE /api/v1/trees/{tenant}/{tree}`, requires `tree:admin`) removes its metadata. Only a backup of the data directory brings it back. See [Storage](/docs/server/storage#backup).
 - **Local history is local.** Snapshots you have not pushed live only in your `.wt/`. Deleting `.wt/` deletes them. Push regularly.
-- Objects are not garbage-collected in v0.2.0, so storage only grows.
+- Server garbage collection deletes objects that are no longer reachable from any branch, tag, staged snapshot, merge request or release after a grace period (default 30 days). See [Garbage collection](/docs/server/operations#garbage-collection).
 </Callout>

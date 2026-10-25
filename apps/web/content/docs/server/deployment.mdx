@@ -1,36 +1,67 @@
 ---
 title: Deployment
-description: Run worktree-server in production behind a TLS-terminating reverse proxy, as a system service, with registration locked down and backups in place.
+description: Run worktree-server in production with built-in TLS or behind a reverse proxy, as a system service or container, with registration, retention, limits and backups in place.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
-This page covers running the server for a team. For a narrative walkthrough, see the [self-hosting guide](/guides/self-hosting).
+This page covers running the server for a team. For a narrative walkthrough, see the [self-hosting guide](/guides/self-hosting); for day-to-day knobs, see [Operations](/docs/server/operations).
 
 ## Production checklist
 
-- [ ] Build the binary (and the admin panel, if wanted) from a tagged source checkout. See [Installation](/docs/server/installation).
+- [ ] Build the binary (and the admin panel) from a tagged source checkout, or build the container image. See [Installation](/docs/server/installation).
 - [ ] Run as a dedicated, unprivileged user with its own data directory (`--data`).
-- [ ] Listen on loopback only (`--addr 127.0.0.1:7420`) and put a reverse proxy in front that terminates TLS and forwards HTTP/2 cleartext (h2c) to the server.
+- [ ] Encrypt traffic: either built-in TLS (`--tls-cert`/`--tls-key`), or listen on loopback (`--addr 127.0.0.1:7420`) behind a TLS-terminating proxy and set `--trusted-proxies`. Never serve cleartext on a public address (the server warns when you do).
 - [ ] Set the admin password through `WT_ADMIN_PASSWORD` from a file readable only by the service user, not on the command line.
-- [ ] Disable self-service registration (`--allow-registration=false`) unless you want open sign-up.
-- [ ] Restrict `/metrics` to your monitoring network at the proxy.
-- [ ] Add any extra browser origins that call the API to `WT_CORS_ORIGINS`.
+- [ ] Disable self-service registration (`--allow-registration=false`) unless you want open sign-up; create accounts with `wt admin account-create` or invitations.
+- [ ] Set `--public-url` if you configure SSO.
+- [ ] Decide retention: `--staged-retention` (default 7 days), `--audit-retention` (default keep forever), `--gc-grace` (default 30 days).
+- [ ] Review `--rate-limit` (default 1,200 requests per minute per principal) and default quotas (`--default-max-trees`, `--default-max-storage`).
+- [ ] Restrict `/metrics` to your monitoring network.
+- [ ] Add browser origins that call the API from elsewhere to `--cors-origins`.
 - [ ] Schedule backups of the data directory and test a restore. See [Storage](/docs/server/storage#backup).
-- [ ] Monitor `/healthz` and disk space. See [Monitoring](/docs/server/monitoring).
+- [ ] Monitor `/healthz`, disk space and the audit log. See [Monitoring](/docs/server/monitoring).
 
 ## Reverse proxy and TLS
 
-The server has no built-in TLS (on the Roadmap). The proxy must:
+You have two options.
+
+### Option 1: built-in TLS
+
+The server terminates TLS on its own port; HTTPS and gRPC share it through ALPN `h2`:
+
+```bash
+worktree-server \
+  --addr :443 \
+  --tls-cert /etc/worktree/tls/fullchain.pem \
+  --tls-key /etc/worktree/tls/privkey.pem \
+  --public-url https://wt.example.com
+```
+
+Add `--tls-client-ca /etc/worktree/tls/clients-ca.pem` to require client certificates (mTLS). The server reads the certificate at startup: restart it after renewing (for example from your ACME client's deploy hook). Clients use the `https://` URL directly:
+
+```bash
+wt remote add origin https://wt.example.com --tenant acme
+wt login https://wt.example.com -u ada
+```
+
+### Option 2: a TLS-terminating reverse proxy
+
+Run the server on loopback and let the proxy handle certificates. The proxy must:
 
 1. terminate TLS for clients;
-2. forward gRPC (`Content-Type: application/grpc`, path prefix `/worktree.sync.v1.SyncService/`) to the backend over **HTTP/2 cleartext**, because gRPC requires HTTP/2 end to end;
+2. forward gRPC (`Content-Type: application/grpc`, path prefix `/worktree.sync.v1.SyncService/`) to the backend over **HTTP/2 cleartext** (h2c), because gRPC needs HTTP/2 end to end;
 3. pass REST and `/admin/` requests through (HTTP/1.1 or h2c both work);
-4. not buffer the SSE stream at `/api/v1/events`, and allow long-lived responses (the server sends a heartbeat every 15 seconds);
-5. allow request bodies of at least 64 MiB, the gRPC message size limit.
+4. not buffer the SSE stream at `/api/v1/events`, and allow long-lived responses (heartbeat every 15 seconds) and long-lived gRPC streams (`WatchBranches`, used by the daemon);
+5. allow request bodies of at least 64 MiB (gRPC messages and release assets);
+6. set `X-Forwarded-For`, and the server must list the proxy in `--trusted-proxies` so audit records, policy IP conditions and per-IP rate limits see the real client:
 
-### Caddy
+```bash
+worktree-server --addr 127.0.0.1:7420 --trusted-proxies 127.0.0.1 --public-url https://wt.example.com
+```
+
+#### Caddy
 
 Caddy obtains certificates automatically and can speak h2c to the backend for all traffic:
 
@@ -48,9 +79,9 @@ wt.example.com {
 }
 ```
 
-The `h2c://` scheme makes Caddy speak cleartext HTTP/2 to the backend for every request, so gRPC, REST, SSE, and the admin panel share one upstream. `flush_interval -1` flushes responses immediately, which keeps the event stream live.
+The `h2c://` scheme makes Caddy speak cleartext HTTP/2 to the backend for every request, so gRPC, REST, SSE and the admin panel share one upstream. `flush_interval -1` flushes responses immediately, which keeps the event stream live. Caddy sets `X-Forwarded-For` by default.
 
-### nginx
+#### nginx
 
 nginx forwards gRPC with `grpc_pass` (HTTP/2 to the backend) and everything else with `proxy_pass`. The `http2 on;` directive needs nginx 1.25.1 or newer; on older versions write `listen 443 ssl http2;`.
 
@@ -72,6 +103,7 @@ server {
     # gRPC sync service (wt, worktree-bg)
     location /worktree.sync.v1.SyncService/ {
         grpc_pass grpc://worktree;
+        grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         grpc_read_timeout 1h;
         grpc_send_timeout 1h;
     }
@@ -105,10 +137,8 @@ server {
 }
 ```
 
-Behind a proxy, the `remote_addr` recorded in audit entries can be the proxy's address.
-
 <Callout type="info" title="Client URLs">
-  Remote URLs are the public origin of the proxy. v0.2.0 documentation and tests use `http://` URLs; confirm that your `wt` build connects over `https://` before relying on it for clients, and otherwise reach the server over a private network or VPN. See [Security](/docs/security).
+  Remote URLs are the public `https://` origin of the proxy or of the server. `wt` and the daemon speak gRPC over TLS for `https://` remotes and h2c for `http://` remotes. See [Security](/docs/security).
 </Callout>
 
 ## Running as a service
@@ -141,7 +171,9 @@ sudoedit /etc/worktree/server.env
 ```text
 WT_ADMIN_USER=admin
 WT_ADMIN_PASSWORD=use-a-long-random-secret
-WT_CORS_ORIGINS=https://wt.example.com
+WT_PUBLIC_URL=https://wt.example.com
+WT_TRUSTED_PROXIES=127.0.0.1
+WT_LOG_FORMAT=json
 ```
 
 </Step>
@@ -188,7 +220,7 @@ curl -s http://127.0.0.1:7420/healthz
 </Step>
 </Steps>
 
-`systemctl stop` sends `SIGTERM`, and the server shuts down gracefully.
+`systemctl stop` sends `SIGTERM`: the server stops accepting work, drains connections within `--shutdown-timeout` (default 15 s), audits `server.stop` and exits.
 
 ### Windows
 
@@ -196,37 +228,29 @@ curl -s http://127.0.0.1:7420/healthz
 
 ## Containers
 
-<Callout type="warn" title="Roadmap">
-  No official Docker image is published for v0.2.0. The Dockerfile below is an illustrative example of how you could package a build yourself, not a supported artifact.
-</Callout>
-
-```text
-# Example only: build from the repository root.
-FROM golang:1.25 AS build
-WORKDIR /src
-COPY services/server-go/ .
-RUN CGO_ENABLED=0 go build -o /out/worktree-server .
-
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/worktree-server /usr/local/bin/worktree-server
-VOLUME /data
-EXPOSE 7420
-ENTRYPOINT ["/usr/local/bin/worktree-server", "--addr", ":7420", "--data", "/data"]
-```
+The repository root has a `Dockerfile.server` that builds the admin panel and a static Go binary and packages both in an Alpine image. No image is published; build it yourself:
 
 ```bash
-docker build -t worktree-server:local -f Dockerfile .
-docker run -d --name worktree -p 127.0.0.1:7420:7420 \
-  -v wt-data:/data -e WT_ADMIN_PASSWORD='use-a-long-random-secret' \
-  -e WT_ALLOW_REGISTRATION=false worktree-server:local
+docker build -f Dockerfile.server -t worktree-server .
+docker run -d --name worktree -p 7420:7420 -v wt-data:/data \
+  -e WT_ADMIN_PASSWORD='use-a-long-random-secret' -e WT_ALLOW_REGISTRATION=false \
+  worktree-server
 ```
 
-Keep the data volume on persistent storage and run a single container per data directory; bbolt allows only one process to open `meta.db`.
+The image runs as the unprivileged user `worktree` (uid 10001), stores data in the `/data` volume, serves the bundled admin panel from `/app/admin` (`WT_ADDR=:7420`, `WT_DATA=/data`, `WT_ADMIN_DIR=/app/admin`) and declares a `HEALTHCHECK` on `/healthz`. Pass any other setting as a `WT_*` environment variable, for example `WT_TLS_CERT` and `WT_TLS_KEY` with the certificate files mounted into the container. Build arguments `VERSION` and `COMMIT` set the reported version.
+
+For a local stack, `docker-compose.yml` runs the server (port 7420, with the admin panel) and this documentation site (port 3000):
+
+```bash
+WT_ADMIN_PASSWORD=change-me docker compose up --build
+```
+
+Keep the data volume on persistent storage and run a single container per data directory: bbolt allows only one process to open `meta.db`.
 
 ## Upgrading
 
 1. Back up the data directory.
-2. Build the new version and replace the binary (and the admin panel build).
+2. Build the new version and replace the binary (and the admin panel build), or rebuild the image.
 3. Restart the service and check `/healthz` for the new `version`.
 
-v0.2.0 is pre-1.0: read the [changelog](/changelog) before upgrading, and keep the backup until the new version has run cleanly.
+The server refuses to open a `meta.db` written by a newer schema, so keep the backup until the new version has run cleanly. The project is pre-1.0: read the [changelog](/changelog) before upgrading.

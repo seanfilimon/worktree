@@ -8,7 +8,7 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 <Callout type="info" title="Build from source only">
-  W0rkTree v0.2.0 is pre-1.0. There are no prebuilt server binaries, packages, or official container images yet; you build the server from the repository. Prebuilt binaries and package-manager installs are on the Roadmap.
+  W0rkTree is pre-1.0. There are no prebuilt server binaries, packages or published container images yet; you build the server from the repository (directly, or as a container image with the repository's `Dockerfile.server`, see [Deployment](/docs/server/deployment#containers)). Prebuilt binaries are on the [roadmap](/roadmap).
 </Callout>
 
 ## Requirements
@@ -96,8 +96,10 @@ curl http://localhost:7420/healthz
 ```
 
 ```json
-{"status":"ok","version":"0.2.0","uptime_seconds":12}
+{"status":"ok","version":"0.2.0-dev","uptime_seconds":12,"checks":{"meta":"ok","objects":"ok"}}
 ```
+
+The status is `degraded` (HTTP `503`) when the metadata store or the object store probe fails. See [Monitoring](/docs/server/monitoring#health-check).
 
 On Windows PowerShell, `curl` is an alias for `Invoke-WebRequest`; use `curl.exe` or `Invoke-RestMethod`:
 
@@ -133,7 +135,9 @@ wt push
 </Tab>
 </Tabs>
 
-The tenant `admin` is the admin account's personal tenant (its slug equals the username). See [`wt login`](/docs/cli/remote#wt-login) and [`wt remote`](/docs/cli/remote#wt-remote).
+The tenant `admin` is the admin account's personal tenant (its slug equals the username). Accounts with two-factor authentication are asked for a code, or pass `--mfa-code` (`WT_MFA_CODE`). See [`wt login`](/docs/cli/remote#wt-login) and [`wt remote`](/docs/cli/remote#wt-remote).
+
+Other users can now register themselves (`wt register`), or a server admin creates their accounts with `wt admin account-create USERNAME --email EMAIL` (see [`wt admin`](/docs/cli/administration#wt-admin)).
 
 </Step>
 </Steps>
@@ -174,5 +178,6 @@ For panel development, run `npm run dev` in `apps/admin` instead: the Vite dev s
 ## Next steps
 
 - [Configuration](/docs/server/configuration) lists every flag and environment variable.
-- [Deployment](/docs/server/deployment) covers TLS, service units, and backups.
+- [Deployment](/docs/server/deployment) covers TLS, service units, containers and backups.
+- [Operations](/docs/server/operations) covers garbage collection, quotas and rate limits.
 - [Access control](/docs/server/access-control) explains tenants, roles, and tokens.

@@ -1,0 +1,219 @@
+---
+title: Reviews, CI and Merges
+description: Open merge requests, review them on the current source tip, report CI checks, protect branches and tags, and merge several trees atomically with wt mr, wt ci and wt protect.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+These commands talk to the server's REST API. They accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. A `TREE` argument is written `tenant/tree`; inside a worktree it defaults to the origin tenant plus the current tree's remote name. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#wt-mr).
+
+## Workflow
+
+<Steps>
+<Step>
+
+### Push the source branch
+
+```bash
+wt switch -c feature/refunds
+wt snapshot -m "Add refund endpoint"
+wt push --branch feature/refunds
+```
+
+</Step>
+<Step>
+
+### Open the merge request
+
+```bash
+wt mr create --source feature/refunds --target main --title "Add refund endpoint"
+```
+
+Needs `mr:create` (developer). Source and target must be branches of the same tree.
+
+</Step>
+<Step>
+
+### Review
+
+```bash
+wt mr show 4 --diff
+wt mr comment 4 -m "Validate the amount" --path src/refund.rs --line 42
+wt mr review 4 --request-changes -m "Amount is not validated"
+# after the author pushes a fix
+wt mr review 4 --approve
+```
+
+</Step>
+<Step>
+
+### Check and merge
+
+```bash
+wt mr checks 4
+wt mr merge 4
+```
+
+</Step>
+</Steps>
+
+### Review rules
+
+- **Approvals belong to a source tip.** An approval records the source branch tip at the time it was given. When the author pushes again, the approval becomes **stale** and no longer counts; the reviewer must approve again.
+- **Change requests block.** A `--request-changes` review from someone with `mr:approve` blocks the merge until that same reviewer approves the current tip.
+- **Authors cannot approve** (or request changes on) their own merge request.
+- `--approve` and `--request-changes` need `mr:approve` (maintainer); `--comment` and `wt mr comment` need only `tree:read`.
+
+### Merges are fast-forward only
+
+The server moves the target branch to the source tip with a compare-and-swap. It never creates a merge snapshot. If the target has moved on, bring it into the source branch locally and push again:
+
+```bash
+wt pull --branch main
+wt switch feature/refunds
+wt merge main -m "Merge main into feature/refunds"
+wt push --branch feature/refunds
+```
+
+A refused merge reports why, in this order of precedence: a linked group answers `409 linked_group`; missing approvals answer `403 review_required`; change requests, CI, blocking TODOs and linear-history violations answer `409 merge_blocked` listing every blocker; a target that has diverged from the source (and nothing else) answers `409 conflict`. Run `wt mr checks` first to see all blockers at once. See [`wt merge`](/docs/cli/branches#wt-merge).
+
+## `wt mr`
+
+```text
+wt mr <list|show|create|approve|merge|close|review|comment|comments|checks|link|merge-group|groups>
+```
+
+| Command | Usage | Notes |
+|---|---|---|
+| `list` | `wt mr list [--state <open\|merged\|closed\|all>] [TREE]` | Default `open`. |
+| `show` | `wt mr show [--diff] <NUMBER> [TREE]` | `--diff` adds the changes (JSON: `{"merge_request", "diff"}`). |
+| `create` | `wt mr create --source <B> --target <B> --title <T> [--description <D>] [TREE]` | |
+| `approve` | `wt mr approve <NUMBER> [TREE]` | Same as `review --approve`. |
+| `review` | `wt mr review <--approve\|--request-changes\|--comment> [-m <TEXT>] <NUMBER> [TREE]` | `--comment` needs `-m`. |
+| `comment` | `wt mr comment --message <TEXT> [--path <PATH>] [--line <N>] <NUMBER> [TREE]` | `--line` refers to a line of `--path`. |
+| `comments` | `wt mr comments <NUMBER> [TREE]` | |
+| `checks` | `wt mr checks <NUMBER> [TREE]` | Merge readiness, below. |
+| `merge` | `wt mr merge <NUMBER> [TREE]` | Needs `mr:merge`. Fast-forward only. |
+| `close` | `wt mr close <NUMBER> [TREE]` | Close without merging. |
+| `link` | `wt mr link [--tenant <SLUG>] <NAME> <TREE#N> <TREE#N>...` | Linked group, below. |
+| `merge-group` | `wt mr merge-group [--tenant <SLUG>] <ID>` | |
+| `groups` | `wt mr groups [--tenant <SLUG>]` | |
+
+### `wt mr checks`
+
+Shows whether the merge request can be merged now and what blocks it. With `--json`:
+
+```json
+{
+  "mergeable": false,
+  "blockers": [
+    {"kind": "approvals", "message": "1 of 2 required approvals on the current source tip"},
+    {"kind": "ci", "message": "required CI checks have not passed: ci/test is pending"}
+  ],
+  "approvals": {"required": 2, "current": 1, "stale": 1, "changes_requested": []},
+  "ci": {"state": "pending", "required": ["ci/build", "ci/test"], "missing": []},
+  "todos": {"blocking_open": 0}
+}
+```
+
+Blocker kinds: `state` (not open), `source` (source branch missing or empty), `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `linear` (the source brings merge snapshots), `diverged` (the target is not an ancestor of the source). Messages above are illustrative.
+
+### Linked merges across trees
+
+Merge requests in different trees (or tenants) can be linked into a group that merges all or nothing:
+
+```bash
+wt mr link oauth acme/frontend#4 acme/backend#9
+wt mr groups
+wt mr merge-group <id>
+```
+
+- Creating a group needs `mr:merge` on every member tree. A merge request belongs to at most one open group.
+- `merge-group` merges only when every member is mergeable. Tips move in order with compare-and-swap and are rolled back if one fails; the server publishes `group.merged`.
+- Merging a member alone with `wt mr merge` answers `409` with code `linked_group`.
+
+## `wt ci`
+
+CI systems report check results per snapshot; branch protection can require them.
+
+```text
+wt ci report --snapshot <ID> --context <NAME> --state <STATE> [--description <TEXT>] [--url <URL>] [TREE]
+wt ci status [--snapshot <ID> | --branch <B>] [TREE]
+```
+
+- `--state` is `pending`, `success`, `failure` or `error`. `--snapshot` also accepts a branch or tag, resolved to its snapshot. `--url` must be `http` or `https`.
+- A newer report for the same snapshot and context replaces the older one. Each report publishes the event `ci.status`.
+- The combined state is `failure` if any check is `failure` or `error`, else `pending` if any is `pending`, else `success` (empty when nothing was reported).
+- Reporting needs `ci:report` (developer and above, or a scoped key).
+
+A CI job typically uses a service-account key limited to `ci:report`:
+
+```bash
+# once, as a tenant admin
+wt sa create acme ci --role developer --description "CI pipeline"
+wt sa key-create acme ci --name github-actions --scope ci:report
+
+# in the job: the key is a bearer token for the REST API
+curl -s -X POST https://wt.example.com/api/v1/trees/acme/payments/ci/status \
+  -H "Authorization: Bearer $WT_CI_KEY" -H 'Content-Type: application/json' \
+  -d "{\"snapshot\":\"$SNAPSHOT_ID\",\"context\":\"ci/test\",\"state\":\"success\",\"target_url\":\"$JOB_URL\"}"
+```
+
+`wt ci report` uses the credential saved by [`wt login`](/docs/cli/remote#wt-login), so it suits jobs that run as a signed-in account:
+
+```bash
+wt ci report acme/payments --snapshot main --context ci/test \
+  --state success --url "$JOB_URL" --description "212 tests passed"
+```
+
+The CLI has no environment variable for a bearer token; `wt` reads tokens only from `$WT_HOME/credentials.toml`. See [`wt sa`](/docs/cli/iam#wt-sa).
+
+## `wt protect`
+
+Branch and tag protection rules of a server tree. Rules are enforced on the server for everyone, server admins included.
+
+```text
+wt protect list [TREE]
+wt protect set [OPTIONS] [TREE] <PATTERN>
+wt protect remove [--yes] [TREE] <PATTERN>
+wt protect tag list|set|remove ...
+```
+
+`wt protect set` creates **or replaces** the rule for a pattern: flags you leave out are off. Pass every flag the rule should keep.
+
+| Flag | Rule field | Effect |
+|---|---|---|
+| `--no-direct-push` | `no_direct_push` | Changes reach matching branches only through merge requests. |
+| `--approvals <N>` | `required_approvals` | Current approvals needed to merge (default `0`). |
+| `--pusher <U>` | `allowed_pushers` | Accounts allowed to push (repeatable; default: anyone with write access). |
+| `--no-delete` | `no_delete` | Matching branches cannot be deleted. |
+| `--require-ci` | `require_ci_pass` | Merges need passing CI on the source tip: every `--check`, or every reported check when none is named. |
+| `--check <NAME>` | `required_checks` | A CI context that must succeed (repeatable; implies `--require-ci`). |
+| `--require-signed` | `require_signed` | Every pushed snapshot must carry a verified signature. See [Snapshot signing](/docs/cli/signing). |
+| `--require-linear` | `require_linear` | No merge snapshots, in direct pushes or merged sources. |
+| `--block-on-todos` | `block_on_todos` | Open blocking TODOs that target the source branch block merging. See [Dependencies](/docs/cli/dependencies#blocking-merges-on-todos). |
+
+```bash
+wt protect set main --no-direct-push --approvals 2 --no-delete --check ci/build --check ci/test --require-signed
+wt protect set "release/*" --no-direct-push --approvals 1 --require-linear
+wt protect list
+```
+
+Patterns are branch names or `path.Match` globs (`release/*`). All matching rules combine into their most restrictive form. Rule semantics: [Branch protection](/docs/server/branch-protection).
+
+### Tag protection
+
+```text
+wt protect tag set [--no-delete] [--no-move] [--tagger <U>]... [TREE] <PATTERN>
+wt protect tag list [TREE]
+wt protect tag remove [--yes] [TREE] <PATTERN>
+```
+
+```bash
+wt protect tag set "v*" --no-delete --no-move --tagger release-bot
+```
+
+`--no-move` stops matching tags from being replaced, `--no-delete` stops deletion, and `--tagger` limits who may create, move or delete them (default: anyone with `tree:write`).
+
+See the [Server specification, section 9](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md#9-merge-requests-reviews-and-ci) for the full merge, review and CI rules.

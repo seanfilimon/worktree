@@ -14,7 +14,7 @@ W0rkTree has exactly three places that hold configuration or state you might loo
 | `<dir>/.wt-tree/config.toml` | One nested tree | `wt tree add` | Marks `<dir>` as a nested tree. |
 | `$WT_HOME` (default `~/.wt`) | One user, all worktrees | `wt login`, `wt register`, `wt logout`, `wt daemon` | Saved tokens and daemon state. |
 
-There is no global or system-wide `wt` config file in v0.2.0, and no layering between files: every setting in `.wt/config.toml` applies to that worktree only.
+Configuration is layered: `$WT_HOME/config.toml` (user defaults for `[user]`, `[signing]`, `[secret_scanning]`) < `.wt/config.toml` < `<tree>/.wt-tree/config.toml` (per-tree `[auto_snapshot]`, `[secret_scanning]`, `[hooks]`). See [Local configuration](/docs/cli/configuration).
 
 ## `.wt/config.toml`
 
@@ -157,7 +157,7 @@ See [Local layout](/docs/protocol/local-layout) for the complete list. `.wt/` it
 
 - Do not create or edit `.wt-tree/` by hand; use `wt tree add` and `wt tree remove`.
 - `.wt-tree/` is a built-in ignore and is never snapshotted.
-- Nested trees share the worktree's `.wt/config.toml`: the same author, auto-snapshot settings and remotes apply to every tree. Each tree has its own branches, tags and reflog, and is pushed to its own server tree.
+- Nested trees share the worktree's `.wt/config.toml` (author, remotes, sync settings); their own `.wt-tree/config.toml` can override `[auto_snapshot]`, `[secret_scanning]` and `[hooks]`. Each tree has its own branches, tags and reflog, and is pushed to its own server tree.
 
 See [Nested trees](/guides/nested-trees).
 

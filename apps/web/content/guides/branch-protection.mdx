@@ -74,7 +74,7 @@ In the admin panel: **Trees**, select the tree, then the **Protections** tab. Se
 
 ## The merge request workflow
 
-With `no_direct_push` on `main`, work happens on a feature branch and lands through a merge request (MR). Merge requests are managed through the REST API and the admin panel. There are no `wt` subcommands for them in v0.2.0.
+With `no_direct_push` on `main`, work happens on a feature branch and lands through a merge request (MR). Merge requests are managed with [`wt mr`](/docs/cli/merge-requests#wt-mr), the REST API and the admin panel.
 
 <Steps>
 <Step>
@@ -182,5 +182,5 @@ When the server refuses a push, `wt push` exits with code 1 and prints the reaso
 | `conflict_detected` | The branch tip on the server moved since your last pull. | `wt pull`, resolve any conflicts, then push again. |
 
 <Callout type="warn" title="Roadmap">
-  CI gates and required status checks are not part of v0.2.0. The protocol reserves a `ci_checks_failed` rejection, but the server does not run or require checks yet. Gate merges with `required_approvals` for now.
+  The server does not run CI itself, but CI systems can report check results (`wt ci report`), and a rule with `require_ci_pass` (`wt protect set ... --require-ci --check NAME`) blocks merges until the required checks succeed on the source tip. See [Reviews, CI and merges](/docs/cli/merge-requests).
 </Callout>

@@ -1,0 +1,211 @@
+---
+title: Configuration
+description: How wt layers user, worktree and tree configuration, every configuration key, ignore rule evaluation, snapshot hooks and secret-scanning settings.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Client behaviour is driven by TOML files on disk, read and written with [`wt config`](/docs/cli/repository#wt-config); none of it is stored on the server. This page explains how those files combine and how the local snapshot pipeline (ignore rules, hooks, secret scanning) is configured. The file formats are specified in [DotWt.md](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt/DotWt.md) and [DotWtTree.md](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/DotWtTree.md).
+
+## Configuration hierarchy
+
+Three files are read, lowest precedence first. A value in a higher layer replaces the same key of a lower layer.
+
+| Layer | File | Sections read from it | Written with |
+|---|---|---|---|
+| User | `$WT_HOME/config.toml` (default `~/.wt/config.toml`) | `[user]`, `[signing]`, `[secret_scanning]` | `wt config set KEY VALUE --global` |
+| Worktree | `.wt/config.toml` | every section | `wt config set KEY VALUE` |
+| Tree | `<tree>/.wt-tree/config.toml` | `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` | `wt --tree NAME config set KEY VALUE` |
+
+Rules:
+
+- A section a layer is not allowed to set is ignored there (and left in the file). Remotes, `[sync]`, `[worktree]` and `[git_remote.*]` are worktree-only; `[signing]` and `[user]` are user or worktree.
+- For a nested tree, the `.wt-tree/config.toml` files of its enclosing trees apply first, then its own.
+- `secret_scanning.patterns` and `secret_scanning.exclude` are **concatenated** across layers instead of replaced.
+- Empty `user.name`, `user.email` and `signing.key` strings count as unset, so a worktree can fall back to the user config.
+- Unknown keys are preserved whenever `wt` rewrites a file, so newer sections do not break older clients.
+
+Find out where a value comes from with `--show-origin` (`default`, `user`, `worktree` or `tree`):
+
+```bash
+wt config list --show-origin
+wt config get secret_scanning.block_on_match --tree auth --show-origin
+wt config set user.email ada@example.com --global
+wt --tree auth config set secret_scanning.block_on_match false
+```
+
+A complete `.wt/config.toml`:
+
+```toml
+[worktree]
+name = "my-project"                 # worktree / root tree name
+id = "3f6c1d2a-8f0e-4c55-9d7b-2a1e5b9c0d44"   # read-only
+created_at = "2026-10-25T09:00:00+00:00"      # read-only
+default_branch = "main"
+
+[user]
+name = "Ada Lovelace"               # snapshot author "Name <email>"
+email = "ada@example.com"
+
+[auto_snapshot]                     # used by the daemon
+enabled = true
+inactivity_secs = 30
+max_changed_files = 50
+max_changed_bytes = "50MB"          # 0 / unset = no byte limit
+message_format = "auto: {count} files changed"
+on_branch_switch = "refuse"         # snapshot | stash | refuse
+
+[sync]
+auto_stage = true
+remote = "origin"
+auto_fetch = true
+interval_secs = 300
+
+[remote.origin]
+url = "http://localhost:7420"
+tenant = "acme"
+
+[secret_scanning]
+enabled = true
+block_on_match = true
+patterns = [{ name = "internal-token", regex = "itk_[A-Za-z0-9]{32}" }]
+exclude = ["tests/fixtures/**"]
+
+[hooks]
+enabled = true
+timeout_secs = 60
+
+[signing]
+key = "laptop"
+auto = false
+
+[git_remote.github]
+url = "https://example.com/acme/web.git"
+```
+
+`[secret_scanning]`, `[hooks]` and `[signing]` are omitted from the file while they hold their defaults.
+
+## Keys
+
+| Key | Type | Default | Layers | Description |
+|---|---|---|---|---|
+| `worktree.name` | string | directory name | worktree | Worktree and root tree name. |
+| `worktree.default_branch` | string | `main` | worktree | Default branch for new trees. |
+| `worktree.id`, `worktree.created_at` | string | generated | worktree | Read-only. |
+| `user.name`, `user.email` | string | empty | user, worktree | Snapshot author `Name <email>`. When both are empty the OS user name (`USERNAME` / `USER`) is used. |
+| `auto_snapshot.enabled` | bool | `true` | worktree, tree | Let the daemon take automatic snapshots. |
+| `auto_snapshot.inactivity_secs` | integer | `30` | worktree, tree | Quiet period before an auto-snapshot. Alias: `inactivity_timeout_secs`. |
+| `auto_snapshot.max_changed_files` | integer | `50` | worktree, tree | Snapshot at once when this many distinct paths changed (`0` = no limit). |
+| `auto_snapshot.max_changed_bytes` | size | `0` | worktree, tree | Snapshot at once when the changed files total this many bytes (`0` = no limit). Accepts integers or sizes such as `"50MB"`, `"1GiB"` (KB/MB/GB = powers of 1000, KiB/MiB/GiB = powers of 1024). |
+| `auto_snapshot.message_format` | string | `auto: {count} files changed` | worktree, tree | Auto-snapshot message. Placeholders: `{count}` (changed files), `{files}` (their paths, first 10 then `(+N more)`), `{branch}`, `{tree}`. |
+| `auto_snapshot.on_branch_switch` | string | `refuse` | worktree, tree | What happens when `wt switch` finds uncommitted changes. See below. |
+| `sync.auto_stage` | bool | `true` | worktree | The daemon uploads auto-snapshots as staged snapshots. |
+| `sync.remote` | string | `origin` | worktree | Remote used by the daemon and the default for push, fetch, pull and stage. |
+| `sync.auto_fetch` | bool | `true` | worktree | The daemon keeps remote-tracking branches fresh. See [Background fetch](/docs/cli/daemon#background-fetch). |
+| `sync.interval_secs` | integer | `300` | worktree | Periodic fetch fallback of the daemon. |
+| `remote.<name>.url`, `remote.<name>.tenant` | string | | worktree | Server base URL (`http://` or `https://`) and tenant slug. |
+| `secret_scanning.enabled` | bool | `true` | all | Run the pre-snapshot secret scan. |
+| `secret_scanning.block_on_match` | bool | `true` | all | `false` = report findings as warnings and snapshot anyway. |
+| `secret_scanning.exclude` | list | empty | all | Comma-separated globs (in `wt config set`) never scanned. |
+| `secret_scanning.patterns.<name>` | regex | | all | One extra rule; an empty value removes it. |
+| `hooks.enabled` | bool | `true` | worktree, tree | Run snapshot hooks. |
+| `hooks.timeout_secs` | integer | `60` | worktree, tree | Kill a hook after this many seconds (`0` = no limit). |
+| `signing.key` | string | empty | user, worktree | Key name under `$WT_HOME/keys/` (empty = signing off). |
+| `signing.auto` | bool | `false` | user, worktree | Sign every snapshot, not only `wt snapshot --sign`. |
+
+Booleans accept `true/false/yes/no/on/off/1/0`. An unparsable config file makes every command fail with `InvalidConfig` naming the file.
+
+### Branch switches with uncommitted changes
+
+| Value | Behavior |
+|---|---|
+| `refuse` (default) | `wt switch` refuses while the tree has uncommitted changes; `--force` discards them. |
+| `snapshot` | Before switching, `wt switch` asks the running daemon to auto-snapshot the tree first. |
+| `stash` | Accepted, but currently behaves like `refuse`. |
+
+<Callout type="warn">
+`snapshot` only takes effect when the daemon is running, watches this worktree, and auto-snapshots are not paused or disabled. Without the daemon the switch is refused as with `refuse`. Snapshot your work yourself (`wt snapshot -m ...`) if you are unsure.
+</Callout>
+
+## Ignore rules
+
+A path is never snapshotted (and never triggers a daemon snapshot) when the rules below ignore it. Patterns use gitignore syntax and `/` separators on every platform. Evaluation order:
+
+1. **Hard ignores**: `.wt/`, `.wt-tree/`, `.git/`. Always ignored; cannot be re-included.
+2. **Root rules**: `.wt/ignore`, then the root `.wtignore`. A path they ignore stays ignored whatever deeper files say. Within these files the last matching line wins, so `!pattern` works normally.
+3. **Tree rules**: `<tree>/.wt-tree/ignore` of every tree containing the path. Additive only: they can ignore more, never re-include.
+4. **Nested `.wtignore` files** in subdirectories: the deepest file with a matching pattern decides, but they cannot re-include anything ignored by steps 1-3.
+5. **Soft defaults**: `node_modules/`, `target/`, `__pycache__/`, `.DS_Store`, `Thumbs.db`, `*.pyc`, `*.pyo`, `*.swp`, `*.swo`, `*~`, `.env`, `.venv/`, `dist/`, `build/`, `*.log`. They apply unless the root rules re-include the path with `!pattern`.
+
+```text
+# .wtignore at the worktree root (tracked, shared with the team)
+*.pem
+.env.*
+!.env.example
+# re-include a soft default
+!build/
+```
+
+Only `.wtignore` files are part of snapshots. `.wt/ignore` and `.wt-tree/ignore` stay on your machine. Inspect the result with `wt ignore list --sources` and `wt ignore check PATH`; see [`wt ignore`](/docs/cli/repository#wt-ignore).
+
+## Hooks
+
+Hooks are executables that run around every snapshot, including daemon auto-snapshots.
+
+| Phase | When | On failure |
+|---|---|---|
+| `pre-snapshot` | Before the working state is read | Non-zero exit (or timeout) aborts the snapshot: `pre-snapshot hook failed: ...` with the tail of its output. |
+| `post-snapshot` | After the snapshot is written | Reported on stderr; the snapshot is kept. |
+
+Discovery and order:
+
+- `.wt/hooks/<phase>` runs first, then `<tree>/.wt-tree/hooks/<phase>` of every tree enclosing the snapshotted tree (outermost first), then the tree's own.
+- On Unix the file must be executable. On Windows `<phase>.exe`, `<phase>.cmd`, `<phase>.bat`, `<phase>.ps1` (run with PowerShell) and an extensionless `<phase>` script (run with `sh`) are recognized; the first one found per directory runs.
+- The working directory is the tree root; stdin is empty; output goes to stderr (never stdout, which may carry `--json`).
+
+| Variable | Value |
+|---|---|
+| `WT_HOOK` | `pre-snapshot` or `post-snapshot` (also `WT_HOOK_PHASE`) |
+| `WT_TREE` | Tree name (also `WT_TREE_NAME`) |
+| `WT_TREE_PATH` | Absolute tree directory |
+| `WT_BRANCH` | Current branch |
+| `WT_ROOT` | Worktree root |
+| `WT_USER` | Snapshot author |
+| `WT_SNAPSHOT` | New snapshot id, post hooks only (also `WT_SNAPSHOT_ID`) |
+
+```bash
+#!/bin/sh
+# .wt/hooks/pre-snapshot: refuse snapshots with failing formatting
+cargo fmt --check
+```
+
+Skip hooks for one snapshot with `wt snapshot --no-verify`, or turn them off with `wt config set hooks.enabled false`. `wt tree init-config` creates an empty `hooks/` directory for a nested tree.
+
+## Secret scanning
+
+Before every snapshot, added and modified files are scanned for credentials on the client: private-key blocks, AWS keys, GitHub, GitLab, Slack, Stripe, Google, npm, Anthropic and OpenAI tokens, JWTs and generic `secret = "..."` assignments. Binary files are skipped, only the first 8 KiB of each line is scanned, and excerpts are redacted. A finding aborts the snapshot with the file, line, rule and excerpt (`SecretsDetected`).
+
+```toml
+[secret_scanning]
+enabled = true                       # false = no scan
+block_on_match = true                # false = warn only
+patterns = [{ name = "internal-token", regex = "itk_[A-Za-z0-9]{32}" }]
+exclude = ["tests/fixtures/**"]      # globs never scanned
+```
+
+- Set it in `$WT_HOME/config.toml`, `.wt/config.toml` or a tree's `.wt-tree/config.toml`; patterns and excludes from all layers add up.
+- Add a rule from the command line: `wt config set secret_scanning.patterns.internal-token 'itk_[A-Za-z0-9]{32}'`.
+- Suppress a false positive by putting `wt:allow-secret` on the same line, for example in a trailing comment.
+- Skip the scan for one snapshot with `wt snapshot --no-scan`.
+
+Scanning happens only on the client; the server does not scan pushes.
+
+## Snapshot signing settings
+
+`[signing] key` names an Ed25519 key in `$WT_HOME/keys/` and `[signing] auto = true` signs every snapshot (otherwise only `wt snapshot --sign` signs). Keys are created and registered with [`wt identity`](/docs/cli/signing#wt-identity).
+
+```bash
+wt identity generate laptop
+wt config set signing.key laptop --global
+wt config set signing.auto true --global
+```

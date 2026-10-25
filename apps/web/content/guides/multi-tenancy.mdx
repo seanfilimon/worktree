@@ -197,5 +197,5 @@ wt login http://wt.internal:7420 -u ci-bot
 </Tabs>
 
 <Callout type="warn" title="Roadmap">
-  Declarative access configuration (roles and policies written in TOML and enforced by the server), OAuth/SSO, and `wt` subcommands for tenants and members are not part of v0.2.0. Manage tenants and members through the REST API or the admin panel.
+  Tenants and members can also be managed with [`wt tenant`](/docs/cli/administration#wt-tenant), roles and policies can be kept as TOML and applied with [`wt access`](/docs/server/declarative-access), and OIDC single sign-on is configured with `wt sso set` (see [Access and identity](/docs/cli/iam)).
 </Callout>

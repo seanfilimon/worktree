@@ -45,7 +45,7 @@ wt push
 Pushing a tag requires `tree:write` on the server tree, like pushing a branch. Tags are listed by `GET /api/v1/trees/{tenant}/{tree}/tags` ([REST API](/docs/server/rest-api#tags)), shown in the [admin panel](/guides/admin-panel), and published as `tag.pushed` events on the [SSE stream](/docs/server/events).
 
 <Callout type="warn" title="Deleting tags">
-`wt tag delete NAME` removes the tag from your worktree only. There is no command to delete or move a tag on the server, and the next `wt fetch` brings a pushed tag back. Treat pushed tags as permanent and pick names carefully.
+`wt tag delete NAME` removes the tag from your worktree only, and the next `wt fetch` brings a pushed tag back. Deleting a server tag needs `tree:admin` (`wt trees tag-delete`), and tag protections (`wt protect tag set`) can forbid moving or deleting tags. Treat pushed tags as permanent and pick names carefully.
 </Callout>
 
 ## Release archives
@@ -163,5 +163,5 @@ git -C ../my-project-git push origin v1.2.0   # after adding a Git remote named 
 ## Not in v0.2.0
 
 <Callout type="warn" title="Roadmap">
-Signed tags and snapshot signing are not implemented, and there are no prebuilt release binaries for W0rkTree itself yet. See the [roadmap](/roadmap).
+Signed tags are not implemented (snapshots can be signed; see [Snapshot signing](/docs/cli/signing)), and there are no prebuilt release binaries for W0rkTree itself yet. Server-side releases with assets are managed with [`wt release`](/docs/cli/dependencies#wt-release). See the [roadmap](/roadmap).
 </Callout>

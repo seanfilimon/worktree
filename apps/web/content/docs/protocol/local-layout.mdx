@@ -1,14 +1,14 @@
 ---
 title: Local Layout
-description: The on-disk format of a W0rkTree worktree — the .wt/ directory, config.toml, nested tree markers, per-user $WT_HOME files, and ignore rules.
+description: The on-disk format of a W0rkTree worktree — the .wt/ directory, config.toml, nested .wt-tree/ markers, hooks and access files, per-user $WT_HOME files, and ignore rules.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the worktree root. Per-user state (credentials and the daemon) lives separately in `$WT_HOME`. The authoritative description is the module documentation of `crates/worktree-sdk/src/repo/mod.rs`; this page expands on it.
+Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the worktree root. Per-user state (credentials, user configuration, signing keys, the daemon) lives separately in `$WT_HOME`. The authoritative description is the module documentation of `crates/worktree-sdk/src/repo/mod.rs` and the [`.wt/`](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt/DotWt.md) and [`.wt-tree/`](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/DotWtTree.md) specifications; this page summarizes them.
 
 <Callout type="info">
-  The layout is managed by `worktree_sdk::Repository`. Use `wt` or the [SDK](/docs/sdk/repository) rather than editing files under `.wt/` by hand. The format may change before 1.0.
+  The layout is managed by `worktree_sdk::Repository`. Use `wt` or the [SDK](/docs/sdk/repository) rather than editing files under `.wt/trees/` by hand. Configuration, ignore, hook and access files are meant to be edited. The format may change before 1.0.
 </Callout>
 
 ## The `.wt/` directory
@@ -16,8 +16,8 @@ Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the 
 ```text
 .wt/
   config.toml                 WorktreeConfig
-  ignore                      extra ignore patterns (one per line)
-  objects/<hh>/<62 hex>       blobs + manifests (ObjectStore)
+  ignore                      worktree-wide ignore patterns
+  objects/<hh>/<62 hex>       blobs, manifests, chunk lists (ObjectStore)
   snapshots/<id>.json         Snapshot records
   trees/<tree>/tree.toml      TreeInfo (name, id, path, default branch, remote name)
   trees/<tree>/HEAD           current branch name
@@ -27,26 +27,41 @@ Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the 
   trees/<tree>/refs/tags/<tag>.json          TagInfo
   trees/<tree>/index.json     stat cache: path -> (size, mtime_ns, hash)
   trees/<tree>/reflog.jsonl   ReflogEntry per line (append-only)
+  trees/<tree>/shallow        boundary snapshot ids of a shallow history
+  trees/<tree>/stubbed        paths whose content the server withheld
   trees/<tree>/MERGE_STATE.json
+  trees/<tree>/LOCK           OS lock held by mutating operations
   conflicts/<tree>.json       machine-readable conflict list during a merge
+  hooks/<phase>               worktree-wide snapshot hooks
+  access/roles.toml           declarative custom roles (tenant scope)
+  access/policies.toml        declarative policies (tenant scope)
+  git-map.json                snapshot id <-> Git commit sha (after wt git import/export)
 ```
 
 | Path | Contents |
 |---|---|
-| `config.toml` | Worktree configuration (`WorktreeConfig`, see below). |
-| `ignore` | Extra ignore patterns for the whole worktree, one per line. `wt ignore add` appends here. |
-| `objects/` | The content-addressed object store: blobs and manifests, stored raw at `objects/<hh>/<62 hex>`. Shared by all trees of the worktree. See [Object model](/docs/protocol/object-model). |
+| `config.toml` | Worktree configuration (`WorktreeConfig`, see below). Hand-editable; unknown keys are preserved when `wt` rewrites it. |
+| `ignore` | Ignore patterns for the whole worktree. `wt ignore add` appends here; `wt git import` copies the Git repository's root `.gitignore` patterns here. Not shared: put team rules in a tracked `.wtignore`. |
+| `objects/` | The content-addressed object store: blobs, manifests and chunk lists, stored raw at `objects/<hh>/<62 hex>`. Shared by all trees of the worktree and never deleted locally. See [Object model](/docs/protocol/object-model). |
 | `snapshots/<id>.json` | One JSON `Snapshot` record per snapshot, named by its UUID. Shared by all trees. |
 | `trees/<tree>/tree.toml` | `TreeInfo` for one tree: name, id, path relative to the root (empty for the root tree), default branch, and server-side (remote) name. |
 | `trees/<tree>/HEAD` | Name of the tree's current branch. |
 | `trees/<tree>/refs/branches/<branch>` | The branch tip's snapshot id, or empty for a branch with no snapshots yet. Branch names may contain `/` (for example `feature/login`). |
-| `trees/<tree>/refs/branches.meta.json` | Per-branch metadata: creation time and the `archived` flag. Archiving a branch sets the flag; the ref and its history stay. |
-| `trees/<tree>/refs/remotes/<remote>/<branch>` | Last known server tip of `<branch>` on `<remote>`, updated by push, fetch, and pull. Revisions like `origin/main` resolve here. |
+| `trees/<tree>/refs/branches.meta.json` | Per-branch metadata: creation time and the `archived` flag. |
+| `trees/<tree>/refs/remotes/<remote>/<branch>` | Last known server tip of `<branch>` on `<remote>`, updated by push, fetch, pull and the daemon's background fetch. Revisions like `origin/main` resolve here. |
 | `trees/<tree>/refs/tags/<tag>.json` | One `TagInfo` per tag: name, target snapshot, optional message, tagger, creation time. |
-| `trees/<tree>/index.json` | Stat cache mapping each tracked path to its size, modification time (ns), and hash, so `wt status` can skip rehashing unchanged files. Safe to delete; it is rebuilt. |
+| `trees/<tree>/index.json` | Stat cache so `wt status` can skip rehashing unchanged files. Safe to delete; it is rebuilt. |
 | `trees/<tree>/reflog.jsonl` | Append-only log of every ref change, one JSON `ReflogEntry` per line. See below. |
+| `trees/<tree>/shallow` | Present after a shallow clone or fetch: the boundary snapshot ids. See [Shallow sync](/docs/protocol/large-files#shallow-sync). |
+| `trees/<tree>/stubbed` | Paths the server withheld (license or path policy); they are not checked out. See [Restricted paths](/docs/protocol/large-files#restricted-paths). |
 | `trees/<tree>/MERGE_STATE.json` | Present only while a conflicted merge awaits resolution. See [Merge and diff](/docs/protocol/merge-and-diff#merge-state). |
-| `conflicts/<tree>.json` | Machine-readable conflict list (each entry has `path` and `kind`) during a conflicted merge, for editors and scripts. |
+| `trees/<tree>/LOCK` | OS advisory lock taken by every mutating operation, so the CLI and the daemon never interleave writes to one tree. Released when the process exits; stale files are removed by the daemon's maintenance pass. |
+| `conflicts/<tree>.json` | Machine-readable conflict list (`path`, `kind`, `hunks`) during a conflicted merge, for editors and scripts. |
+| `hooks/<phase>` | Worktree-wide `pre-snapshot` / `post-snapshot` executables. See [Hooks](/docs/cli/configuration#hooks). |
+| `access/*.toml` | Declarative roles and policies applied with `wt access apply`. See [Declarative access](/docs/server/declarative-access). |
+| `git-map.json` | Mapping between snapshot ids and Git commit SHAs, written by the Git bridge so repeated imports and exports are incremental. |
+
+`hooks/`, `access/`, `conflicts/` and the per-tree `shallow` and `stubbed` files are created only when used. Nothing under `.wt/` is ever part of a snapshot, so its contents are not shared by `wt push` or `wt clone`.
 
 ### Reflog entries
 
@@ -56,11 +71,11 @@ Each line of `reflog.jsonl` is a `ReflogEntry`:
 |---|---|
 | `at` | Timestamp (UTC). |
 | `tree`, `branch` | Tree and branch affected. |
-| `action` | One of `init`, `snapshot`, `auto-snapshot`, `switch`, `branch.create`, `branch.archive`, `merge`, `fast-forward`, `revert`, `restore`, `pull`, `push`, `tag.create`, `tag.delete`. |
+| `action` | `init`, `snapshot`, `auto-snapshot`, `switch`, `branch.create`, `branch.archive`, `branch.restore`, `merge`, `fast-forward`, `revert`, `restore`, `pull`, `push`, `tag.create`, `tag.delete`, or `import` (Git import). |
 | `old`, `new` | Snapshot ids before and after (either may be null). |
 | `message` | Human-readable description. |
 
-The file is only ever appended to; `wt reflog` shows it newest first. See [Reflog and recovery](/guides/reflog-and-recovery).
+`wt reflog` shows the entries newest first and `@{N}` / `BRANCH@{N}` revisions read them. Lines that do not parse (a torn last write) are skipped. Retention is 90 days and 1,000 entries per tree by default, applied by [`wt reflog expire`](/docs/cli/snapshots#wt-reflog) and by the daemon every 6 hours. See [Reflog and recovery](/guides/reflog-and-recovery).
 
 ## `config.toml`
 
@@ -69,46 +84,96 @@ The file is only ever appended to; `wt reflog` shows it newest first. See [Reflo
 ```toml
 [worktree]
 name = "my-project"            # worktree and root tree name
-id = "4f9c2a1e-..."            # UUID, generated by init
-created_at = "..."
+id = "4f9c2a1e-..."            # UUID, generated by init (read-only)
+created_at = "..."             # read-only
 default_branch = "main"
 
 [user]
 name = "Ada Lovelace"          # snapshot author: "name <email>"
 email = "ada@example.com"
 
-[auto_snapshot]
-enabled = true                 # daemon auto-snapshots
-inactivity_secs = 30           # snapshot after this many quiet seconds
-max_changed_files = 50         # or immediately once this many files changed
+[auto_snapshot]                # used by the daemon
+enabled = true
+inactivity_secs = 30           # alias: inactivity_timeout_secs
+max_changed_files = 50         # 0 = no limit
+max_changed_bytes = "50MB"     # 0 or absent = no limit
+message_format = "auto: {count} files changed"
+on_branch_switch = "refuse"    # snapshot | stash | refuse
 
 [sync]
 auto_stage = true              # daemon uploads auto-snapshots as staged WIP
-remote = "origin"              # remote the daemon uses
+remote = "origin"              # default remote for the daemon, push, fetch, pull, stage
+auto_fetch = true              # daemon keeps remote-tracking branches fresh
+interval_secs = 300            # fallback periodic fetch
 
 [remote.origin]
-url = "http://localhost:7420"  # server base URL (gRPC + REST)
+url = "http://localhost:7420"  # server base URL (gRPC + REST), http:// or https://
 tenant = "ada"                 # tenant slug on that server
+
+[secret_scanning]
+enabled = true
+block_on_match = true          # false = warn only
+patterns = [{ name = "internal-token", regex = "itk_[A-Za-z0-9]{32}" }]
+exclude = ["tests/fixtures/**"]
+
+[hooks]
+enabled = true
+timeout_secs = 60
+
+[signing]
+key = "laptop"                 # key name under $WT_HOME/keys/ ("" = no signing)
+auto = false                   # sign every snapshot (else only wt snapshot --sign)
+
+[git_remote.github]            # Git remotes for wt git push
+url = "https://example.com/acme/web.git"
 ```
 
 | Section | Fields | Defaults |
 |---|---|---|
 | `[worktree]` | `name`, `id`, `created_at`, `default_branch` | `default_branch = "main"` |
-| `[user]` | `name`, `email` | empty |
-| `[auto_snapshot]` | `enabled`, `inactivity_secs`, `max_changed_files` | `true`, `30`, `50` |
-| `[sync]` | `auto_stage`, `remote` | `true`, `"origin"` |
+| `[user]` | `name`, `email` | empty (author falls back to the OS user) |
+| `[auto_snapshot]` | `enabled`, `inactivity_secs`, `max_changed_files`, `max_changed_bytes`, `message_format`, `on_branch_switch` | `true`, `30`, `50`, `0`, `auto: {count} files changed`, `refuse` |
+| `[sync]` | `auto_stage`, `remote`, `auto_fetch`, `interval_secs` | `true`, `"origin"`, `true`, `300` |
 | `[remote.<name>]` | `url`, `tenant` | none; one table per named remote |
+| `[secret_scanning]` | `enabled`, `block_on_match`, `patterns`, `exclude` | `true`, `true`, none, none |
+| `[hooks]` | `enabled`, `timeout_secs` | `true`, `60` |
+| `[signing]` | `key`, `auto` | `""`, `false` |
+| `[git_remote.<name>]` | `url` | none |
 
-Every field is addressable as a dotted key (`user.name`, `remote.origin.url`, ...) through [`wt config`](/docs/cli/repository#wt-config) and `WorktreeConfig::get` / `set` / `entries`. There is no global configuration file; configuration is per worktree. See [Config model](/guides/config-model).
+`[secret_scanning]`, `[hooks]`, `[signing]` and `[git_remote.*]` are omitted from the file while they hold their defaults.
+
+### Configuration layers
+
+Configuration is layered, lowest precedence first:
+
+| Layer | File | Sections read |
+|---|---|---|
+| User | `$WT_HOME/config.toml` | `[user]`, `[signing]`, `[secret_scanning]` |
+| Worktree | `.wt/config.toml` | everything above |
+| Tree | `<tree>/.wt-tree/config.toml` | `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` |
+
+A higher layer replaces a key of a lower layer, except `secret_scanning.patterns` and `secret_scanning.exclude`, which accumulate across layers. Keys a layer may not set are ignored there (and left in the file). Inspect and edit with `wt config get KEY --show-origin`, `wt config set KEY VALUE --global` and `wt --tree NAME config set KEY VALUE`. See [Local configuration](/docs/cli/configuration) and [`wt config`](/docs/cli/repository#wt-config).
 
 ## Nested trees: `.wt-tree/`
 
-A worktree always has a root tree (created by `wt init`). Additional **nested trees** are directories that contain a `.wt-tree/` marker directory; `wt tree add NAME PATH` registers one and writes `PATH/.wt-tree/config.toml`. Each tree also has its own `trees/<tree>/` directory under the root `.wt/`.
+A worktree always has a root tree (created by `wt init`). Additional **nested trees** are directories that contain a `.wt-tree/` marker; `wt tree add NAME PATH` registers one and writes `PATH/.wt-tree/config.toml`. The registry is `.wt/trees/<tree>/tree.toml`: copying a directory that contains a `.wt-tree/` into a worktree does not register it.
 
-- A tree's snapshots exclude the paths of trees nested inside it, so each file belongs to exactly one tree.
-- `.wt-tree/` markers themselves are never snapshotted.
+```text
+services/auth/
+  .wt-tree/
+    config.toml          name, id, and [auto_snapshot] / [secret_scanning] / [hooks] overrides
+    ignore               tree-level ignore patterns (additive)
+    hooks/pre-snapshot   tree hooks (also .cmd/.bat/.ps1 on Windows)
+    hooks/post-snapshot
+    access/policies.toml tree-scope policies, deny statements only
+  .wtignore              tracked ignore file (shared with the team)
+```
+
+- `wt tree add` creates only `config.toml`; `wt tree init-config` scaffolds `ignore`, `hooks/` and `access/`, keeping existing files. `wt tree validate` checks the marker, that config and ignore files parse, and that there is no nested `.wt/`.
+- The marker's `id` is rewritten to the server tree id on first push, fetch or clone.
+- A tree's snapshots exclude the paths of trees nested inside it, so each file belongs to exactly one tree. `.wt-tree/` itself is never snapshotted, so its contents are local to the worktree.
 - When no tree is named, commands act on the deepest tree whose directory contains the current path, falling back to the root tree (`Repository::tree_for_path`).
-- Removing a nested tree unregisters it and keeps its files. The root tree cannot be removed.
+- Removing a nested tree deletes its marker and registry entry and keeps its files, which fall back to the enclosing tree. The root tree cannot be removed.
 
 See [Nested trees](/guides/nested-trees).
 
@@ -118,45 +183,47 @@ See [Nested trees](/guides/nested-trees).
 
 | File | Written by | Contents |
 |---|---|---|
-| `credentials.toml` | `wt login`, `wt register`, `wt logout` | One entry per normalized server URL (no trailing slash), each with `username` and `token`. |
-| `bg.json` | `worktree-bg` | `{"pid": u32, "port": u16, "version": "..."}`. Written on startup, removed on clean shutdown. The CLI uses it to find the daemon. |
+| `credentials.toml` | `wt login`, `wt register`, `wt logout` | One entry per normalized server URL (no trailing slash), each with `username` and `token`. Mode 0600 on Unix. |
+| `config.toml` | `wt config set --global`, user | User-level `[user]`, `[signing]`, `[secret_scanning]`. |
+| `keys/<name>.key`, `keys/<name>.pub` | `wt identity generate`, `wt identity register` | Ed25519 signing keys (hex seed, mode 0600) and the public key with its registered key id. See [Snapshot signing](/docs/cli/signing). |
+| `bg.json` | `worktree-bg` | `{"pid", "port", "version", "token"}` of the running daemon. Removed on clean shutdown. |
 | `bg.toml` | `worktree-bg` | `watched = ["path", ...]`: watched worktree roots, persisted on watch / unwatch. |
-| `bg.log` | `worktree-bg` | Daemon log. |
+| `bg.log` | `worktree-bg` | Daemon log, rotated to `bg.log.old` above 10 MiB. |
+
+```toml
+# $WT_HOME/credentials.toml
+[servers."http://localhost:7420"]
+username = "ada"
+token = "wt_..."
+```
 
 <Callout type="warn">
-  `credentials.toml` holds bearer tokens. Keep `$WT_HOME` private to your user and never commit it. See [Security](/docs/security#local-credential-file).
+  `credentials.toml` holds bearer tokens and `keys/` holds private signing keys. Keep `$WT_HOME` private to your user and never commit it. See [Security](/docs/security#local-credential-file).
 </Callout>
 
 ## Ignore rules
 
-A path is never snapshotted if it matches an ignore pattern. Patterns are combined from three sources (`Repository::ignore_patterns`):
+A path is never snapshotted if it is ignored. Patterns use gitignore syntax and are matched with `/` separators on every platform. For a root-relative path the rules are evaluated in this order (`crates/worktree-sdk/src/repo/ignore_rules.rs`):
 
-1. **Built-ins**, always active:
+1. **Hard ignores**: `.wt/`, `.wt-tree/`, `.git/`. Always ignored, never re-includable.
+2. **Root rules**: `.wt/ignore`, then the root `.wtignore`. They are authoritative: a path they ignore stays ignored whatever deeper files say. Within them the last matching line wins, so `!pattern` works as usual.
+3. **Tree rules**: `<tree>/.wt-tree/ignore` of every tree containing the path. Additive only: they can ignore more, never re-include.
+4. **Nested `.wtignore` files**: the deepest file with a matching pattern decides, but they cannot re-include anything ignored by steps 1 to 3.
+5. **Soft defaults**, applied unless the root rules re-include the path with `!pattern`:
 
    ```text
-   .wt/
-   .wt-tree/
-   .git/
-   target/
-   node_modules/
-   .DS_Store
-   *.swp
+   node_modules/  target/  __pycache__/  .DS_Store  Thumbs.db  *.pyc  *.pyo
+   *.swp  *.swo  *~  .env  .venv/  dist/  build/  *.log
    ```
-
-2. **`.wt/ignore`**, local to the worktree (`wt ignore add` appends here; `wt git import` converts `.gitignore` into it).
-3. **`.wtignore`** files in the working directory.
-
-Patterns use gitignore-style syntax, implemented by `worktree_protocol::feature::ignore`:
 
 | Syntax | Meaning |
 |---|---|
 | blank line, `# comment` | Ignored. |
 | `name` (no `/`) | Matches a file or directory name at any depth, e.g. `*.log`. |
 | `dir/` | Trailing `/`: matches directories only. |
-| `a/b` (contains `/`) | Anchored: matched against the full `/`-separated path. |
-| `*` | Any run of characters within one path segment. |
+| `a/b` (contains `/`) | Anchored: matched against the path relative to the ignore file's directory. |
+| `*`, `?` | Any run of characters / one character within one path segment. |
 | `**` | Zero or more path segments, e.g. `**/build`. |
-| `?` | One character other than `/`. |
-| `!pattern` | Negation: re-includes a path excluded by an earlier pattern. |
+| `!pattern` | Negation: re-includes a path excluded by an earlier pattern (subject to the order above). |
 
-Paths are always matched with `/` separators, also on Windows. Check a path with [`wt ignore check`](/docs/cli/repository#wt-ignore) or `Repository::is_ignored`. See [Ignore patterns](/guides/ignore-patterns).
+Invalid lines are skipped with a warning. Inspect the result with `wt ignore list --sources` and test a path with [`wt ignore check`](/docs/cli/repository#wt-ignore). See [Ignore rules](/docs/cli/configuration#ignore-rules) and [Ignore patterns](/guides/ignore-patterns).

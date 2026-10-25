@@ -10,9 +10,11 @@
     "events",
     "---Features---",
     "access-control",
+    "declarative-access",
     "branch-protection",
     "licensing",
     "---Operations---",
+    "operations",
     "storage",
     "monitoring",
     "deployment"

@@ -1,0 +1,172 @@
+---
+title: Administration
+description: Manage tenants and their members, server trees, license rules, search, live events, server administration (accounts, garbage collection, quotas) and the audit log from the wt CLI.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+These commands talk to the server's REST API. They accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. A `TREE` argument is written `tenant/tree`; inside a worktree it defaults to the origin tenant plus the current tree's remote name. Destructive commands ask for confirmation and require `--yes` when stdin is not a terminal. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#collaboration).
+
+## `wt tenant`
+
+```text
+wt tenant list
+wt tenant create [--name <N>] <SLUG>
+wt tenant show <TENANT>
+wt tenant rename <TENANT> <NAME>
+wt tenant plan <TENANT> <free|pro|enterprise>
+wt tenant members <TENANT>
+wt tenant add-member [--role <R>] <TENANT> <USERNAME>
+wt tenant set-role <TENANT> <USERNAME> <ROLE>
+wt tenant remove-member <TENANT> <USERNAME>
+wt tenant suspend [--reason <TEXT>] <TENANT>
+wt tenant resume <TENANT>
+wt tenant deactivate [--reason <TEXT>] <TENANT>
+```
+
+- `create` makes an organization tenant with you as `owner`. Every account also has a personal tenant whose slug is its username.
+- `add-member` defaults to `--role developer`; roles are the built-in ones or a [custom role](/docs/cli/iam#wt-role). Only owners can assign `owner`, and removing or demoting the last owner fails (`409 last_owner`). [`wt invite`](/docs/cli/iam#wt-invite) onboards people by code instead.
+- `plan` sets a label (`free`, `pro`, `enterprise`); it changes no limits. Server admins only.
+- **Status** (server admins only): `suspend` makes the tenant read-only (every write is refused with the reason, reads still work) and revokes nothing; `deactivate` refuses all access; `resume` lifts either. `--reason` is shown to members whose requests are refused. Server admins are never affected.
+
+```bash
+wt tenant create acme --name "Acme Corp"
+wt tenant add-member acme bob --role maintainer
+wt tenant suspend acme --reason "Invoice overdue"
+```
+
+## `wt trees`
+
+Server-side trees. Local nested trees are managed with [`wt tree`](/docs/cli/repository#wt-tree).
+
+| Command | Usage |
+|---|---|
+| `list` | `wt trees list [--tenant <T>]` (default: the origin tenant, else every tenant you can see) |
+| `create` | `wt trees create [--description <D>] [--visibility <private\|internal\|public>] [--default-branch <B>] <T/NAME>` |
+| `show` | `wt trees show [TREE]` (counters: branches, snapshots, staged, open merge requests) |
+| `update` | `wt trees update [--description <D>] [--visibility <V>] [--default-branch <B>] [TREE]` |
+| `delete` | `wt trees delete [--yes] <TREE>` (deletes the tree and everything in it) |
+| `branches` | `wt trees branches [TREE]` |
+| `branch-create` | `wt trees branch-create [--from <REV>] <TREE> <NAME>` (default start: the default branch tip) |
+| `branch-delete` | `wt trees branch-delete [--yes] <TREE> <NAME>` (refused for the default branch and `no_delete` rules) |
+| `tags` | `wt trees tags [TREE]` |
+| `tag-create` | `wt trees tag-create [-m <MSG>] --target <REV> <TREE> <NAME>` |
+| `tag-delete` | `wt trees tag-delete [--yes] <TREE> <NAME>` (needs `tree:admin`; honours tag protection) |
+| `log` | `wt trees log [--branch <B>] [-n <N>] [TREE]` (newest first, server default 50) |
+| `compare` | `wt trees compare [--from <REV>] --to <REV> [--stat] [--patch] [TREE]` (default base: first parent of `--to`) |
+| `stats` | `wt trees stats [--days <N>] [TREE]` (contributors, activity and languages; 1 to 365 days, default 30) |
+| `file-log` | `wt trees file-log <TREE> <PATH>` (snapshots that changed a file) |
+| `staged` | `wt trees staged [TREE]` (the team's staged work in progress) |
+
+```bash
+wt trees create acme/payments --visibility internal --description "Payment service"
+wt trees compare acme/payments --from v1.3.0 --to main --stat
+wt trees branch-delete acme/payments feature/old --yes
+```
+
+A server branch deletion is a hard delete; snapshots that become unreachable are removed by [garbage collection](/docs/server/operations#garbage-collection) after the grace period. Content of paths you may not read is omitted from `compare`, `file-log` and listings.
+
+## `wt license`
+
+Per-path SPDX license rules of a server tree, enforced for principals outside the owning tenant. Semantics: [License rules](/docs/server/licensing).
+
+```text
+wt license list [TREE]
+wt license set [--grant <GRANT>] [--grantee <TENANT>] [--expires <WHEN>] [TREE] <GLOB> <SPDX>
+wt license remove [--yes] [TREE] <GLOB>
+wt license detect [--apply] [--grant <GRANT>] [--yes] [PATH]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--grant` | `read-only` (default), `modify`, `redistribute`, or `license-default`: no explicit grant, so permissive licenses allow everything and proprietary ones (`Proprietary`, `LicenseRef-*proprietary*`) nothing. |
+| `--grantee` | Apply the rule only to this tenant. Default: every tenant that does not own the tree. |
+| `--expires` | Stop applying the rule after this time: RFC 3339, or `YYYY-MM-DD` meaning the end of that day in UTC. |
+
+```bash
+wt license set "billing/**" Proprietary --grant license-default
+wt license set billing Proprietary --grant modify --grantee partner --expires 2026-12-31
+wt license detect
+wt license detect --apply --yes
+```
+
+`detect` scans the tree's files: a `LICENSE`, `LICENCE` or `COPYING` file proposes a rule for its directory (several in one directory combine with `OR`), and a file whose `SPDX-License-Identifier` header differs proposes a rule for that file. `--apply` creates the proposed rules on the server, skipping ones that exist. Requires `tree:admin` to change rules.
+
+## `wt search`
+
+```text
+wt search [-n <N>] <QUERY>
+```
+
+Case-insensitive substring search over tenants, trees, branches and accounts, limited to what you can read (accounts are searched for server admins only). `-n` caps hits per kind (server default 20).
+
+## `wt events`
+
+```text
+wt events [--tenant <T>] [--tree <TREE>] [--type <TYPE>]...
+```
+
+Streams live server events until Ctrl-C. With `--json` each event is printed as one JSON object per line. Without filters, server admins see every event and others the events of their tenants.
+
+```bash
+wt events --tree acme/payments --type branch.pushed --type mr.merged --json
+```
+
+Event types and payloads: [Events](/docs/server/events).
+
+## `wt admin`
+
+Server administration; every subcommand except `usage` requires a server admin.
+
+```text
+wt admin accounts
+wt admin account-create [--admin] [--password-stdin] --email <EMAIL> <USERNAME>
+wt admin account-set [--admin <BOOL>] [--disabled <BOOL>] <USERNAME>
+wt admin password [--password-stdin] <USERNAME>
+wt admin reset-code [--ttl-hours <N>] <USERNAME>
+wt admin system
+wt admin stats
+wt admin gc [--dry-run]
+wt admin gc-status
+wt admin limits [--max-trees <N>] [--max-storage <SIZE>] [--max-branches <N>] [--max-members <N>] [--rate <N>] [--clear] <TENANT>
+wt admin usage <TENANT>
+```
+
+| Command | Notes |
+|---|---|
+| `account-create` | Bypasses the registration setting. |
+| `account-set` | Grant or revoke server admin, disable or re-enable an account. Takes effect on the next request. |
+| `password` | Sets a password and revokes all of the account's tokens. |
+| `reset-code` | One-time `wtr_...` code (server default 1 hour) the user redeems with [`wt password-reset`](/docs/cli/remote#wt-password-reset). |
+| `system`, `stats` | Version, runtime and storage information; object counts. |
+| `gc` | Runs garbage collection now: marks unreachable objects, deletes those marked longer than the grace period, expires staged snapshots and audit events. `--dry-run` only reports. |
+| `gc-status` | GC configuration and the last runs. |
+| `limits` | Without flags, shows the tenant's limits. Flags set tenant-specific limits; `0` unsets one and `--clear` removes them all (back to the server defaults). Sizes accept `500M`, `10GiB` or `1TB` (`K/M/G/T` and `KiB`..`TiB` are powers of 1024, `KB`..`TB` powers of 1000). `--rate` is requests per minute per principal. |
+| `usage` | Trees, branches, members and stored bytes against the effective limits. Needs only `tenant:read`. |
+
+```bash
+wt admin gc --dry-run
+wt admin limits acme --max-trees 50 --max-storage 20GiB --rate 600
+wt admin usage acme
+```
+
+Garbage collection, quotas and rate limits are described in [Operations](/docs/server/operations).
+
+## `wt audit`
+
+```text
+wt audit [--tenant <T>] [--action <A>] [--resource-type <T>] [--resource-id <ID>] [--since <RFC3339>] [--until <RFC3339>] [-n <N>] [--format <table|ndjson>]
+```
+
+- Tenant admins see their tenants; server admins see everything when no tenant is given.
+- `--action` takes an exact action (`branch.push`) or a prefix ending in `.*` (`iam.*`, `license.*`).
+- `--until` is exclusive. `-n` defaults to 100 on the server.
+- `--format ndjson` exports **every** matching event as one JSON object per line, with no limit, for a SIEM or archive.
+
+```bash
+wt audit --tenant acme --action 'policy.*' --since 2026-10-01T00:00:00Z
+wt audit --action access.denied -n 20
+wt audit --tenant acme --format ndjson > acme-audit.ndjson
+```
+
+Retention, export and the list of actions: [Monitoring](/docs/server/monitoring#audit-log).

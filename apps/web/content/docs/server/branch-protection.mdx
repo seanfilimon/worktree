@@ -1,27 +1,33 @@
 ---
 title: Branch Protection and Merge Requests
-description: Protect branches with glob-matched rules and move protected branches forward through approved, fast-forward merge requests.
+description: Protect branches and tags with glob-matched rules, and move protected branches forward through reviewed, CI-checked, fast-forward merge requests.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
-Branch protection rules restrict how branches matching a pattern may change. Merge requests are the path for changing a branch that does not accept direct pushes. Both are managed through the [REST API](/docs/server/rest-api#protections) and the admin panel; there are no `wt` subcommands for them in v0.2.0.
+Branch protection rules restrict how branches matching a pattern may change; tag protection rules do the same for tags. Merge requests are the path for changing a branch that does not accept direct pushes. Everything here is enforced on the server, for everyone, server admins included; there is no bypass permission.
+
+Manage rules with [`wt protect`](/docs/cli/merge-requests#wt-protect), merge requests with [`wt mr`](/docs/cli/merge-requests#wt-mr) and CI results with [`wt ci`](/docs/cli/merge-requests#wt-ci), or use the [REST API](/docs/server/rest-api#protections) and the admin panel. Rule changes need `tree:admin`.
 
 ## Protection rules
 
 A rule belongs to one tree and is keyed by its `pattern`.
 
-| Field | Type | Meaning |
-|---|---|---|
-| `tree_id` | string | Set by the server. |
-| `pattern` | string | Branch name glob. Matches with Go `path.Match` semantics: `*` matches any run of characters except `/`, `?` matches one character, `[...]` is a character class. |
-| `no_direct_push` | bool | Reject every direct push to matching branches. The branch only moves when a merge request is merged. |
-| `required_approvals` | int | Number of approvals a merge request needs before it can be merged into a matching branch. `0` means none. |
-| `allowed_pushers` | string array | Usernames allowed to push to matching branches. Empty means role-based only: anyone with `tree:write` may push. |
-| `no_delete` | bool | Reject deletion of matching branches. |
+| Field | Type | `wt protect set` flag | Meaning |
+|---|---|---|---|
+| `pattern` | string | `PATTERN` | Branch name glob, Go `path.Match` semantics: `*` matches any run except `/`, `?` one character, `[...]` a class. |
+| `no_direct_push` | bool | `--no-direct-push` | Reject every direct push; the branch moves only when a merge request is merged. |
+| `required_approvals` | int | `--approvals N` | Current approvals a merge request needs. `0` means none. |
+| `allowed_pushers` | string array | `--pusher U` (repeatable) | Usernames allowed to push. Empty: anyone with `tree:write`. |
+| `no_delete` | bool | `--no-delete` | Matching branches cannot be deleted. |
+| `require_ci_pass` | bool | `--require-ci` | Merges need passing CI on the source tip. |
+| `required_checks` | string array | `--check NAME` (repeatable, implies `--require-ci`) | CI contexts that must be `success`. Empty with `require_ci_pass`: every reported check must succeed. |
+| `require_signed` | bool | `--require-signed` | Every pushed snapshot must carry a verified signature. See [signing](/docs/cli/signing). |
+| `require_linear` | bool | `--require-linear` | No merge snapshots: direct pushes must be linear and merged sources must fast-forward without merges. |
+| `block_on_todos` | bool | `--block-on-todos` | Open blocking TODOs that target the source branch block merging. See [TODOs](/docs/cli/dependencies#wt-todo). |
 
-Every rule whose pattern matches a branch applies to it. Branch listings report `protected: true` for branches that at least one rule matches.
+Every rule whose pattern matches a branch applies to it; matching rules combine into their most restrictive form. Branch listings report `protected: true` for branches that at least one rule matches.
 
 ### Pattern examples
 
@@ -35,96 +41,154 @@ Every rule whose pattern matches a branch applies to it. Branch listings report 
 ### Creating a rule
 
 ```bash
-curl -s -X PUT http://localhost:7420/api/v1/trees/acme/payments/protections \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"pattern":"main","no_direct_push":true,"required_approvals":2,"allowed_pushers":[],"no_delete":true}'
+wt protect set acme/payments main --no-direct-push --approvals 2 --no-delete --check ci/build --check ci/test --require-signed
+wt protect set acme/payments 'release/*' --no-direct-push --approvals 1 --require-linear --block-on-todos
+wt protect list acme/payments
+wt protect remove acme/payments 'release/*'
 ```
 
-Requires `tree:admin`. Putting a rule with an existing pattern replaces it; `DELETE .../protections?pattern=main` removes it. See the [branch protection guide](/guides/branch-protection) for recommended setups.
+`wt protect set` creates or replaces the whole rule: flags you leave out are off. Inside a worktree the tree argument can be omitted. Over REST:
+
+```bash
+curl -s -X PUT http://localhost:7420/api/v1/trees/acme/payments/protections \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"pattern":"main","no_direct_push":true,"required_approvals":2,"allowed_pushers":[],"no_delete":true,"require_ci_pass":true,"required_checks":["ci/build"]}'
+```
+
+`DELETE .../protections?pattern=main` removes a rule. See the [branch protection guide](/guides/branch-protection) for recommended setups.
+
+## Tag protection
+
+Pushing an existing tag name is refused; only a `tree:admin` can replace a tag, with REST `POST {tree}/tags` and `"force": true`, or delete one. Tag protection rules restrict who may create tags and whether they may be deleted or replaced:
+
+| Field | `wt protect tag set` flag | Meaning |
+|---|---|---|
+| `pattern` | `PATTERN` | Tag name glob, for example `v*`. |
+| `no_delete` | `--no-delete` | Matching tags cannot be deleted. |
+| `no_move` | `--no-move` | Matching tags cannot be replaced (moved to another snapshot). |
+| `allowed_taggers` | `--tagger U` (repeatable) | Accounts allowed to create, move or delete matching tags. Empty: anyone with `tree:write`. |
+
+```bash
+wt protect tag set acme/payments 'v*' --no-delete --no-move --tagger release-bot
+wt protect tag list acme/payments
+```
+
+REST: `GET|PUT|DELETE {tree}/tag-protections` (`DELETE` takes `?pattern=`). Rules apply to `PushTag` from `wt push` and to REST tag creation and deletion.
 
 ## How pushes are checked
 
-On every push the server first checks `tree:write`, then runs the branch protection check for the target branch (`review.CheckPush`), then license rules, object completeness, and ancestry (see the [push flow](/docs/server#what-happens-on-a-push)). The protection check rejects the push when a matching rule:
+On every push the server checks `tree:write` and `branch:push` (policies can deny one branch), then branch protection, then snapshot records, objects, fast-forward, license rules and the push checks (see the [push flow](/docs/server#what-happens-on-a-push)). Protection rejects the push when a matching rule:
 
-- has `no_direct_push: true`, or
-- has a non-empty `allowed_pushers` list that does not contain the pusher's username.
+- has `no_direct_push`; or
+- has a non-empty `allowed_pushers` that does not contain the pusher; or
+- has `require_linear` and the push contains a merge snapshot; or
+- has `require_signed` and a new snapshot has no verified signature (an invalid signature is rejected on any branch).
 
-A rejected push returns a `branch_protection` rejection naming the rule, and `wt push` exits with an error. Nothing is written.
-
-Deleting a branch runs the equivalent check (`review.CheckDeleteBranch`), which rejects deletion when a matching rule has `no_delete: true`. Locally, branches are never hard-deleted; `wt branch archive` soft-deletes them (see [`wt branch`](/docs/cli/branches#wt-branch)).
+A rejected push changes nothing and `wt push` exits with an error naming the rule. Deleting a branch (`wt trees branch-delete`, REST `DELETE {tree}/branches/{name}`) is refused for the default branch and for branches with `no_delete`. Locally, `wt branch archive` only soft-deletes. See [`wt branch`](/docs/cli/branches#wt-branch).
 
 ## Merge requests
 
-A merge request asks the server to move `target_branch` to the tip of `source_branch`.
+A merge request asks the server to move `target_branch` to the tip of `source_branch`, within one tree.
 
 | State | Meaning |
 |---|---|
-| `open` | Created and awaiting approvals or merge. |
+| `open` | Created and awaiting reviews or merge. |
 | `merged` | The target was fast-forwarded. `merged_at` and `merged_snapshot` are set. |
 | `closed` | Closed without merging. |
 
-Numbers are per tree and start at 1. Each approval records `account_id`, `username`, and `at`.
+Numbers are per tree and start at 1.
 
 <Steps>
 <Step>
 
-### Push the source branch
+### Push the source branch and open
 
 ```bash
 wt switch -c feature/refunds
 wt snapshot -m "Add refund endpoint"
 wt push --branch feature/refunds
+wt mr create --source feature/refunds --target main --title "Add refund endpoint"
 ```
+
+Requires `mr:create`. Publishes `mr.opened`.
 
 </Step>
 <Step>
 
-### Open
+### Review
 
 ```bash
-curl -s -X POST http://localhost:7420/api/v1/trees/acme/payments/merge-requests \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"title":"Add refund endpoint","description":"","source_branch":"feature/refunds","target_branch":"main"}'
+wt mr show 4 --diff
+wt mr comment 4 -m "Handle partial refunds" --path src/refund.rs --line 42
+wt mr review 4 --request-changes -m "Needs a test"
+wt mr review 4 --approve
 ```
 
-Requires `mr:create`. Publishes `mr.opened`. The response contains the merge request `number`.
+An approval (`mr:approve`; authors cannot approve their own merge request) records the source tip it approved. **Approvals go stale** when the source branch moves and must be renewed. A `--request-changes` review from someone with `mr:approve` blocks merging until that reviewer approves the current tip. `--comment` reviews need only `tree:read`.
 
 </Step>
 <Step>
 
-### Approve
+### Report CI
+
+CI systems report results per snapshot and context, using a token with `ci:report` (for example a service-account key scoped to `ci:report`):
 
 ```bash
-curl -s -X POST http://localhost:7420/api/v1/trees/acme/payments/merge-requests/4/approve \
-  -H "Authorization: Bearer $REVIEWER_TOKEN"
+wt ci report --snapshot feature/refunds --context ci/build --state success --url https://ci.example.com/runs/812 acme/payments
+wt ci status --branch feature/refunds acme/payments
 ```
 
-Requires `mr:approve`. Publishes `mr.approved`.
+The combined state is `failure` if any check failed or errored, else `pending` if any is pending, else `success`. A newer report for the same snapshot and context replaces the old one.
 
 </Step>
 <Step>
 
-### Merge
+### Check and merge
 
 ```bash
-curl -s -X POST http://localhost:7420/api/v1/trees/acme/payments/merge-requests/4/merge \
-  -H "Authorization: Bearer $TOKEN"
+wt mr checks 4
+wt mr merge 4
 ```
 
-Requires `mr:merge`. The server:
+`wt mr checks` (`GET .../merge-requests/{n}/checks`) shows `mergeable` and the blockers:
 
-1. counts approvals against the `required_approvals` of every protection rule matching the target branch; too few fails with `review_required`;
-2. checks that the target tip is an ancestor of the source tip; if not, the merge fails with `409 conflict`;
-3. fast-forwards the target branch to the source tip (no new snapshot is created), sets the state to `merged`, and publishes `mr.merged`.
+```json
+{
+  "mergeable": false,
+  "blockers": [
+    {"kind": "approvals", "message": "1 of 2 required approvals (1 stale)"},
+    {"kind": "ci", "message": "required CI checks have not passed: missing ci/test"}
+  ],
+  "approvals": {"required": 2, "current": 1, "stale": 1},
+  "ci": {"state": "pending", "required": ["ci/build", "ci/test"], "missing": ["ci/test"]},
+  "todos": {"blocking_open": 0}
+}
+```
+
+Blocker kinds are `state`, `source`, `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `linear` and `diverged` (the target is not an ancestor of the source). The messages above are illustrative.
+
+A merge (`mr:merge`) enforces the same checks (required approvals, change requests, `require_ci_pass`, `block_on_todos`, `require_linear`, fast-forwardability), then moves the target to the source tip with compare-and-swap. No new snapshot is created. A refused merge answers `409 linked_group` for a linked-group member, `403 review_required` for missing approvals, `409 merge_blocked` (listing the blockers) for change requests, CI, blocking TODOs or non-linear history, and `409 conflict` when the only problem is a diverged target. Success publishes `mr.merged` and `branch.pushed`.
 
 </Step>
 </Steps>
 
-Close an open merge request without merging with `POST .../merge-requests/{n}/close`, which publishes `mr.closed`.
+Close an open merge request without merging with `wt mr close 4`, which publishes `mr.closed`.
+
+### Linked merge requests
+
+Changes that span trees can be merged together. Group merge requests of several trees, then merge them all or none:
+
+```bash
+wt mr link oauth acme/frontend#4 acme/backend#9
+wt mr groups
+wt mr merge-group <ID>
+```
+
+Creating a group needs `mr:merge` on every member tree. Every member must be mergeable; tips move in order and are rolled back on failure, and `group.merged` is published. Merging one member alone answers `409 linked_group`.
 
 ### Resolving a merge conflict
 
-The server only fast-forwards; it never creates merge snapshots itself. When the target branch has moved on since the source branch was created, bring the target into the source locally and push:
+The server only fast-forwards; it never creates merge snapshots. When the target has moved on, bring it into the source locally and push:
 
 ```bash
 wt pull --branch main
@@ -134,10 +198,8 @@ wt merge main -m "Merge main into feature/refunds"
 wt push --branch feature/refunds
 ```
 
-The source tip now descends from the target tip, so retrying the merge request fast-forwards. See [`wt merge`](/docs/cli/branches#wt-merge) and the [merge strategies guide](/guides/merge-strategies).
+The source tip now descends from the target, so the merge request can fast-forward. Pushing the source makes existing approvals stale, so reviewers approve again. With `require_linear`, the merged source must not contain merge snapshots. See [`wt merge`](/docs/cli/branches#wt-merge) and the [merge strategies guide](/guides/merge-strategies).
 
-## Not in v0.2.0
-
-<Callout type="warn" title="Roadmap">
-  CI gates and required status checks are not implemented. The protocol reserves a `ci_checks_failed` rejection, but the server never produces it in v0.2.0. Merge readiness depends only on approvals and fast-forwardability.
+<Callout type="info">
+  Server-side three-way merges, automatic source-branch deletion and force pushes are not built (see the [roadmap](/roadmap)). The wire protocol defines a `ci_checks_failed` push rejection, but CI gates apply to merges, not pushes.
 </Callout>

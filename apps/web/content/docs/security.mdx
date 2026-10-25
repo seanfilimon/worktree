@@ -1,102 +1,126 @@
 ---
 title: Security Model
-description: How W0rkTree v0.2.0 protects secrets, history, credentials, and server access, and which security features are still on the Roadmap.
+description: How W0rkTree protects secrets, history, credentials, server access and transport — secret scanning, append-only history, signing, IAM, license rules, TLS, rate limits and audit — and what is not built yet.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-This page summarizes the security properties of W0rkTree v0.2.0, from the local worktree to the server. Each section links to the detailed reference.
+This page summarizes the security properties of W0rkTree, from the local worktree to the server. Each section links to the detailed reference; the [Security specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/security/Security.md) is normative.
+
+| Boundary | Trust |
+|---|---|
+| CLI ↔ daemon | Same user on the same machine: loopback TCP plus a per-daemon random token. |
+| Client ↔ server | Every request authenticated with a bearer token; TLS when configured. The server never trusts client-side decisions. |
+| Server ↔ storage | Local disk owned by the server process; integrity from BLAKE3 content addressing. Not encrypted at rest. |
+| Server ↔ identity provider | OpenID Connect over HTTPS; ID tokens are verified. |
 
 ## Secret scanning before snapshots
 
-Every [`wt snapshot`](/docs/cli/snapshots#wt-snapshot) scans the files it adds or modifies for credentials before anything is written to history.
+Every [`wt snapshot`](/docs/cli/snapshots#wt-snapshot), and every daemon auto-snapshot, scans the files it adds or modifies for credentials before anything is written to history.
 
-- Rules detect common secret formats, for example `aws-access-key`, `github-token`, and `private-key`. Binary content is skipped.
-- If anything matches, the snapshot is **not** created. Each finding is reported with its rule, path, 1-based line number, and a **redacted** excerpt, so the secret itself is not echoed back in full.
-- A false positive on a specific line is suppressed by putting the marker `wt:allow-secret` on that same line (for example in a trailing comment).
-- `wt snapshot --no-scan` skips the scan for one snapshot. Use it deliberately.
-- Auto-snapshots taken by the daemon run the same scan. A finding blocks the auto-snapshot and is reported in the daemon's `last_error` (see [`wt daemon`](/docs/cli/daemon#wt-daemon)).
+- Built-in rules cover private-key blocks, AWS access and secret keys, GitHub, GitLab, Slack, Stripe, Google, npm, Anthropic and OpenAI tokens, JWTs and generic `secret = "..."` assignments. Matches must pass placeholder suppression, an entropy floor and a letter-and-digit check; binary files are skipped and only the first 8 KiB of each line is scanned.
+- A finding aborts the snapshot with the file, line, rule and a **redacted** excerpt.
+- Suppress a false positive with `wt:allow-secret` on the same line, or skip the scan for one snapshot with `wt snapshot --no-scan`.
+- `[secret_scanning]` (user, worktree or tree configuration) adds `patterns`, `exclude` globs, or turns blocking into a warning with `block_on_match = false`. See [Secret scanning](/docs/cli/configuration#secret-scanning).
 
-Scanning happens on the client, at snapshot time. Because nothing reaches the object store, nothing can be pushed or staged by mistake.
+Scanning happens on the client, so nothing reaches the object store, a staged snapshot or the server. There is no server-side scan of pushes (see the [roadmap](/roadmap)).
 
 ## Append-only history
 
-History in W0rkTree only grows.
-
-- **No rewriting locally.** [`wt revert`](/docs/cli/snapshots#wt-revert) creates a new snapshot that undoes an earlier one. Branches are archived (soft-deleted) and can be restored; they are never hard-deleted. Every ref change is appended to `.wt/trees/<tree>/reflog.jsonl`. See [Reflog and recovery](/guides/reflog-and-recovery).
+- **No rewriting locally.** [`wt revert`](/docs/cli/snapshots#wt-revert) creates a new snapshot that undoes an earlier one. Local branches are archived (soft-deleted) and can be restored. Every ref change is appended to `.wt/trees/<tree>/reflog.jsonl`. See [Reflog and recovery](/guides/reflog-and-recovery).
 - **Immutable server snapshots.** Once the server has stored a snapshot it is never modified.
-- **No force push.** A push is accepted only if the new tip descends from the server's current tip for that branch; otherwise it is rejected with a conflict and the client must pull and merge first. Branch tips move with a compare-and-swap, so concurrent pushes cannot overwrite each other. See [Sync protocol](/docs/protocol/sync-protocol#push-flow).
-- **Content addressing.** Every blob and manifest is identified by the BLAKE3-256 hash of its exact bytes. The server verifies the hash of every uploaded object and rejects mismatches. See [Object model](/docs/protocol/object-model).
+- **No force push.** A push is accepted only if the new tip descends from the server's current tip; branch tips move by compare-and-swap, so concurrent pushes cannot overwrite each other. Merge requests merge only by fast-forward. See [Sync protocol](/docs/protocol/sync-protocol#push-flow).
+- **Content addressing.** Every blob, manifest and chunk list is identified by the BLAKE3-256 hash of its exact bytes. The server verifies every uploaded object and refuses pushes that reference missing objects; the client verifies every object it downloads or reads. See [Object model](/docs/protocol/object-model).
 
-## Accounts, passwords, and tokens
+## Snapshot signing
+
+Snapshots can carry an Ed25519 signature. Keys are created with `wt identity generate` and kept in `$WT_HOME/keys/` (private seed mode 0600; it never leaves the machine). `[signing] key` selects the key and `[signing] auto = true` signs every snapshot; `wt snapshot --sign` signs one. Register the public key with `wt identity register`.
+
+On push, the server verifies every signed snapshot against a registered, unrevoked key and marks it `verified`; an invalid signature rejects the push and is audited as `snapshot.signature_invalid`. Branch protection with `--require-signed` requires every new snapshot on the branch to be verified. `wt identity verify` and `wt log --show-signature` check signatures locally. See [Snapshot signing](/docs/cli/signing).
+
+## Accounts, passwords and tokens
 
 | Item | How it is handled |
 |---|---|
-| Passwords | Hashed with **argon2id** on the server. The CLI never accepts a password as a flag: it reads stdin (`--password-stdin`), the `WT_PASSWORD` environment variable, or an interactive prompt. |
-| Session tokens | Issued by `wt login` / `POST /api/v1/auth/login` (and by registration). Default lifetime **30 days**. |
-| Personal API tokens | Created with `POST /api/v1/auth/tokens` (`name`, optional `ttl_hours`) or the admin panel's Settings page. No expiry when `ttl_hours` is omitted. The raw token is shown once. |
-| Storage on the server | Only the hex **SHA-256** of each token is stored, never the raw value. |
-| Revocation | `POST /api/v1/auth/logout` revokes the token used for the request; `DELETE /api/v1/auth/tokens/{id}` revokes a specific API token. `wt logout` removes the local credential. |
-| Presentation | `authorization: Bearer <token>` in gRPC metadata and `Authorization: Bearer <token>` on REST. |
+| Passwords | **argon2id** (RFC 9106 parameters, upgraded on login), 8 to 1024 bytes. The CLI never accepts a password as a flag: it reads stdin (`--password-stdin`), `WT_PASSWORD`, or an interactive prompt. Failed logins lock a (username, client IP) pair after 10 attempts in 5 minutes. |
+| Two-factor authentication | TOTP (RFC 6238) with 10 single-use recovery codes: `wt mfa enable`, then `wt login --mfa-code` (or `WT_MFA_CODE`, or the prompt). Policies can require MFA (`require_mfa`). |
+| Single sign-on | OpenID Connect with PKCE, state and nonce; RS256 or ES256 ID tokens; `link_by_email` is off by default because local emails are not verified. Configure with `wt sso set`. |
+| Tokens | `wt_` + 32 random bytes; only the SHA-256 hash is stored. Kinds: `session` (30 days), personal `api` tokens (`wt token create`, optional TTL) and service-account keys (`wt sa key-create`). All can be **scoped** to action patterns such as `tree:read` or `ci:report`. |
+| Sessions | `wt session list`, `wt session revoke`, `wt session revoke-others`, or `POST /api/v1/auth/logout` for the current one. `wt logout` only removes the local credential; the session stays valid until it expires or is revoked. |
+| One-time codes | Invitations (`wti_`, 7 days) and admin-issued password resets (`wtr_`, 1 hour; redeeming revokes every token of the account). |
+| Presentation | `Authorization: Bearer <token>` on REST and as gRPC metadata. GET requests may use `?access_token=` for `EventSource` clients. An invalid credential is rejected (`401`), never downgraded to anonymous. |
 
-Prefer a dedicated API token with a `ttl_hours` for CI and scripts over a personal session token, and revoke it when it is no longer needed. Server admins can disable accounts (`PATCH /api/v1/admin/accounts/{username}`), and public sign-up can be turned off with `--allow-registration=false`. See [Access control](/docs/server/access-control#tokens).
+Prefer a scoped, expiring API token or a service-account key for CI over a personal session. See [Access control](/docs/server/access-control#tokens) and [Access and identity commands](/docs/cli/iam).
 
 ## Local credential file
 
-`wt login` and `wt register` save one token per server URL in `$WT_HOME/credentials.toml` (`$WT_HOME` defaults to `~/.wt`, or `%USERPROFILE%\.wt` on Windows). The daemon reads the same file to auto-stage.
+`wt login` and `wt register` save one token per server URL in `$WT_HOME/credentials.toml` (`$WT_HOME` defaults to `~/.wt`, or `%USERPROFILE%\.wt` on Windows). The file is rewritten atomically and created with mode `0600` on Unix; on Windows it inherits your profile's ACLs. The daemon reads it to stage and fetch as you. `$WT_HOME/keys/` holds your signing keys.
 
 <Callout type="warn" title="Protect $WT_HOME">
-  `credentials.toml` contains bearer tokens in plain text. Keep `$WT_HOME` readable only by your user (for example `chmod 700 ~/.wt` and `chmod 600 ~/.wt/credentials.toml` on Unix; on Windows keep it inside your user profile, which is private by default). Never commit it, copy it into containers, or share it. Revoke the token on the server if the file is exposed.
+  `credentials.toml` contains bearer tokens and `keys/` contains private keys. Keep `$WT_HOME` readable only by your user (for example `chmod 700 ~/.wt` on Unix; on Windows keep it inside your user profile). Never commit it, copy it into containers, or share it. Revoke the session (`wt session revoke`) and keys (`wt identity revoke`) if it is exposed.
 </Callout>
 
 ## Authorization
 
-Access to the server is decided by tenant membership roles and tree visibility.
+Every request is authorized on the server by the IAM engine. In order:
 
-- **Roles**, most to least privileged: `owner` > `admin` > `maintainer` > `developer` > `viewer`. Each role includes the permissions of the roles below it.
-- **Actions** checked per request include `tree:read`, `tree:write` (push, stage, tag), `tree:admin` (protections, licenses, settings, delete), `tenant:admin` (members, settings), and `server:admin`.
-- **Visibility** widens read access only: `private` (tenant members), `internal` (any authenticated account), `public` (anonymous reads). Writing always requires a membership with a sufficient role.
-- **Anonymous** gRPC calls are allowed only for `Ping` and reads of public trees.
+1. Disabled accounts and service accounts are denied.
+2. Token scopes are checked (they bind server admins too).
+3. Server admins are allowed.
+4. Tenant status: a suspended tenant denies writes, a deactivated one denies everything.
+5. Roles are collected from the tenant membership, teams, tree grants (users, teams, service accounts, other tenants) and tree visibility.
+6. Enabled policies of the tenant apply: a matching **deny** overrides every allow, a matching allow grants the action. Denies never take `iam:*` or `tenant:admin` away from tenant owners, and a tenant always keeps one owner.
+7. Otherwise the request is denied.
 
-See [Access control](/docs/server/access-control) for the full action table.
+Policies can target a tenant, tree, branch or individual paths (`wt:path/acme/web/secrets/**`) with conditions on client IP ranges, MFA and time windows. Path denies stub files on pull, reject pushes that touch them, and answer `403 path_denied` on REST reads. `wt iam simulate` explains any decision. See [Access control](/docs/server/access-control) and [Declarative access](/docs/server/declarative-access).
 
 ## Branch protection and review
 
-Protection rules match branch names by glob (for example `main` or `release/*`) and can forbid direct pushes, require a number of approvals on merge requests, restrict pushes to named users, and forbid deleting the branch. Protected branches change only in ways the rule allows; a rejected push leaves the server unchanged. See [Branch protection](/docs/server/branch-protection).
+Protection rules match branch names by glob and apply to everyone, server admins included; there is no bypass permission. They can forbid direct pushes and deletion, restrict pushers, require approvals on the **current** source tip (approvals go stale when the source moves; a change request blocks until the same reviewer approves), require passing CI checks, signed snapshots, linear history, or no open blocking TODOs. Tag protections can forbid moving or deleting tags. See [Branch protection](/docs/server/branch-protection) and [Reviews, CI and merges](/docs/cli/merge-requests).
 
 ## License enforcement
 
-License rules attach an SPDX identifier and a grant (`read-only`, `modify`, `redistribute`) to path globs in a tree. On push, the server checks every changed path; a principal outside the owning tenant that changes a path it may not modify gets a `license_violation` rejection naming the path and license. See [License rules](/docs/server/licensing).
-
-## Audit log
-
-Security-relevant actions (for example `auth.login`, `tree.create`, `branch.push`) are written to an **append-only** audit log with the actor, action, resource, details, remote address, and time. Tenant admins can query their tenant's events and server admins can query all of them with `GET /api/v1/audit`. See the [REST API](/docs/server/rest-api).
+License rules attach an SPDX expression and a grant (`read-only`, `modify`, `redistribute`, or the license default) to path globs in a tree, optionally for one grantee tenant and until an expiry date. They restrict principals outside the owning tenant, in addition to IAM: unreadable paths are stubbed on pull and answer `451 license_restricted` on REST, unwritable paths reject pushes with `license_violation`, and exports omit non-redistributable paths and add a `LICENSES/NOTICE` file. See [License rules](/docs/server/licensing).
 
 ## Transport
 
-The server listens on **one port** (default `:7420`) and speaks gRPC and REST over **cleartext** HTTP/2 (h2c) and HTTP/1.1. TLS is not built in.
+The server listens on **one port** (default `:7420`) for gRPC and REST.
 
-<Callout type="error" title="Never expose port 7420 without TLS">
-  Bearer tokens and file contents travel in cleartext on the server port. For anything beyond `localhost`, put the server behind a reverse proxy that terminates TLS and forwards to the backend over HTTP/2 cleartext (h2c) so gRPC works, bind the server to a private interface, and use the proxy's `https://` URL as the remote URL. See [Deployment](/docs/server/deployment#reverse-proxy-and-tls).
+- Without TLS flags it speaks cleartext HTTP/1.1 and h2c, and logs a warning when the listen address is not loopback.
+- `--tls-cert` / `--tls-key` serve HTTPS and gRPC over TLS on the same port (ALPN `h2`); `--tls-client-ca` requires client certificates (mTLS). Clients use `https://` remote URLs.
+- Behind a reverse proxy, set `--trusted-proxies` so the client IP used by policies, rate limits and audit comes from `X-Forwarded-For`.
+
+<Callout type="error" title="Never expose a cleartext port">
+  Bearer tokens and file contents travel in cleartext without TLS. For anything beyond `localhost`, enable built-in TLS or terminate TLS at a reverse proxy in front of a loopback-bound server. See [Operations](/docs/server/operations#tls) and [Deployment](/docs/server/deployment).
 </Callout>
 
-The CLI talks to the local daemon over loopback TCP (`127.0.0.1`) only. See [Daemon IPC](/docs/sdk/ipc).
+REST JSON bodies are limited to 1 MiB (unknown fields rejected), gRPC messages and release assets to 64 MiB. Responses carry `X-Content-Type-Options: nosniff` and `X-Request-Id`; responses with secrets send `Cache-Control: no-store`.
+
+The CLI talks to the local daemon over loopback TCP with a per-daemon token from `$WT_HOME/bg.json`. See [Daemon IPC](/docs/sdk/ipc).
+
+## Rate limits and quotas
+
+Requests are rate-limited per principal (or per client IP for anonymous callers) with a token bucket: `--rate-limit` requests per minute (default 1,200), overridable per tenant; excess requests get `429 rate_limited` or gRPC `ResourceExhausted`. Tenant quotas cap trees, stored bytes, branches per tree and members. See [Rate limiting](/docs/server/operations#rate-limiting) and [Quotas](/docs/server/operations#quotas).
+
+## Audit log
+
+Security-relevant actions are written to an **append-only** audit log in `meta.db` with the actor, action, resource, details (secret-looking values redacted), remote address and time: sign-ins and failures, token and session changes, MFA, IAM changes, pushes and push rejections, license denials, invalid signatures, exports, and every REST `403` and gRPC `PermissionDenied` (`access.denied`). Query it with `wt audit` (filters by tenant, action or prefix such as `iam.*`, resource, time range) and export everything as NDJSON with `wt audit --format ndjson`. Retention is `--audit-retention` (default: keep forever). See [Monitoring](/docs/server/monitoring#audit-log).
 
 ## CORS
 
-Browser requests to the REST API are allowed from `http://localhost:5173` (the admin panel's Vite dev server) and from origins listed in `WT_CORS_ORIGINS`. The admin panel served by the server at `/admin/` is same-origin and needs no CORS entry. Add only origins you control. See [Configuration](/docs/server/configuration).
+Browser requests to the REST API are allowed from `http://localhost:5173` (the admin panel's Vite dev server) and from origins listed in `--cors-origins` / `WT_CORS_ORIGINS` (`*` allows any origin). The admin panel served by the server at `/admin/` is same-origin and needs no CORS entry. Add only origins you control. See [Configuration](/docs/server/configuration).
 
-## Roadmap
+## Not built yet
 
 <Callout type="warn" title="Roadmap">
-  The following are **not** part of v0.2.0:
+  The following are **not** built (see the [roadmap](/roadmap)):
 
-  - Snapshot signing and signature verification.
-  - Encryption at rest for the object store and metadata database (use disk-level encryption today).
-  - Built-in TLS and the QUIC transport (use a TLS-terminating reverse proxy today).
-  - OAuth / SSO sign-in.
-  - Rate limiting and plan quotas.
-  - Enforcement of declarative TOML access policies (RBAC/ABAC).
+  - Encryption at rest for the object store and metadata database (use disk-level encryption).
+  - The QUIC transport and certificate pinning in the client.
+  - OAuth device flow, refresh tokens, and storing credentials in the OS keychain.
+  - Server-side secret scanning of pushes.
+  - Email verification and email-based account recovery.
+  - A protection-bypass permission and federation between servers.
 </Callout>
 
 ## Reporting vulnerabilities
