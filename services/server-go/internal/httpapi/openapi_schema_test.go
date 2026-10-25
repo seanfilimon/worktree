@@ -211,6 +211,9 @@ var openAPITypes = map[string]any{
 	"MergeMRRequest":           mergeMRRequest{},
 	"MergeConflictError":       mergeConflictBody{},
 	"MergeConflictErrorDetail": mergeConflictDetail{},
+	"FsckReport":               fsckReport{},
+	"FsckMissing":              fsckMissing{},
+	"StagedFilesResponse":      stagedFilesResponse{},
 
 	// Service types encoded or decoded directly by handlers.
 	"CIReport":             ci.Report{},

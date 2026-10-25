@@ -51,7 +51,7 @@ tags:
   - name: Snapshots
     description: Snapshot history, file listings, blobs and archives.
   - name: Insights
-    description: Compare, file history, statistics and staged activity.
+    description: Compare, file history, blame, statistics and staged activity.
   - name: Staged
     description: Staged (work-in-progress) snapshots.
   - name: MergeRequests
@@ -63,7 +63,7 @@ tags:
   - name: Releases
     description: Releases and release assets.
   - name: IAM
-    description: Teams, roles, policies, grants, service accounts, invitations, simulator.
+    description: Teams, roles, policies and their history, grants, service accounts, invitations, simulator.
   - name: Access
     description: Declarative access configuration.
   - name: SSO
@@ -73,7 +73,9 @@ tags:
   - name: Events
     description: Server-Sent Events and recent events.
   - name: Search
-    description: Global search.
+    description: Global search and code search.
+  - name: Webhooks
+    description: Tenant and tree webhooks and their delivery log.
   - name: Admin
     description: Server administration (server administrators only).
 paths:
@@ -1011,6 +1013,131 @@ paths:
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/staged/{snapshot}/files:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: snapshot
+        in: path
+        required: true
+        description: Snapshot id of a live staged entry (any author, any branch).
+        schema:
+          type: string
+    get:
+      operationId: listStagedFiles
+      summary: List the files of a staged snapshot
+      description: |
+        v0.6 (§14.9). The staged entry and the files of its working
+        manifest, sorted by path. Files the caller may not read (path-deny
+        policies, license rules) are left out and counted in
+        `restricted_count`. An entry staged without a manifest, or whose
+        manifest never reached the server, answers 404.
+      tags: [Staged]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The staged entry and its files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StagedFilesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/staged/{snapshot}/files/{path}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: snapshot
+        in: path
+        required: true
+        description: Snapshot id of a live staged entry (any author, any branch).
+        schema:
+          type: string
+      - name: path
+        in: path
+        required: true
+        description: File path within the working manifest; may contain '/' (router wildcard `{path...}`). Must be clean and relative.
+        schema:
+          type: string
+    get:
+      operationId: stagedFile
+      summary: Download a staged file
+      description: |
+        v0.6 (§14.9). The raw bytes of one file of a staged entry's working
+        manifest, with the read checks of the blob endpoint (path deny 403
+        `path_denied`, license 451 `license_restricted`, checked before the
+        lookup so that the file's existence is not revealed). Supports
+        `Range` and conditional requests (`ETag` is the content hash,
+        `Last-Modified` the staging time); `Cache-Control: private,
+        no-cache`. Active content types are served as `text/plain`, with
+        `Content-Security-Policy: default-src 'none'; sandbox`. Staged
+        content is uploaded best effort, so content that is not stored on
+        the server answers 404.
+      tags: [Staged]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+        - accessTokenQuery: []
+      parameters:
+        - name: download
+          in: query
+          required: false
+          description: When present, `Content-Disposition` is `attachment` instead of `inline`.
+          schema:
+            type: string
+          allowEmptyValue: true
+      responses:
+        "200":
+          description: The file content (Content-Type from the extension or sniffed).
+          headers:
+            ETag:
+              schema:
+                type: string
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "206":
+          description: Partial content for a `Range` request.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "304":
+          description: Not modified (conditional request).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden`, or `path_denied` when an access policy denies reading the path."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "416":
+          description: The requested range is not satisfiable.
+        "451":
+          $ref: "#/components/responses/UnavailableForLegalReasons"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/trees/{tenant}/{tree}/protections:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -1044,7 +1171,9 @@ paths:
       description: |
         Creates or replaces the rule for `pattern` (a path.Match glob).
         `tree_id` in the body is ignored. `required_approvals` 0-100.
-        Audited as `protection.update`.
+        `merge_methods` (v0.6) entries must be `fast-forward`, `merge` or
+        `squash`; the list is stored deduplicated in that order. Audited as
+        `protection.update`.
       tags: [Trees]
       x-wt-action: tree:admin
       requestBody:
@@ -1343,14 +1472,39 @@ paths:
       operationId: mergeMR
       summary: Merge a merge request
       description: |
-        Moves the target branch to the source tip (fast-forward). Missing
-        approvals answer `403 review_required`; other readiness failures
-        (changes requested, CI, blocking TODOs, linear history) answer
-        `409 merge_blocked`, members of a linked group `409 linked_group`,
-        and a merge request that is not open or a diverged target
-        `409 conflict`. Publishes `mr.merged`.
+        Merges the source branch into the target branch with `method`
+        (v0.6, §14.1): `fast-forward` moves the target to the source tip;
+        `merge` writes a server-side merge snapshot (parents: target tip,
+        source tip) with the three-way merge of both sides; `squash` writes
+        one snapshot (parent: target tip) with the combined changes. Merge
+        and squash snapshots are authored and pushed by the caller. Without
+        a method (or without a body) the default is the first of
+        fast-forward, merge, squash that is allowed and possible (see
+        `GET .../mergeability`). The target moves with a compare-and-swap;
+        when it already contains the source the merge request is just
+        marked merged. `merge_method` of the result records the method.
+
+        Missing approvals answer `403 review_required`. Other readiness
+        failures (changes requested, CI, blocking TODOs, linear history for
+        a fast-forward) answer `409 merge_blocked`, members of a linked
+        group `409 linked_group`, a method refused by branch protection
+        (`merge_methods`, `require_linear`, `require_signed`) or not
+        available on the server `409 merge_method_not_allowed`, a
+        conflicting three-way merge `409 merge_conflict` (body
+        `MergeConflictError` with the conflicting paths), and a merge
+        request that is not open, a diverged target for a fast-forward or a
+        target that moved concurrently `409 conflict`. Without the v0.6
+        merge service only fast-forward is available (other methods answer
+        501). Publishes `mr.merged` (and `branch.pushed` with
+        `merge_method` when the target moved).
       tags: [MergeRequests]
       x-wt-action: mr:merge
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MergeMRRequest"
       responses:
         "200":
           description: The merged merge request.
@@ -1371,11 +1525,19 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: "`merge_blocked`, `linked_group` or `conflict`."
+          description: "`merge_blocked`, `linked_group`, `merge_method_not_allowed` or `conflict` (Error); `merge_conflict` (MergeConflictError, the conflicting paths both at the top level and in `error`)."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                anyOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/MergeConflictError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/close:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -1846,6 +2008,87 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/trees/{tenant}/{tree}/blame/{rev}/{path}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: rev
+        in: path
+        required: true
+        description: "Revision: a snapshot id, branch name, tag name or unique id prefix (one path segment, so branch names containing '/' must be given as a snapshot id)."
+        schema:
+          type: string
+      - name: path
+        in: path
+        required: true
+        description: File path within the snapshot; may contain '/' (router wildcard `{path...}`). Must be clean and relative.
+        schema:
+          type: string
+    get:
+      operationId: blame
+      summary: Blame a file
+      description: |
+        v0.6 (§14.4). Every line of the file at `rev`, attributed to the
+        snapshot that last changed it, plus the snapshot `rev` resolved to.
+        Read checks are those of the blob endpoint: `tree:read`, then a
+        path-denied path answers 403 `path_denied` and a license-restricted
+        one 451 `license_restricted`, before the file is looked up so that
+        its existence is not revealed. An unknown revision or file answers
+        404; an ambiguous id prefix or a bad line range (`end` before
+        `start`, `start` past the last line) answers 400.
+      tags: [Insights]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: start
+          in: query
+          required: false
+          description: First line to return (1-based).
+          schema:
+            type: integer
+            minimum: 1
+        - name: end
+          in: query
+          required: false
+          description: Last line to return (1-based, inclusive; clamped to the file's length).
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: The attributed lines.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlameResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden`, or `path_denied` when an access policy denies reading the path."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          description: "`payload_too_large`: the file is larger than 32 MiB."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "`binary_file`: the file is binary."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "451":
+          $ref: "#/components/responses/UnavailableForLegalReasons"
   /api/v1/trees/{tenant}/{tree}/staged/summary:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -2121,6 +2364,106 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/search/code:
+    get:
+      operationId: searchCode
+      summary: Code search
+      description: |
+        v0.6 (§14.3). Searches the text files at the default-branch tip of
+        the trees in scope through a trigram index (built lazily, rebuilt
+        when stale), line by line; binary and chunked files are not
+        indexed. The scope is one
+        tree (`tree=TENANT/TREE`, or `tenant=T&tree=TREE`), the trees of
+        one tenant (`tenant=T`) or every tree on the server; within it only
+        trees the caller may read (`tree:read`) are searched, so anonymous
+        callers see public trees only. Hits in paths a path-deny policy or a
+        license rule keeps from the caller are dropped. Hits are ordered by
+        tenant, tree, path and line; when more than `limit` exist or the
+        5-second time budget runs out, the hits found so far are returned
+        with `truncated` set. An unknown tenant or tree in the scope
+        answers 404, an explicit tree the caller may not read 401/403 (as
+        on the tree routes).
+      tags: [Search]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Literal text (at least 3 characters, no line breaks) or, with `regex=true`, an RE2 expression; at most 1000 bytes.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+        - name: tenant
+          in: query
+          required: false
+          description: Tenant slug (or id) to search in.
+          schema:
+            type: string
+        - name: tree
+          in: query
+          required: false
+          description: "`TENANT/TREE`, or a tree name together with `tenant`."
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: false
+          description: Path glob restricting the files searched (`**`, `*`, `?`, `[...]`, anchored at the tree root; a pattern without '/' matches the file name at any depth, e.g. `*.go`).
+          schema:
+            type: string
+        - name: regex
+          in: query
+          required: false
+          description: Treat `q` as a regular expression.
+          schema:
+            type: boolean
+            default: false
+        - name: case
+          in: query
+          required: false
+          description: Case-sensitive matching (default case-insensitive, with Unicode folding).
+          schema:
+            type: boolean
+            default: false
+        - name: context
+          in: query
+          required: false
+          description: Lines of context returned before and after each hit.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10
+            default: 2
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of hits (clamped to 1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+      responses:
+        "200":
+          description: The hits.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeSearchResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/admin/gc:
     post:
       operationId: runGC
@@ -2180,6 +2523,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GCStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/fsck:
+    post:
+      operationId: fsck
+      summary: Check server integrity
+      description: |
+        v0.6 (§14.6). Re-hashes every stored object (when the object store
+        can list its objects) and walks every snapshot reachable from a
+        branch tip or tag of any tree, checking that its manifest, blobs,
+        chunk lists and chunks are present and decode. Read-only; problems
+        are reported in the body, not as an error status.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: The integrity report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsckReport"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -3439,7 +3807,7 @@ paths:
     post:
       operationId: createPolicy
       summary: Create a policy
-      description: "`enabled` defaults to true; at most 100 statements, validated by the authorization engine. Server-managed fields (`id`, `version`, `created_at`, ...) are accepted and ignored. Audited as `policy.create`."
+      description: "`enabled` defaults to true; at most 100 statements, validated by the authorization engine. Server-managed fields (`id`, `version`, `created_at`, ...) are accepted and ignored. Records history version 1 and publishes `policy.changed` (v0.6). Audited as `policy.create`."
       tags: [IAM]
       x-wt-action: iam:admin
       requestBody:
@@ -3534,7 +3902,7 @@ paths:
     put:
       operationId: putPolicy
       summary: Replace a policy
-      description: "Full replace; increments `version`. A non-zero `version` in the body must equal the stored version (optimistic concurrency). Audited as `policy.update`."
+      description: "Full replace; increments `version`. A non-zero `version` in the body must equal the stored version (optimistic concurrency). Records a history version and publishes `policy.changed` (v0.6). Audited as `policy.update`."
       tags: [IAM]
       x-wt-action: iam:admin
       requestBody:
@@ -3567,7 +3935,7 @@ paths:
     delete:
       operationId: deletePolicy
       summary: Delete a policy
-      description: "Audited as `policy.delete`."
+      description: "Records a `delete` history version (the history stays readable; rollback restores the policy) and publishes `policy.changed` (v0.6). Audited as `policy.delete`."
       tags: [IAM]
       x-wt-action: iam:admin
       responses:
@@ -3585,6 +3953,213 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/tenants/{tenant}/policies/deleted:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    get:
+      operationId: listDeletedPolicies
+      summary: List deleted policies
+      description: v0.6 (§14.7). The latest history version (a `delete` change) of each deleted policy that has not been restored. Use rollback to restore one.
+      tags: [IAM]
+      x-wt-action: iam:read
+      responses:
+        "200":
+          description: One version per deleted policy.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PolicyVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/tenants/{tenant}/policies/{id}/versions:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Policy id (live or deleted).
+        schema:
+          type: string
+    get:
+      operationId: listPolicyVersions
+      summary: List a policy's versions
+      description: |
+        v0.6 (§14.7). Every stored revision of the policy, oldest first:
+        each create, update, delete and rollback (through the REST API or a
+        declarative access apply) appends one. A policy older than history
+        recording has a synthetic version 1 (its current state). History
+        stays readable after the policy is deleted; 404 when the policy has
+        neither a live copy nor a history.
+      tags: [IAM]
+      x-wt-action: iam:read
+      responses:
+        "200":
+          description: The versions, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PolicyVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/tenants/{tenant}/policies/{id}/versions/{version}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Policy id (live or deleted).
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        description: History version number (from 1).
+        schema:
+          type: integer
+          minimum: 1
+    get:
+      operationId: getPolicyVersion
+      summary: Get a policy version
+      description: v0.6 (§14.7).
+      tags: [IAM]
+      x-wt-action: iam:read
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/tenants/{tenant}/policies/{id}/diff:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Policy id (live or deleted).
+        schema:
+          type: string
+    get:
+      operationId: diffPolicyVersions
+      summary: Diff two policy versions
+      description: |
+        v0.6 (§14.7). Statement-level and field-level differences between
+        two versions. `to` defaults to the latest version and `from` to the
+        version before `to`. Version 0, and every `delete` version, stand
+        for the empty policy.
+      tags: [IAM]
+      x-wt-action: iam:read
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Older version (0 = the empty policy; default `to` - 1).
+          schema:
+            type: integer
+            minimum: 0
+        - name: to
+          in: query
+          required: false
+          description: Newer version (default the latest).
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: The differences.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyDiff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/tenants/{tenant}/policies/{id}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Policy id (live or deleted).
+        schema:
+          type: string
+    post:
+      operationId: rollbackPolicy
+      summary: Roll a policy back to a version
+      description: |
+        v0.6 (§14.7). The policy's name, description, enabled flag and
+        statements become those of `version`, recorded as a new `rollback`
+        history version with the comment "rollback to version N[:
+        comment]". A live policy's `version` is incremented as by PUT; a
+        deleted policy is re-created with its id. The statements are
+        validated against the current action catalogue (400) and the name
+        must still be unique (409). Publishes `policy.changed`; audited as
+        `policy.rollback`.
+      tags: [IAM]
+      x-wt-action: iam:admin
+      parameters:
+        - name: force
+          in: query
+          required: false
+          description: "`true` lets a tenant owner roll back a policy managed by a declarative access document."
+          schema:
+            type: boolean
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RollbackPolicyRequest"
+      responses:
+        "200":
+          description: The new history version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the policy already matches the version, or another policy has its name; `managed_by_config`: owned by a declarative access document (pass `?force=true` as a tenant owner)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
   /api/v1/trees/{tenant}/{tree}/grants:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -4619,7 +5194,14 @@ paths:
     get:
       operationId: mrChecks
       summary: Get merge readiness
-      description: Evaluates required approvals, open change requests, required CI checks, blocking TODOs, linear history, divergence and linked-group membership.
+      description: |
+        Evaluates required approvals, open change requests, required CI
+        checks, blocking TODOs, linked-group membership and (v0.6, §14.1) the
+        merge methods: `methods` lists the allowed and possible methods (the
+        first is the default) and `conflicts` the three-way conflicts when
+        the branches diverged. Divergence, linear history, conflicts and
+        merge-method restrictions block only when no allowed method can
+        merge.
       tags: [MergeRequests]
       x-wt-action: tree:read
       security:
@@ -4632,6 +5214,50 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MergeChecks"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/mergeability:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number.
+        schema:
+          type: integer
+          minimum: 1
+    get:
+      operationId: mrMergeability
+      summary: Get the possible merge methods
+      description: |
+        v0.6 (§14.1). Which merge methods branch protection allows and which
+        of them can merge the request now (fast-forward possible, three-way
+        merge clean), the merge base and the three-way conflicts, with a
+        reason per method that is not offered. Approvals, CI and TODOs are
+        not considered (see `GET .../checks`). Merge requests that are not
+        open are answered too, every method with a reason. The three-way
+        outcome is cached per (source tip, target tip).
+      tags: [MergeRequests]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The merge methods and conflicts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mergeability"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -4910,12 +5536,20 @@ paths:
       operationId: mergeGroup
       summary: Merge a linked group
       description: |
-        Merges every member atomically: all members must be mergeable; the
+        Merges every member atomically: all members must be mergeable with
+        `method` (v0.6, §14.1; empty or no body = each member's default
+        method). Merge and squash snapshots are written first, then the
         target tips move with compare-and-swap in order and are rolled back
         on failure. Requires `mr:merge` on every member tree. Publishes
         `group.merged`.
       tags: [MergeRequests]
       x-wt-action: ['tenant:read', 'mr:merge']
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MergeGroupRequest"
       responses:
         "200":
           description: The merged group.
@@ -4923,6 +5557,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LinkedGroupView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -4930,11 +5566,17 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: "`merge_blocked`: a member is not mergeable (message names the blocker); `conflict`: the group is not open or a target moved."
+          description: "`merge_blocked`: a member is not mergeable (message names the blocker); `merge_method_not_allowed`: a member's protection refuses the method; `conflict`: the group is not open or a target moved (Error). `merge_conflict`: three-way conflicts are the only problem (MergeConflictError; each conflict carries its `tree`)."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                anyOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/MergeConflictError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "501":
           $ref: "#/components/responses/NotImplemented"
   /api/v1/trees/{tenant}/{tree}/tag-protections:
@@ -5254,6 +5896,642 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/Internal"
+  /api/v1/tenants/{tenant}/webhooks:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    get:
+      operationId: listTenantWebhooks
+      summary: List tenant webhooks
+      description: v0.6 (§14.2). The webhooks of the tenant, oldest first. Secrets are never returned (`has_secret` reports one).
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      responses:
+        "200":
+          description: The webhooks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    post:
+      operationId: createTenantWebhook
+      summary: Create a tenant webhook
+      description: |
+        v0.6 (§14.2). Delivers the bus events of the tenant (every tree of it) whose
+        type matches one of `events` to `url`: a JSON POST of the envelope
+        `{id, event, tenant, tree?, actor?, at, payload}` with the headers
+        `X-WT-Event`, `X-WT-Delivery`, `X-WT-Hook-ID` and
+        `X-WT-Signature: sha256=<hex HMAC-SHA256 of the body>`. Failed
+        deliveries are retried with backoff; a hook that keeps failing is
+        deactivated (`webhook.failing`). Without `secret` the server
+        generates one and returns it in this response only. At most 50
+        webhooks per scope (409). Audited as `webhook.create`.
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookRequest"
+      responses:
+        "201":
+          description: The created webhook (with `secret` when it was generated).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedWebhook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the scope already has the maximum number of webhooks (50)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/webhooks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+    get:
+      operationId: getTenantWebhook
+      summary: Get a tenant webhook
+      description: v0.6 (§14.2).
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      responses:
+        "200":
+          description: The webhook.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    patch:
+      operationId: patchTenantWebhook
+      summary: Update a tenant webhook
+      description: |
+        v0.6 (§14.2). Changes the fields present in the body (same limits as
+        on create). Setting `active` to true on an inactive hook resets its
+        failure count; deactivating drops its pending retries. Audited as
+        `webhook.update` (with the changed fields).
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchWebhookRequest"
+      responses:
+        "200":
+          description: The updated webhook.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    delete:
+      operationId: deleteTenantWebhook
+      summary: Delete a tenant webhook
+      description: v0.6 (§14.2). Deletes the webhook, its pending retries and its delivery log. Audited as `webhook.delete`.
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/webhooks/{id}/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+    get:
+      operationId: listTenantWebhookDeliveries
+      summary: List a tenant webhook's deliveries
+      description: v0.6 (§14.2). The delivery log of the webhook, newest first (the server keeps the last 200 deliveries per hook, for 30 days by default).
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of deliveries (clamped to 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: The deliveries, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/webhooks/{id}/deliveries/{did}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+      - name: did
+        in: path
+        required: true
+        description: Delivery id (also sent as `X-WT-Delivery`).
+        schema:
+          type: string
+    get:
+      operationId: getTenantWebhookDelivery
+      summary: Get a tenant webhook delivery
+      description: v0.6 (§14.2). One delivery with its request body (`payload`), response excerpt and timing.
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      responses:
+        "200":
+          description: The delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDelivery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/webhooks/{id}/deliveries/{did}/redeliver:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+      - name: did
+        in: path
+        required: true
+        description: Delivery id.
+        schema:
+          type: string
+    post:
+      operationId: redeliverTenantWebhook
+      summary: Redeliver a tenant webhook delivery
+      description: |
+        v0.6 (§14.2). Sends the request body of the delivery again as a new
+        delivery (`redelivery` set), attempted once synchronously and
+        without retries. Inactive hooks may be redelivered to, to check a
+        receiver before reactivating it. The receiver's failure is reported
+        in the delivery, not as an error status.
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      responses:
+        "201":
+          description: The new delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDelivery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the delivery has no replayable request body."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/webhooks/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+    post:
+      operationId: testTenantWebhook
+      summary: Send a test delivery to a tenant webhook
+      description: |
+        v0.6 (§14.2). Sends a `ping` event (payload: a message and the
+        webhook) to the hook, attempted once synchronously and without
+        retries. The receiver's failure is reported in the delivery, not as
+        an error status.
+      tags: [Webhooks]
+      x-wt-action: tenant:admin
+      responses:
+        "201":
+          description: The ping delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDelivery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/webhooks:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: listTreeWebhooks
+      summary: List tree webhooks
+      description: v0.6 (§14.2). The webhooks of the tree, oldest first. Secrets are never returned (`has_secret` reports one).
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      responses:
+        "200":
+          description: The webhooks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    post:
+      operationId: createTreeWebhook
+      summary: Create a tree webhook
+      description: |
+        v0.6 (§14.2). Delivers the bus events of the tree whose
+        type matches one of `events` to `url`: a JSON POST of the envelope
+        `{id, event, tenant, tree?, actor?, at, payload}` with the headers
+        `X-WT-Event`, `X-WT-Delivery`, `X-WT-Hook-ID` and
+        `X-WT-Signature: sha256=<hex HMAC-SHA256 of the body>`. Failed
+        deliveries are retried with backoff; a hook that keeps failing is
+        deactivated (`webhook.failing`). Without `secret` the server
+        generates one and returns it in this response only. At most 50
+        webhooks per scope (409). Audited as `webhook.create`.
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookRequest"
+      responses:
+        "201":
+          description: The created webhook (with `secret` when it was generated).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedWebhook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the scope already has the maximum number of webhooks (50)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/webhooks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+    get:
+      operationId: getTreeWebhook
+      summary: Get a tree webhook
+      description: v0.6 (§14.2).
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      responses:
+        "200":
+          description: The webhook.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    patch:
+      operationId: patchTreeWebhook
+      summary: Update a tree webhook
+      description: |
+        v0.6 (§14.2). Changes the fields present in the body (same limits as
+        on create). Setting `active` to true on an inactive hook resets its
+        failure count; deactivating drops its pending retries. Audited as
+        `webhook.update` (with the changed fields).
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchWebhookRequest"
+      responses:
+        "200":
+          description: The updated webhook.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    delete:
+      operationId: deleteTreeWebhook
+      summary: Delete a tree webhook
+      description: v0.6 (§14.2). Deletes the webhook, its pending retries and its delivery log. Audited as `webhook.delete`.
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/webhooks/{id}/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+    get:
+      operationId: listTreeWebhookDeliveries
+      summary: List a tree webhook's deliveries
+      description: v0.6 (§14.2). The delivery log of the webhook, newest first (the server keeps the last 200 deliveries per hook, for 30 days by default).
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of deliveries (clamped to 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: The deliveries, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/webhooks/{id}/deliveries/{did}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+      - name: did
+        in: path
+        required: true
+        description: Delivery id (also sent as `X-WT-Delivery`).
+        schema:
+          type: string
+    get:
+      operationId: getTreeWebhookDelivery
+      summary: Get a tree webhook delivery
+      description: v0.6 (§14.2). One delivery with its request body (`payload`), response excerpt and timing.
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      responses:
+        "200":
+          description: The delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDelivery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/webhooks/{id}/deliveries/{did}/redeliver:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+      - name: did
+        in: path
+        required: true
+        description: Delivery id.
+        schema:
+          type: string
+    post:
+      operationId: redeliverTreeWebhook
+      summary: Redeliver a tree webhook delivery
+      description: |
+        v0.6 (§14.2). Sends the request body of the delivery again as a new
+        delivery (`redelivery` set), attempted once synchronously and
+        without retries. Inactive hooks may be redelivered to, to check a
+        receiver before reactivating it. The receiver's failure is reported
+        in the delivery, not as an error status.
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      responses:
+        "201":
+          description: The new delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDelivery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the delivery has no replayable request body."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/webhooks/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Webhook id.
+        schema:
+          type: string
+    post:
+      operationId: testTreeWebhook
+      summary: Send a test delivery to a tree webhook
+      description: |
+        v0.6 (§14.2). Sends a `ping` event (payload: a message and the
+        webhook) to the hook, attempted once synchronously and without
+        retries. The receiver's failure is reported in the delivery, not as
+        an error status.
+      tags: [Webhooks]
+      x-wt-action: tree:admin
+      responses:
+        "201":
+          description: The ping delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDelivery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
 components:
   securitySchemes:
     bearerAuth:
@@ -6322,6 +7600,48 @@ components:
           $ref: "#/components/schemas/Snapshot"
         change:
           type: string
+    FsckMissing:
+      type: object
+      description: "An object referenced by a reachable snapshot that is not stored."
+      required: [snapshot, object]
+      properties:
+        snapshot:
+          type: string
+          description: "The first snapshot found referencing the object."
+        object:
+          type: string
+          description: "The object hash (hex)."
+    FsckReport:
+      type: object
+      description: "fsckReport is the response of POST /api/v1/admin/fsck."
+      required: [objects_checked, corrupt, missing, missing_snapshots, snapshots_checked, duration_ms]
+      properties:
+        objects_checked:
+          type: integer
+          format: int64
+          description: "ObjectsChecked is the number of stored objects whose content was read back and re-hashed (0 when the object store cannot list its objects)."
+        corrupt:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Corrupt lists objects whose stored bytes do not decode to content with their hash, and manifests / chunk lists that do not parse (sorted hashes)."
+        missing:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/FsckMissing"
+          description: "Missing lists objects referenced by a snapshot reachable from a branch or tag that are not stored (each object once)."
+        missing_snapshots:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "MissingSnapshots lists snapshot ids referenced by a branch, tag or parent link that have no snapshot record."
+        snapshots_checked:
+          type: integer
+          format: int64
+          description: "SnapshotsChecked counts the reachable snapshots walked."
+        duration_ms:
+          type: integer
+          format: int64
     GCConfig:
       type: object
       required: [interval, interval_seconds, grace, grace_seconds, staged_retention, staged_retention_seconds, audit_retention, audit_retention_seconds]
@@ -7793,6 +9113,21 @@ components:
           type: [array, "null"]
           items:
             type: string
+    StagedFilesResponse:
+      type: object
+      description: "stagedFilesResponse is the body of GET {tree}/staged/{snapshot}/files."
+      required: [staged, files, restricted_count]
+      properties:
+        staged:
+          $ref: "#/components/schemas/StagedSnapshot"
+        files:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/FileEntry"
+          description: "The files of the working manifest, sorted by path."
+        restricted_count:
+          type: integer
+          description: "RestrictedCount is the number of files left out of Files because the caller may not read them (path policies or license rules, §13.1)."
     StagedSnapshot:
       type: object
       description: "StagedSnapshot is a WIP snapshot visible to the team but not part of branch history. At most one per (tree, account, branch): a newer stage replaces the older one."
@@ -8372,7 +9707,7 @@ components:
         event:
           type: string
         payload:
-          description: "Any JSON value."
+          description: "The request body POSTed to the receiver: the envelope {id, event, tenant, tree?, actor?, at, payload}."
         attempts:
           type: integer
         status_code:
