@@ -17,13 +17,17 @@ export interface ToastStore {
   dismiss: (id: number) => void;
   error: (err: unknown, title?: string) => number;
   success: (title: string, message?: string) => number;
+  /** How long a toast stays up in ms (0 = until dismissed); applied by the `Toaster`. */
+  readonly autoDismissMs: number;
 }
 
 const MAX_TOASTS = 5;
 
 /**
  * Framework-independent toast queue, so non-React code (e.g. the query
- * client's global mutation error handler) can raise toasts too.
+ * client's global mutation error handler) can raise toasts too. The
+ * `Toaster` renders the queue with Sonner and dismisses entries when Sonner
+ * closes them (timeout, swipe or close button).
  */
 export function createToastStore(autoDismissMs = 6000): ToastStore {
   let toasts: readonly Toast[] = [];
@@ -32,6 +36,7 @@ export function createToastStore(autoDismissMs = 6000): ToastStore {
   const emit = () => listeners.forEach((l) => l());
 
   const store: ToastStore = {
+    autoDismissMs,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -41,7 +46,6 @@ export function createToastStore(autoDismissMs = 6000): ToastStore {
       const id = nextId++;
       toasts = [...toasts, { ...t, id }].slice(-MAX_TOASTS);
       emit();
-      if (autoDismissMs > 0) setTimeout(() => store.dismiss(id), autoDismissMs);
       return id;
     },
     dismiss(id) {
