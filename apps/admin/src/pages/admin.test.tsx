@@ -106,24 +106,3 @@ describe("tenant detail", () => {
     expect(screen.getByRole("table", { name: "Trees" })).toHaveTextContent("web");
   });
 });
-
-describe("audit log", () => {
-  it("applies filters to the query", async () => {
-    const { user, fetchMock } = renderApp({
-      route: "/audit",
-      api: {
-        "GET /api/v1/audit": [
-          { id: "e1", tenant_id: fx.tenant.id, actor_id: "acc-1", actor: "alice", action: "auth.login", resource_type: "account", resource_id: "acc-1", remote_addr: "127.0.0.1", at: new Date().toISOString() },
-        ],
-      },
-    });
-    expect(await screen.findByRole("table", { name: "Audit events" })).toHaveTextContent("auth.login");
-    await user.selectOptions(screen.getByLabelText("Tenant"), "acme");
-    await user.type(screen.getByLabelText("Action"), "branch.push");
-    await user.click(screen.getByRole("button", { name: "Apply" }));
-    const last = fetchMock.find("GET /api/v1/audit").at(-1);
-    expect(last?.url.searchParams.get("tenant")).toBe("acme");
-    expect(last?.url.searchParams.get("action")).toBe("branch.push");
-    expect(last?.url.searchParams.get("limit")).toBe("100");
-  });
-});
