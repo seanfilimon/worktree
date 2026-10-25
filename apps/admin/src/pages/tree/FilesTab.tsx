@@ -1,7 +1,9 @@
-import { FolderGit2, Pin } from "lucide-react";
+import { EyeOff, FolderGit2, Pin } from "lucide-react";
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useBranches, useSnapshot } from "@/api/queries";
+import type { SnapshotDetailV05 } from "@/api/v05tree";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DirectoryView } from "@/components/files/DirectoryView";
 import { FileTree } from "@/components/files/FileTree";
 import { FileViewer } from "@/components/files/FileViewer";
@@ -21,7 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { normalizeDir, parentDir } from "@/lib/files";
-import { firstLine, shortId } from "@/lib/format";
+import { firstLine, formatNumber, shortId } from "@/lib/format";
 import { treePath } from "@/lib/paths";
 import { BranchSelect } from "./BranchSelect";
 import { useTreeContext } from "./context";
@@ -209,9 +211,23 @@ export function FilesTab() {
     );
   }
 
+  const restricted = (detail.data as SnapshotDetailV05).restricted_count ?? 0;
+
   return (
     <>
       {toolbar}
+      {restricted > 0 && (
+        <Alert className="mb-3" aria-label="Restricted paths">
+          <EyeOff aria-hidden="true" />
+          <AlertTitle>
+            {formatNumber(restricted)} {restricted === 1 ? "path is" : "paths are"} hidden
+          </AlertTitle>
+          <AlertDescription>
+            You may not read {restricted === 1 ? "it" : "them"} at this snapshot: an access policy denies the path or a license rule
+            restricts it for your tenant. Clones and pulls leave such files out too.
+          </AlertDescription>
+        </Alert>
+      )}
       <SplitPane
         label="Resize file tree"
         start={

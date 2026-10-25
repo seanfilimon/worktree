@@ -1,6 +1,23 @@
 import { buildQuery } from "./client";
 import { EVENT_TYPES, type ServerEvent } from "./types";
 
+// ---- v0.5 admin-tree (§13.12): named SSE events from domain/v05.go ----
+/** The server frames events as `event: <type>`; listen for the v0.5 types too. */
+const V05_EVENT_TYPES = [
+  "tree.deleted",
+  "branch.deleted",
+  "tag.deleted",
+  "todo.created",
+  "todo.updated",
+  "ci.status",
+  "mr.reviewed",
+  "mr.commented",
+  "group.merged",
+  "release.created",
+  "release.deleted",
+  "access.applied",
+] as const;
+
 /** The subset of EventSource this client relies on (eases testing). */
 export interface EventSourceLike {
   readonly readyState: number;
@@ -124,7 +141,7 @@ export class EventStream {
       const event = parseEvent(type, ev.data);
       if (event) this.opts.onEvent(event);
     };
-    for (const type of EVENT_TYPES) source.addEventListener(type, deliver(type));
+    for (const type of [...EVENT_TYPES, ...V05_EVENT_TYPES]) source.addEventListener(type, deliver(type));
     source.onmessage = deliver("message");
 
     source.onopen = () => {

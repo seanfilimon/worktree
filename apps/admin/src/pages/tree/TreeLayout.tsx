@@ -23,6 +23,7 @@ import { Link, Outlet, useLocation, useParams } from "react-router";
 import { keys, useTree } from "@/api/queries";
 import type { ServerEvent, TreeSummary, Visibility } from "@/api/types";
 import { useServerEvents } from "@/api/useServerEvents";
+import { v05Keys } from "@/api/v05tree";
 import { canMaintain, useAuth } from "@/auth/context";
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumbs } from "@/components/shell/Breadcrumbs";
@@ -71,6 +72,12 @@ const ALL_TREE_DATA = [
   "compare",
   "file-history",
   "stats",
+  // v0.5 (§13.12, api/v05tree.ts keys)
+  "ci",
+  "mr-checks",
+  "mr-comments",
+  "todos",
+  "dependencies",
 ];
 
 /** Query-key suffixes (under ["tree", tenant, tree]) to refresh per event type. */
@@ -79,12 +86,26 @@ const INVALIDATE: Record<string, string[]> = {
   "staged.cleared": ["staged", "staged-summary"],
   "branch.pushed": ALL_TREE_DATA,
   "branch.created": ["branches", "compare"],
-  "tag.pushed": ["tags", "compare"],
+  "branch.deleted": ["branches", "compare", "mr-checks"],
+  "tag.pushed": ["tags", "compare", "releases"],
+  "tag.deleted": ["tags", "compare", "releases"],
   "mr.opened": ["mrs"],
-  "mr.approved": ["mrs", "mr"],
+  "mr.approved": ["mrs", "mr", "mr-checks"],
   "mr.merged": ALL_TREE_DATA,
-  "mr.closed": ["mrs", "mr"],
+  "mr.closed": ["mrs", "mr", "mr-checks"],
+  // v0.5 events (§13.4, §13.5)
+  "mr.reviewed": ["mrs", "mr", "mr-checks"],
+  "mr.commented": ["mr-comments"],
+  "ci.status": ["ci", "mr-checks"],
+  "todo.created": ["todos", "dependencies", "mr-checks"],
+  "todo.updated": ["todos", "dependencies", "mr-checks"],
+  "release.created": ["releases", "tags"],
+  "release.deleted": ["releases", "tags"],
+  "group.merged": ALL_TREE_DATA,
 };
+
+/** Events that also refresh tenant-scoped linked groups (§13.4). */
+const GROUP_EVENTS = new Set(["group.merged", "mr.merged", "mr.closed"]);
 
 const VISIBILITY_ICON: Record<Visibility, LucideIcon> = { private: Lock, internal: Building2, public: Globe };
 
@@ -136,6 +157,7 @@ export function TreeLayout() {
     const suffixes = INVALIDATE[e.type];
     if (!suffixes) return;
     for (const s of suffixes) void queryClient.invalidateQueries({ queryKey: ["tree", tenant, tree, s] });
+    if (GROUP_EVENTS.has(e.type)) void queryClient.invalidateQueries({ queryKey: v05Keys.linkedGroups(tenant) });
     void queryClient.invalidateQueries({ queryKey: keys.tree(tenant, tree), exact: true });
     void queryClient.invalidateQueries({ queryKey: ["events", "recent"] });
   });

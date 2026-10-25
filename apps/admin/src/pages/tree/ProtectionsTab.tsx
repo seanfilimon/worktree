@@ -1,9 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, Info, Lock, Pencil, Plus, ShieldCheck } from "lucide-react";
+import { Ban, BadgeCheck, CircleCheck, GitCommitHorizontal, Info, ListTodo, Lock, Pencil, Plus, ShieldCheck } from "lucide-react";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { useApi } from "@/api/context";
 import { keys, useBranches, useProtections } from "@/api/queries";
-import type { BranchProtection } from "@/api/types";
+import type { BranchProtectionV05 } from "@/api/v05tree";
 import { ChipsInput } from "@/components/files/ChipsInput";
 import { ConfirmDelete } from "@/components/files/ConfirmDelete";
 import { MatchPreview } from "@/components/files/MatchPreview";
@@ -19,6 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { pathMatch } from "@/lib/glob";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
+import { TagProtectionsSection } from "./v05/TagProtections";
 
 interface FormState {
   pattern: string;
@@ -26,18 +27,60 @@ interface FormState {
   required_approvals: string;
   allowed_pushers: string[];
   no_delete: boolean;
+  // v0.5 (§13.4–§13.6)
+  require_ci_pass: boolean;
+  required_checks: string[];
+  require_signed: boolean;
+  require_linear: boolean;
+  block_on_todos: boolean;
 }
 
-const NEW_RULE: FormState = { pattern: "", no_direct_push: true, required_approvals: "1", allowed_pushers: [], no_delete: true };
+const NEW_RULE: FormState = {
+  pattern: "",
+  no_direct_push: true,
+  required_approvals: "1",
+  allowed_pushers: [],
+  no_delete: true,
+  require_ci_pass: false,
+  required_checks: [],
+  require_signed: false,
+  require_linear: false,
+  block_on_todos: false,
+};
 
-function toForm(p: BranchProtection): FormState {
+function toForm(p: BranchProtectionV05): FormState {
   return {
     pattern: p.pattern,
     no_direct_push: p.no_direct_push,
     required_approvals: String(p.required_approvals),
     allowed_pushers: p.allowed_pushers ?? [],
     no_delete: p.no_delete,
+    require_ci_pass: p.require_ci_pass ?? false,
+    required_checks: p.required_checks ?? [],
+    require_signed: p.require_signed ?? false,
+    require_linear: p.require_linear ?? false,
+    block_on_todos: p.block_on_todos ?? false,
   };
+}
+
+/** The PUT body; v0.5 fields are `omitempty` on the server, so false / empty ones are left out. */
+function toBody(treeId: string, pattern: string, approvals: number, f: FormState): BranchProtectionV05 {
+  const body: BranchProtectionV05 = {
+    tree_id: treeId,
+    pattern,
+    no_direct_push: f.no_direct_push,
+    required_approvals: approvals,
+    allowed_pushers: f.allowed_pushers,
+    no_delete: f.no_delete,
+  };
+  if (f.require_ci_pass) {
+    body.require_ci_pass = true;
+    if (f.required_checks.length) body.required_checks = f.required_checks;
+  }
+  if (f.require_signed) body.require_signed = true;
+  if (f.require_linear) body.require_linear = true;
+  if (f.block_on_todos) body.block_on_todos = true;
+  return body;
 }
 
 /** Problems Go's path.Match would reject, or that make a pattern useless. */
@@ -121,7 +164,7 @@ function ProtectionDialog({
   const replaces = !editing && existing.includes(pattern);
 
   const save = useMutation({
-    mutationFn: (body: BranchProtection) => api.trees.putProtection(tenant, tree, body),
+    mutationFn: (body: BranchProtectionV05) => api.trees.putProtection(tenant, tree, body),
     onSuccess: async (p) => {
       toast.success(editing ? "Protection updated" : "Protection added", p.pattern);
       onClose();
@@ -136,21 +179,14 @@ function ProtectionDialog({
     e.preventDefault();
     setTouched(true);
     if (errors.pattern || errors.approvals) return;
-    save.mutate({
-      tree_id: summary.tree.id,
-      pattern,
-      no_direct_push: form.no_direct_push,
-      required_approvals: approvals,
-      allowed_pushers: form.allowed_pushers,
-      no_delete: form.no_delete,
-    });
+    save.mutate(toBody(summary.tree.id, pattern, approvals, form));
   };
 
   const showPattern = touched && errors.pattern;
   const showApprovals = touched && errors.approvals;
 
   return (
-    <DialogContent className="sm:max-w-lg">
+    <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
       <DialogHeader>
         <DialogTitle>{editing ? `Edit protection: ${initial.pattern}` : "Add branch protection"}</DialogTitle>
         <DialogDescription>Rules apply to every branch whose name matches the pattern, now and in future.</DialogDescription>
@@ -238,6 +274,52 @@ function ProtectionDialog({
           checked={form.no_delete}
           onChange={(v) => set("no_delete", v)}
         />
+        <fieldset className="grid gap-3">
+          <legend className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">Merge and push requirements</legend>
+          <SwitchField
+            id={`${id}-ci`}
+            label="Require CI to pass"
+            description="Merging needs every required check to report success on the source tip."
+            checked={form.require_ci_pass}
+            onChange={(v) => set("require_ci_pass", v)}
+          />
+          {form.require_ci_pass && (
+            <div className="grid gap-2 pl-3">
+              <Label htmlFor={`${id}-checks`}>Required checks</Label>
+              <ChipsInput
+                id={`${id}-checks`}
+                values={form.required_checks}
+                onChange={(v) => set("required_checks", v)}
+                placeholder="ci/build, ci/test"
+                describedBy={`${id}-checks-hint`}
+              />
+              <p id={`${id}-checks-hint`} className="text-xs text-muted-foreground">
+                CI contexts that must succeed. Empty = every reported check.
+              </p>
+            </div>
+          )}
+          <SwitchField
+            id={`${id}-signed`}
+            label="Require signed snapshots"
+            description="Every pushed snapshot must carry a verified signature."
+            checked={form.require_signed}
+            onChange={(v) => set("require_signed", v)}
+          />
+          <SwitchField
+            id={`${id}-linear`}
+            label="Require linear history"
+            description="No merge snapshots: merge requests must fast-forward and pushes may not contain merges."
+            checked={form.require_linear}
+            onChange={(v) => set("require_linear", v)}
+          />
+          <SwitchField
+            id={`${id}-todos`}
+            label="Block on open TODOs"
+            description="Open blocking TODOs targeting the source branch block merging."
+            checked={form.block_on_todos}
+            onChange={(v) => set("block_on_todos", v)}
+          />
+        </fieldset>
       </form>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>
@@ -272,9 +354,52 @@ function Explanation() {
           <span className="font-semibold text-foreground">Allowed pushers</span> restricts who may push at all;{" "}
           <span className="font-semibold text-foreground">prevent deletion</span> blocks removing the branch.
         </p>
+        <p>
+          <span className="font-semibold text-foreground">Require CI</span>,{" "}
+          <span className="font-semibold text-foreground">block on TODOs</span> and{" "}
+          <span className="font-semibold text-foreground">linear history</span> gate merges;{" "}
+          <span className="font-semibold text-foreground">signed snapshots</span> gate pushes. Tag protections guard release tags
+          against deletion and re-pointing.
+        </p>
         <p>Staged work in progress is never blocked — only pushes and merges are checked.</p>
       </CardContent>
     </Card>
+  );
+}
+
+function hasV05Rule(p: BranchProtectionV05): boolean {
+  return !!(p.require_ci_pass || p.require_signed || p.require_linear || p.block_on_todos);
+}
+
+function V05RuleBadges({ rule: p }: { rule: BranchProtectionV05 }) {
+  const checks = p.required_checks ?? [];
+  return (
+    <>
+      {p.require_ci_pass && (
+        <Badge variant="outline" title={checks.length ? `Required checks: ${checks.join(", ")}` : "Every reported check must pass"}>
+          <CircleCheck aria-hidden="true" />
+          {checks.length ? `CI: ${checks.join(", ")}` : "CI must pass"}
+        </Badge>
+      )}
+      {p.require_signed && (
+        <Badge variant="outline">
+          <BadgeCheck aria-hidden="true" />
+          signed only
+        </Badge>
+      )}
+      {p.require_linear && (
+        <Badge variant="outline">
+          <GitCommitHorizontal aria-hidden="true" />
+          linear
+        </Badge>
+      )}
+      {p.block_on_todos && (
+        <Badge variant="outline">
+          <ListTodo aria-hidden="true" />
+          blocks on TODOs
+        </Badge>
+      )}
+    </>
   );
 }
 
@@ -298,7 +423,7 @@ export function ProtectionsTab() {
     },
   });
 
-  const rules = protections.data ?? [];
+  const rules: BranchProtectionV05[] = protections.data ?? [];
   const names = (branches.data ?? []).map((b) => b.name);
 
   return (
@@ -366,7 +491,8 @@ export function ProtectionsTab() {
                             no delete
                           </Badge>
                         )}
-                        {!p.no_direct_push && !p.no_delete && <span className="text-muted-foreground">—</span>}
+                        <V05RuleBadges rule={p} />
+                        {!p.no_direct_push && !p.no_delete && !hasV05Rule(p) && <span className="text-muted-foreground">—</span>}
                       </span>
                     </TableCell>
                     <TableCell className="text-right font-semibold tabular-nums">{p.required_approvals}</TableCell>
@@ -407,6 +533,7 @@ export function ProtectionsTab() {
         )}
       </section>
       <Explanation />
+      <TagProtectionsSection />
       <Dialog open={dialog !== null} onOpenChange={(open) => !open && setDialog(null)}>
         {dialog && (
           <ProtectionDialog

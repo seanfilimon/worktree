@@ -85,6 +85,11 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Do not treat 401 as "session expired" (login/register calls). */
   skipAuthRedirect?: boolean;
+  // ---- v0.5 admin-tree (§13.12): raw uploads (release assets) ----
+  /** Sent as-is instead of a JSON `body` (e.g. a File). */
+  rawBody?: Blob | ArrayBuffer;
+  /** Content-Type of `rawBody` (default application/octet-stream). */
+  contentType?: string;
 }
 
 export interface ApiClientOptions {
@@ -160,6 +165,10 @@ export class ApiClient {
     if (opts.body !== undefined) {
       headers.set("Content-Type", "application/json");
       body = JSON.stringify(opts.body);
+    } else if (opts.rawBody !== undefined) {
+      // v0.5 admin-tree: raw upload body.
+      headers.set("Content-Type", opts.contentType || "application/octet-stream");
+      body = opts.rawBody;
     }
 
     const doFetch = this.fetchImpl ?? globalThis.fetch.bind(globalThis);
