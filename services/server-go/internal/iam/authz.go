@@ -75,6 +75,12 @@ func (s *Service) Authorize(ctx context.Context, p *domain.Principal, act domain
 		}
 		return deny(nil, act, "authentication required")
 	}
+	if !ScopeAllows(p.Scopes, act) {
+		return deny(p, act, "token scope does not permit it")
+	}
+	if p.IsServiceAccount() {
+		return s.authorizeServiceAccount(ctx, p, act, tenantID, tree)
+	}
 
 	acct, err := s.store.GetAccount(ctx, p.AccountID)
 	if err != nil {
@@ -108,6 +114,37 @@ func (s *Service) Authorize(ctx context.Context, p *domain.Principal, act domain
 			return deny(p, act, "not a member of the tenant")
 		}
 		return deny(p, act, "role "+role+" does not permit it")
+	}
+	return nil
+}
+
+// authorizeServiceAccount applies the built-in role matrix to a service
+// account: its Role grants actions in its own tenant only; tree visibility
+// widens tree:read as for users. Disabled or deleted service accounts are
+// denied.
+func (s *Service) authorizeServiceAccount(ctx context.Context, p *domain.Principal, act domain.Action, tenantID string, tree *domain.Tree) error {
+	sa, err := s.store.GetServiceAccount(ctx, p.ServiceAccountID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("iam: unknown service account: %w", domain.ErrUnauthenticated)
+		}
+		return fmt.Errorf("iam: looking up service account: %w", err)
+	}
+	if sa.Disabled {
+		return deny(p, act, "service account is disabled")
+	}
+	if act == domain.ActServerAdmin {
+		return deny(p, act, "server admin required")
+	}
+	if act == domain.ActTreeRead && tree != nil &&
+		(tree.Visibility == domain.VisibilityPublic || tree.Visibility == domain.VisibilityInternal) {
+		return nil
+	}
+	if tenantID == "" || tenantID != sa.TenantID {
+		return deny(p, act, "service account does not belong to the tenant")
+	}
+	if !RoleAllows(sa.Role, act) {
+		return deny(p, act, "role "+sa.Role+" does not permit it")
 	}
 	return nil
 }
