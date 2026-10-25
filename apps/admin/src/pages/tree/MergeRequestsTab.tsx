@@ -1,179 +1,268 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
-import { useApi } from "@/api/context";
-import { useBranches, useMergeRequests } from "@/api/queries";
-import { MR_STATES, type MergeRequestState } from "@/api/types";
-import { StateBadge } from "@/components/legacy/Badge";
-import { Button } from "@/components/legacy/Button";
-import { Section } from "@/components/legacy/Card";
-import { SelectField, TextAreaField, TextField } from "@/components/legacy/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
-import { Table, Td, Th, Tr } from "@/components/legacy/Table";
-import { RelativeTime } from "@/components/legacy/Time";
-import { cn } from "@/lib/cn";
+import { Check, CircleX, GitPullRequest, Plus, Search } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router";
+import { errorMessage } from "@/api/client";
+import { useMergeRequests, useProtections } from "@/api/queries";
+import { MR_STATES, type BranchProtection, type MergeRequest, type MergeRequestState } from "@/api/types";
+import { BranchFlow } from "@/components/mr/BranchFlow";
+import { CreateMergeRequestDialog } from "@/components/mr/CreateMergeRequestDialog";
+import { MergeStateBadge } from "@/components/mr/MergeStateBadge";
+import { Timestamp } from "@/components/mr/Timestamp";
+import { UserChip } from "@/components/mr/UserAvatar";
+import { approvalCount, matchingProtections, requiredApprovals } from "@/components/mr/model";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { mergeRequestPath } from "@/lib/paths";
+import { cn } from "@/lib/utils";
 import { useTreeContext } from "./context";
 
-const FILTERS: { value: MergeRequestState | ""; label: string }[] = [
-  ...MR_STATES.map((s) => ({ value: s, label: s[0]!.toUpperCase() + s.slice(1) })),
-  { value: "", label: "All" },
-];
+type Filter = MergeRequestState | "all";
+const FILTERS: Filter[] = [...MR_STATES, "all"];
+const LABEL: Record<Filter, string> = { open: "Open", merged: "Merged", closed: "Closed", all: "All" };
 
-function CreateMergeRequestForm({ onDone }: { onDone: () => void }) {
-  const api = useApi();
-  const { tenant, tree, summary } = useTreeContext();
-  const branches = useBranches(tenant, tree);
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const names = (branches.data ?? []).map((b) => b.name);
-  const defaultBranch = summary.tree.default_branch;
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [source, setSource] = useState("");
-  const [target, setTarget] = useState(defaultBranch);
-  const [touched, setTouched] = useState(false);
-  const sourceValue = source || names.find((n) => n !== target) || "";
-  const errors = {
-    title: title.trim() ? undefined : "Required.",
-    source: !sourceValue ? "Choose a source branch." : sourceValue === target ? "Source and target must differ." : undefined,
-  };
+function parseFilter(raw: string | null): Filter {
+  return FILTERS.find((f) => f === raw) ?? "open";
+}
 
-  const create = useMutation({
-    mutationFn: () =>
-      api.mergeRequests.create(tenant, tree, { title: title.trim(), description: description.trim(), source_branch: sourceValue, target_branch: target }),
-    onSuccess: async (mr) => {
-      await queryClient.invalidateQueries({ queryKey: ["tree", tenant, tree] });
-      onDone();
-      void navigate(mergeRequestPath(tenant, tree, mr.number));
-    },
-  });
-
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    setTouched(true);
-    if (!errors.title && !errors.source) create.mutate();
-  };
-
-  const options = names.map((n) => (
-    <option key={n} value={n}>
-      {n}
-    </option>
-  ));
-
-  return (
-    <form onSubmit={onSubmit} aria-label="Create merge request" className="flex flex-col gap-3" noValidate>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <SelectField label="Source branch" value={sourceValue} onChange={(e) => setSource(e.target.value)} error={touched ? errors.source : undefined}>
-          {!sourceValue && <option value="">Select a branch</option>}
-          {options}
-        </SelectField>
-        <SelectField label="Target branch" value={target} onChange={(e) => setTarget(e.target.value)}>
-          {!names.includes(target) && <option value={target}>{target}</option>}
-          {options}
-        </SelectField>
-      </div>
-      <TextField label="Title" value={title} onChange={(e) => setTitle(e.target.value)} error={touched ? errors.title : undefined} autoFocus />
-      <TextAreaField label="Description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What changes and why (optional)" />
-      <div className="flex gap-2">
-        <Button type="submit" variant="primary" loading={create.isPending}>
-          Open merge request
-        </Button>
-        <Button onClick={onDone}>Cancel</Button>
-      </div>
-    </form>
+function matchesSearch(mr: MergeRequest, q: string): boolean {
+  if (!q) return true;
+  const needle = q.toLowerCase().replace(/^[!#](?=\d)/, "");
+  return [mr.title, mr.author, mr.source_branch, mr.target_branch, String(mr.number)].some((s) =>
+    s.toLowerCase().includes(needle),
   );
 }
 
 export function MergeRequestsTab() {
-  const { tenant, tree } = useTreeContext();
+  const { tenant, tree, summary } = useTreeContext();
   const [params, setParams] = useSearchParams();
-  const raw = params.get("state");
-  const state: MergeRequestState | "" = raw === "" || raw === "all" ? "" : MR_STATES.find((s) => s === raw) ?? "open";
+  const filter = parseFilter(params.get("state"));
+  const q = params.get("q") ?? "";
   const [creating, setCreating] = useState(false);
-  const mrs = useMergeRequests(tenant, tree, state);
+  // One request for every state: the filter counts come from the same list.
+  const mrs = useMergeRequests(tenant, tree, "");
+  const protections = useProtections(tenant, tree);
+
+  const update = (next: { state?: Filter; q?: string }) => {
+    setParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        if (next.state !== undefined) p.set("state", next.state);
+        if (next.q !== undefined) {
+          if (next.q) p.set("q", next.q);
+          else p.delete("q");
+        }
+        return p;
+      },
+      { replace: true },
+    );
+  };
+
+  const all = useMemo(() => mrs.data ?? [], [mrs.data]);
+  const counts = useMemo(() => {
+    const c: Record<Filter, number> = { open: 0, merged: 0, closed: 0, all: all.length };
+    for (const mr of all) c[mr.state] += 1;
+    return c;
+  }, [all]);
+  const visible = useMemo(
+    () =>
+      all
+        .filter((mr) => (filter === "all" || mr.state === filter) && matchesSearch(mr, q.trim()))
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+    [all, filter, q],
+  );
 
   return (
-    <div className="flex flex-col gap-5">
-      {creating && (
-        <Section title="New merge request">
-          <CreateMergeRequestForm onDone={() => setCreating(false)} />
-        </Section>
-      )}
-      <Section
-        title="Merge requests"
-        flush
-        actions={
-          <>
-            <div role="group" aria-label="Filter by state" className="flex rounded-md border border-border-strong p-0.5">
-              {FILTERS.map((f) => (
-                <button
-                  key={f.label}
-                  type="button"
-                  aria-pressed={state === f.value}
-                  onClick={() => setParams({ state: f.value || "all" }, { replace: true })}
-                  className={cn(
-                    "rounded px-2 py-0.5 text-xs font-medium",
-                    state === f.value ? "bg-surface-2 text-fg" : "text-muted-foreground hover:text-fg",
-                  )}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-            {!creating && (
-              <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
-                New merge request
-              </Button>
-            )}
-          </>
-        }
-      >
+    <Card className="gap-0 py-0">
+      <div className="flex flex-col gap-3 border-b p-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center gap-2">
+          <GitPullRequest aria-hidden className="size-4 text-muted-foreground" />
+          <h2 className="text-base font-semibold">Merge requests</h2>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            value={filter}
+            onValueChange={(v) => {
+              if (v) update({ state: parseFilter(v) });
+            }}
+            aria-label="Filter by state"
+            className="w-full sm:w-fit"
+          >
+            {FILTERS.map((f) => (
+              <ToggleGroupItem key={f} value={f} aria-label={`${LABEL[f]} (${counts[f]})`} className="flex-1 gap-1.5 sm:flex-none">
+                {LABEL[f]}
+                <span className="font-mono text-xs text-muted-foreground tabular-nums">{mrs.isPending ? "–" : counts[f]}</span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <div className="relative sm:w-64">
+            <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              aria-label="Search merge requests"
+              placeholder="Search title, author, branch…"
+              value={q}
+              onChange={(e) => update({ q: e.target.value })}
+              className="h-8 pl-8"
+            />
+          </div>
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus aria-hidden />
+            New merge request
+          </Button>
+        </div>
+      </div>
+
+      <CardContent className="px-0">
         {mrs.isPending ? (
-          <SkeletonRows label="Loading merge requests" />
+          <div aria-label="Loading merge requests" className="flex flex-col gap-3 p-4">
+            {Array.from({ length: 4 }, (_, i) => (
+              <Skeleton key={i} className="h-8 w-full" />
+            ))}
+          </div>
         ) : mrs.isError ? (
-          <ErrorState error={mrs.error} onRetry={() => void mrs.refetch()} />
-        ) : mrs.data.length === 0 ? (
-          <EmptyState title={state ? `No ${state} merge requests` : "No merge requests"} />
+          <div className="p-4">
+            <Alert>
+              <CircleX aria-hidden />
+              <AlertTitle>Could not load merge requests</AlertTitle>
+              <AlertDescription>
+                <p>{errorMessage(mrs.error)}</p>
+                <Button size="sm" variant="outline" onClick={() => void mrs.refetch()}>
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          </div>
+        ) : visible.length === 0 ? (
+          <EmptyList
+            total={all.length}
+            filter={filter}
+            query={q.trim()}
+            onClear={() => update({ q: "" })}
+            onCreate={() => setCreating(true)}
+          />
         ) : (
-          <Table label="Merge requests">
-            <thead>
-              <tr>
-                <Th>Merge request</Th>
-                <Th>Branches</Th>
-                <Th>State</Th>
-                <Th className="text-right">Approvals</Th>
-                <Th>Updated</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {mrs.data.map((mr) => (
-                <Tr key={mr.id}>
-                  <Td>
-                    <Link to={mergeRequestPath(tenant, tree, mr.number)} className="font-medium hover:underline">
-                      <span className="mr-1.5 font-mono text-muted-foreground">!{mr.number}</span>
-                      {mr.title}
-                    </Link>
-                    <p className="text-xs text-muted-foreground">
-                      by {mr.author} · opened <RelativeTime value={mr.created_at} />
-                    </p>
-                  </Td>
-                  <Td className="font-mono text-xs">
-                    {mr.source_branch} <span className="text-subtle">→</span> {mr.target_branch}
-                  </Td>
-                  <Td>
-                    <StateBadge value={mr.state} />
-                  </Td>
-                  <Td className="text-right tabular-nums">{mr.approvals?.length ?? 0}</Td>
-                  <Td>
-                    <RelativeTime value={mr.updated_at} className="text-muted-foreground" />
-                  </Td>
-                </Tr>
-              ))}
-            </tbody>
-          </Table>
+          <MergeRequestTable rows={visible} protections={protections.data ?? []} tenant={tenant} tree={tree} />
         )}
-      </Section>
+      </CardContent>
+
+      <CreateMergeRequestDialog
+        tenant={tenant}
+        tree={tree}
+        defaultBranch={summary.tree.default_branch}
+        open={creating}
+        onOpenChange={setCreating}
+      />
+    </Card>
+  );
+}
+
+function MergeRequestTable({
+  rows,
+  protections,
+  tenant,
+  tree,
+}: {
+  rows: MergeRequest[];
+  protections: BranchProtection[];
+  tenant: string;
+  tree: string;
+}) {
+  return (
+    <Table aria-label="Merge requests">
+      <TableHeader className="sticky top-0 z-10 bg-card">
+        <TableRow>
+          <TableHead className="w-16 pl-4">#</TableHead>
+          <TableHead>Title</TableHead>
+          <TableHead className="hidden md:table-cell">Branches</TableHead>
+          <TableHead className="hidden lg:table-cell">Author</TableHead>
+          <TableHead className="text-right">Approvals</TableHead>
+          <TableHead className="hidden sm:table-cell">Updated</TableHead>
+          <TableHead className="pr-4">State</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((mr) => {
+          const required = requiredApprovals(matchingProtections(protections, mr.target_branch));
+          const have = approvalCount(mr);
+          const met = have >= required;
+          return (
+            <TableRow key={mr.id} className={cn(mr.state === "closed" && "text-muted-foreground")}>
+              <TableCell className="pl-4 font-mono text-muted-foreground tabular-nums">!{mr.number}</TableCell>
+              <TableCell className="max-w-[28rem] whitespace-normal">
+                <Link
+                  to={mergeRequestPath(tenant, tree, mr.number)}
+                  className="font-medium break-words underline-offset-4 hover:underline focus-visible:underline"
+                >
+                  {mr.title}
+                </Link>
+                <BranchFlow source={mr.source_branch} target={mr.target_branch} className="mt-1 md:hidden" />
+              </TableCell>
+              <TableCell className="hidden md:table-cell">
+                <BranchFlow source={mr.source_branch} target={mr.target_branch} />
+              </TableCell>
+              <TableCell className="hidden lg:table-cell">
+                <UserChip name={mr.author} />
+              </TableCell>
+              <TableCell className="text-right">
+                <span
+                  className={cn("inline-flex items-center gap-1 font-mono tabular-nums", met && required > 0 && "font-semibold")}
+                  aria-label={required > 0 ? `${have} of ${required} required approvals` : `${have} approvals`}
+                >
+                  {met && required > 0 && <Check aria-hidden className="size-3.5" />}
+                  {required > 0 ? `${have}/${required}` : have}
+                </span>
+              </TableCell>
+              <TableCell className="hidden text-muted-foreground sm:table-cell">
+                <Timestamp value={mr.updated_at} />
+              </TableCell>
+              <TableCell className="pr-4">
+                <MergeStateBadge state={mr.state} />
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+function EmptyList({
+  total,
+  filter,
+  query,
+  onClear,
+  onCreate,
+}: {
+  total: number;
+  filter: Filter;
+  query: string;
+  onClear: () => void;
+  onCreate: () => void;
+}) {
+  const body: { title: string; hint: string; action?: { label: string; run: () => void } } =
+    total === 0
+      ? { title: "No merge requests yet", hint: "Open one to propose merging a branch.", action: { label: "New merge request", run: onCreate } }
+      : query
+        ? { title: `No merge requests match “${query}”`, hint: "Try a different title, author or branch.", action: { label: "Clear search", run: onClear } }
+        : { title: `No ${filter === "all" ? "" : `${filter} `}merge requests`, hint: "Pick another state to see more." };
+  return (
+    <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
+      <GitPullRequest aria-hidden className="size-8 text-muted-foreground" />
+      <p className="font-medium">{body.title}</p>
+      <p className="text-sm text-muted-foreground">{body.hint}</p>
+      {body.action && (
+        <Button size="sm" variant="outline" onClick={body.action.run}>
+          {body.action.label}
+        </Button>
+      )}
     </div>
   );
 }
