@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
@@ -28,7 +29,9 @@ const maxMissingReported = 5
 // Validation pipeline (in order; the first failure wins):
 //
 //  1. authentication, request shape (branch name, new_tip);
-//  2. tree:write on the tree — refusal → AccessDenied rejection;
+//  2. tree:write on the tree, then — when Authz is also a
+//     domain.AccessEvaluator — branch:push on the branch (policies may deny
+//     pushes per branch) — refusal → AccessDenied rejection;
 //  3. Review.CheckPush (branch protection) — *PushDenied → matching
 //     rejection, ErrForbidden → AccessDenied;
 //  4. every snapshot record is well-formed, belongs to this tree, does not
@@ -73,13 +76,26 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 		return nil, err
 	}
 
-	// 2. Authorization.
+	// 2. Authorization. The checks of this push (tree:write, branch:push and
+	// branch protection) share one memoized read of the caller's IAM data.
+	ctx = authz.WithRequestCache(ctx)
 	if err := s.d.Authz.Authorize(ctx, p, domain.ActTreeWrite, t.TenantID, t); err != nil {
 		if errors.Is(err, domain.ErrForbidden) {
 			s.auditRejected(ctx, p, t, branch, newTip, "access_denied")
 			return rejected(accessDenied("you do not have write access to this tree")), nil
 		}
 		return nil, s.toStatus(ctx, err, "authorize")
+	}
+	if ev, ok := s.d.Authz.(domain.AccessEvaluator); ok {
+		res := domain.Resource{TenantID: t.TenantID, Tree: t, Branch: branch}
+		d, err := ev.Evaluate(ctx, p, domain.ActBranchPush, res, authz.RequestEnvFrom(ctx))
+		if err != nil {
+			return nil, s.toStatus(ctx, err, "authorize")
+		}
+		if !d.Allowed {
+			s.auditRejected(ctx, p, t, branch, newTip, "access_denied")
+			return rejected(accessDenied("pushing to branch " + branch + " is denied by an access policy")), nil
+		}
 	}
 
 	// 3. Branch protection.

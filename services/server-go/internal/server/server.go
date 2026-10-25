@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/audit"
+	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
 	"github.com/seanfilimon/worktree/services/server-go/internal/config"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/events"
@@ -87,16 +88,19 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		}
 		log.Info("admin account ensured", slog.String("username", cfg.AdminUser))
 	}
+	// Authorization (roles, teams, grants, service accounts, policies) is
+	// decided by the v0.4 engine; iamSvc handles authentication only.
+	authorizer := authz.New(store, authz.Options{})
 	bus := events.NewBus()
 	auditLog := audit.New(store, log)
 	lic := license.New(store)
-	rev := review.New(store, history, iamSvc, bus, auditLog)
-	stg := staged.New(store, iamSvc, bus)
+	rev := review.New(store, history, authorizer, bus, auditLog)
+	stg := staged.New(store, authorizer, bus)
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
 		Objects: objects,
 		History: history,
-		Authz:   iamSvc,
+		Authz:   authorizer,
 		Review:  rev,
 		License: lic,
 		Staged:  stg,
@@ -114,7 +118,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Objects:     objects,
 		History:     history,
 		Auth:        iamSvc,
-		Authz:       iamSvc,
+		Authz:       authorizer,
 		Review:      rev,
 		License:     lic,
 		Staged:      stg,
@@ -131,6 +135,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		DataDir:           cfg.DataDir,
 
 		Security: iamSvc,
+		Access:   authorizer,
 		SSO:      sso.New(store, iamSvc, iamSvc, sso.Options{PublicURL: cfg.PublicURL, Logger: log}),
 	})
 
