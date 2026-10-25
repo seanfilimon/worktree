@@ -142,6 +142,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 
 		PushChecks: []domain.PushChecker{},
 		AccessCfg:  accessCfg,
+
+		// daemon (§13.11): ends WatchBranches streams on shutdown.
+		Done: ctx.Done(),
 	})
 	_ = pathACL // becomes a PushChecker in its workstream
 

@@ -23,6 +23,10 @@ pub struct WatchStats {
     pub last_snapshot_at: Option<DateTime<Utc>>,
     pub last_stage_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    /// Sync loop (see [`crate::sync`]).
+    pub last_fetch_at: Option<DateTime<Utc>>,
+    pub sync_state: Option<String>,
+    pub sync_error: Option<String>,
 }
 
 impl WatchStats {
@@ -36,6 +40,9 @@ impl WatchStats {
             last_snapshot_at: self.last_snapshot_at,
             last_stage_at: self.last_stage_at,
             last_error: self.last_error.clone(),
+            last_fetch_at: self.last_fetch_at,
+            sync_state: self.sync_state.clone(),
+            sync_error: self.sync_error.clone(),
         }
     }
 
@@ -108,7 +115,8 @@ impl TriggerReport {
 /// The work done when a snapshot is due. Implemented by
 /// [`crate::snapshot::RepoSnapshotter`]; tests substitute fakes.
 pub trait SnapshotAction: Send + Sync + 'static {
-    fn run(&self) -> impl Future<Output = TriggerReport> + Send;
+    /// Snapshot every tree with changes, or only tree `only`.
+    fn run(&self, only: Option<String>) -> impl Future<Output = TriggerReport> + Send;
 }
 
 /// Control messages from the daemon to a worker.
@@ -116,6 +124,12 @@ pub trait SnapshotAction: Send + Sync + 'static {
 pub enum WorkerCommand {
     /// Snapshot immediately (ignores pause and `enabled`), replying with the report.
     SnapshotNow(oneshot::Sender<TriggerReport>),
+    /// Snapshot one tree before a branch switch, unless auto-snapshots are
+    /// paused or disabled (then `None`).
+    SnapshotTree(String, oneshot::Sender<Option<TriggerReport>>),
+    /// Daemon shutdown: snapshot pending changes now, unless paused or
+    /// disabled or nothing changed (then `None`).
+    Flush(oneshot::Sender<Option<TriggerReport>>),
     SetPaused(bool),
 }
 
@@ -150,6 +164,29 @@ pub async fn run_worker<A: SnapshotAction>(
                     // The requester may have given up waiting; nothing to do then.
                     let _ = reply.send(report);
                 }
+                Some(WorkerCommand::SnapshotTree(tree, reply)) => {
+                    let active = debouncer.settings().enabled && !debouncer.is_paused();
+                    let report = if active {
+                        let report = action.run(Some(tree.clone())).await;
+                        tracing::info!(%tree, summary = %report.summary(), "snapshot before branch switch");
+                        stats.lock().apply(&report, Utc::now());
+                        Some(report)
+                    } else {
+                        None
+                    };
+                    let _ = reply.send(report);
+                }
+                Some(WorkerCommand::Flush(reply)) => {
+                    let due = debouncer.settings().enabled
+                        && !debouncer.is_paused()
+                        && debouncer.pending_count() > 0;
+                    let report = if due {
+                        Some(fire(&action, &mut debouncer, &stats).await)
+                    } else {
+                        None
+                    };
+                    let _ = reply.send(report);
+                }
                 Some(WorkerCommand::SetPaused(paused)) => {
                     debouncer.set_paused(paused);
                     stats.lock().paused = paused;
@@ -178,7 +215,7 @@ async fn fire<A: SnapshotAction>(
 ) -> TriggerReport {
     let changed = debouncer.take();
     stats.lock().pending_changes = 0;
-    let report = action.run().await;
+    let report = action.run(None).await;
     if report.errors.is_empty() {
         tracing::info!(paths = changed.len(), summary = %report.summary(), "auto-snapshot pass");
     } else {
@@ -201,11 +238,15 @@ mod tests {
     struct FakeAction {
         calls: UnboundedSender<Instant>,
         report: TriggerReport,
+        only: Arc<Mutex<Vec<String>>>,
     }
 
     impl SnapshotAction for FakeAction {
-        fn run(&self) -> impl Future<Output = TriggerReport> + Send {
+        fn run(&self, only: Option<String>) -> impl Future<Output = TriggerReport> + Send {
             let _ = self.calls.send(Instant::now());
+            if let Some(tree) = only {
+                self.only.lock().unwrap().push(tree);
+            }
             let report = self.report.clone();
             async move { report }
         }
@@ -217,6 +258,7 @@ mod tests {
         calls: UnboundedReceiver<Instant>,
         stats: SharedStats,
         task: JoinHandle<()>,
+        only: Arc<Mutex<Vec<String>>>,
     }
 
     fn settings(inactivity_secs: u64, max: usize) -> DebounceSettings {
@@ -240,9 +282,11 @@ mod tests {
         let (commands, commands_rx) = unbounded_channel();
         let (calls_tx, calls) = unbounded_channel();
         let stats = SharedStats::default();
+        let only = Arc::new(Mutex::new(Vec::new()));
         let action = FakeAction {
             calls: calls_tx,
             report,
+            only: only.clone(),
         };
         let task = tokio::spawn(run_worker(
             action,
@@ -257,6 +301,7 @@ mod tests {
             calls,
             stats,
             task,
+            only,
         }
     }
 
@@ -396,6 +441,7 @@ mod tests {
         let action = FakeAction {
             calls: calls_tx,
             report: ok_report("s"),
+            only: Arc::default(),
         };
         let _task = tokio::spawn(run_worker(
             action,
@@ -471,6 +517,58 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn flush_snapshots_pending_changes_only_when_active() {
+        let mut h = start(settings(3600, 50), ok_report("s1"));
+        let flush = |h: &Harness| {
+            let (tx, rx) = oneshot::channel();
+            h.commands.send(WorkerCommand::Flush(tx)).unwrap();
+            rx
+        };
+        // Nothing pending: no snapshot.
+        assert_eq!(flush(&h).await.unwrap(), None);
+        h.change("a");
+        h.settle().await;
+        h.commands.send(WorkerCommand::SetPaused(true)).unwrap();
+        assert_eq!(flush(&h).await.unwrap(), None, "paused");
+        h.commands.send(WorkerCommand::SetPaused(false)).unwrap();
+        let report = flush(&h).await.unwrap().expect("flushed");
+        assert_eq!(report.snapshots, vec!["s1".to_string()]);
+        assert!(h.calls.try_recv().is_ok());
+        assert_eq!(h.stats.snapshot().pending_changes, 0);
+        assert_eq!(h.only.lock().unwrap().len(), 0, "flush covers every tree");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn snapshot_tree_targets_one_tree_and_respects_pause() {
+        let mut h = start(settings(3600, 50), ok_report("s1"));
+        let snap = |h: &Harness| {
+            let (tx, rx) = oneshot::channel();
+            h.commands
+                .send(WorkerCommand::SnapshotTree("web".into(), tx))
+                .unwrap();
+            rx
+        };
+        let report = snap(&h).await.unwrap().expect("snapshot");
+        assert_eq!(report.snapshots.len(), 1);
+        assert_eq!(*h.only.lock().unwrap(), vec!["web".to_string()]);
+        assert_eq!(h.stats.snapshot().snapshots_created, 1);
+        assert!(h.calls.try_recv().is_ok());
+
+        h.commands.send(WorkerCommand::SetPaused(true)).unwrap();
+        assert_eq!(snap(&h).await.unwrap(), None);
+        assert!(h.calls.try_recv().is_err());
+
+        let h2 = start(
+            DebounceSettings {
+                enabled: false,
+                ..settings(1, 1)
+            },
+            ok_report("s"),
+        );
+        assert_eq!(snap(&h2).await.unwrap(), None, "auto-snapshot disabled");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn worker_exits_when_commands_close() {
         let h = start(settings(1, 50), ok_report("s"));
         drop(h.commands);
@@ -515,8 +613,14 @@ mod tests {
             last_snapshot_at: Some(Utc::now()),
             last_stage_at: Some(Utc::now()),
             last_error: Some("e".into()),
+            last_fetch_at: Some(Utc::now()),
+            sync_state: Some("watching".into()),
+            sync_error: Some("offline".into()),
         };
         let w = stats.to_watched(Path::new("/r"));
+        assert_eq!(w.last_fetch_at, stats.last_fetch_at);
+        assert_eq!(w.sync_state.as_deref(), Some("watching"));
+        assert_eq!(w.sync_error.as_deref(), Some("offline"));
         assert_eq!(w.root, Path::new("/r"));
         assert!(w.paused);
         assert_eq!(w.pending_changes, 4);

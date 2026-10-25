@@ -25,6 +25,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 qrcode = { version = "0.14", default-features = false }
 reqwest = { version = "0.12", default-features = false }
 
+# daemon (§13.11): keep `wt`'s own stdio handles out of the detached daemon.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

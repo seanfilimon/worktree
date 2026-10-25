@@ -23,6 +23,13 @@ impl DaemonInfoFile {
     pub fn create(path: &Path, info: DaemonInfo) -> Result<Self> {
         let json = serde_json::to_vec_pretty(&info)?;
         write_atomic(path, &json)?;
+        // The file holds the IPC token: owner-only where the OS supports it
+        // (on Windows the per-user profile directory's ACL protects it).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(Self {
             path: path.to_path_buf(),
             info,
@@ -66,6 +73,7 @@ mod tests {
             pid: std::process::id(),
             port,
             version: "1.2.3".into(),
+            token: "tok".into(),
         }
     }
 
@@ -104,6 +112,7 @@ mod tests {
             pid: 1,
             port: 2000,
             version: "x".into(),
+            token: String::new(),
         };
         std::fs::write(&path, serde_json::to_vec(&theirs).unwrap()).unwrap();
         drop(ours);

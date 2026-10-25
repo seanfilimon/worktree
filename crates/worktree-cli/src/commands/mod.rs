@@ -79,6 +79,7 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Pull(args) => sync::pull(ctx, args),
         Command::Clone(args) => sync::clone(ctx, args),
         Command::Stage(args) => sync::stage(ctx, args),
+        Command::Unstage(args) => sync::unstage(ctx, args), // daemon (§13.11)
         Command::Archive(args) => archive::run(ctx, args),
         Command::Git(args) => git::run(ctx, args),
         Command::Daemon(args) => daemon::run(ctx, args),

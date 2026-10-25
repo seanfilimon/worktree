@@ -69,6 +69,11 @@ type Deps struct {
 	// AccessCfg applies SyncAccessConfig documents; nil = documents are
 	// only stored (v0.4 behaviour).
 	AccessCfg *accesscfg.Service
+
+	// v0.5 daemon (§13.11): Done, when non-nil, is closed when the server
+	// starts shutting down; open WatchBranches streams then end with
+	// Unavailable so graceful shutdown is not held up by idle watchers.
+	Done <-chan struct{}
 }
 
 // Service implements syncpb.SyncServiceServer.

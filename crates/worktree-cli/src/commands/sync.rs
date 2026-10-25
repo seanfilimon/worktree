@@ -54,6 +54,10 @@ pub struct CloneArgs {
 
     /// Destination directory (default: ./TREE)
     pub dest: Option<PathBuf>,
+
+    /// Start the background daemon (if needed) and auto-snapshot the clone
+    #[arg(long)]
+    pub watch: bool,
 }
 
 #[derive(Debug, Args)]
@@ -61,6 +65,25 @@ pub struct StageArgs {
     /// Remote to stage on (default: [sync].remote, usually origin)
     #[arg(long, value_name = "R")]
     pub remote: Option<String>,
+
+    /// Remove your staged snapshot of the current branch instead (same as `wt unstage`)
+    #[arg(long)]
+    pub discard: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct UnstageArgs {
+    /// Remote to unstage from (default: [sync].remote, usually origin)
+    #[arg(long, value_name = "R")]
+    pub remote: Option<String>,
+
+    /// Branch whose staged snapshot to remove (default: the current branch)
+    #[arg(long, value_name = "B", conflicts_with = "all")]
+    pub branch: Option<String>,
+
+    /// Remove your staged snapshots of every branch of the tree
+    #[arg(long)]
+    pub all: bool,
 }
 
 pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
@@ -159,6 +182,8 @@ struct CloneResult<'a> {
     tenant: &'a str,
     tree: &'a str,
     branch: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watching: Option<&'a str>,
 }
 
 pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
@@ -167,12 +192,18 @@ pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
     let dest = ctx.absolute(args.dest.as_deref().unwrap_or_else(|| Path::new(tree_name)));
     let repo = block_on(remote::clone(&server, tenant, tree_name, &dest))??;
     let root_tree = repo.root_tree()?;
+    let watching = if args.watch {
+        Some(crate::commands::daemon::start_and_watch(repo.root())?)
+    } else {
+        None
+    };
     let result = CloneResult {
         root: repo.root(),
         server: &server,
         tenant,
         tree: tree_name,
         branch: &root_tree.current_branch,
+        watching: watching.as_deref(),
     };
     ctx.out.emit(&result, |t| {
         t.line(format_args!(
@@ -182,6 +213,9 @@ pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
             result.root.display(),
             result.branch.green()
         ));
+        if let Some(msg) = &watching {
+            t.line(format_args!("Daemon: {msg}"));
+        }
     })
 }
 
@@ -198,7 +232,62 @@ fn parse_tree_spec(spec: &str) -> Result<(&str, &str)> {
     }
 }
 
+#[derive(Serialize)]
+struct UnstageResult<'a> {
+    tree: &'a str,
+    remote: &'a str,
+    /// `None` = every branch.
+    branch: Option<&'a str>,
+    removed: bool,
+}
+
+/// `wt unstage` / `wt stage --discard`: remove the caller's staged snapshot.
+pub fn unstage(ctx: &Context, args: UnstageArgs) -> Result<()> {
+    let (repo, tree) = ctx.open_tree()?;
+    let remote = remote_name(&repo, args.remote);
+    let branch = match (args.all, args.branch) {
+        (true, _) => None,
+        (false, Some(b)) => Some(b),
+        (false, None) => Some(repo.current_branch(&tree.name)?),
+    };
+    let removed = block_on(remote::unstage(
+        &repo,
+        &tree.name,
+        &remote,
+        branch.as_deref(),
+    ))??;
+    let result = UnstageResult {
+        tree: &tree.name,
+        remote: &remote,
+        branch: branch.as_deref(),
+        removed,
+    };
+    ctx.out.emit(&result, |t| {
+        let scope = match &branch {
+            Some(b) => format!("on {}", b.green()),
+            None => "on any branch".to_string(),
+        };
+        if removed {
+            t.line(format_args!(
+                "Removed your staged snapshot {scope} from {remote}"
+            ));
+        } else {
+            t.line(format_args!("Nothing staged {scope} on {remote}"));
+        }
+    })
+}
+
 pub fn stage(ctx: &Context, args: StageArgs) -> Result<()> {
+    if args.discard {
+        return unstage(
+            ctx,
+            UnstageArgs {
+                remote: args.remote,
+                branch: None,
+                all: false,
+            },
+        );
+    }
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
     let staged = block_on(remote::stage(&repo, &tree.name, &remote))??;

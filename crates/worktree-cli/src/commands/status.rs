@@ -35,6 +35,21 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
         head_summary(&repo, &report)?
     };
 
+    // daemon workstream (§13.11): hint when auto-snapshot is on but the
+    // daemon is not running / not watching this worktree (text mode only).
+    let daemon_hint = if ctx.out.is_json() {
+        None
+    } else {
+        crate::commands::daemon::status_hint(&repo)
+    };
+    let render = |t: &mut Text, report: &StatusReport, head_line: &str| {
+        render(t, report, head_line);
+        if let Some(hint) = &daemon_hint {
+            t.blank();
+            t.line(hint);
+        }
+    };
+
     if !args.team {
         return ctx.out.emit(&report, |t| render(t, &report, &head_line));
     }

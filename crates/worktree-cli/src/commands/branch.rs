@@ -155,6 +155,14 @@ fn tip_subjects(repo: &Repository, branches: &[BranchInfo]) -> Result<Vec<String
 
 pub fn switch(ctx: &Context, args: SwitchArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
+    // daemon workstream (§13.11): a running daemon snapshots the tree first
+    // when auto_snapshot.on_branch_switch = "snapshot". Best effort.
+    if !args.force {
+        let _ = crate::context::block_on(worktree_sdk::ipc::prepare_branch_switch(
+            repo.root(),
+            &tree.name,
+        ));
+    }
     repo.switch_branch(
         &tree.name,
         &args.name,

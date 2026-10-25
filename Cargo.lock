@@ -2928,17 +2928,25 @@ dependencies = [
 name = "worktree-bg"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "blake3",
  "chrono",
  "clap",
  "notify",
+ "prost",
+ "prost-types",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "toml",
+ "tonic",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "worktree-protocol",
  "worktree-sdk",
 ]
 
@@ -2962,6 +2970,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
  "worktree-git",
  "worktree-sdk",
  "zip",

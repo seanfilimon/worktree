@@ -126,7 +126,8 @@ type Inner = SyncServiceClient<InterceptedService<Channel, BearerAuth>>;
 pub struct SyncClient {
     server: String,
     authenticated: bool,
-    inner: Inner,
+    // pub(super): daemon workstream (§13.11) adds RPCs in remote/watch.rs.
+    pub(super) inner: Inner,
 }
 
 impl SyncClient {
@@ -180,7 +181,7 @@ impl SyncClient {
         self.authenticated
     }
 
-    fn status(&self, status: Status) -> SdkError {
+    pub(super) fn status(&self, status: Status) -> SdkError {
         status_to_error(&self.server, &status)
     }
 
