@@ -154,3 +154,54 @@ func TestValidatePattern(t *testing.T) {
 		}
 	}
 }
+
+// v0.6 (§14.1): merge-method restrictions intersect across matching rules.
+func TestResolveMergeMethods(t *testing.T) {
+	ff, mc, sq := domain.MergeFastForward, domain.MergeCommit, domain.MergeSquash
+	rules := []domain.BranchProtection{
+		{Pattern: "main", MergeMethods: []string{sq, ff}},
+		{Pattern: "ma*", MergeMethods: []string{mc, sq, "bogus"}},
+		{Pattern: "dev", MergeMethods: []string{"bogus"}},
+		{Pattern: "rel", MergeMethods: []string{ff}},
+		{Pattern: "r*", MergeMethods: []string{mc}},
+	}
+	tests := []struct {
+		branch   string
+		restrict bool
+		methods  []string
+		allowed  map[string]bool
+	}{
+		{"main", true, []string{sq}, map[string]bool{ff: false, mc: false, sq: true}},
+		{"mars", true, []string{mc, sq}, map[string]bool{ff: false, mc: true, sq: true}},
+		{"dev", false, nil, map[string]bool{ff: true, mc: true, sq: true}},
+		{"other", false, nil, map[string]bool{ff: true, mc: true, sq: true}},
+		{"rel", true, []string{}, map[string]bool{ff: false, mc: false, sq: false}},
+	}
+	for _, tt := range tests {
+		eff := Resolve(rules, tt.branch)
+		if eff.RestrictMethods != tt.restrict || !reflect.DeepEqual(eff.MergeMethods, tt.methods) {
+			t.Errorf("%s: restrict=%v methods=%#v, want %v %#v", tt.branch, eff.RestrictMethods, eff.MergeMethods, tt.restrict, tt.methods)
+		}
+		for m, want := range tt.allowed {
+			if eff.MethodAllowed(m) != want {
+				t.Errorf("%s: MethodAllowed(%s) = %v", tt.branch, m, !want)
+			}
+		}
+	}
+}
+
+func TestNormalizeMergeMethods(t *testing.T) {
+	got, err := NormalizeMergeMethods([]string{" squash", "fast-forward", "squash"})
+	if err != nil || !reflect.DeepEqual(got, []string{domain.MergeFastForward, domain.MergeSquash}) {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if got, err := NormalizeMergeMethods(nil); err != nil || got != nil {
+		t.Fatalf("empty: %v, %v", got, err)
+	}
+	if _, err := NormalizeMergeMethods([]string{"rebase"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("unknown: %v", err)
+	}
+	if !ValidMergeMethod(domain.MergeCommit) || ValidMergeMethod("") {
+		t.Fatal("ValidMergeMethod")
+	}
+}

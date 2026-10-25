@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
@@ -127,64 +126,14 @@ func (s *Service) Close(ctx context.Context, p *domain.Principal, tree *domain.T
 	return mr, nil
 }
 
-// Merge fast-forwards the target branch to the source branch's tip.
-//
-// It requires domain.ActMRMerge, an open merge request and the number of
-// current approvals (for the source tip) demanded by the target's
-// effective protection (otherwise *domain.PushDenied{Kind:
-// "review_required"}). Outstanding change requests, required CI checks,
-// open blocking TODOs and linear history fail with a *BlockedError (code
-// "merge_blocked"); a member of an open linked group fails with code
-// "linked_group" (merge the group instead). The target tip must be an
-// ancestor of the source tip (or the target empty); otherwise the result
-// wraps domain.ErrConflict and the author must merge the target into the
-// source locally and push. A target that moves concurrently also yields
-// domain.ErrConflict. When the target already contains the source tip (the
-// same snapshot or a descendant of it) the merge request is simply marked
-// merged without moving the branch.
-func (s *Service) Merge(ctx context.Context, p *domain.Principal, tree *domain.Tree, number int) (*domain.MergeRequest, error) {
-	if err := checkTree(tree); err != nil {
-		return nil, err
-	}
-	if err := s.authz.Authorize(ctx, p, domain.ActMRMerge, tree.TenantID, tree); err != nil {
-		return nil, err
-	}
-	if err := requirePrincipal(p); err != nil {
-		return nil, err
-	}
-
-	unlock := s.lockTree(tree.ID)
-	defer unlock()
-
-	mr, err := s.openMR(ctx, tree.ID, number)
-	if err != nil {
-		return nil, err
-	}
-	ev, err := s.evaluate(ctx, tree, mr, false)
-	if err != nil {
-		return nil, err
-	}
-	if err := ev.mergeError(); err != nil {
-		return nil, err
-	}
-	moved, err := s.moveTarget(ctx, tree, mr, ev)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.markMerged(ctx, mr, ev.sourceTip); err != nil {
-		return nil, err
-	}
-	s.announceMerge(ctx, p, tree, mr, ev, moved, nil)
-	return mr, nil
-}
-
-// moveTarget fast-forwards the target branch of mr to the evaluated source
-// tip (unless the target is up to date) and reports whether it moved.
-func (s *Service) moveTarget(ctx context.Context, tree *domain.Tree, mr *domain.MergeRequest, ev *evaluation) (bool, error) {
+// moveTarget moves the target branch of mr to plan.newTip with a
+// compare-and-swap (unless the target is up to date) and reports whether it
+// moved.
+func (s *Service) moveTarget(ctx context.Context, tree *domain.Tree, mr *domain.MergeRequest, ev *evaluation, plan *mergePlan) (bool, error) {
 	if ev.upToDate {
 		return false, nil
 	}
-	if err := s.store.CompareAndSwapBranchTip(ctx, tree.ID, mr.TargetBranch, ev.targetTip, ev.sourceTip); err != nil {
+	if err := s.store.CompareAndSwapBranchTip(ctx, tree.ID, mr.TargetBranch, ev.targetTip, plan.newTip); err != nil {
 		if errors.Is(err, domain.ErrConflict) {
 			return false, fmt.Errorf("merge request !%d: target branch '%s' moved during the merge; retry: %w",
 				mr.Number, mr.TargetBranch, err)
@@ -194,16 +143,17 @@ func (s *Service) moveTarget(ctx context.Context, tree *domain.Tree, mr *domain.
 	return true, nil
 }
 
-// markMerged stores mr as merged at sourceTip.
-func (s *Service) markMerged(ctx context.Context, mr *domain.MergeRequest, sourceTip string) error {
+// markMerged stores mr as merged by plan.
+func (s *Service) markMerged(ctx context.Context, mr *domain.MergeRequest, plan *mergePlan) error {
 	now := s.now()
 	mr.State = domain.MRStateMerged
 	mr.MergedAt = &now
-	mr.MergedSnapshot = sourceTip
+	mr.MergedSnapshot = plan.merged
+	mr.MergeMethod = plan.method
 	mr.UpdatedAt = now
 	if err := s.store.UpdateMergeRequest(ctx, mr); err != nil {
 		// The branch has already moved; surface the failure so the caller
-		// can retry (a retry finds source == target and completes).
+		// can retry (a retry finds the target up to date and completes).
 		return fmt.Errorf("review: branch '%s' updated but merge request !%d could not be saved: %w",
 			mr.TargetBranch, mr.Number, err)
 	}
@@ -211,22 +161,18 @@ func (s *Service) markMerged(ctx context.Context, mr *domain.MergeRequest, sourc
 }
 
 // announceMerge publishes the events and audit record of a completed merge.
-func (s *Service) announceMerge(ctx context.Context, p *domain.Principal, tree *domain.Tree, mr *domain.MergeRequest, ev *evaluation, moved bool, extra map[string]string) {
+func (s *Service) announceMerge(ctx context.Context, p *domain.Principal, tree *domain.Tree, mr *domain.MergeRequest, ev *evaluation, plan *mergePlan, moved bool, extra map[string]string) {
 	s.publish(domain.EventMRMerged, p, tree, snapshotMR(mr))
 	if moved {
 		s.publish(domain.EventBranchPushed, p, tree, map[string]any{
 			"branch":        mr.TargetBranch,
 			"old_tip":       ev.targetTip,
-			"new_tip":       ev.sourceTip,
+			"new_tip":       plan.newTip,
 			"merge_request": mr.Number,
+			"merge_method":  plan.method,
 		})
 	}
-	details := map[string]string{
-		"old_tip":    ev.targetTip,
-		"new_tip":    ev.sourceTip,
-		"approvals":  strconv.Itoa(countApprovals(mr, ev.sourceTip)),
-		"up_to_date": strconv.FormatBool(!moved),
-	}
+	details := mergeAuditDetails(mr, ev, plan, moved)
 	for k, v := range extra {
 		details[k] = v
 	}

@@ -57,6 +57,11 @@ func reviewError(err error) error {
 	if errors.As(err, &be) {
 		return &apiError{status: http.StatusConflict, code: be.Code, msg: be.Message}
 	}
+	// v0.6 (§14.1): a merge method refused by branch protection.
+	var me *review.MethodError
+	if errors.As(err, &me) {
+		return &apiError{status: http.StatusConflict, code: review.CodeMergeMethodNotAllowed, msg: me.Message}
+	}
 	return err
 }
 
@@ -66,6 +71,7 @@ func (a *api) registerReviewRoutes(tree string) {
 	mr := tree + "/merge-requests/{n}"
 	a.handle("POST "+mr+"/review", a.handleReviewMR)
 	a.handle("GET "+mr+"/checks", a.handleMRChecks)
+	a.handle("GET "+mr+"/mergeability", a.handleMergeability) // v0.6 (§14.1)
 	a.handle("GET "+mr+"/comments", a.handleListComments)
 	a.handle("POST "+mr+"/comments", a.handleAddComment)
 	a.handle("PATCH "+mr+"/comments/{id}", a.handleUpdateComment)
@@ -419,7 +425,8 @@ func (a *api) handleGetGroup(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// handleMergeGroup answers POST /tenants/{tenant}/linked-groups/{id}/merge.
+// handleMergeGroup answers POST /tenants/{tenant}/linked-groups/{id}/merge
+// with an optional body {"method"} (v0.6, §14.1).
 func (a *api) handleMergeGroup(w http.ResponseWriter, r *http.Request) error {
 	p, err := requireLogin(r)
 	if err != nil {
@@ -429,7 +436,24 @@ func (a *api) handleMergeGroup(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	merged, err := rv.MergeGroup(r.Context(), p, t.ID, g.ID)
+	var req struct {
+		Method string `json:"method"`
+	}
+	if err := decodeOptionalJSON(w, r, &req); err != nil {
+		return err
+	}
+	if err := (&mergeMRRequest{Method: req.Method}).validate(); err != nil {
+		return err
+	}
+	var merged *domain.LinkedGroup
+	if m, ok := rv.(merger); ok {
+		merged, err = m.MergeGroupWith(r.Context(), p, t.ID, g.ID, strings.TrimSpace(req.Method))
+	} else {
+		merged, err = rv.MergeGroup(r.Context(), p, t.ID, g.ID)
+	}
+	if writeMergeConflict(w, err) {
+		return nil
+	}
 	if err != nil {
 		return reviewError(err)
 	}

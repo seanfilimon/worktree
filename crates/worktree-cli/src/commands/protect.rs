@@ -5,6 +5,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::commands::mr::MergeMethod;
 use crate::commands::server_common::{
     confirm, nullable, render, tree_or_default, Api, Cell, Table, TreeRef,
 };
@@ -61,6 +62,10 @@ pub enum ProtectCommand {
         /// Open blocking TODOs of the source branch block merging
         #[arg(long)]
         block_on_todos: bool,
+        /// Merge methods allowed for merge requests into matching branches,
+        /// comma-separated (fast-forward, merge, squash; default: all)
+        #[arg(long, value_name = "METHODS", value_delimiter = ',')]
+        merge_methods: Vec<MergeMethod>,
     },
     /// Remove the rule for a branch pattern
     #[command(allow_missing_positional = true)]
@@ -134,6 +139,8 @@ struct Protection {
     require_signed: bool,
     require_linear: bool,
     block_on_todos: bool,
+    #[serde(deserialize_with = "nullable")]
+    merge_methods: Vec<String>,
 }
 
 /// `domain.TagProtection` (also the PUT body).
@@ -168,8 +175,15 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
             require_signed,
             require_linear,
             block_on_todos,
+            merge_methods,
         } => {
             let tree = tree_or_default(ctx, tree)?;
+            let mut methods: Vec<String> = Vec::new();
+            for m in merge_methods {
+                if !methods.iter().any(|x| x == m.as_str()) {
+                    methods.push(m.as_str().to_string());
+                }
+            }
             let rule = Protection {
                 pattern,
                 no_direct_push,
@@ -181,6 +195,7 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
                 require_signed,
                 require_linear,
                 block_on_todos,
+                merge_methods: methods,
             };
             let value = api.put(&path(&tree), &rule)?;
             render(out, &value, |t, rule: Protection| {
@@ -301,6 +316,9 @@ fn merge_checks(rule: &Protection) -> Vec<String> {
     if rule.block_on_todos {
         parts.push("todos".into());
     }
+    if !rule.merge_methods.is_empty() {
+        parts.push(format!("methods {}", rule.merge_methods.join("/")));
+    }
     parts
 }
 
@@ -337,6 +355,9 @@ fn describe(rule: &Protection) -> String {
     }
     if rule.block_on_todos {
         parts.push("blocking TODOs block merges".into());
+    }
+    if !rule.merge_methods.is_empty() {
+        parts.push(format!("merge methods {}", rule.merge_methods.join(", ")));
     }
     if parts.is_empty() {
         "no restrictions".into()
@@ -460,6 +481,7 @@ mod tests {
             require_signed,
             require_linear,
             block_on_todos,
+            merge_methods,
         } = protect(&[
             "set",
             "acme/web",
@@ -480,10 +502,16 @@ mod tests {
             "--require-signed",
             "--require-linear",
             "--block-on-todos",
+            "--merge-methods",
+            "squash,fast-forward",
         ])
         else {
             panic!()
         };
+        assert_eq!(
+            merge_methods,
+            [MergeMethod::Squash, MergeMethod::FastForward]
+        );
         assert_eq!(tree.map(|t| t.to_string()).as_deref(), Some("acme/web"));
         assert_eq!(pattern, "release/*");
         assert!(no_direct_push && no_delete);
@@ -502,6 +530,14 @@ mod tests {
                 ..
             }
         ));
+        let ProtectCommand::Set { merge_methods, .. } = protect(&["set", "main"]) else {
+            panic!()
+        };
+        assert!(merge_methods.is_empty());
+        assert_eq!(
+            parse_err(&["protect", "set", "main", "--merge-methods", "squash,rebase"]),
+            ErrorKind::InvalidValue
+        );
         assert!(matches!(
             protect(&["remove", "main", "--yes"]),
             ProtectCommand::Remove {
@@ -615,6 +651,20 @@ mod tests {
         let body = serde_json::to_value(&rule).expect("json");
         assert_eq!(body["require_ci_pass"], true);
         assert_eq!(body["required_checks"], json!(["build"]));
+
+        // v0.6 (§14.1): merge-method restrictions.
+        let rule: Protection = serde_json::from_value(json!({
+            "pattern": "main", "merge_methods": ["fast-forward", "squash"]
+        }))
+        .expect("rule");
+        assert_eq!(describe(&rule), "merge methods fast-forward, squash");
+        assert_eq!(merge_checks(&rule), ["methods fast-forward/squash"]);
+        let body = serde_json::to_value(&rule).expect("json");
+        assert_eq!(body["merge_methods"], json!(["fast-forward", "squash"]));
+        let rule: Protection =
+            serde_json::from_value(json!({"pattern": "main", "merge_methods": null}))
+                .expect("rule");
+        assert!(rule.merge_methods.is_empty());
     }
 
     #[test]

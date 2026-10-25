@@ -64,8 +64,28 @@ pub enum MrCommand {
         #[arg(id = "tree_ref", value_name = "TREE")]
         tree: Option<TreeRef>,
     },
-    /// Merge (fast-forward) a merge request into its target
+    /// Merge a merge request into its target on the server
+    ///
+    /// Without --method the server fast-forwards when it can and otherwise
+    /// writes a merge snapshot (the first method branch protection allows).
+    /// A merge with conflicts is refused: merge the target into the source
+    /// locally, resolve and push.
     Merge {
+        number: u32,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+        /// How to merge: move the target (fast-forward), write a merge
+        /// snapshot with both tips as parents (merge), or one snapshot with
+        /// the combined changes (squash)
+        #[arg(long, value_name = "METHOD")]
+        method: Option<MergeMethod>,
+        /// Message of the merge or squash snapshot (default: "Merge branch
+        /// 'SRC' into TGT (!N)" / the merge request title)
+        #[arg(short, long, value_name = "MSG")]
+        message: Option<String>,
+    },
+    /// Show which merge methods can merge a merge request, and its conflicts
+    Mergeability {
         number: u32,
         #[arg(id = "tree_ref", value_name = "TREE")]
         tree: Option<TreeRef>,
@@ -146,6 +166,9 @@ pub enum MrCommand {
         /// Tenant that owns the group (default: this worktree's origin tenant)
         #[arg(long, value_name = "SLUG")]
         tenant: Option<String>,
+        /// Merge method for every member (default: each member's default)
+        #[arg(long, value_name = "METHOD")]
+        method: Option<MergeMethod>,
     },
     /// List the linked groups of a tenant
     Groups {
@@ -198,6 +221,54 @@ impl StateFilter {
     }
 }
 
+/// A server-side merge method (`domain.Merge*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MergeMethod {
+    /// Move the target branch to the source tip
+    FastForward,
+    /// Write a merge snapshot whose parents are the target and source tips
+    Merge,
+    /// Write one snapshot on the target with the combined changes
+    Squash,
+}
+
+impl MergeMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FastForward => "fast-forward",
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+        }
+    }
+}
+
+/// `review.Mergeability`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Mergeability {
+    fast_forward: bool,
+    up_to_date: bool,
+    #[serde(deserialize_with = "nullable")]
+    methods: Vec<String>,
+    default: String,
+    #[serde(deserialize_with = "nullable")]
+    allowed: Vec<String>,
+    merge_base: String,
+    #[serde(deserialize_with = "nullable")]
+    conflicts: Vec<MergeConflict>,
+    #[serde(deserialize_with = "nullable")]
+    reasons: std::collections::BTreeMap<String, String>,
+}
+
+/// `review.Conflict`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct MergeConflict {
+    tree: String,
+    path: String,
+    kind: String,
+}
+
 /// `domain.MergeRequest`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -216,6 +287,7 @@ struct MergeRequest {
     merged_at: Option<String>,
     merged_snapshot: Option<String>,
     linked_group: Option<String>,
+    merge_method: Option<String>,
 }
 
 /// `domain.Approval`: a review decision ("" = a pre-v0.5 approval).
@@ -374,14 +446,36 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
                 ));
             })
         }
-        MrCommand::Merge { number, tree } => action(ctx, &api, tree, number, "merge", |t, mr| {
-            t.line(format_args!(
-                "Merged {} into {} at {}",
-                format!("!{}", mr.number).bold(),
-                mr.target_branch.green(),
-                short(mr.merged_snapshot.as_deref().unwrap_or_default()).yellow()
-            ));
-        }),
+        MrCommand::Merge {
+            number,
+            tree,
+            method,
+            message,
+        } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let value = api
+                .post(
+                    &format!("{}/merge", mr_path(&tree, number)),
+                    &merge_body(method, message.as_deref()),
+                )
+                .map_err(|e| merge_error(e, number))?;
+            render(out, &value, |t, mr: MergeRequest| {
+                t.line(format_args!(
+                    "Merged {} into {} at {}{}",
+                    format!("!{}", mr.number).bold(),
+                    mr.target_branch.green(),
+                    short(mr.merged_snapshot.as_deref().unwrap_or_default()).yellow(),
+                    method_suffix(&mr)
+                ));
+            })
+        }
+        MrCommand::Mergeability { number, tree } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let value = api.get(&format!("{}/mergeability", mr_path(&tree, number)))?;
+            render(out, &value, |t, m: Mergeability| {
+                mergeability(t, number, &m)
+            })
+        }
         MrCommand::Close { number, tree } => action(ctx, &api, tree, number, "close", |t, mr| {
             t.line(format_args!("Closed {}", format!("!{}", mr.number).bold()));
         }),
@@ -467,12 +561,14 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
                 ));
             })
         }
-        MrCommand::MergeGroup { id, tenant } => {
+        MrCommand::MergeGroup { id, tenant, method } => {
             let tenant = group_tenant(ctx, tenant)?;
-            let value = api.post(
-                &format!("{}/{}/merge", groups_path(&tenant), seg(&id)),
-                &json!({}),
-            )?;
+            let value = api
+                .post(
+                    &format!("{}/{}/merge", groups_path(&tenant), seg(&id)),
+                    &merge_body(method, None),
+                )
+                .map_err(|e| merge_error(e, 0))?;
             render(out, &value, |t, g: Group| {
                 t.line(format_args!(
                     "Merged group {} ({})",
@@ -519,6 +615,101 @@ fn mrs_path(tree: &TreeRef) -> String {
 
 fn mr_path(tree: &TreeRef, number: u32) -> String {
     format!("{}/{number}", mrs_path(tree))
+}
+
+/// The body of a merge request or linked group merge: `{"method"?, "message"?}`.
+fn merge_body(method: Option<MergeMethod>, message: Option<&str>) -> Value {
+    let mut body = json!({});
+    if let Some(method) = method {
+        body["method"] = json!(method.as_str());
+    }
+    if let Some(message) = message {
+        body["message"] = json!(message);
+    }
+    body
+}
+
+/// Adds hints to merge refusals: conflicts exit with code 3 like `wt merge`.
+fn merge_error(err: CliError, number: u32) -> CliError {
+    let text = err.to_string();
+    let target = if number > 0 {
+        format!("`wt mr mergeability {number}`")
+    } else {
+        "`wt mr mergeability N`".to_string()
+    };
+    if text.contains("merge_conflict") {
+        CliError::conflicts(text).with_hint(format!(
+            "merge the target into the source locally (`wt merge`), resolve, push, and retry; {target} lists the conflicts"
+        ))
+    } else if text.contains("merge_method_not_allowed") {
+        err.with_hint(format!(
+            "{target} shows the methods branch protection allows"
+        ))
+    } else {
+        err
+    }
+}
+
+/// ` (squash)` for merges that did not fast-forward.
+fn method_suffix(mr: &MergeRequest) -> String {
+    match mr.merge_method.as_deref() {
+        Some(m) if !m.is_empty() && m != "fast-forward" => format!(" ({m})"),
+        _ => String::new(),
+    }
+}
+
+fn mergeability(t: &mut Text, number: u32, m: &Mergeability) {
+    let head = format!("!{number}");
+    if m.methods.is_empty() {
+        t.line(format_args!(
+            "{} cannot be merged on the server",
+            head.bold().red()
+        ));
+    } else {
+        t.line(format_args!(
+            "{} can be merged with {} (default {})",
+            head.bold().green(),
+            m.methods.join(", "),
+            m.default.bold()
+        ));
+    }
+    let state = if m.up_to_date {
+        "up to date (the target already contains the source)"
+    } else if m.fast_forward {
+        "fast-forward possible"
+    } else {
+        "diverged (needs a merge or squash snapshot)"
+    };
+    t.line(format_args!("  history: {state}"));
+    if !m.merge_base.is_empty() {
+        t.line(format_args!(
+            "  merge base: {}",
+            short(&m.merge_base).yellow()
+        ));
+    }
+    let allowed = if m.allowed.is_empty() {
+        "none".to_string()
+    } else {
+        m.allowed.join(", ")
+    };
+    t.line(format_args!("  allowed by protection: {allowed}"));
+    for (method, reason) in &m.reasons {
+        t.line(format_args!("  {} {method}: {reason}", "-".dimmed()));
+    }
+    if !m.conflicts.is_empty() {
+        t.line(format_args!(
+            "  {}:",
+            plural(m.conflicts.len(), "conflict", "conflicts").red()
+        ));
+        for c in &m.conflicts {
+            let path = if c.tree.is_empty() {
+                c.path.clone()
+            } else {
+                format!("{}:{}", c.tree, c.path)
+            };
+            t.line(format_args!("    {} {path} ({})", "x".red(), c.kind));
+        }
+    }
 }
 
 /// POST `/merge-requests/{n}/{verb}` and render the updated merge request.
@@ -764,9 +955,10 @@ fn show(t: &mut Text, mr: &MergeRequest) {
     }
     if let Some(merged) = mr.merged_snapshot.as_deref().filter(|s| !s.is_empty()) {
         t.line(format_args!(
-            "  merged as {} {}",
+            "  merged as {} {}{}",
             short(merged).yellow(),
-            when(mr.merged_at.as_deref().unwrap_or_default())
+            when(mr.merged_at.as_deref().unwrap_or_default()),
+            method_suffix(mr)
         ));
     }
     if !mr.description.is_empty() {
@@ -847,11 +1039,14 @@ mod tests {
             mr(&["approve", "1"]),
             MrCommand::Approve { number: 1, .. }
         ));
+        // v0.6: no --method = the server's default method.
         assert!(matches!(
             mr(&["merge", "2", "acme/web"]),
             MrCommand::Merge {
                 number: 2,
-                tree: Some(_)
+                tree: Some(_),
+                method: None,
+                message: None,
             }
         ));
         assert!(matches!(
@@ -867,6 +1062,111 @@ mod tests {
             parse_err(&["mr", "list", "--state", "draft"]),
             ErrorKind::InvalidValue
         );
+    }
+
+    #[test]
+    fn parses_merge_methods() {
+        let MrCommand::Merge {
+            number,
+            method,
+            message,
+            ..
+        } = mr(&["merge", "3", "--method", "squash", "-m", "Squash it"])
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (number, method, message.as_deref()),
+            (3, Some(MergeMethod::Squash), Some("Squash it"))
+        );
+        assert!(matches!(
+            mr(&["merge", "3", "acme/web", "--method", "fast-forward"]),
+            MrCommand::Merge {
+                method: Some(MergeMethod::FastForward),
+                ..
+            }
+        ));
+        assert!(matches!(
+            mr(&["merge", "3", "--method", "merge"]),
+            MrCommand::Merge {
+                method: Some(MergeMethod::Merge),
+                ..
+            }
+        ));
+        assert_eq!(
+            parse_err(&["mr", "merge", "3", "--method", "rebase"]),
+            ErrorKind::InvalidValue
+        );
+        assert!(matches!(
+            mr(&["mergeability", "4", "acme/web"]),
+            MrCommand::Mergeability {
+                number: 4,
+                tree: Some(_)
+            }
+        ));
+        assert!(matches!(
+            mr(&["merge-group", "g1", "--method", "squash"]),
+            MrCommand::MergeGroup {
+                method: Some(MergeMethod::Squash),
+                ..
+            }
+        ));
+
+        assert_eq!(merge_body(None, None), json!({}));
+        assert_eq!(
+            merge_body(Some(MergeMethod::FastForward), Some("m")),
+            json!({"method": "fast-forward", "message": "m"})
+        );
+        let conflict = merge_error(
+            CliError::failure("cannot be merged automatically (merge_conflict, HTTP 409)"),
+            3,
+        );
+        assert_eq!(conflict.exit_code(), 3);
+        let refused = merge_error(
+            CliError::failure("not allowed (merge_method_not_allowed, HTTP 409)"),
+            3,
+        );
+        assert_eq!(refused.exit_code(), 1);
+        assert_eq!(
+            merge_error(CliError::failure("x"), 3),
+            CliError::failure("x")
+        );
+    }
+
+    #[test]
+    fn renders_mergeability() {
+        colored::control::set_override(false);
+        let m: Mergeability = serde_json::from_value(json!({
+            "fast_forward": false, "up_to_date": false,
+            "methods": [], "default": "", "allowed": ["merge", "squash"],
+            "merge_base": "0123456789abcdef",
+            "conflicts": [{"path": "a.txt", "kind": "content"}, {"tree": "acme/api", "path": "b", "kind": "binary"}],
+            "reasons": {"fast-forward": "target has diverged", "merge": "2 conflicting paths"}
+        }))
+        .expect("mergeability");
+        let mut t = Text::default();
+        mergeability(&mut t, 5, &m);
+        assert_eq!(
+            t.as_str(),
+            "!5 cannot be merged on the server\n  history: diverged (needs a merge or squash snapshot)\n  merge base: 01234567\n  allowed by protection: merge, squash\n  - fast-forward: target has diverged\n  - merge: 2 conflicting paths\n  2 conflicts:\n    x a.txt (content)\n    x acme/api:b (binary)\n"
+        );
+        let m: Mergeability = serde_json::from_value(json!({
+            "fast_forward": true, "methods": ["fast-forward", "squash"], "default": "fast-forward",
+            "allowed": null, "conflicts": null, "reasons": null
+        }))
+        .expect("mergeability");
+        let mut t = Text::default();
+        mergeability(&mut t, 5, &m);
+        assert_eq!(
+            t.as_str(),
+            "!5 can be merged with fast-forward, squash (default fast-forward)\n  history: fast-forward possible\n  allowed by protection: none\n"
+        );
+        let merged = MergeRequest {
+            merge_method: Some("squash".into()),
+            ..MergeRequest::default()
+        };
+        assert_eq!(method_suffix(&merged), " (squash)");
+        assert_eq!(method_suffix(&MergeRequest::default()), "");
     }
 
     #[test]

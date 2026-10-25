@@ -497,7 +497,10 @@ func TestMergeFastForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mr.State != domain.MRStateMerged || mr.MergedSnapshot != s3 || mr.MergedAt == nil || !mr.MergedAt.Equal(fixedNow) {
+	// v0.6: the default method of a fast-forwardable request is
+	// fast-forward, and it is recorded.
+	if mr.State != domain.MRStateMerged || mr.MergedSnapshot != s3 || mr.MergedAt == nil || !mr.MergedAt.Equal(fixedNow) ||
+		mr.MergeMethod != domain.MergeFastForward {
 		t.Fatalf("merged mr = %+v", mr)
 	}
 	if tip, _ := e.store.tip(e.tree.ID, "main"); tip != s3 {
@@ -511,14 +514,14 @@ func TestMergeFastForward(t *testing.T) {
 		t.Fatalf("events = %v, want %v", got, wantEvents)
 	}
 	push := e.bus.events[2]
-	wantPayload := map[string]any{"branch": "main", "old_tip": s2, "new_tip": s3, "merge_request": 1}
+	wantPayload := map[string]any{"branch": "main", "old_tip": s2, "new_tip": s3, "merge_request": 1, "merge_method": domain.MergeFastForward}
 	if !reflect.DeepEqual(push.Payload, wantPayload) || push.Actor != "carol" || push.TreeID != e.tree.ID {
 		t.Fatalf("branch.pushed event = %+v", push)
 	}
 	if got := e.audit.actions(); !reflect.DeepEqual(got, []string{"mr.open", "mr.merge"}) {
 		t.Fatalf("audit = %v", got)
 	}
-	if d := e.audit.events[1].Details; d["old_tip"] != s2 || d["new_tip"] != s3 || d["up_to_date"] != "false" {
+	if d := e.audit.events[1].Details; d["old_tip"] != s2 || d["new_tip"] != s3 || d["up_to_date"] != "false" || d["method"] != domain.MergeFastForward {
 		t.Fatalf("audit details = %v", d)
 	}
 	// Merging again fails: the merge request is no longer open.
@@ -543,6 +546,10 @@ func TestMergeErrors(t *testing.T) {
 		{name: "anonymous", p: nil, wantErr: domain.ErrUnauthenticated, authzErr: true},
 		{name: "developer lacks mr:merge", p: alice, wantErr: domain.ErrForbidden, authzErr: true},
 		{name: "not found", p: carol, number: 5, wantErr: domain.ErrNotFound},
+		// v0.6: newEnv has no object store (SetObjects), so only
+		// fast-forward is available and a diverged target still fails with
+		// the v0.5 error. Server-side merge/squash of diverged branches is
+		// covered by merge_test.go.
 		{
 			name: "diverged", p: carol, wantErr: domain.ErrConflict,
 			contains: "target has diverged; merge target into source locally and push",

@@ -6,9 +6,13 @@
 // restrictive combination (see Resolve). Protection is never bypassed, not
 // even for server admins.
 //
-// Merge requests are fast-forward only: merging moves the target branch tip
-// to the source tip with a compare-and-swap, and fails with
-// domain.ErrConflict when the target has diverged and needs a local merge.
+// Merge requests merge with one of three methods (v0.6, merge.go):
+// fast-forward moves the target branch tip to the source tip; merge writes
+// a server-side merge snapshot (parents [target tip, source tip]) whose
+// manifest is the three-way merge of internal/merge3; squash writes one
+// snapshot (parent [target tip]) with the combined changes. The target
+// always moves with a compare-and-swap. Branch protection may restrict the
+// methods; conflicts refuse the merge (*ConflictError).
 //
 // v0.5 (docs/ENGINEERING_PLAN.md §13.4) adds review decisions with stale
 // approvals (decisions.go), merge readiness checks: CI, TODOs, linear
@@ -36,7 +40,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
 )
 
 // lockStripes is the number of mutexes tree IDs are hashed onto. Striping
@@ -59,7 +66,18 @@ type Service struct {
 	// lock).
 	groupMu sync.Mutex
 	log     *slog.Logger
+
+	// v0.6 server-side merges (§14.1, merge.go). objects is nil until
+	// SetObjects: merge requests can then only be fast-forwarded.
+	objects objstore.Store
+	newID   func() string
+	merges  mergeCache
 }
+
+// SetObjects gives the service the object store, enabling the server-side
+// merge methods "merge" and "squash" (§14.1). Without it merge requests can
+// only be fast-forwarded. Call before serving requests.
+func (s *Service) SetObjects(objs objstore.Store) { s.objects = objs }
 
 var (
 	_ domain.ReviewService = (*Service)(nil)
@@ -86,6 +104,7 @@ func New(store domain.MetaStore, hist domain.History, authz domain.Authorizer, b
 		bus:   bus,
 		audit: audit,
 		now:   func() time.Time { return time.Now().UTC() },
+		newID: uuid.NewString,
 	}
 }
 
