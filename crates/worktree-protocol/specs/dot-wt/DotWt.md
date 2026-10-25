@@ -1,730 +1,365 @@
-# `.wt/` Root Worktree Configuration Specification
+# `.wt/` Worktree Metadata Directory Specification
+
+> **Version:** 0.5 — describes the directory as built. The authoritative layout is the doc comment in `crates/worktree-sdk/src/repo/mod.rs`; v0.5 additions follow `docs/ENGINEERING_PLAN.md` §13.
 
 ## Overview
 
-The `.wt/` folder lives at the root of every W0rkTree worktree. It is the single source of
-truth for worktree-wide configuration and serves as the **root-level authority** for:
+`.wt/` sits at the root of every worktree and marks its boundary: commands
+find the worktree by walking up from the current directory to the nearest
+`.wt/`. Unlike earlier drafts of this spec, `.wt/` holds **all** repository
+data — configuration, the object store, snapshot records and per-tree state.
+There is no external, platform-native data directory; per-user state lives
+in `$WT_HOME` (see [§9](#9-per-user-state-wt_home)).
 
-- **Identity** — authentication tokens and local user overrides.
-- **Server connection** — which W0rkTree server this worktree syncs with.
-- **Access control** — custom roles and RBAC/ABAC policies that define the permission ceiling.
-- **Configuration** — sync behaviour, auto-snapshot rules, large-file handling, shallow clone
-  settings, branch protection, registered paths, and license metadata.
-- **Ignore patterns** — authoritative ignore rules that no child tree can negate.
-- **Reflog** — per-branch and global operation history.
-- **Hooks** — pre/post-snapshot scripts that apply across every tree.
-- **Conflicts** — machine-readable merge-conflict metadata.
-- **Cache** — local, bgprocess-managed ephemeral data.
-
-### Cardinal Rule
-
-`.wt/` defines the **ceiling**. No child tree's `.wt-tree/` can expand permissions, negate
-root ignore patterns, or override server/tenant identity. Child trees may only **restrict
-further** within the bounds the root establishes.
+Nothing under `.wt/` is ever part of a snapshot (manifest paths containing a
+`.wt` component are rejected), so its contents are local to this worktree and
+are not shared by `wt push` / `wt clone`.
 
 ---
 
-## Folder Structure
+## 1. Layout
 
 ```
 .wt/
-├── config.toml              # Root config: server, sync, tenant, registered paths,
-│                            #   licenses, large files, branch protection, reflog, shallow
-├── ignore                   # Root ignore patterns (authoritative, cannot be negated by trees)
-│
-├── identity/
-│   ├── token                # Auth token for server connection (JWT or API key)
-│   └── identity.toml        # Local user identity (name, email override)
-│
-├── access/
-│   ├── roles.toml           # Custom role definitions (ceiling for all trees)
-│   └── policies.toml        # Root-level access policies (RBAC + ABAC)
-│
-├── hooks/
-│   ├── pre-snapshot         # Runs before snapshot creation (exit non-zero to abort)
-│   └── post-snapshot        # Runs after snapshot creation (informational)
-│
-├── reflog/
-│   ├── main.log             # Per-branch reflog
-│   ├── feature/oauth.log    # Nested branch reflog
-│   └── _global.log          # Global reflog (all branches, all operations)
-│
-├── conflicts/               # Machine-readable conflict metadata (during merge)
-│   └── *.conflict.json      # One file per conflicting path
-│
-└── cache/                   # Local cache (bgprocess-managed, ephemeral)
-    └── ...
+├── config.toml                          WorktreeConfig (§2)
+├── ignore                               worktree-wide ignore patterns (§3)
+├── objects/<hh>/<62 hex>                content-addressed objects (§4)
+├── snapshots/<id>.json                  snapshot records (§5)
+├── trees/<tree>/                        per-tree state (§6)
+│   ├── tree.toml                        TreeRecord: name, id, path, default_branch, remote_name
+│   ├── HEAD                             current branch name
+│   ├── refs/branches/<branch>           tip snapshot id (empty = no snapshots yet)
+│   ├── refs/branches.meta.json          created_at / archived per branch
+│   ├── refs/remotes/<remote>/<branch>   last fetched server tip
+│   ├── refs/tags/<tag>.json             TagInfo
+│   ├── index.json                       stat cache: path -> (size, mtime_ns, hash)
+│   ├── reflog.jsonl                     ReflogEntry per line, append-only
+│   ├── MERGE_STATE.json                 present while a merge awaits resolution
+│   ├── LOCK                             OS file lock held by mutating operations
+│   ├── shallow                          shallow-boundary snapshot ids (shallow clones)
+│   └── stubbed                          paths withheld by the server (not checked out)
+├── conflicts/<tree>.json                conflict list of the merge in progress (§7)
+├── hooks/<phase>                        worktree-wide snapshot hooks (§8)
+├── access/roles.toml                    declarative custom roles (tenant scope)
+├── access/policies.toml                 declarative policies (tenant scope)
+└── git-map.json                         snapshot id <-> Git commit sha (only after wt git import/export)
 ```
 
-### File Ownership
-
-| Path | Written by | Synced to server |
-|------|-----------|-----------------|
-| `config.toml` | User / CLI | Yes |
-| `ignore` | User / CLI | Yes |
-| `identity/token` | CLI (`wt auth login`) | **No** — local only |
-| `identity/identity.toml` | User / CLI | Yes |
-| `access/roles.toml` | User / CLI (requires PolicyManage) | Yes |
-| `access/policies.toml` | User / CLI (requires PolicyManage) | Yes |
-| `hooks/*` | User / CLI | Yes |
-| `reflog/*` | bgprocess | Configurable |
-| `conflicts/*` | bgprocess | No — local only |
-| `cache/*` | bgprocess | No — local only |
+| Path | Written by | Notes |
+|---|---|---|
+| `config.toml` | `wt init`, `wt config set`, `wt remote add/remove`, `wt git remote` | Hand-editable; unknown keys preserved |
+| `ignore` | `wt init` (header), `wt ignore add`, user | Gitignore syntax |
+| `objects/`, `snapshots/` | SDK (snapshot, merge, fetch, clone, import) | Immutable files |
+| `trees/` | SDK | Do not edit by hand |
+| `conflicts/` | `wt merge`, removed when the merge finishes or aborts | |
+| `hooks/` | User | Executables |
+| `access/` | User, `wt access pull` | Applied with `wt access apply` |
+| `git-map.json` | `worktree-git` | |
 
 ---
 
-## `config.toml` — Full Reference
+## 2. `config.toml`
 
-Below is the **complete** `config.toml` with every supported section and key. Optional keys
-show their default values in comments.
+`config.toml` deserializes into `worktree_sdk::config::WorktreeConfig`.
+Sections and keys:
 
 ```toml
-# ──────────────────────────────────────────────
-#  Worktree identity
-# ──────────────────────────────────────────────
-
 [worktree]
-name = "my-project"                         # Human-readable worktree name
-server = "https://wt.company.com"           # W0rkTree server URL
-tenant = "acme-corp"                        # Tenant (organisation) slug
-visibility = "private"                      # private | shared | public
-                                            #   private  — only explicit grants
-                                            #   shared   — visible to tenant members
-                                            #   public   — readable by all authenticated users
+name = "my-project"                 # worktree / root tree name
+id = "3f6c1d2a-8f0e-4c55-9d7b-2a1e5b9c0d44"   # UUID, read-only
+created_at = "2026-10-25T09:00:00+00:00"      # RFC 3339, read-only
+default_branch = "main"             # default branch for new trees (default "main")
 
-# ──────────────────────────────────────────────
-#  Sync behaviour
-# ──────────────────────────────────────────────
+[user]
+name = "Ada Lovelace"               # snapshot author "Name <email>"; empty → OS user name
+email = "ada@example.com"
+
+[auto_snapshot]                     # used by the daemon
+enabled = true                      # default true
+inactivity_secs = 30                # quiet period before a snapshot (alias: inactivity_timeout_secs)
+max_changed_files = 50              # snapshot at once when this many distinct paths changed (0 = no limit)
+max_changed_bytes = 52428800        # snapshot at once when this many bytes changed
+message_format = "auto: {count} files changed"   # placeholders {count} {files} {branch}
+on_branch_switch = "refuse"         # snapshot | stash | refuse — what wt switch does with a dirty tree
 
 [sync]
-auto = true                                 # Enable automatic background sync
-interval_secs = 30                          # Polling / push interval in seconds
-retry_backoff_max_secs = 300                # Max exponential backoff on transient failure
-conflict_strategy = "mark"                  # mark | ours | theirs — default merge strategy
+auto_stage = true                   # daemon stages auto-snapshots (default true)
+remote = "origin"                   # remote used by the daemon and as default for push/fetch/pull/stage
+auto_fetch = true                   # daemon keeps remote-tracking branches fresh (default true)
+interval_secs = 300                 # fallback periodic fetch (default 300)
 
-# ──────────────────────────────────────────────
-#  Auto-snapshot
-# ──────────────────────────────────────────────
+[remote.origin]                     # one table per remote
+url = "http://localhost:7420"       # http:// or https://; trailing '/' stripped
+tenant = "acme"                     # tenant slug on the server
 
-[auto_snapshot]
-enabled = true                              # Automatically create snapshots
-inactivity_timeout_secs = 300               # Seconds of inactivity before snapshot
-max_changed_files = 50                      # Max dirty files before forced snapshot
-on_tree_switch = true                       # Snapshot current tree when switching trees
+[secret_scanning]
+enabled = true                      # default true
+block_on_match = true               # false = warn only
+patterns = [{ name = "internal-token", regex = "itk_[A-Za-z0-9]{32}" }]
+exclude = ["tests/fixtures/**"]
 
-# ──────────────────────────────────────────────
-#  Large file handling
-# ──────────────────────────────────────────────
+[hooks]
+enabled = true                      # default true
+timeout_secs = 60                   # default 60
 
-[large_files]
-threshold_bytes = 10485760                  # 10 MiB — files above this use chunked storage
-chunk_size_bytes = 4194304                  # 4 MiB chunk size for upload/download
-lazy_loading = true                         # Only fetch large blobs on access
-preload_patterns = ["*.rs", "*.ts"]         # Glob patterns to eagerly preload
+[signing]
+key = "laptop"                      # key name under $WT_HOME/keys/ ("" = no signing)
+auto = false                        # sign every snapshot (else only wt snapshot --sign)
 
-# ──────────────────────────────────────────────
-#  Reflog
-# ──────────────────────────────────────────────
-
-[reflog]
-retention_days = 90                         # Days to retain reflog entries locally
-max_entries_per_branch = 10000              # Hard cap per branch log file
-sync_to_server = true                       # Replicate reflog to server for recovery
-compression = "zstd"                        # none | gzip | zstd
-
-# ──────────────────────────────────────────────
-#  Shallow clone settings
-# ──────────────────────────────────────────────
-
-[shallow]
-enabled = false                             # Enable shallow mode for this worktree
-default_depth = 50                          # Number of snapshots to fetch initially
-auto_deepen = true                          # Automatically fetch more history on demand
-lazy_blobs = true                           # Defer blob download until checkout
-
-# ──────────────────────────────────────────────
-#  License metadata
-# ──────────────────────────────────────────────
-
-[license]
-default = "MIT"                             # Default SPDX identifier for the worktree
-spdx_strict = true                          # Reject non-SPDX identifiers
-
-# Per-path license overrides (repeatable)
-[[license.path]]
-path = "services/billing-engine"
-license = "proprietary"
-
-[[license.path]]
-path = "libs/shared-utils"
-license = "Apache-2.0"
-
-# Cross-tenant license grants (repeatable)
-[[license.grant]]
-path = "services/billing-engine"
-tenant = "partner-corp"
-grant = "read-only"                         # read-only | compile-only | full
-
-[[license.grant]]
-path = "libs/shared-utils"
-tenant = "*"                                # Wildcard — all tenants
-grant = "full"
-
-# ──────────────────────────────────────────────
-#  Registered paths
-# ──────────────────────────────────────────────
-#  Registered paths are paths that are explicitly tracked for
-#  policy enforcement, audit, and UI surfacing. They can be
-#  referenced in access policies by scope = { path = "..." }.
-
-[[registered_path]]
-path = "config/production.toml"
-description = "Production configuration"
-sensitivity = "high"                        # low | medium | high | critical
-
-[[registered_path]]
-path = "secrets"
-description = "Secrets directory"
-sensitivity = "critical"
-
-[[registered_path]]
-path = "services/billing-engine/src/pricing.rs"
-description = "Core pricing logic"
-sensitivity = "high"
-
-# ──────────────────────────────────────────────
-#  Tenant access (worktree-level grants)
-# ──────────────────────────────────────────────
-
-[[tenant_access]]
-tenant = "alice-dev"
-permissions = ["tree:read", "branch:read"]
-
-[[tenant_access]]
-tenant = "partner-corp"
-permissions = ["tree:read", "branch:read", "snapshot:read"]
-
-# ──────────────────────────────────────────────
-#  Branch protection rules
-# ──────────────────────────────────────────────
-#  Available rules:
-#    no_direct_push      — cannot push snapshots directly
-#    require_merge_review — must go through merge review flow
-#    no_delete            — branch cannot be deleted
-#    no_force_push        — cannot overwrite history
-#    require_ci_pass      — (future) require CI green before merge
-
-[[branch_protection]]
-branch = "main"
-rules = ["no_direct_push", "require_merge_review", "no_delete", "no_force_push"]
-
-[branch_protection.review]
-min_approvals = 1
-require_from_roles = ["Maintainer", "Admin"]
-dismiss_stale_on_update = true              # Dismiss approvals when new snapshots arrive
-
-[[branch_protection]]
-branch = "release/*"
-rules = ["no_direct_push", "require_merge_review", "no_delete"]
-
-[branch_protection.review]
-min_approvals = 2
-require_from_roles = ["Maintainer", "Admin"]
+[git_remote.github]                 # Git remotes for wt git push (wt git remote add)
+url = "https://example.com/acme/web.git"
 ```
 
-### Key Validation Rules
+`[secret_scanning]`, `[hooks]` and `[signing]` are omitted from the file while
+they hold their defaults. The same `[user]`, `[signing]` and
+`[secret_scanning]` sections can be set per user in `$WT_HOME/config.toml`;
+`[auto_snapshot]`, `[secret_scanning]` and `[hooks]` can be overridden per
+tree in `<tree>/.wt-tree/config.toml`. Precedence: user < `.wt/` < tree.
 
-1. `worktree.name` must be 1–128 characters, alphanumeric plus `-`, `_`, `.`.
-2. `worktree.server` must be a valid HTTPS URL (HTTP allowed only for `localhost`).
-3. `worktree.tenant` must be a valid tenant slug (lowercase alphanumeric plus `-`).
-4. `license.default` must be a valid SPDX expression when `spdx_strict = true`.
-5. `registered_path.path` must be relative and must not escape the worktree root.
-6. `branch_protection.branch` supports literal names and trailing `*` globs only.
-7. Numeric values (`interval_secs`, `threshold_bytes`, etc.) must be positive integers.
+### 2.1 Command access
+
+```bash
+wt config list
+wt config get user.email [--show-origin]
+wt config set user.name "Ada Lovelace"
+wt config set auto_snapshot.inactivity_secs 10 --tree frontend
+wt config set user.email ada@example.com --global
+wt config set remote.origin.url https://wt.example.com     # creates [remote.origin] if needed
+wt remote add origin http://localhost:7420 --tenant acme
+```
+
+Dotted keys accepted by `get`/`set`: `worktree.name`, `worktree.default_branch`,
+`worktree.id` and `worktree.created_at` (read-only), `user.name`, `user.email`,
+`auto_snapshot.enabled`, `auto_snapshot.inactivity_secs`,
+`auto_snapshot.max_changed_files`, `sync.auto_stage`, `sync.remote`,
+`remote.<name>.url`, `remote.<name>.tenant`, plus the v0.5 keys of the
+sections above.
+
+### 2.2 Validation
+
+| Key | Rule |
+|---|---|
+| `worktree.name` | Tree-name rules: 1-100 chars, one path component, no `/ \ : * ? " < > |` or control chars, not starting with `.`, not ending with `.` or space |
+| `worktree.default_branch` | Branch-name rules (see Tree.md §2.1) |
+| `remote.<name>` | Name: letters, digits, `-`, `_` (≤ 64); `url` must be `http://` or `https://` with a host |
+| `sync.remote` | Remote-name rules |
+| booleans | `true/false/yes/no/on/off/1/0` |
+| numbers | Non-negative integers |
+
+An unparsable `config.toml` makes every command fail with `InvalidConfig`
+naming the file.
 
 ---
 
-## `ignore` — Root Ignore Patterns
+## 3. `ignore`
 
-### Format
+Gitignore syntax, patterns relative to the worktree root. `wt init` writes a
+comment header; `wt ignore add PATTERN` appends; `wt git import` copies the
+Git repository's root `.gitignore` patterns here.
 
-The ignore file follows `.gitignore` syntax with the following rules:
+Evaluation (all trees):
 
-| Syntax | Meaning |
-|--------|---------|
-| `# comment` | Comment line (ignored) |
-| `pattern` | Match files/dirs anywhere in the worktree |
-| `/pattern` | Match relative to worktree root only |
-| `pattern/` | Match directories only |
-| `*` | Match any sequence of non-`/` characters |
-| `**` | Match any sequence of characters including `/` |
-| `?` | Match any single non-`/` character |
-| `[abc]` | Character class |
-| `!pattern` | Negate a previous pattern |
+1. Hard-coded `.wt/`, `.wt-tree/`, `.git/` — always ignored, never
+   re-includable.
+2. Soft defaults `__pycache__/`, `*.pyc`, `.env`, `*.log`, `node_modules/`,
+   `.venv/`, `dist/`, `build/`, `target/` — ignored unless re-included with
+   `!pattern`.
+3. `.wt/ignore` and the root `.wtignore` form the root level. Patterns here
+   cannot be re-included by `!pattern` in a deeper `.wtignore` or a
+   `.wt-tree/ignore`; inside the root level the last matching line wins, so
+   `!` works normally.
+4. `<tree>/.wt-tree/ignore`, then `.wtignore` files in subdirectories (deeper
+   files take precedence over shallower ones, except over the root level).
 
-### Authoritativeness
-
-Root `.wt/ignore` is **authoritative**:
-
-- Patterns defined here **cannot** be negated by any child `.wt-tree/ignore`.
-- If a child tree attempts to negate a root pattern with `!pattern`, bgprocess logs a
-  warning and the root pattern wins silently.
-- Negation (`!`) within the root ignore file itself works normally — you can un-ignore
-  something you ignored earlier in the same file.
-
-### Hard-Coded Ignores
-
-The following patterns are **always active** and cannot be un-ignored by any ignore file:
+Because `.wt/ignore` is not shared, rules the team needs should go in a
+tracked `.wtignore`. Invalid pattern lines are skipped with a warning.
 
 ```
-.wt/
-.wt-tree/
-.git/
-```
-
-These are structural directories managed by W0rkTree or Git and must never be snapshotted
-as regular content.
-
-### Soft Defaults
-
-The following patterns are active **by default** but can be explicitly un-ignored in
-`.wt/ignore` (and only in `.wt/ignore`, not in tree-level ignores):
-
-```
-node_modules/
-target/
-__pycache__/
-.DS_Store
-Thumbs.db
-*.pyc
-*.pyo
-*.swp
-*.swo
-*~
-.env
-.venv/
-dist/
-build/
-*.log
-```
-
-To un-ignore a soft default, add an explicit negation in `.wt/ignore`:
-
-```
-# We want to track build output
-!dist/
-```
-
-### Example `.wt/ignore`
-
-```
-# Compiled output
-*.o
-*.a
-*.so
-*.dll
-
-# IDE files
-.idea/
-.vscode/
-*.iml
-
-# Secrets (NEVER snapshot)
+# .wt/ignore
 *.pem
-*.key
 .env.*
-
-# But allow .env.example
 !.env.example
-
-# OS junk
-.DS_Store
-Thumbs.db
-
-# Test fixtures that are too large
 tests/fixtures/large/
 ```
 
 ---
 
-## `identity/` — Authentication & User Identity
-
-### `identity/token`
-
-A single-line file containing the authentication credential for the W0rkTree server.
-
-- Format: JWT bearer token **or** opaque API key.
-- Created by `wt auth login` — should **never** be edited by hand.
-- File permissions: `0600` (owner read/write only). bgprocess warns if permissions are lax.
-- **Not synced to server** — local to this machine only.
-- **Not committed to snapshots** — hard-coded ignore ensures this.
-
-### `identity/identity.toml`
-
-Local user identity overrides for this specific worktree. When present, these values
-override the global user config at `~/.config/w0rktree/config.toml`.
-
-```toml
-[user]
-name = "Alice Engineer"
-email = "alice@company.com"
-signing_key = "ssh-ed25519 AAAA..."     # Optional — for snapshot signing
-```
-
-- `name` and `email` are embedded in snapshot metadata.
-- `signing_key` is used for cryptographic snapshot signing when enabled.
-- This file **is** synced to server and versioned.
-
----
-
-## `access/` — Declarative Access Control
-
-### Built-in Roles
-
-The following roles always exist and cannot be deleted or redefined:
-
-| Role | Description |
-|------|-------------|
-| **Owner** | Full control. Can transfer ownership, delete worktree. |
-| **Admin** | Full control except ownership transfer and worktree deletion. |
-| **Maintainer** | Manage branches, merge, manage trees. Cannot modify access policies. |
-| **Developer** | Read/write to allowed trees and branches. |
-| **Viewer** | Read-only access. |
-
-### `access/roles.toml` — Custom Role Definitions
-
-Custom roles extend the built-in set. They must be a **subset** of an existing role's
-permissions — you cannot create a custom role with more power than Admin.
-
-```toml
-# A security reviewer who can read everything but only write to security-related paths
-[[role]]
-name = "security-reviewer"
-inherits = "Viewer"                         # Start with Viewer permissions
-description = "Can review and approve security-sensitive changes"
-
-[[role.grant]]
-permission = "merge:approve"
-scope = "worktree"
-
-[[role.grant]]
-permission = "branch:read"
-scope = "worktree"
-
-# A CI bot role with minimal permissions
-[[role]]
-name = "ci-bot"
-inherits = "Viewer"
-description = "Automated CI/CD pipeline identity"
-
-[[role.grant]]
-permission = "snapshot:read"
-scope = "worktree"
-
-[[role.grant]]
-permission = "branch:read"
-scope = "worktree"
-
-# An external auditor with read-only access and audit log visibility
-[[role]]
-name = "external-auditor"
-inherits = "Viewer"
-description = "External compliance auditor — read-only with audit trail"
-
-[[role.grant]]
-permission = "reflog:read"
-scope = "worktree"
-```
-
-### `access/policies.toml` — RBAC + ABAC Policies
-
-Policies bind subjects to permissions at specific scopes. The root policies file defines
-the **ceiling** — tree-level policies can only restrict further.
-
-```toml
-# Grant the backend team Developer access to the entire worktree
-[[policy]]
-name = "backend-team-access"
-subject = { team = "backend" }
-role = "Developer"
-scope = "worktree"
-effect = "allow"
-
-# Grant the security team the custom security-reviewer role
-[[policy]]
-name = "security-review-access"
-subject = { team = "security" }
-role = "security-reviewer"
-scope = "worktree"
-effect = "allow"
-
-# Restrict the billing-engine to specific accounts
-[[policy]]
-name = "billing-engine-restrict"
-subject = { role = "Developer" }
-scope = { path = "services/billing-engine" }
-effect = "deny"
-unless = { team = ["billing", "platform"] }
-
-# Allow all authenticated users to read shared libraries
-[[policy]]
-name = "shared-libs-read"
-subject = "all_authenticated"
-role = "Viewer"
-scope = { path = "libs/*" }
-effect = "allow"
-
-# Deny all access to secrets unless you are Admin or Owner
-[[policy]]
-name = "secrets-lockdown"
-subject = "all_authenticated"
-scope = { path = "secrets" }
-effect = "deny"
-unless = { role = ["Admin", "Owner"] }
-```
-
-#### Subject Types
-
-| Subject | Syntax | Example |
-|---------|--------|---------|
-| Specific account | `{ account = "alice" }` | Single user |
-| Team | `{ team = "backend" }` | All members of a team |
-| Role | `{ role = "Developer" }` | All users with a role |
-| Tenant | `{ tenant = "partner-corp" }` | All users in a tenant |
-| All authenticated | `"all_authenticated"` | Any logged-in user |
-
-#### Scope Types
-
-| Scope | Syntax | Example |
-|-------|--------|---------|
-| Worktree-wide | `"worktree"` | Entire worktree |
-| Specific tree | `{ tree = "auth-service" }` | One tree |
-| Specific branch | `{ branch = "main" }` | One branch |
-| Specific path | `{ path = "secrets" }` | Registered path |
-
-#### Policy Evaluation Order
-
-1. Explicit **deny** rules are evaluated first — deny always wins.
-2. **unless** clauses can exempt subjects from a deny.
-3. **allow** rules are then evaluated — at least one must match.
-4. If no allow rule matches, access is **implicitly denied**.
-5. Tree-level policies run **after** root policies — they can only add denies or narrow allows.
-
-### Modification Permissions
-
-Only users with the `PolicyManage` permission (granted to Owner, Admin, or custom roles
-with explicit grant) can modify `access/roles.toml` or `access/policies.toml`. Attempts
-to modify these files without the correct permission are rejected by bgprocess before sync.
-
----
-
-## `hooks/` — Pre/Post Snapshot Hooks
-
-### Overview
-
-Hooks are executable scripts or programs that run at defined points in the snapshot
-lifecycle. Root-level hooks apply to **all** snapshots across every tree.
-
-### `hooks/pre-snapshot`
-
-- **When**: Runs immediately before a snapshot is created (manual or auto).
-- **Working directory**: Worktree root.
-- **Environment variables**:
-  - `WT_HOOK=pre-snapshot`
-  - `WT_BRANCH=<current branch>`
-  - `WT_TREE=<tree name or "root">`
-  - `WT_SNAPSHOT_TYPE=manual|auto`
-  - `WT_CHANGED_FILES=<newline-separated list>`
-- **Exit code**: Non-zero aborts the snapshot. stderr is shown to the user.
-- **Timeout**: 30 seconds (configurable via `config.toml` in future).
-
-### `hooks/post-snapshot`
-
-- **When**: Runs immediately after a snapshot is successfully created.
-- **Working directory**: Worktree root.
-- **Environment variables**:
-  - `WT_HOOK=post-snapshot`
-  - `WT_BRANCH=<current branch>`
-  - `WT_TREE=<tree name or "root">`
-  - `WT_SNAPSHOT_ID=<new snapshot hash>`
-  - `WT_SNAPSHOT_TYPE=manual|auto`
-- **Exit code**: Informational only — non-zero is logged but does not roll back.
-
-### Execution Order
-
-When both root and tree hooks exist:
-
-1. Root `hooks/pre-snapshot` runs first.
-2. Tree `.wt-tree/hooks/pre-snapshot` runs second.
-3. Snapshot is created.
-4. Root `hooks/post-snapshot` runs first.
-5. Tree `.wt-tree/hooks/post-snapshot` runs second.
-
-If the root pre-snapshot hook fails, the tree hook is **not** executed and the snapshot
-is aborted.
-
----
-
-## `reflog/` — Operation History
-
-### Purpose
-
-The reflog records every ref-changing operation in the worktree. It enables:
-
-- Undo / recovery of lost snapshots.
-- Cross-machine history when synced to server.
-- Audit trail for compliance.
-
-### File Layout
-
-- **Per-branch files**: `reflog/<branch-name>.log` (e.g., `reflog/main.log`,
-  `reflog/feature/oauth.log`). Nested branches use directory separators.
-- **Global log**: `reflog/_global.log` contains all operations across all branches.
-
-### Log Entry Format
-
-Each line is a single operation, tab-separated:
-
-```
-<ISO-8601 timestamp>\t<operation>\t<before_ref>\t<after_ref>\t<user>\t<message>
-```
-
-#### Operations
-
-| Operation | Description |
-|-----------|-------------|
-| `snapshot` | New snapshot created |
-| `merge` | Branch merged |
-| `revert` | Snapshot reverted |
-| `branch:create` | New branch created |
-| `branch:delete` | Branch deleted |
-| `branch:rename` | Branch renamed |
-| `reset` | Ref reset (e.g., `wt reset --to`) |
-| `sync:pull` | Pulled from server |
-| `sync:push` | Pushed to server |
-
-#### Example
-
-```
-2025-01-15T09:32:11Z	snapshot	abc1234	def5678	alice	auto-snapshot: 3 files changed
-2025-01-15T10:01:44Z	merge	def5678	789abcd	bob	merge feature/oauth into main
-2025-01-15T10:05:00Z	sync:push	789abcd	789abcd	alice	pushed main to server
-```
-
-### Retention
-
-- Controlled by `config.toml` → `[reflog].retention_days` and `max_entries_per_branch`.
-- bgprocess prunes entries older than `retention_days` during periodic maintenance.
-- When `sync_to_server = true`, entries are replicated before pruning for remote recovery.
-
----
-
-## `conflicts/` — Merge Conflict Metadata
-
-### Purpose
-
-When bgprocess detects conflicts during auto-merge or an explicit `wt merge`, it writes
-structured conflict metadata to `conflicts/`. This enables tooling and UIs to present
-conflicts in a machine-readable way.
-
-### File Naming
-
-Each conflicting file gets a corresponding `.conflict.json`:
-
-```
-conflicts/<path-with-dashes>.conflict.json
-```
-
-For example, a conflict in `src/auth/handler.rs` produces:
-`conflicts/src-auth-handler.rs.conflict.json`
-
-### Conflict JSON Schema
+## 4. `objects/`
+
+Content-addressed store (`worktree_sdk::store::ObjectStore`):
+
+- Path: `objects/<first 2 hex>/<remaining 62 hex>` of the BLAKE3-256 hash.
+- Stored raw, uncompressed — the same bytes the server stores and the wire
+  carries.
+- Kinds: blobs (file content or one chunk), manifests (protobuf
+  `ManifestRecord`), chunk lists (protobuf `ChunkList`, files > 8 MiB).
+- Writes go to a temp file in the fan-out directory and are renamed into
+  place; losing a rename race to another writer of the same object counts as
+  success (Windows "Access is denied" included).
+- Objects are never deleted locally.
+
+## 5. `snapshots/`
+
+One JSON file per snapshot, `snapshots/<uuid>.json`, the serde form of
+`worktree_sdk::Snapshot` (hashes as hex). Records are immutable. Lookups by
+prefix need at least 4 characters.
+
+## 6. `trees/`
+
+One directory per registered tree (root tree included); see the layout
+table above and [Tree.md](../tree/Tree.md). Notes:
+
+- `refs/branches/` may contain `/`-separated subdirectories for branch names
+  like `feature/login`.
+- `index.json` is only a cache; losing it costs a re-hash.
+- `reflog.jsonl` lines that do not parse (torn writes) are skipped. Retention:
+  90 days / 1000 entries per tree by default, applied by `wt reflog expire`
+  and the daemon's maintenance pass.
+- `LOCK` is an OS-level advisory lock taken by every mutating operation so the
+  CLI and the daemon never interleave writes to one tree; it is released
+  automatically when the process exits. The daemon's maintenance pass removes
+  stale lock files.
+
+## 7. `conflicts/`
+
+`conflicts/<tree>.json` exists while a merge in that tree has unresolved
+conflicts. It is a JSON array of `ConflictInfo`:
 
 ```json
-{
-  "file": "src/auth/handler.rs",
-  "branch_ours": "main",
-  "branch_theirs": "feature/oauth",
-  "ancestor_ref": "abc1234",
-  "ours_ref": "def5678",
-  "theirs_ref": "789abcd",
-  "hunks": [
-    {
-      "start_line": 42,
-      "end_line": 58,
-      "ours": "fn authenticate(token: &str) -> Result<User> {\n    ...\n}",
-      "ancestor": "fn authenticate(token: &str) -> bool {\n    ...\n}",
-      "theirs": "fn authenticate(token: &str, provider: Provider) -> Result<User> {\n    ...\n}"
-    }
-  ],
-  "auto_resolvable": false,
-  "created_at": "2025-01-15T10:02:00Z"
-}
+[
+  {"path": "src/auth/handler.rs", "kind": "content",
+   "hunks": [{"ours_start": 42, "ours_len": 6, "theirs_start": 42, "theirs_len": 9}]},
+  {"path": "docs/old.md", "kind": "modify_delete", "hunks": []}
+]
 ```
 
-### Lifecycle
+`kind` is one of `content`, `modify_delete`, `add_add`, `binary`. The merge
+itself (source branch, tips, base, message) is in
+`trees/<tree>/MERGE_STATE.json`. Both files are removed by `wt merge
+--continue`, a completing `wt snapshot`, or `wt merge abort`.
 
-1. bgprocess writes `.conflict.json` files when conflicts are detected.
-2. User resolves conflicts (manually or via tooling).
-3. User runs `wt conflicts resolve` or creates a new snapshot.
-4. bgprocess cleans up resolved `.conflict.json` files.
+## 8. `hooks/`
 
----
+Worktree-wide hooks run for every tree; tree hooks live in
+`<tree>/.wt-tree/hooks/`.
 
-## `cache/` — Local Cache
+| File | When | Failure |
+|---|---|---|
+| `hooks/pre-snapshot` | Before the working state is read | Non-zero exit aborts the snapshot (`pre-snapshot hook failed: ...`) |
+| `hooks/post-snapshot` | After the snapshot is written | Printed to stderr; snapshot kept |
 
-### Purpose
+On Windows `<phase>.cmd`, `<phase>.bat` and `<phase>.ps1` are also found.
+Order: `.wt/hooks/` first, then the tree's. Environment:
 
-bgprocess uses the `cache/` directory for ephemeral, machine-local data:
+| Variable | Value |
+|---|---|
+| `WT_HOOK` | `pre-snapshot` or `post-snapshot` |
+| `WT_TREE` | Tree name |
+| `WT_TREE_PATH` | Absolute tree directory (also the working directory) |
+| `WT_BRANCH` | Current branch |
+| `WT_ROOT` | Worktree root |
+| `WT_SNAPSHOT` | New snapshot id (post only) |
 
-- Partial blob downloads in progress.
-- Decompressed object cache for faster access.
-- Index acceleration structures.
+`[hooks] timeout_secs` kills slow hooks; `[hooks] enabled = false` or
+`wt snapshot --no-verify` skips them. Hooks run for daemon auto-snapshots too.
 
-### Characteristics
+## 9. Per-user state (`$WT_HOME`)
 
-- **Never synced** to server.
-- **Never committed** to snapshots.
-- Can be safely deleted at any time — bgprocess rebuilds as needed.
-- Size is bounded by bgprocess configuration (default: 500 MiB).
+`$WT_HOME` (default `~/.wt`, from `HOME` or `USERPROFILE`) is outside every
+worktree:
 
----
+| File | Content |
+|---|---|
+| `credentials.toml` | Saved bearer tokens per normalized server URL (mode 0600 on Unix) |
+| `config.toml` | User-level `[user]`, `[signing]`, `[secret_scanning]` |
+| `keys/<name>.key`, `keys/<name>.pub` | Ed25519 signing keys (hex seed, 0600) and public key + registered key id |
+| `bg.json` | Running daemon: `{pid, port, version, token}` |
+| `bg.toml` | Daemon watch list `watched = [...]` |
+| `bg.log` | Daemon log (rotated to `bg.log.old` above 10 MiB) |
 
-## What `.wt/` Does NOT Contain
+```toml
+# $WT_HOME/credentials.toml
+[servers."http://localhost:7420"]
+username = "ada"
+token = "wt_..."
+```
 
-The following are explicitly **outside** the `.wt/` directory:
-
-| Concern | Where it lives |
-|---------|---------------|
-| Object store (blobs, snapshots, trees) | bgprocess-managed external storage |
-| Full version history | bgprocess + server |
-| Large binary data | bgprocess chunked storage layer |
-| Tree-specific config | `.wt-tree/` inside each tree |
-| Global user config | `~/.config/w0rktree/config.toml` |
-| Server-side enforcement | Server process |
-
----
-
-## Initialisation
-
-When `wt init` creates a new worktree, it scaffolds `.wt/` with:
-
-1. `config.toml` — populated with user-provided name, server, tenant, and sensible defaults.
-2. `ignore` — populated with soft defaults (commented, for visibility).
-3. `identity/` — empty until `wt auth login` is run.
-4. `access/roles.toml` — empty (built-in roles are implicit).
-5. `access/policies.toml` — default policy granting Owner full access.
-6. `hooks/` — empty directory.
-7. `reflog/` — empty directory (bgprocess populates on first operation).
-8. `conflicts/` — empty directory.
-9. `cache/` — empty directory.
+Tests and isolated environments must set `WT_HOME`.
 
 ---
 
-## Migration & Compatibility
+## 10. Initialization
 
-- The `.wt/` folder includes an implicit format version derived from the W0rkTree CLI
-  version that created it.
-- When a newer CLI opens an older `.wt/`, it auto-migrates forward (non-destructive).
-- When an older CLI opens a newer `.wt/`, it refuses with a clear upgrade message.
-- `config.toml` is forward-compatible: unknown keys are preserved but ignored by older CLIs.
+`wt init [PATH] [--name N] [--branch B] [--watch]` creates:
+
+1. `config.toml` with `[worktree]` (name, new UUID, timestamp, default
+   branch) and default `[user]`, `[auto_snapshot]`, `[sync]` sections;
+2. `objects/`, `snapshots/`, `trees/`;
+3. `ignore` with a comment header;
+4. `trees/<name>/` for the root tree: `tree.toml`, `HEAD`, an empty default
+   branch ref, `refs/tags/`, `refs/remotes/`, and an `init` reflog entry.
+
+If any step fails, `.wt/` is removed. `AlreadyInitialized` if `.wt/` exists.
+`--watch` also starts the daemon (if needed) and watches the new worktree.
+`hooks/`, `access/`, `conflicts/` and the per-tree `shallow`/`stubbed` files
+are created only when used. `wt clone` performs the same initialization, then
+configures `[remote.origin]`, adopts the server tree id and fetches.
+
+## 11. Compatibility
+
+- Readers ignore unknown keys and `wt config set` preserves them, so newer
+  sections do not break older files.
+- New fields of stored JSON records (`Snapshot.dependencies`, `reverts`,
+  `signature`; `ManifestEntry.chunked`) default when absent, so v0.5 reads
+  pre-v0.5 data unchanged.
+- There is no explicit format version and no migration step.
+
+---
+
+## Implementation Status
+
+| Item | Status |
+|---|---|
+| Layout of `config.toml`, `ignore`, `objects/`, `snapshots/`, `trees/`, `conflicts/` | Built |
+| `$WT_HOME` credentials, daemon files | Built |
+| `[secret_scanning]`, `[hooks]`, `[signing]`, `sync.auto_fetch/interval_secs` | Built (v0.5) |
+| Config hierarchy with `--show-origin`, `--tree`, `--global` | Built (v0.5 §13.9) |
+| `hooks/`, `access/`, `shallow`, `stubbed`, conflict hunks, `[git_remote.*]` | Built (v0.5) |
+| `git-map.json` | Built |
+
+## Roadmap
+
+Described in earlier drafts, not built and not in v0.5:
+
+- `[worktree] server / tenant / visibility` keys — the server URL and tenant
+  are per remote (`[remote.<name>]`); visibility is a server tree setting.
+- `[sync] auto / retry_backoff_max_secs / conflict_strategy`, `[shallow]`,
+  `[large_files]` / `[storage]` (threshold, chunk size, lazy loading,
+  preload patterns), `[reflog]` (retention, per-branch caps, server sync,
+  compression), `[license]`, `[[license.path]]`, `[[license.grant]]`,
+  `[[registered_path]]`, `[[tenant_access]]`, `[[branch_protection]]` — the
+  corresponding features are server rules or fixed behaviour today.
+- `identity/token` and `identity/identity.toml` — tokens live in
+  `$WT_HOME/credentials.toml`; identity is `[user]`.
+- Per-branch and global reflog files (`reflog/<branch>.log`,
+  `_global.log`) and tab-separated reflog lines — the reflog is one JSONL file
+  per tree.
+- One `.conflict.json` per conflicting path with stored ours/base/theirs
+  text.
+- `cache/` directory and a bounded object cache.
+- A format version with automatic forward migration.
+- Hook variables `WT_SNAPSHOT_TYPE` and `WT_CHANGED_FILES`.
+- Client-side rejection of `access/` edits without a `PolicyManage`
+  permission — authorization happens when the server applies the files.
+
+## References
+
+- `crates/worktree-sdk/src/repo/mod.rs` — layout doc comment, `init`, `open`
+- `crates/worktree-sdk/src/config.rs` — `WorktreeConfig`, sections, `get`/`set`, `wt_home()`
+- `crates/worktree-sdk/src/store.rs` — `ObjectStore`
+- `crates/worktree-sdk/src/repo/{trees,refs,reflog,working,merging,ignore_rules,lock,fsutil}.rs`
+- `crates/worktree-sdk/src/hooks.rs`, `src/signing.rs`, `src/scan/secrets.rs`
+- `crates/worktree-sdk/src/remote/credentials.rs` — `credentials.toml`
+- `crates/worktree-sdk/src/ipc.rs`, `crates/worktree-bg/src/{info,config}.rs` — `bg.json`, `bg.toml`
+- `crates/worktree-git/src/{map,import}.rs` — `git-map.json`, `.gitignore` import
+- `crates/worktree-cli/src/commands/{init,config,ignore,remote,access}.rs`
