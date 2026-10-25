@@ -692,7 +692,7 @@ func TestSnapshotEndpoints(t *testing.T) {
 		{name: "detail", method: "GET", path: "/api/v1/trees/acme/web/snapshots/snap-2", as: "carol", status: 200,
 			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
 				d := decode[snapshotDetail](t, rec)
-				if d.Snapshot.ID != "snap-2" || len(d.Files) != 6 {
+				if d.Snapshot.ID != "snap-2" || len(d.Files) != 5 || d.RestrictedCount != 1 { // secret/key.txt is license-restricted (§13.1)
 					t.Fatalf("detail = %s", rec.Body.String())
 				}
 				var paths []string
@@ -750,7 +750,7 @@ func TestSnapshotEndpoints(t *testing.T) {
 					t.Fatalf("Content-Disposition = %q", cd)
 				}
 			}},
-		{name: "blob license denied", method: "GET", path: "/api/v1/trees/acme/web/blob/snap-2/secret/key.txt", as: "carol", status: 403, code: "license_violation",
+		{name: "blob license denied", method: "GET", path: "/api/v1/trees/acme/web/blob/snap-2/secret/key.txt", as: "carol", status: 451, code: "license_restricted",
 			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
 				if strings.Contains(rec.Body.String(), "hunter2") {
 					t.Fatal("content leaked")

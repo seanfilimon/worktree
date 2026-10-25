@@ -35,6 +35,20 @@
 // domain.LicenseChecker; callers use CheckExport. Under a "modify" grant a
 // non-member may read and push but export is forbidden.
 //
+// # Grantees and expiry (v0.5)
+//
+// A rule with a Grantee (a tenant slug) applies only to principals of that
+// tenant: its members (any role), the principal whose personal tenant it
+// is, and its service accounts. A rule without a Grantee applies to every
+// non-member. For a given principal the rules naming one of its tenants
+// take precedence over the general rules: when any grantee rule matches a
+// path, the most specific of those decides; otherwise the most specific
+// general rule does. So a general "**" proprietary rule plus a grantee
+// "src/**" modify rule lets that tenant read and push src/ while keeping
+// the rest closed. Rules whose ExpiresAt has passed are ignored entirely
+// (a lapsed grant falls back to the general rules; a lapsed restriction
+// lifts).
+//
 // Violations are reported as *domain.PushDenied{Kind: "license_violation"}
 // naming the first offending path (in input order).
 package license
@@ -43,6 +57,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 )
@@ -130,6 +146,7 @@ func Permits(rule domain.LicenseRule, op Operation) bool {
 // domain.LicenseChecker and is safe for concurrent use.
 type Checker struct {
 	store domain.MetaStore
+	now   func() time.Time // nil = time.Now (tests override it)
 }
 
 var _ domain.LicenseChecker = (*Checker)(nil)
@@ -167,50 +184,166 @@ func (c *Checker) Check(ctx context.Context, p *domain.Principal, tree *domain.T
 	default:
 		return fmt.Errorf("license: unknown operation %q: %w", op, domain.ErrInvalid)
 	}
-	if len(paths) == 0 || ownerOrAdmin(p, tree) {
+	if len(paths) == 0 {
 		return nil
 	}
-	if c.store == nil {
-		return errors.New("license: no store configured")
-	}
-
-	rules, err := c.store.ListLicenseRules(ctx, tree.ID)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		return fmt.Errorf("license: list rules for tree %s: %w", tree.ID, err)
-	}
-	if len(rules) == 0 {
-		return nil
-	}
-	member, err := c.isMember(ctx, p, tree)
-	if err != nil {
+	sc, err := c.scopeFor(ctx, p, tree)
+	if err != nil || sc == nil {
 		return err
 	}
-	if member {
-		return nil
-	}
-
-	set, err := compileRules(rules)
-	if err != nil {
-		return fmt.Errorf("license: tree %s: %w", tree.ID, err)
-	}
 	for _, raw := range paths {
-		segs, ok := splitPath(raw)
-		if !ok {
-			return &domain.PushDenied{
-				Kind:   KindLicenseViolation,
-				Path:   raw,
-				Reason: fmt.Sprintf("license check failed for operation %q: invalid path %q", op, raw),
-			}
-		}
-		rule := set.resolve(segs)
-		if rule == nil {
-			continue
-		}
-		if !rightsOf(&rule.rule).permits(op) {
-			return denial(op, raw, &rule.rule)
+		if d := sc.check(op, raw); d != nil {
+			return d
 		}
 	}
 	return nil
+}
+
+// UnreadablePaths returns the paths (in input order) that p may not read
+// under the tree's license rules; nil when every path is readable. Invalid
+// paths are reported as unreadable (fail closed). An error means the rules
+// or memberships could not be loaded (callers must treat it as a denial).
+func (c *Checker) UnreadablePaths(ctx context.Context, p *domain.Principal, tree *domain.Tree, paths []string) ([]string, error) {
+	if tree == nil {
+		return nil, fmt.Errorf("license: nil tree: %w", domain.ErrInvalid)
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	sc, err := c.scopeFor(ctx, p, tree)
+	if err != nil || sc == nil {
+		return nil, err
+	}
+	var out []string
+	for _, raw := range paths {
+		if sc.check(OpRead, raw) != nil {
+			out = append(out, raw)
+		}
+	}
+	return out, nil
+}
+
+// scope is the set of rules that bind one principal on one tree.
+type scope struct {
+	grantee ruleSet // rules naming one of the principal's tenants
+	general ruleSet // rules without a grantee
+}
+
+// check returns the denial of op on raw, or nil when it is permitted.
+func (s *scope) check(op Operation, raw string) *domain.PushDenied {
+	segs, ok := splitPath(raw)
+	if !ok {
+		return &domain.PushDenied{
+			Kind:   KindLicenseViolation,
+			Path:   raw,
+			Reason: fmt.Sprintf("license check failed for operation %q: invalid path %q", op, raw),
+		}
+	}
+	rule := s.grantee.resolve(segs)
+	if rule == nil {
+		rule = s.general.resolve(segs)
+	}
+	if rule == nil || rightsOf(&rule.rule).permits(op) {
+		return nil
+	}
+	return denial(op, raw, &rule.rule)
+}
+
+// scopeFor loads the rules that restrict p on tree. It returns nil (and no
+// error) when p is unrestricted: an owner, member or server admin, or no
+// rule applies to p.
+func (c *Checker) scopeFor(ctx context.Context, p *domain.Principal, tree *domain.Tree) (*scope, error) {
+	if ownerOrAdmin(p, tree) {
+		return nil, nil
+	}
+	if c.store == nil {
+		return nil, errors.New("license: no store configured")
+	}
+	rules, err := c.store.ListLicenseRules(ctx, tree.ID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return nil, fmt.Errorf("license: list rules for tree %s: %w", tree.ID, err)
+	}
+	now := c.clock()
+	live := rules[:0:0]
+	for _, r := range rules {
+		if r.ExpiresAt == nil || now.Before(*r.ExpiresAt) {
+			live = append(live, r)
+		}
+	}
+	if len(live) == 0 {
+		return nil, nil
+	}
+	member, err := c.isMember(ctx, p, tree)
+	if err != nil || member {
+		return nil, err
+	}
+
+	var general, granted []domain.LicenseRule
+	inTenant := map[string]bool{}
+	for _, r := range live {
+		if r.Grantee == "" {
+			general = append(general, r)
+			continue
+		}
+		in, seen := inTenant[r.Grantee]
+		if !seen {
+			if in, err = c.inTenant(ctx, p, r.Grantee); err != nil {
+				return nil, err
+			}
+			inTenant[r.Grantee] = in
+		}
+		if in {
+			granted = append(granted, r)
+		}
+	}
+	if len(general) == 0 && len(granted) == 0 {
+		return nil, nil
+	}
+	sc := &scope{}
+	if sc.general, err = compileRules(general); err != nil {
+		return nil, fmt.Errorf("license: tree %s: %w", tree.ID, err)
+	}
+	if sc.grantee, err = compileRules(granted); err != nil {
+		return nil, fmt.Errorf("license: tree %s: %w", tree.ID, err)
+	}
+	return sc, nil
+}
+
+// inTenant reports whether p belongs to the tenant with the given slug: it
+// is p's personal (or, for service accounts, owning) tenant, or p's
+// account is a member of it. An unknown slug matches nobody.
+func (c *Checker) inTenant(ctx context.Context, p *domain.Principal, slug string) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	t, err := c.store.GetTenantBySlug(ctx, slug)
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("license: tenant %q: %w", slug, err)
+	}
+	if p.TenantID != "" && p.TenantID == t.ID {
+		return true, nil
+	}
+	if p.AccountID == "" {
+		return false, nil
+	}
+	_, err = c.store.GetMembership(ctx, t.ID, p.AccountID)
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("license: membership of %s in tenant %q: %w", p.AccountID, slug, err)
+	}
+	return true, nil
+}
+
+func (c *Checker) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 func denial(op Operation, path string, r *domain.LicenseRule) *domain.PushDenied {
@@ -306,8 +439,10 @@ func Resolve(rules []domain.LicenseRule, p string) (rule domain.LicenseRule, ok 
 // Validate checks a rule submitted through the API: a well-formed path
 // glob, a known grant ("", "read-only", "modify", "redistribute") and a
 // syntactically valid SPDX expression (e.g. "MIT", "MIT OR Apache-2.0",
-// "GPL-2.0-only WITH Classpath-exception-2.0", "LicenseRef-Acme"). TreeID
-// is not checked. Errors wrap domain.ErrInvalid.
+// "GPL-2.0-only WITH Classpath-exception-2.0", "LicenseRef-Acme"), plus a
+// grantee that is "" or has tenant-slug syntax. TreeID, the existence of
+// the grantee tenant and whether ExpiresAt lies in the future are not
+// checked (the REST handler does). Errors wrap domain.ErrInvalid.
 func Validate(rule domain.LicenseRule) error {
 	if _, err := compileGlob(rule.PathGlob); err != nil {
 		return fmt.Errorf("%w: %v", domain.ErrInvalid, err)
@@ -321,5 +456,14 @@ func Validate(rule domain.LicenseRule) error {
 	if err := ValidateSPDX(rule.SPDX); err != nil {
 		return fmt.Errorf("%w: %v", domain.ErrInvalid, err)
 	}
+	if rule.Grantee != "" && !granteeRe.MatchString(rule.Grantee) {
+		return fmt.Errorf("%w: grantee %q is not a tenant slug", domain.ErrInvalid, rule.Grantee)
+	}
+	if rule.ExpiresAt != nil && rule.ExpiresAt.IsZero() {
+		return fmt.Errorf("%w: expires_at must be a valid time", domain.ErrInvalid)
+	}
 	return nil
 }
+
+// granteeRe is the tenant slug syntax (personal tenant slugs are usernames).
+var granteeRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)

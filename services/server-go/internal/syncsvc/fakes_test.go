@@ -435,6 +435,13 @@ func (l *fakeLicense) CheckPush(_ context.Context, _ *domain.Principal, _ *domai
 	return fn(paths)
 }
 
+// CheckRead allows every read. (v0.5 sec-paths, §13.1: Pull consults the
+// license checker for stubbed paths; pull_paths_test.go covers denials with
+// the real checker.)
+func (l *fakeLicense) CheckRead(context.Context, *domain.Principal, *domain.Tree, []string) error {
+	return nil
+}
+
 // ------------------------------------------------------------------ Staged
 
 type fakeStaged struct {

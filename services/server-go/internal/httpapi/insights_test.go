@@ -238,7 +238,8 @@ func TestCompare(t *testing.T) {
 				for i, fd := range res.Files {
 					paths[i] = fd.Path
 				}
-				want := []string{"LICENSE", "README.md", "index.html", "run.sh", "secret/key.txt", "src/main.go"}
+				// secret/key.txt is license-restricted: omitted and counted (§13.1).
+				want := []string{"LICENSE", "README.md", "index.html", "run.sh", "src/main.go"}
 				if !slices.Equal(paths, want) {
 					t.Fatalf("paths = %v, want %v", paths, want)
 				}
@@ -254,12 +255,11 @@ func TestCompare(t *testing.T) {
 				if main.Status != "added" || main.OldHash != "" || !strings.HasPrefix(main.Patch, "--- /dev/null\n+++ b/src/main.go\n@@ -0,0 +1,3 @@\n") || main.Additions != 3 {
 					t.Fatalf("src/main.go = %+v", main)
 				}
-				secret := insFileByPath(t, res, "secret/key.txt")
-				if secret.Patch != "" || secret.Additions != 0 || secret.NewHash == "" || secret.Status != "added" {
-					t.Fatalf("license-restricted file leaked content: %+v", secret)
+				if res.RestrictedCount != 1 || strings.Contains(rec.Body.String(), "secret/key.txt") || strings.Contains(rec.Body.String(), "hunter2") {
+					t.Fatalf("license-restricted file leaked: restricted_count=%d body=%s", res.RestrictedCount, rec.Body.String())
 				}
 				// 1 (LICENSE) + 1 (README) + 1 (index.html) + 2 (run.sh) + 3 (main.go)
-				if res.Stats != (compareStats{Files: 6, Additions: 8, Deletions: 1}) {
+				if res.Stats != (compareStats{Files: 5, Additions: 8, Deletions: 1}) {
 					t.Fatalf("stats = %+v", res.Stats)
 				}
 			},
@@ -475,7 +475,7 @@ func TestFileHistory(t *testing.T) {
 			}},
 		{name: "nothing pushed to default branch", method: "GET", path: "/api/v1/trees/acme/docs/history?path=README.md", status: 200,
 			check: expect()},
-		{name: "license restricted path", method: "GET", path: webAPI + "/history?path=secret/key.txt", as: "alice", status: 403, code: "license_violation"},
+		{name: "license restricted path", method: "GET", path: webAPI + "/history?path=secret/key.txt", as: "alice", status: 451, code: "license_restricted"},
 		{name: "missing path", method: "GET", path: webAPI + "/history", as: "alice", status: 400, code: "bad_request"},
 		{name: "unclean path", method: "GET", path: webAPI + "/history?path=src/../README.md", as: "alice", status: 400, code: "bad_request"},
 		{name: "absolute path", method: "GET", path: webAPI + "/history?path=/README.md", as: "alice", status: 400, code: "bad_request"},

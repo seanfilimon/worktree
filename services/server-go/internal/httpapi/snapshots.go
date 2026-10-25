@@ -13,8 +13,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/content"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
+	"github.com/seanfilimon/worktree/services/server-go/internal/pathacl"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 )
 
@@ -34,6 +36,9 @@ type fileEntry struct {
 type snapshotDetail struct {
 	Snapshot domain.Snapshot `json:"snapshot"`
 	Files    []fileEntry     `json:"files"`
+	// RestrictedCount is the number of files left out of Files because the
+	// caller may not read them (path policies or license rules, §13.1).
+	RestrictedCount int `json:"restricted_count"`
 }
 
 func normalizeSnapshot(s *domain.Snapshot) { s.Parents = nonNil(s.Parents) }
@@ -133,8 +138,21 @@ func (a *api) handleGetSnapshot(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	files := make([]fileEntry, 0, len(m.GetEntries()))
+	paths := make([]string, 0, len(m.GetEntries()))
 	for _, e := range m.GetEntries() {
+		paths = append(paths, e.GetPath())
+	}
+	rs, err := a.readRestrictions(ctx, principal(r), tree, paths)
+	if err != nil {
+		return err
+	}
+	files := make([]fileEntry, 0, len(m.GetEntries()))
+	restricted := 0
+	for _, e := range m.GetEntries() {
+		if rs.restricted(e.GetPath()) {
+			restricted++
+			continue
+		}
 		h, err := entryHash(e)
 		if err != nil {
 			return err
@@ -143,8 +161,116 @@ func (a *api) handleGetSnapshot(w http.ResponseWriter, r *http.Request) error {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	normalizeSnapshot(s)
-	writeJSON(w, http.StatusOK, snapshotDetail{Snapshot: *s, Files: files})
+	writeJSON(w, http.StatusOK, snapshotDetail{Snapshot: *s, Files: files, RestrictedCount: restricted})
 	return nil
+}
+
+// ---- read restrictions (docs/ENGINEERING_PLAN.md §13.1) ----
+
+// Error codes of restricted reads.
+const (
+	codePathDenied        = "path_denied"        // 403: an access policy denies the path
+	codeLicenseRestricted = "license_restricted" // 451: the tree's license rules forbid reading it
+)
+
+// readRestrictions records which paths of a request the caller may not
+// read. The zero value (and nil) restricts nothing.
+type readRestrictions struct {
+	denied   map[string]string // path -> denying policy name
+	licensed map[string]bool
+}
+
+// restricted reports whether path may not be read.
+func (rs *readRestrictions) restricted(path string) bool {
+	if rs == nil {
+		return false
+	}
+	_, denied := rs.denied[path]
+	return denied || rs.licensed[path]
+}
+
+// check returns the error for reading path's content: 403 path_denied for
+// a policy deny, 451 license_restricted for a license restriction, or nil.
+func (rs *readRestrictions) check(path string) error {
+	if rs == nil {
+		return nil
+	}
+	if policy, ok := rs.denied[path]; ok {
+		msg := "reading " + path + " is denied by an access policy"
+		if policy != "" {
+			msg = "reading " + path + " is denied by policy " + policy
+		}
+		return &apiError{status: http.StatusForbidden, code: codePathDenied, msg: msg}
+	}
+	if rs.licensed[path] {
+		return &apiError{status: http.StatusUnavailableForLegalReasons, code: codeLicenseRestricted,
+			msg: path + " is restricted by the tree's license rules"}
+	}
+	return nil
+}
+
+// readRestrictions evaluates path-deny policies (tree:read) and license
+// read rules for paths of tree. The caller must already hold tree:read.
+func (a *api) readRestrictions(ctx context.Context, p *domain.Principal, tree *domain.Tree, paths []string) (*readRestrictions, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	rs := &readRestrictions{}
+	ev := a.d.Access
+	if ev == nil {
+		ev, _ = a.d.Authz.(domain.AccessEvaluator)
+	}
+	if ev != nil {
+		denied, err := pathacl.DeniedPaths(ctx, a.d.Store, ev, p, tree, domain.ActTreeRead, paths)
+		if err != nil {
+			return nil, err
+		}
+		rs.denied = denied
+	}
+	if a.d.License != nil {
+		licensed, err := a.licenseUnreadable(ctx, p, tree, paths)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range licensed {
+			if rs.licensed == nil {
+				rs.licensed = make(map[string]bool, len(licensed))
+			}
+			rs.licensed[path] = true
+		}
+	}
+	return rs, nil
+}
+
+// licenseUnreadable lists the paths the license checker refuses to let p
+// read, using its bulk UnreadablePaths API when available. The common
+// all-readable case costs one check.
+func (a *api) licenseUnreadable(ctx context.Context, p *domain.Principal, tree *domain.Tree, paths []string) ([]string, error) {
+	type lister interface {
+		UnreadablePaths(ctx context.Context, p *domain.Principal, tree *domain.Tree, paths []string) ([]string, error)
+	}
+	if l, ok := a.d.License.(lister); ok {
+		return l.UnreadablePaths(ctx, p, tree, paths)
+	}
+	err := a.d.License.CheckRead(ctx, p, tree, paths)
+	if err == nil {
+		return nil, nil
+	}
+	if !isReadDenied(err) {
+		return nil, err
+	}
+	var out []string
+	for _, path := range paths {
+		err := a.d.License.CheckRead(ctx, p, tree, []string{path})
+		switch {
+		case err == nil:
+		case isReadDenied(err):
+			out = append(out, path)
+		default:
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // activeContentTypes are rendered by browsers as documents or scripts; they
@@ -191,6 +317,15 @@ func (a *api) handleBlob(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	// Restricted paths are refused before the lookup, so that their
+	// existence is not revealed either.
+	rs, err := a.readRestrictions(ctx, principal(r), tree, []string{filePath})
+	if err != nil {
+		return err
+	}
+	if err := rs.check(filePath); err != nil {
+		return err
+	}
 	m, err := a.loadManifest(ctx, s)
 	if err != nil {
 		return err
@@ -212,17 +347,15 @@ func (a *api) handleBlob(w http.ResponseWriter, r *http.Request) error {
 	if entry == nil {
 		return notFoundf("file %q not found in snapshot %s", filePath, s.ID)
 	}
-	if err := a.d.License.CheckRead(ctx, principal(r), tree, []string{filePath}); err != nil {
-		return err
-	}
 	h, err := entryHash(entry)
 	if err != nil {
 		return err
 	}
-	data, err := a.d.Objects.Get(ctx, h)
+	data, err := content.ReadEntry(ctx, a.d.Objects, entry)
 	if err != nil {
-		// A referenced blob that is missing is corruption (500), as above.
-		return fmt.Errorf("blob %s of %q: %v", h, filePath, err)
+		// A referenced blob (or chunk) that is missing is corruption (500),
+		// as above.
+		return fmt.Errorf("content %s of %q: %v", h, filePath, err)
 	}
 
 	hdr := w.Header()
