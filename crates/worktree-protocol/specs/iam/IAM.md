@@ -670,8 +670,6 @@ built, and are not part of the v0.5 contract:
 - **Ownership transfer** as a distinct operation and action.
 - **Tenant-wide team roles.** Teams receive access only through tree grants
   and policies.
-- **Policy history.** Earlier policy versions, diffs and rollback. Only the
-  `version` counter is kept. `wt access plan` shows pending changes.
 - **`acr`-based SSO assurance levels** (only `amr` is read today).
 - **Access files versioned with snapshots**, protected on push, and
   re-applied automatically by the background process. See

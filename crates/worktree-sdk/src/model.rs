@@ -695,6 +695,8 @@ pub struct BlameLine {
     pub author: String,
     /// First line of the snapshot's message.
     pub message: String,
+    /// When the snapshot was created (JSON `at`, like the server's BlameLine).
+    #[serde(rename = "at", alias = "created_at")]
     pub created_at: DateTime<Utc>,
 }
 

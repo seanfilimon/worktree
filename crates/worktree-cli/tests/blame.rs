@@ -121,7 +121,7 @@ fn blame_json_attributes_lines() {
     );
     assert_eq!(lines[1]["message"], "second");
     assert_eq!(lines[0]["author"], "Test User");
-    assert!(lines[0]["created_at"].is_string());
+    assert!(lines[0]["at"].is_string());
 }
 
 #[test]

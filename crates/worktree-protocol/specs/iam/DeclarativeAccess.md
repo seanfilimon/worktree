@@ -385,8 +385,9 @@ built:
   that modify access files unless the pusher has `iam:admin`, and other
   clients would receive server-side changes on sync. Access files are local
   configuration, and the server keeps only the applied document.
-- **Policy history and diffs** between applied versions. Only the last
-  `AccessConfigDoc` and each policy's `version` counter are kept.
+- **History of whole access documents** (each policy's versions are kept —
+  see [PolicyHistory.md](./PolicyHistory.md) — but only the last applied
+  `AccessConfigDoc`).
 - **The E1xxx (schema), E3xxx (logical) and E4xxx (security) error families**,
   including circular role dependencies. Roles do not inherit from each other,
   so cycles cannot occur.
