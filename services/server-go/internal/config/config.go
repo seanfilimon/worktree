@@ -108,6 +108,13 @@ type Config struct {
 	DefaultMaxTrees   int
 	DefaultMaxStorage int64
 
+	// ---- webhooks (§14.2) ----
+
+	// WebhookAllowPrivate permits webhook targets resolving to loopback,
+	// link-local or private addresses (turns the SSRF guard off). Flag
+	// --webhook-allow-private, env WT_WEBHOOK_ALLOW_PRIVATE.
+	WebhookAllowPrivate bool
+
 	// The fields below are set programmatically, not from flags.
 
 	// Version is the server version reported by /healthz, Ping and logs.
@@ -238,6 +245,15 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 	integer("WT_DEFAULT_MAX_TREES", &maxTrees)
 	integer("WT_DEFAULT_MAX_STORAGE", &cfg.DefaultMaxStorage)
 	cfg.RateLimit, cfg.DefaultMaxTrees = int(rate), int(maxTrees)
+
+	// webhooks (§14.2).
+	if v, ok := lookup("WT_WEBHOOK_ALLOW_PRIVATE"); ok && v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("WT_WEBHOOK_ALLOW_PRIVATE: invalid boolean %q", v))
+		}
+		cfg.WebhookAllowPrivate = b
+	}
 	return cfg, errors.Join(errs...)
 }
 
@@ -277,6 +293,9 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 	fs.IntVar(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "requests per minute per principal or anonymous IP; 0 disables (env WT_RATE_LIMIT)")
 	fs.IntVar(&cfg.DefaultMaxTrees, "default-max-trees", cfg.DefaultMaxTrees, "default maximum trees per tenant; 0 = unlimited (env WT_DEFAULT_MAX_TREES)")
 	fs.Int64Var(&cfg.DefaultMaxStorage, "default-max-storage", cfg.DefaultMaxStorage, "default maximum stored `bytes` per tenant; 0 = unlimited (env WT_DEFAULT_MAX_STORAGE)")
+
+	// webhooks (§14.2).
+	fs.BoolVar(&cfg.WebhookAllowPrivate, "webhook-allow-private", cfg.WebhookAllowPrivate, "allow webhook targets on loopback, link-local and private addresses (env WT_WEBHOOK_ALLOW_PRIVATE)")
 	return fs
 }
 

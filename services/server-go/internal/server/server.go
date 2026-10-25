@@ -150,6 +150,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	// dependencies and cleaning up TODOs/releases of deleted trees.
 	todos.Start(ctx)
 	releases.Start(ctx)
+	// webhooks (§14.2): bus-driven deliveries, retries and log retention.
+	hooks.Configure(webhooks.Options{AllowPrivate: cfg.WebhookAllowPrivate, Version: cfg.Version})
+	hooks.Start(ctx)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
