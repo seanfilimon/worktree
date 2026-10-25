@@ -76,6 +76,11 @@ pub struct FakeState {
     pub download_tree_ids: Vec<String>,
     /// tree id -> paths whose content is withheld (`PullResponse.stubbed_paths`).
     pub stubbed: HashMap<String, BTreeSet<String>>,
+    /// access workstream: applied access documents by (tenant, tree id),
+    /// with the username that applied them.
+    pub access_docs: HashMap<(String, String), (Vec<u8>, String)>,
+    /// access workstream: the last SyncAccessConfig request.
+    pub last_access_sync: Option<wire::AccessConfigSyncRequest>,
 }
 
 impl FakeState {
@@ -696,11 +701,47 @@ impl SyncService for Svc {
         }))
     }
 
+    // access workstream: a minimal declarative access store. Documents must
+    // be JSON objects; the plan lists one "create" per policy and role.
     async fn sync_access_config(
         &self,
-        _req: Request<wire::AccessConfigSyncRequest>,
+        req: Request<wire::AccessConfigSyncRequest>,
     ) -> Result<Response<wire::AccessConfigSyncResponse>, Status> {
-        Err(Status::unimplemented("not in the fake"))
+        let caller = self.require(&req)?;
+        let req = req.into_inner();
+        let mut st = lock(&self.state);
+        st.last_access_sync = Some(req.clone());
+        let doc: Value = match serde_json::from_slice(&req.content) {
+            Ok(v @ Value::Object(_)) => v,
+            _ => {
+                return Ok(Response::new(wire::AccessConfigSyncResponse {
+                    accepted: false,
+                    validation_errors: vec!["content is not a JSON object".into()],
+                    changes: vec![],
+                }))
+            }
+        };
+        let mut changes = Vec::new();
+        for (kind, key) in [("role", "roles"), ("policy", "policies")] {
+            for item in doc[key].as_array().into_iter().flatten() {
+                changes.push(format!(
+                    "{kind} {}: create",
+                    item["name"].as_str().unwrap_or("")
+                ));
+            }
+        }
+        if !req.dry_run {
+            let tenant = req.tenant_id.map(|t| t.value).unwrap_or_default();
+            st.access_docs.insert(
+                (tenant, tree_of(&req.tree_id)),
+                (req.content, caller.username.clone()),
+            );
+        }
+        Ok(Response::new(wire::AccessConfigSyncResponse {
+            accepted: true,
+            validation_errors: vec![],
+            changes,
+        }))
     }
 
     async fn upload_objects(
@@ -943,7 +984,25 @@ impl SyncService for Svc {
         req: Request<wire::GetAccessConfigRequest>,
     ) -> Result<Response<wire::GetAccessConfigResponse>, Status> {
         self.require(&req)?;
-        Ok(Response::new(wire::GetAccessConfigResponse::default()))
+        let req = req.into_inner();
+        let st = lock(&self.state);
+        let key = (
+            req.tenant_id.map(|t| t.value).unwrap_or_default(),
+            tree_of(&req.tree_id),
+        );
+        Ok(Response::new(match st.access_docs.get(&key) {
+            None => wire::GetAccessConfigResponse::default(),
+            Some((content, by)) => wire::GetAccessConfigResponse {
+                found: true,
+                content: content.clone(),
+                config_hash: None,
+                updated_at: Some(prost_types::Timestamp {
+                    seconds: 1_767_225_600,
+                    nanos: 0,
+                }),
+                updated_by: by.clone(),
+            },
+        }))
     }
 }
 

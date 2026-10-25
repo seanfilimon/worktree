@@ -16,6 +16,7 @@ type roleView struct {
 	Description string          `json:"description"`
 	Permissions []domain.Action `json:"permissions"`
 	Builtin     bool            `json:"builtin"`
+	ManagedBy   string          `json:"managed_by,omitempty"` // v0.5: "config" for roles owned by an access document
 	CreatedAt   *time.Time      `json:"created_at,omitempty"`
 	UpdatedAt   *time.Time      `json:"updated_at,omitempty"`
 }
@@ -36,7 +37,7 @@ func builtinRoleView(name, description string) roleView {
 }
 
 func customRoleView(r *domain.CustomRole) roleView {
-	v := roleView{Name: r.Name, Description: r.Description, Permissions: nonNil(r.Permissions)}
+	v := roleView{Name: r.Name, Description: r.Description, Permissions: nonNil(r.Permissions), ManagedBy: r.ManagedBy}
 	if !r.CreatedAt.IsZero() {
 		c := r.CreatedAt
 		v.CreatedAt = &c
@@ -186,6 +187,9 @@ func (a *api) handlePatchRole(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if err := a.checkManaged(r, t.ID, role.ManagedBy, "role "+role.Name); err != nil {
+		return err
+	}
 	details := map[string]string{}
 	if req.Description != nil {
 		d := strings.TrimSpace(*req.Description)
@@ -225,6 +229,9 @@ func (a *api) handleDeleteRole(w http.ResponseWriter, r *http.Request) error {
 	}
 	role, err := a.customRoleByPath(r, t)
 	if err != nil {
+		return err
+	}
+	if err := a.checkManaged(r, t.ID, role.ManagedBy, "role "+role.Name); err != nil {
 		return err
 	}
 	ctx := r.Context()

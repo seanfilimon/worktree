@@ -53,6 +53,22 @@ pub enum TenantCommand {
     },
     /// Remove a member from a tenant
     RemoveMember { tenant: String, username: String },
+    /// Suspend a tenant: it becomes read-only (server admins only; nothing is revoked)
+    Suspend {
+        tenant: String,
+        /// Why, shown to members whose writes are refused
+        #[arg(long, value_name = "TEXT")]
+        reason: Option<String>,
+    },
+    /// Lift a suspension or deactivation (server admins only)
+    Resume { tenant: String },
+    /// Deactivate a tenant: all access is refused (server admins only)
+    Deactivate {
+        tenant: String,
+        /// Why, shown to members whose requests are refused
+        #[arg(long, value_name = "TEXT")]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -73,6 +89,29 @@ pub struct Tenant {
     pub kind: String,
     pub plan: String,
     pub created_at: String,
+    /// "" = active, "suspended", "deactivated" (v0.5).
+    pub status: String,
+    pub status_reason: String,
+}
+
+impl Tenant {
+    /// The status, with "" spelled out as "active".
+    pub fn status_label(&self) -> &str {
+        if self.status.is_empty() {
+            "active"
+        } else {
+            &self.status
+        }
+    }
+}
+
+/// PATCH /admin/tenants/{t} body for `suspend` / `resume` / `deactivate`.
+fn status_body(status: &str, reason: Option<String>) -> serde_json::Value {
+    match reason {
+        Some(r) => json!({ "status": status, "status_reason": r }),
+        None if status == "active" => json!({ "status": status, "status_reason": "" }),
+        None => json!({ "status": status }),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -162,6 +201,13 @@ pub fn run(ctx: &Context, args: TenantArgs) -> Result<()> {
                 ));
             })
         }
+        TenantCommand::Suspend { tenant, reason } => {
+            set_status(&api, ctx, &tenant, "suspended", reason)
+        }
+        TenantCommand::Resume { tenant } => set_status(&api, ctx, &tenant, "active", None),
+        TenantCommand::Deactivate { tenant, reason } => {
+            set_status(&api, ctx, &tenant, "deactivated", reason)
+        }
         TenantCommand::RemoveMember { tenant, username } => {
             api.delete(&member_path(&tenant, &username), &[])?;
             out.emit(
@@ -176,6 +222,33 @@ pub fn run(ctx: &Context, args: TenantArgs) -> Result<()> {
             )
         }
     }
+}
+
+fn set_status(
+    api: &Api,
+    ctx: &Context,
+    tenant: &str,
+    status: &str,
+    reason: Option<String>,
+) -> Result<()> {
+    let path = format!("/api/v1/admin/tenants/{}", seg(tenant));
+    let value = api.patch(&path, &status_body(status, reason))?;
+    render(&ctx.out, &value, |t, tenant: Tenant| {
+        let label = tenant.status_label();
+        let colored = match label {
+            "active" => label.green(),
+            "suspended" => label.yellow(),
+            _ => label.red(),
+        };
+        t.line(format_args!(
+            "{} is now {}",
+            tenant.slug.bold(),
+            colored.bold()
+        ));
+        if !tenant.status_reason.is_empty() {
+            t.line(format_args!("reason: {}", tenant.status_reason));
+        }
+    })
 }
 
 fn member_path(tenant: &str, username: &str) -> String {
@@ -204,6 +277,13 @@ fn show(t: &mut Text, tenant: &Tenant) {
         &[
             ("kind", tenant.kind.clone()),
             ("plan", tenant.plan.clone()),
+            ("status", {
+                let mut s = tenant.status_label().to_string();
+                if !tenant.status_reason.is_empty() {
+                    s.push_str(&format!(" ({})", tenant.status_reason));
+                }
+                s
+            }),
             ("id", tenant.id.clone()),
             ("created", when(&tenant.created_at)),
         ],
@@ -280,6 +360,47 @@ mod tests {
             parse_err(&["tenant", "set-role", "acme", "bob"]),
             ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn parses_status_subcommands() {
+        assert!(matches!(
+            tenant(&["suspend", "acme", "--reason", "unpaid"]),
+            TenantCommand::Suspend { tenant, reason: Some(r) } if tenant == "acme" && r == "unpaid"
+        ));
+        assert!(matches!(
+            tenant(&["deactivate", "acme"]),
+            TenantCommand::Deactivate { reason: None, .. }
+        ));
+        assert!(matches!(
+            tenant(&["resume", "acme"]),
+            TenantCommand::Resume { tenant } if tenant == "acme"
+        ));
+        assert_eq!(
+            parse_err(&["tenant", "resume", "acme", "--reason", "x"]),
+            ErrorKind::UnknownArgument
+        );
+    }
+
+    #[test]
+    fn status_bodies_and_labels() {
+        assert_eq!(
+            status_body("suspended", Some("unpaid".into())),
+            json!({"status": "suspended", "status_reason": "unpaid"})
+        );
+        assert_eq!(
+            status_body("deactivated", None),
+            json!({"status": "deactivated"})
+        );
+        assert_eq!(
+            status_body("active", None),
+            json!({"status": "active", "status_reason": ""})
+        );
+        let t: Tenant = serde_json::from_value(json!({"slug": "acme"})).unwrap();
+        assert_eq!(t.status_label(), "active");
+        let t: Tenant =
+            serde_json::from_value(json!({"slug": "acme", "status": "suspended"})).unwrap();
+        assert_eq!(t.status_label(), "suspended");
     }
 
     #[test]

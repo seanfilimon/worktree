@@ -5,5 +5,6 @@
 //! version control resources.
 
 pub mod branch_access;
+pub mod declarative;
 pub mod resource;
 pub mod tree_access;

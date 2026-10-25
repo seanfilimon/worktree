@@ -517,7 +517,7 @@ func TestTenantEndpoints(t *testing.T) {
 		{name: "put member unknown account", method: "PUT", path: "/api/v1/tenants/acme/members/zed", as: "alice", body: map[string]string{"role": "viewer"}, status: 404, code: "not_found"},
 		{name: "grant owner as non-owner admin", method: "PUT", path: "/api/v1/tenants/acme/members/bob", as: "mallory", body: map[string]string{"role": "owner"}, status: 403, code: "forbidden"},
 		{name: "grant owner as owner", method: "PUT", path: "/api/v1/tenants/acme/members/bob", as: "alice", body: map[string]string{"role": "owner"}, status: 200},
-		{name: "demote last owner", method: "PUT", path: "/api/v1/tenants/acme/members/alice", as: "alice", body: map[string]string{"role": "admin"}, status: 409, code: "conflict"},
+		{name: "demote last owner", method: "PUT", path: "/api/v1/tenants/acme/members/alice", as: "alice", body: map[string]string{"role": "admin"}, status: 409, code: "last_owner"},
 		{name: "delete member", method: "DELETE", path: "/api/v1/tenants/acme/members/bob", as: "alice", status: 204,
 			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
 				if _, err := f.store.GetMembership(context.Background(), f.acme.ID, "acct-bob"); !errors.Is(err, domain.ErrNotFound) {
@@ -527,7 +527,7 @@ func TestTenantEndpoints(t *testing.T) {
 			}},
 		{name: "leave tenant", method: "DELETE", path: "/api/v1/tenants/acme/members/carol", as: "carol", status: 204},
 		{name: "delete other as developer", method: "DELETE", path: "/api/v1/tenants/acme/members/carol", as: "bob", status: 403, code: "forbidden"},
-		{name: "last owner leaves", method: "DELETE", path: "/api/v1/tenants/acme/members/alice", as: "alice", status: 409, code: "conflict"},
+		{name: "last owner leaves", method: "DELETE", path: "/api/v1/tenants/acme/members/alice", as: "alice", status: 409, code: "last_owner"},
 		{name: "delete non-member", method: "DELETE", path: "/api/v1/tenants/acme/members/dave", as: "alice", status: 404, code: "not_found"},
 	})
 }

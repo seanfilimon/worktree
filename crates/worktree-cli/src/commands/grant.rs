@@ -1,5 +1,6 @@
-//! `wt grant` — Per-tree access grants for users, teams and service
-//! accounts (§12.3 grants).
+//! `wt grant` — Per-tree access grants for users, teams, service accounts
+//! (§12.3 grants) and, since v0.5, whole tenants (§13.7: every member and
+//! service account of another tenant).
 
 use clap::{Args, Subcommand};
 use serde_json::{json, Value};
@@ -62,17 +63,22 @@ pub struct SubjectArgs {
     /// A service account, by name
     #[arg(long, value_name = "NAME")]
     pub sa: Option<String>,
+    /// Every member and service account of another tenant, by slug
+    /// (cross-tenant access to this tree)
+    #[arg(long, value_name = "SLUG")]
+    pub tenant: Option<String>,
 }
 
 impl SubjectArgs {
     /// (subject_type, subject) as the API spells them.
     pub fn subject(&self) -> (&'static str, &str) {
-        match (&self.user, &self.team, &self.sa) {
-            (Some(user), _, _) => ("user", user),
-            (_, Some(team), _) => ("team", team),
-            (_, _, Some(sa)) => ("service_account", sa),
-            // clap enforces exactly one of the three.
-            (None, None, None) => unreachable!("clap requires a subject"),
+        match (&self.user, &self.team, &self.sa, &self.tenant) {
+            (Some(user), ..) => ("user", user),
+            (_, Some(team), ..) => ("team", team),
+            (_, _, Some(sa), _) => ("service_account", sa),
+            (_, _, _, Some(tenant)) => ("tenant", tenant),
+            // clap enforces exactly one of the four.
+            (None, None, None, None) => unreachable!("clap requires a subject"),
         }
     }
 }
@@ -166,6 +172,16 @@ mod tests {
             panic!()
         };
         assert_eq!(subject.subject(), ("user", "ada"));
+        let GrantCommand::Set { subject, .. } =
+            grant(&["set", "acme/web", "--tenant", "partner", "--role", "viewer"])
+        else {
+            panic!()
+        };
+        assert_eq!(subject.subject(), ("tenant", "partner"));
+        assert_eq!(
+            parse_err(&["grant", "set", "acme/web", "--tenant", "a", "--sa", "b", "--role", "r"]),
+            ErrorKind::ArgumentConflict
+        );
 
         assert_eq!(
             parse_err(&["grant", "set", "acme/web", "--role", "viewer"]),

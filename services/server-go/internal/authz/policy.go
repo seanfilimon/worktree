@@ -24,6 +24,7 @@ const (
 	prefixTeam             = "team:"
 	prefixRole             = "role:"
 	prefixSA               = "sa:"
+	prefixTenant           = "tenant:" // v0.5: every member and service account of a tenant
 )
 
 // weekdays maps TimeWindow day names to time.Weekday.
@@ -34,9 +35,10 @@ var weekdays = map[string]time.Weekday{
 
 // compiledPolicy is an enabled policy with its statements pre-parsed.
 type compiledPolicy struct {
-	id, name   string
-	statements []compiledStatement
-	usesTeams  bool // some statement has a "team:" principal
+	id, name    string
+	statements  []compiledStatement
+	usesTeams   bool // some statement has a "team:" principal
+	usesTenants bool // some statement has a "tenant:" principal
 }
 
 // compiledStatement is a PolicyStatement ready for matching.
@@ -97,6 +99,9 @@ func compilePolicies(pols []domain.Policy) []compiledPolicy {
 			for _, pr := range st.Principals {
 				if strings.HasPrefix(strings.TrimSpace(pr), prefixTeam) {
 					cp.usesTeams = true
+				}
+				if strings.HasPrefix(strings.TrimSpace(pr), prefixTenant) {
+					cp.usesTenants = true
 				}
 			}
 		}
@@ -332,6 +337,7 @@ type principalFacts struct {
 	saLocal   bool   // service account belongs to the policy tenant
 	roles     []string
 	teams     []string // team slugs in the policy tenant (loaded only when a statement names a team)
+	tenants   []string // slugs of the tenants the caller belongs to (loaded only when a statement names a tenant)
 }
 
 // principalMatches reports whether pattern covers the caller.
@@ -374,6 +380,13 @@ func principalMatches(pattern string, f *principalFacts) bool {
 				return true
 			}
 		}
+	case strings.HasPrefix(pattern, prefixTenant):
+		t := strings.TrimPrefix(pattern, prefixTenant)
+		for _, have := range f.tenants {
+			if globMatch(t, have) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -386,7 +399,7 @@ func validatePrincipalPattern(p string) error {
 	case "":
 		return fmt.Errorf("principal is empty")
 	}
-	for _, prefix := range []string{prefixUser, prefixTeam, prefixRole, prefixSA} {
+	for _, prefix := range []string{prefixUser, prefixTeam, prefixRole, prefixSA, prefixTenant} {
 		if name, ok := strings.CutPrefix(p, prefix); ok {
 			if name == "" {
 				return fmt.Errorf("principal %q has no name after %q", p, prefix)
@@ -404,5 +417,5 @@ func validatePrincipalPattern(p string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("unknown principal %q (want user:, team:, role:, sa:, authenticated, anonymous or *)", p)
+	return fmt.Errorf("unknown principal %q (want user:, team:, role:, sa:, tenant:, authenticated, anonymous or *)", p)
 }

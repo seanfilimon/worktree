@@ -38,7 +38,16 @@ const (
 	SubjectUser           = "user"
 	SubjectTeam           = "team"
 	SubjectServiceAccount = "service_account"
+	// SubjectTenant grants the role to every member (and service account)
+	// of the tenant named by Grant.SubjectID: cross-tenant tree access
+	// (v0.5, §13.7).
+	SubjectTenant = "tenant"
 )
+
+// ManagedByConfig marks policies and custom roles owned by a declarative
+// access document (Policy.ManagedBy / CustomRole.ManagedBy, v0.5 §13.7).
+// They are read-only in the REST API unless an owner passes ?force=true.
+const ManagedByConfig = "config"
 
 // Policy statement effects.
 const (
@@ -71,7 +80,8 @@ type CustomRole struct {
 	TenantID    string    `json:"tenant_id"`
 	Name        string    `json:"name"` // [a-z0-9-], 2..40
 	Description string    `json:"description"`
-	Permissions []Action  `json:"permissions"` // concrete actions or "<area>:*"
+	Permissions []Action  `json:"permissions"`          // concrete actions or "<area>:*"
+	ManagedBy   string    `json:"managed_by,omitempty"` // ManagedByConfig or "" (REST-managed)
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -100,7 +110,8 @@ type TimeWindow struct {
 // "wt:branch/<tenant>/<tree>/<branch>", "wt:path/<tenant>/<tree>/<path>"
 // with "*" (one segment) and "**" (any depth) wildcards, or "*" for all.
 // Principals: "user:<username>", "team:<slug>", "role:<role>",
-// "sa:<service-account>", "authenticated", "anonymous", "*".
+// "sa:<service-account>", "tenant:<slug>" (every member and service
+// account of that tenant), "authenticated", "anonymous", "*".
 // Actions: concrete Action strings, "<area>:*" or "*".
 type PolicyStatement struct {
 	Sid        string           `json:"sid,omitempty"`
@@ -122,9 +133,16 @@ type Policy struct {
 	Enabled     bool              `json:"enabled"`
 	Statements  []PolicyStatement `json:"statements"`
 	Version     int               `json:"version"` // incremented on every update
-	CreatedBy   string            `json:"created_by"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	// ManagedBy is ManagedByConfig for policies applied from a declarative
+	// access document ("" = managed through the REST API).
+	ManagedBy string `json:"managed_by,omitempty"`
+	// TreeID is set for config-managed policies that come from a tree-level
+	// access document (<tree>/.wt-tree/access/policies.toml): deny-only
+	// statements whose resources all lie inside that tree.
+	TreeID    string    `json:"tree_id,omitempty"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Grant assigns a role on one tree to a user, team or service account. A
@@ -132,9 +150,9 @@ type Policy struct {
 // give access to a tree in a tenant it is not a member of).
 type Grant struct {
 	TreeID      string    `json:"tree_id"`
-	SubjectType string    `json:"subject_type"` // SubjectUser | SubjectTeam | SubjectServiceAccount
-	SubjectID   string    `json:"subject_id"`   // account / team / service-account id
-	Subject     string    `json:"subject"`      // username / team slug / service-account name (display)
+	SubjectType string    `json:"subject_type"` // SubjectUser | SubjectTeam | SubjectServiceAccount | SubjectTenant
+	SubjectID   string    `json:"subject_id"`   // account / team / service-account / tenant id
+	Subject     string    `json:"subject"`      // username / team slug / service-account name / tenant slug (display)
 	Role        string    `json:"role"`         // built-in or custom role of the tree's tenant
 	CreatedBy   string    `json:"created_by"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -316,7 +334,8 @@ type RequestEnv struct {
 type DecisionReason struct {
 	// "server_admin", "disabled", "tenant_role", "team_role", "tree_grant",
 	// "custom_role", "service_account", "visibility", "token_scope",
-	// "policy", "default".
+	// "policy", "default"; v0.5: "owner_protected", "tenant_suspended",
+	// "tenant_deactivated".
 	Source string `json:"source"`
 	Detail string `json:"detail"`
 	Effect string `json:"effect"` // "allow" | "deny" | "info"

@@ -396,6 +396,38 @@ impl SyncClient {
             .into_inner())
     }
 
+    // --- access workstream (§13.7): raw access-config RPCs used by
+    // `remote::access` ---
+
+    /// Raw `SyncAccessConfig`. A refused document is an `Ok` response with
+    /// `accepted == false` and `validation_errors`.
+    pub async fn sync_access_config(
+        &mut self,
+        req: wire::AccessConfigSyncRequest,
+    ) -> Result<wire::AccessConfigSyncResponse> {
+        Ok(self
+            .inner
+            .sync_access_config(req)
+            .await
+            .map_err(|s| self.status(s))?
+            .into_inner())
+    }
+
+    /// Raw `GetAccessConfig`.
+    pub async fn get_access_config(
+        &mut self,
+        req: wire::GetAccessConfigRequest,
+    ) -> Result<wire::GetAccessConfigResponse> {
+        Ok(self
+            .inner
+            .get_access_config(req)
+            .await
+            .map_err(|s| self.status(s))?
+            .into_inner())
+    }
+
+    // --- end access workstream ---
+
     /// The subset of `candidates` the server does not have (`Negotiate`,
     /// in batches of bounded size). Order follows `candidates`; duplicates
     /// are removed.

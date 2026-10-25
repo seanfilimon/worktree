@@ -135,6 +135,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		RateLimit: cfg.RateLimit,
 	})
 	accessCfg := accesscfg.New(accesscfg.Deps(v5))
+	go accessCfg.Run(ctx) // access workstream: drops access docs of deleted trees (§13.14)
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
 	rev.SetLogger(log)

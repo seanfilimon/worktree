@@ -8,6 +8,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
@@ -28,27 +31,31 @@ var accessConfigKinds = map[syncpb.AccessConfigType]string{
 	syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_LICENSE:           "license",
 }
 
-// SyncAccessConfig stores a raw access-config document (roles, policies,
-// ...) for a tenant. The caller must be a tenant admin. tenant_id may hold
-// the tenant's id or its slug. The document must be non-empty UTF-8 that
-// passes a structural TOML check (see validateTOMLish); semantic validation
-// is left to the consumers of each config kind. Validation failures are
-// returned as accepted=false with validation_errors.
+// SyncAccessConfig applies or stores an access-config document for a
+// tenant (tenant_id may hold the tenant's id or its slug).
+//
+// v0.5 declarative documents (§13.7) — config_type ROLES or POLICIES with
+// canonical JSON content `{"roles":[...],"policies":[...]}`, optionally
+// with tree_id (a tree-level, deny-only document) and dry_run — are
+// validated and applied by accesscfg.Service.Apply; the response carries
+// the plan in `changes`, and refusals of the document (validation,
+// privilege escalation) come back as accepted=false with
+// validation_errors.
+//
+// Anything else is the v0.4 behaviour: the caller must be a tenant admin
+// and the raw document must be non-empty UTF-8 that passes a structural
+// TOML check (see validateTOMLish); it is stored as is.
 func (s *Service) SyncAccessConfig(ctx context.Context, req *syncpb.AccessConfigSyncRequest) (*syncpb.AccessConfigSyncResponse, error) {
 	p, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ref := strings.TrimSpace(req.GetTenantId().GetValue())
-	if ref == "" {
-		return nil, invalidf("tenant_id is required")
-	}
-	tenant, err := s.d.Store.GetTenant(ctx, ref)
-	if errors.Is(err, domain.ErrNotFound) {
-		tenant, err = s.d.Store.GetTenantBySlug(ctx, ref)
-	}
+	tenant, err := s.accessTenant(ctx, req.GetTenantId())
 	if err != nil {
-		return nil, s.toStatus(ctx, err, "tenant")
+		return nil, err
+	}
+	if declarative(req) {
+		return s.applyAccessDocument(ctx, p, tenant, req)
 	}
 	if err := s.authorize(ctx, p, domain.ActTenantAdmin, tenant.ID, nil); err != nil {
 		return nil, err
@@ -94,6 +101,140 @@ func (s *Service) SyncAccessConfig(ctx context.Context, req *syncpb.AccessConfig
 
 func reject(msg string) *syncpb.AccessConfigSyncResponse {
 	return &syncpb.AccessConfigSyncResponse{Accepted: false, ValidationErrors: []string{msg}}
+}
+
+// accessTenant resolves a tenant reference (id or slug).
+func (s *Service) accessTenant(ctx context.Context, id *syncpb.TenantId) (*domain.Tenant, error) {
+	ref := strings.TrimSpace(id.GetValue())
+	if ref == "" {
+		return nil, invalidf("tenant_id is required")
+	}
+	tenant, err := s.d.Store.GetTenant(ctx, ref)
+	if errors.Is(err, domain.ErrNotFound) {
+		tenant, err = s.d.Store.GetTenantBySlug(ctx, ref)
+	}
+	if err != nil {
+		return nil, s.toStatus(ctx, err, "tenant")
+	}
+	return tenant, nil
+}
+
+// declarative reports whether req carries a v0.5 declarative document: a
+// tree-level or dry-run request, or roles/policies content that is a JSON
+// object.
+func declarative(req *syncpb.AccessConfigSyncRequest) bool {
+	if req.TreeId != nil || req.GetDryRun() {
+		return true
+	}
+	switch req.GetConfigType() {
+	case syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_ROLES, syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_POLICIES:
+		return bytes.HasPrefix(bytes.TrimSpace(req.GetContent()), []byte("{"))
+	}
+	return false
+}
+
+// applyAccessDocument hands a declarative document to accesscfg.
+func (s *Service) applyAccessDocument(ctx context.Context, p *domain.Principal, tenant *domain.Tenant, req *syncpb.AccessConfigSyncRequest) (*syncpb.AccessConfigSyncResponse, error) {
+	if s.d.AccessCfg == nil {
+		return nil, status.Error(codes.Unimplemented, "declarative access documents are not supported by this server")
+	}
+	switch req.GetConfigType() {
+	case syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_ROLES, syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_POLICIES:
+	default:
+		return reject("config_type must be ACCESS_CONFIG_TYPE_POLICIES for declarative access documents"), nil
+	}
+	content := req.GetContent()
+	if ch := req.GetConfigHash(); ch != nil && len(ch.GetValue()) > 0 {
+		want, err := hashFromPB(ch)
+		if err != nil {
+			return reject("config_hash: " + err.Error()), nil
+		}
+		if hash.Sum(content) != want {
+			return reject("config_hash does not match BLAKE3(content)"), nil
+		}
+	}
+	var tree *domain.Tree
+	if req.TreeId != nil {
+		t, err := s.loadTree(ctx, req.TreeId)
+		if err != nil {
+			return nil, err
+		}
+		if t.TenantID != tenant.ID {
+			return nil, invalidf("tree %s is not in tenant %s", t.Name, tenant.Slug)
+		}
+		tree = t
+	}
+	res, err := s.d.AccessCfg.Apply(ctx, p, tenant, tree, content, req.GetDryRun())
+	if err != nil {
+		return nil, s.accessStatus(ctx, err, "apply access config")
+	}
+	return &syncpb.AccessConfigSyncResponse{Accepted: res.Accepted, ValidationErrors: res.Errors, Changes: res.Changes}, nil
+}
+
+// accessStatus is toStatus, keeping the authorizer's explanation of a
+// refusal (e.g. "tenant is suspended").
+func (s *Service) accessStatus(ctx context.Context, err error, what string) error {
+	if errors.Is(err, domain.ErrForbidden) {
+		return status.Errorf(codes.PermissionDenied, "%s: %v", what, err)
+	}
+	return s.toStatus(ctx, err, what)
+}
+
+// GetAccessConfig returns the last applied access document of a tenant
+// (tree_id unset) or tree. With the v0.5 service that is the declarative
+// document (reading needs iam:read on the tenant or tree:read on the
+// tree); otherwise the raw v0.4 document of config_type (tenant admins).
+// found=false when there is none.
+func (s *Service) GetAccessConfig(ctx context.Context, req *syncpb.GetAccessConfigRequest) (*syncpb.GetAccessConfigResponse, error) {
+	p, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tenant, err := s.accessTenant(ctx, req.GetTenantId())
+	if err != nil {
+		return nil, err
+	}
+	typ := req.GetConfigType()
+	if s.d.AccessCfg != nil && (req.TreeId != nil || typ == syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_UNSPECIFIED ||
+		typ == syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_ROLES || typ == syncpb.AccessConfigType_ACCESS_CONFIG_TYPE_POLICIES) {
+		var tree *domain.Tree
+		if req.TreeId != nil {
+			if tree, err = s.loadTree(ctx, req.TreeId); err != nil {
+				return nil, err
+			}
+			if tree.TenantID != tenant.ID {
+				return nil, invalidf("tree %s is not in tenant %s", tree.Name, tenant.Slug)
+			}
+		}
+		doc, err := s.d.AccessCfg.Get(ctx, p, tenant, tree)
+		if errors.Is(err, domain.ErrNotFound) {
+			return &syncpb.GetAccessConfigResponse{Found: false}, nil
+		}
+		if err != nil {
+			return nil, s.accessStatus(ctx, err, "read access config")
+		}
+		resp := &syncpb.GetAccessConfigResponse{Found: true, Content: doc.Content, UpdatedAt: tsToPB(doc.UpdatedAt), UpdatedBy: doc.UpdatedBy}
+		resp.ConfigHash = hashToPB(hash.Sum(doc.Content))
+		return resp, nil
+	}
+	if req.TreeId != nil {
+		return nil, status.Error(codes.Unimplemented, "tree-level access documents are not supported by this server")
+	}
+	if err := s.authorize(ctx, p, domain.ActTenantAdmin, tenant.ID, nil); err != nil {
+		return nil, err
+	}
+	kind, ok := accessConfigKinds[typ]
+	if !ok {
+		return nil, invalidf("config_type is unspecified or unknown")
+	}
+	content, err := s.d.Store.GetAccessConfig(ctx, tenant.ID, kind)
+	if errors.Is(err, domain.ErrNotFound) {
+		return &syncpb.GetAccessConfigResponse{Found: false}, nil
+	}
+	if err != nil {
+		return nil, s.toStatus(ctx, err, "read access config")
+	}
+	return &syncpb.GetAccessConfigResponse{Found: true, Content: content, ConfigHash: hashToPB(hash.Sum(content))}, nil
 }
 
 // validateTOMLish performs a structural, line-oriented sanity check of a
