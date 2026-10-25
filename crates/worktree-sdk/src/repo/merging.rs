@@ -41,13 +41,14 @@ struct ConflictReport {
 }
 
 /// Outcome of a three-way manifest merge, before touching the disk.
-struct ThreeWay {
+/// (rewrite §14.5: crate-visible for cherry-pick, rebase and stash.)
+pub(crate) struct ThreeWay {
     /// Resolved entries; for conflicted paths, the side kept in the
     /// working tree.
-    entries: Vec<ManifestEntry>,
-    conflicts: Vec<ConflictInfo>,
+    pub(crate) entries: Vec<ManifestEntry>,
+    pub(crate) conflicts: Vec<ConflictInfo>,
     /// Text files whose working copy gets diff3 conflict markers.
-    marker_files: Vec<(String, Vec<u8>)>,
+    pub(crate) marker_files: Vec<(String, Vec<u8>)>,
 }
 
 /// The three manifests of an in-progress merge.
@@ -336,6 +337,8 @@ impl Repository {
 
     /// Restore the pre-merge head into the working tree and clear merge state.
     pub fn abort_merge(&self, tree: &str) -> Result<()> {
+        // rewrite (§14.5): a stopped cherry-pick/rebase aborts with its own command.
+        self.ensure_no_rewrite(tree)?;
         let _lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         let state = self.merge_state(tree)?.ok_or(SdkError::NoMergeInProgress)?;
@@ -358,6 +361,8 @@ impl Repository {
     /// Finish a conflicted merge once markers are resolved: creates the
     /// two-parent merge snapshot. `MergeConflict` if markers remain.
     pub fn continue_merge(&self, tree: &str, message: Option<&str>) -> Result<Snapshot> {
+        // rewrite (§14.5): a stopped cherry-pick/rebase finishes with its own command.
+        self.ensure_no_rewrite(tree)?;
         let _lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         let state = self.merge_state(tree)?.ok_or(SdkError::NoMergeInProgress)?;
@@ -706,9 +711,34 @@ impl Repository {
         Ok(())
     }
 
+    // rewrite (§14.5): persist a conflicted cherry-pick/rebase step in the
+    // same files a conflicted merge uses, so `wt merge resolve|status` work.
+    /// Write MERGE_STATE.json and `.wt/conflicts/<tree>.json` for `state`.
+    pub(crate) fn write_conflict_state(
+        &self,
+        tree: &str,
+        branch: &str,
+        state: &MergeState,
+    ) -> Result<()> {
+        fsutil::write_json(&self.merge_state_path(tree), state)?;
+        fsutil::write_json(
+            &self.conflicts_path(tree),
+            &ConflictReport {
+                tree: tree.to_string(),
+                branch: branch.to_string(),
+                source_branch: state.source_branch.clone(),
+                source_tip: state.source_tip.clone(),
+                target_tip: state.target_tip.clone(),
+                base: state.base.clone(),
+                conflicts: state.conflicts.clone(),
+                resolved: state.resolved.clone(),
+            },
+        )
+    }
+
     /// Resolve every path of a three-way merge, merging text content and
     /// storing cleanly merged blobs. `strategy` decides conflicts.
-    fn three_way(
+    pub(crate) fn three_way(
         &self,
         base: &Manifest,
         ours: &Manifest,
@@ -809,7 +839,7 @@ impl Repository {
 
 /// Conflict-marker labels with short ids: `ours (main 1a2b3c4d)`,
 /// `base (0f0f0f0f)`, `theirs (feature 5e6f7a8b)`.
-fn merge_labels(
+pub(crate) fn merge_labels(
     branch: &str,
     ours: &str,
     source: &str,

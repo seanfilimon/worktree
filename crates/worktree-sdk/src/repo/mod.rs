@@ -19,6 +19,8 @@
 //!   trees/<tree>/shallow        boundary snapshot ids of a shallow history (one per line)
 //!   trees/<tree>/stubbed        paths whose content the server withheld (one per line)
 //!   trees/<tree>/MERGE_STATE.json
+//!   trees/<tree>/REWRITE_STATE.json  stopped cherry-pick / rebase (§14.5)
+//!   trees/<tree>/stash.jsonl         StashEntry per line, oldest first (§14.5)
 //!   trees/<tree>/LOCK           advisory lock held by mutating operations
 //!   conflicts/<tree>.json       machine-readable conflict list during a merge
 //! ```
@@ -57,6 +59,14 @@ mod refs;
 mod snapshotting;
 mod trees;
 mod working;
+// rewrite (§14.5): cherry-pick, rebase and stash.
+mod rewrite;
+mod stash;
+pub use rewrite::{
+    CherryPickOptions, RebaseOptions, RewriteOp, RewriteOutcome, RewriteState, RewriteStatus,
+    RewrittenSnapshot,
+};
+pub use stash::{AutoStashSwitch, StashApplyOutcome, StashEntry, StashOptions};
 
 pub(crate) use trees::TreeRecord;
 

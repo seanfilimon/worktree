@@ -23,7 +23,8 @@ const RENAME_PAIR_LIMIT: usize = 100 * 100;
 const RENAME_MAX_FILE_SIZE: u64 = 4 * 1024 * 1024;
 
 /// Where the "new" side's file content comes from.
-enum NewSide {
+/// (rewrite §14.5: crate-visible for `stash show`.)
+pub(crate) enum NewSide {
     /// Blobs in the object store.
     Store,
     /// Files in this working directory.
@@ -75,7 +76,7 @@ impl Repository {
         self.diff_manifests(&old, &new, &NewSide::Store, opts)
     }
 
-    fn diff_manifests(
+    pub(crate) fn diff_manifests(
         &self,
         old: &Manifest,
         new: &Manifest,
