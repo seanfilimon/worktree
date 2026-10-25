@@ -150,6 +150,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	// dependencies and cleaning up TODOs/releases of deleted trees.
 	todos.Start(ctx)
 	releases.Start(ctx)
+	codeIndex.Start(ctx) // code-search (§14.3): incremental re-index on pushes, drop on tree.deleted
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
