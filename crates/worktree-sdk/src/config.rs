@@ -3,8 +3,8 @@
 //! Configuration is layered (docs/ENGINEERING_PLAN.md §13.9), lowest
 //! precedence first:
 //!
-//! 1. `<wt home>/config.toml` — user defaults; only `[user]`, `[signing]`
-//!    and `[secret_scanning]` are read from it.
+//! 1. `<wt home>/config.toml` — user defaults; only `[user]`, `[signing]`,
+//!    `[secret_scanning]` and `[alias]` are read from it.
 //! 2. `.wt/config.toml` — the worktree configuration ([`WorktreeConfig`]).
 //! 3. `<tree>/.wt-tree/config.toml` — per-tree overrides; only
 //!    `[auto_snapshot]`, `[secret_scanning]` and `[hooks]` are read from it.
@@ -80,6 +80,13 @@ pub struct WorktreeConfig {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub git_remote: std::collections::BTreeMap<String, GitRemoteSection>,
     // --- end git-export
+    // --- cli-ux (ENGINEERING_PLAN §14.8): command aliases.
+    /// `[alias]`: `wt NAME args...` runs the aliased command line, e.g.
+    /// `st = "status"`, `lg = "log --oneline -n 20"` (user and worktree
+    /// layers; a worktree alias replaces a user alias of the same name).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub alias: std::collections::BTreeMap<String, String>,
+    // --- end cli-ux
 }
 
 // --- git-export (ENGINEERING_PLAN §13.8)
@@ -478,8 +485,8 @@ const ADDITIVE_KEYS: &[(&str, &str)] = &[
 /// String keys for which an empty value means "not set".
 const EMPTY_IS_UNSET: &[(&str, &str)] = &[("user", "name"), ("user", "email"), ("signing", "key")];
 
-/// Sections read from the user config file.
-pub const USER_SECTIONS: &[&str] = &["user", "signing", "secret_scanning"];
+/// Sections read from the user config file (`alias`: cli-ux §14.8).
+pub const USER_SECTIONS: &[&str] = &["user", "signing", "secret_scanning", "alias"];
 /// Sections read from a tree's `.wt-tree/config.toml`.
 pub const TREE_SECTIONS: &[&str] = &["auto_snapshot", "secret_scanning", "hooks"];
 
@@ -493,9 +500,12 @@ const SECTION_ORDER: &[&str] = &[
     "secret_scanning",
     "hooks",
     "signing",
+    "alias", // cli-ux (§14.8)
 ];
 
 const PATTERNS_PREFIX: &str = "secret_scanning.patterns.";
+/// cli-ux (§14.8): prefix of `alias.NAME` keys.
+const ALIAS_PREFIX: &str = "alias.";
 
 /// The canonical spelling of a dotted key (resolves aliases).
 pub fn canonical_key(key: &str) -> String {
@@ -532,6 +542,7 @@ impl WorktreeConfig {
             hooks: HooksSection::default(),
             signing: SigningSection::default(),
             git_remote: std::collections::BTreeMap::new(), // git-export (§13.8)
+            alias: std::collections::BTreeMap::new(),      // cli-ux (§14.8)
         }
     }
 
@@ -599,6 +610,10 @@ impl WorktreeConfig {
                 .iter()
                 .find(|p| p.name == name)
                 .map(|p| p.regex.clone());
+        }
+        // cli-ux (§14.8)
+        if let Some(name) = key.strip_prefix(ALIAS_PREFIX) {
+            return self.alias.get(name).cloned();
         }
         let a = &self.auto_snapshot;
         let value = match key.as_str() {
@@ -675,6 +690,19 @@ impl WorktreeConfig {
                     regex: value.to_string(),
                 }),
             }
+            return Ok(());
+        }
+        // cli-ux (§14.8): `alias.NAME`; an empty value removes the alias.
+        if let Some(name) = key.strip_prefix(ALIAS_PREFIX) {
+            validate_alias_name(name)?;
+            if value.trim().is_empty() {
+                self.alias.remove(name);
+                return Ok(());
+            }
+            split_alias_command(value)
+                .map_err(|e| SdkError::InvalidConfig(format!("{key}: {e}")))?;
+            self.alias
+                .insert(name.to_string(), value.trim().to_string());
             return Ok(());
         }
         match key {
@@ -760,6 +788,9 @@ impl WorktreeConfig {
         for p in &self.secret_scanning.patterns {
             out.push((format!("{PATTERNS_PREFIX}{}", p.name), p.regex.clone()));
         }
+        for (name, command) in &self.alias {
+            out.push((format!("{ALIAS_PREFIX}{name}"), command.clone())); // cli-ux (§14.8)
+        }
         out.sort();
         out
     }
@@ -775,7 +806,7 @@ impl WorktreeConfig {
             return Value::try_from(p).ok();
         }
         let text = self.get(key)?;
-        let kind = if parse_remote_key(key).is_some() {
+        let kind = if parse_remote_key(key).is_some() || key.starts_with(ALIAS_PREFIX) {
             Kind::Str
         } else {
             scalar_kind(key)?
@@ -1383,7 +1414,8 @@ impl Repository {
         };
         probe.set(&key, value)?;
         let mut table = read_table_opt(&path)?.unwrap_or_default();
-        let removing_pattern = key.starts_with(PATTERNS_PREFIX) && value.is_empty();
+        let removing_pattern = (key.starts_with(PATTERNS_PREFIX) && value.is_empty())
+            || (key.starts_with(ALIAS_PREFIX) && value.trim().is_empty()); // cli-ux (§14.8)
         if removing_pattern {
             remove_key(&mut table, &key);
         } else {
@@ -1404,7 +1436,10 @@ impl Repository {
         if key.starts_with("worktree.") || key.starts_with("remote.") {
             return Err(SdkError::InvalidConfig(format!("{key} cannot be unset")));
         }
-        if scalar_kind(&key).is_none() && !key.starts_with(PATTERNS_PREFIX) {
+        if scalar_kind(&key).is_none()
+            && !key.starts_with(PATTERNS_PREFIX)
+            && !key.starts_with(ALIAS_PREFIX)
+        {
             return Err(SdkError::InvalidConfig(format!(
                 "unknown config key: {key}"
             )));
@@ -1674,6 +1709,194 @@ fn find_nested_wt_dirs(dir: &Path, own: &Path, out: &mut Vec<PathBuf>) {
         find_nested_wt_dirs(&path, own, out);
     }
 }
+
+// ----------------------------------------------------------------------
+// cli-ux (ENGINEERING_PLAN §14.8): command aliases and per-layer checks
+// ----------------------------------------------------------------------
+
+/// Alias names: 1-64 of `[A-Za-z0-9_-]`, starting with a letter or digit.
+pub fn validate_alias_name(name: &str) -> Result<()> {
+    let ok = !name.is_empty()
+        && name.len() <= 64
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(SdkError::InvalidConfig(format!(
+            "alias name {name:?} must start with a letter or digit and use only letters, digits, '-' and '_'"
+        )))
+    }
+}
+
+/// Split an alias command line into words, shell style: whitespace
+/// separates words, `'...'` quotes literally, `"..."` quotes with `\"` and
+/// `\\` escapes, and outside quotes a backslash escapes whitespace, quotes
+/// and itself (any other backslash is kept, so Windows paths work).
+pub fn split_alias_command(value: &str) -> std::result::Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => word.push(c),
+                        None => return Err("unterminated ' quote".into()),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') if matches!(chars.peek(), Some('"' | '\\')) => {
+                            word.extend(chars.next());
+                        }
+                        Some(c) => word.push(c),
+                        None => return Err("unterminated \" quote".into()),
+                    }
+                }
+            }
+            '\\' if chars
+                .peek()
+                .is_some_and(|n| n.is_whitespace() || matches!(n, '\'' | '"' | '\\')) =>
+            {
+                in_word = true;
+                word.extend(chars.next());
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    if words.is_empty() {
+        return Err("the alias is empty".into());
+    }
+    Ok(words)
+}
+
+/// The aliases that apply in `dir`: `[alias]` of the user config, replaced
+/// name by name by `[alias]` of the worktree containing `dir` (if any).
+/// Best effort and cheap (no repository is opened): unreadable or invalid
+/// files and non-string values are skipped (`wt doctor` reports them).
+pub fn load_aliases(dir: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut files = vec![user_config_path()];
+    if let Ok(start) = std::path::absolute(dir) {
+        if let Some(root) = start
+            .ancestors()
+            .find(|d| d.join(crate::repo::WT_DIR).is_dir())
+        {
+            files.push(root.join(crate::repo::WT_DIR).join(CONFIG_FILE_NAME));
+        }
+    }
+    for file in files {
+        let Ok(Some(table)) = read_table_opt(&file) else {
+            continue;
+        };
+        if let Some(Value::Table(aliases)) = table.get("alias") {
+            for (name, value) in aliases {
+                if let Some(command) = value.as_str() {
+                    out.insert(name.clone(), command.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Check one configuration file the way it is read at `level` (user,
+/// worktree or tree). `Ok(false)` when the file does not exist.
+pub fn validate_config_file(path: &Path, level: ConfigLevel) -> Result<bool> {
+    let Some(table) = read_table_opt(path)? else {
+        return Ok(false);
+    };
+    match level {
+        ConfigLevel::Worktree => {
+            WorktreeConfig::load(path)?;
+        }
+        ConfigLevel::User | ConfigLevel::Tree | ConfigLevel::Default => {
+            let allowed = if level == ConfigLevel::Tree {
+                TREE_SECTIONS
+            } else {
+                USER_SECTIONS
+            };
+            let mut t = filter_sections(table, allowed, path);
+            normalize(&mut t);
+            drop_unset(&mut t);
+            validate_layer(&t, path)?;
+        }
+    }
+    Ok(true)
+}
+
+/// `wt config set --global KEY VALUE` outside a worktree: set one key of
+/// the user config (`<wt home>/config.toml`), validated like
+/// [`Repository::set_config_value`] with [`ConfigScope::User`].
+pub fn set_user_config_value(key: &str, value: &str) -> Result<()> {
+    let key = canonical_key(key);
+    check_scope(&ConfigScope::User, &key)?;
+    let mut probe = WorktreeConfig::new("probe", "main");
+    probe.set(&key, value)?;
+    let path = user_config_path();
+    let mut table = read_table_opt(&path)?.unwrap_or_default();
+    let removing = (key.starts_with(PATTERNS_PREFIX) && value.is_empty())
+        || (key.starts_with(ALIAS_PREFIX) && value.trim().is_empty());
+    remove_key(&mut table, &key);
+    if !removing {
+        let typed = probe
+            .toml_value(&key)
+            .ok_or_else(|| SdkError::InvalidConfig(format!("unknown config key: {key}")))?;
+        insert_key(&mut table, &key, typed)?;
+    }
+    let mut normalized = table.clone();
+    normalize(&mut normalized);
+    validate_layer(&filter_sections(normalized, USER_SECTIONS, &path), &path)?;
+    write_table(&path, &table)
+}
+
+/// `wt config unset --global KEY` outside a worktree; whether it was set.
+pub fn unset_user_config_value(key: &str) -> Result<bool> {
+    let key = canonical_key(key);
+    check_scope(&ConfigScope::User, &key)?;
+    if scalar_kind(&key).is_none()
+        && !key.starts_with(PATTERNS_PREFIX)
+        && !key.starts_with(ALIAS_PREFIX)
+    {
+        return Err(SdkError::InvalidConfig(format!(
+            "unknown config key: {key}"
+        )));
+    }
+    let path = user_config_path();
+    let Some(mut table) = read_table_opt(&path)? else {
+        return Ok(false);
+    };
+    if !remove_key(&mut table, &key) {
+        return Ok(false);
+    }
+    write_table(&path, &table)?;
+    Ok(true)
+}
+
+// --- end cli-ux
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemoteField {
@@ -2040,6 +2263,105 @@ on_branch_switch = true
         assert!(parse_size("").is_err());
         assert!(parse_size("99999999999999999999GiB").is_err());
     }
+
+    // --- cli-ux (§14.8)
+    #[test]
+    fn aliases_get_set_and_list() {
+        let mut c = cfg();
+        c.set("alias.st", "status").unwrap();
+        c.set("alias.lg", "  log --oneline -n 20 ").unwrap();
+        assert_eq!(c.get("alias.st").as_deref(), Some("status"));
+        assert_eq!(c.get("alias.lg").as_deref(), Some("log --oneline -n 20"));
+        assert!(c
+            .entries()
+            .contains(&("alias.lg".into(), "log --oneline -n 20".into())));
+        c.set("alias.st", "").unwrap();
+        assert_eq!(c.get("alias.st"), None);
+        for bad in ["", "-x", "a.b", "a b", "ä"] {
+            assert!(c.set(&format!("alias.{bad}"), "status").is_err(), "{bad:?}");
+        }
+        assert!(c.set("alias.q", "log \"unterminated").is_err());
+        let toml = toml::to_string(&c).unwrap();
+        assert!(toml.contains("[alias]"), "{toml}");
+        assert!(USER_SECTIONS.contains(&"alias"));
+        assert!(!TREE_SECTIONS.contains(&"alias"));
+    }
+
+    #[test]
+    fn alias_command_lines_split_like_a_shell() {
+        let split = |s: &str| split_alias_command(s).unwrap();
+        assert_eq!(
+            split("log --oneline -n 20"),
+            ["log", "--oneline", "-n", "20"]
+        );
+        assert_eq!(
+            split("snapshot -m 'quick fix' --allow-empty"),
+            ["snapshot", "-m", "quick fix", "--allow-empty"]
+        );
+        assert_eq!(split(r#"x "a \"b\" c" d\ e"#), ["x", "a \"b\" c", "d e"]);
+        assert_eq!(
+            split(r"restore C:\work\a.txt"),
+            ["restore", r"C:\work\a.txt"]
+        );
+        assert_eq!(split("x ''"), ["x", ""]);
+        assert!(split_alias_command("   ").is_err());
+        assert!(split_alias_command("x 'open").is_err());
+        assert!(validate_alias_name("ci-2_x").is_ok());
+    }
+
+    #[test]
+    fn worktree_aliases_are_written_and_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = Repository::init(dir.path(), Default::default()).unwrap();
+        repo.set_config_value(&ConfigScope::Worktree, "alias.lg", "log --oneline")
+            .unwrap();
+        assert_eq!(repo.config().alias["lg"], "log --oneline");
+        let text = std::fs::read_to_string(repo.wt_dir().join(CONFIG_FILE_NAME)).unwrap();
+        assert!(
+            text.contains("[alias]") && text.contains("lg = \"log --oneline\""),
+            "{text}"
+        );
+        let stack = repo.config_stack(None).unwrap();
+        let entry = stack.get("alias.lg").unwrap().unwrap();
+        assert_eq!(entry.origin.level, ConfigLevel::Worktree);
+
+        let sub = dir.path().join("deep/er");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            load_aliases(&sub).get("lg").map(String::as_str),
+            Some("log --oneline")
+        );
+
+        assert!(repo
+            .set_config_value(&ConfigScope::Tree("x".into()), "alias.lg", "log")
+            .is_err());
+        assert!(repo
+            .unset_config_value(&ConfigScope::Worktree, "alias.lg")
+            .unwrap());
+        assert!(!repo.config().alias.contains_key("lg"));
+        assert!(
+            validate_config_file(&repo.wt_dir().join(CONFIG_FILE_NAME), ConfigLevel::Worktree)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn layer_files_are_validated_per_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(!validate_config_file(&path, ConfigLevel::User).unwrap());
+        std::fs::write(&path, "[user]\nname = \"Ada\"\n[alias]\nst = \"status\"\n").unwrap();
+        assert!(validate_config_file(&path, ConfigLevel::User).unwrap());
+        std::fs::write(&path, "[alias]\nst = 3\n").unwrap();
+        assert!(validate_config_file(&path, ConfigLevel::User).is_err());
+        // Tree level ignores [alias] entirely.
+        assert!(validate_config_file(&path, ConfigLevel::Tree).unwrap());
+        std::fs::write(&path, "[hooks]\ntimeout_secs = \"soon\"\n").unwrap();
+        assert!(validate_config_file(&path, ConfigLevel::Tree).is_err());
+        std::fs::write(&path, "not toml = = =").unwrap();
+        assert!(validate_config_file(&path, ConfigLevel::User).is_err());
+    }
+    // --- end cli-ux
 
     #[test]
     fn wt_home_honors_env() {

@@ -201,6 +201,7 @@ mod tests {
             hooks: Default::default(),
             signing: Default::default(),
             git_remote: Default::default(), // git-export (§13.8)
+            alias: Default::default(),      // cli-ux (§14.8)
         }
     }
 

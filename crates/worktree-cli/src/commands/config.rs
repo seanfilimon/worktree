@@ -42,7 +42,7 @@ pub enum ConfigCommand {
         key: String,
         value: String,
         /// Write the user config (<wt home>/config.toml): [user], [signing],
-        /// [secret_scanning] only
+        /// [secret_scanning], [alias] only (works outside a worktree)
         #[arg(long)]
         global: bool,
     },
@@ -102,6 +102,54 @@ fn scope_name(scope: &ConfigScope) -> String {
 }
 
 pub fn run(ctx: &Context, args: ConfigArgs) -> Result<()> {
+    // --- cli-ux (ENGINEERING_PLAN §14.8): `--global` writes need no worktree
+    // (e.g. `wt config set --global alias.st status` anywhere).
+    if ctx.tree_flag().is_none()
+        && matches!(
+            worktree_sdk::Repository::open(ctx.cwd()),
+            Err(worktree_sdk::SdkError::NotAWorktree)
+        )
+    {
+        match &args.command {
+            ConfigCommand::Set {
+                key,
+                value,
+                global: true,
+            } => {
+                worktree_sdk::config::set_user_config_value(key, value)?;
+                return ctx.out.emit(
+                    &Written {
+                        key,
+                        value,
+                        scope: "user".into(),
+                    },
+                    |t| t.line(format_args!("{} = {value}", key.cyan())),
+                );
+            }
+            ConfigCommand::Unset { key, global: true } => {
+                let removed = worktree_sdk::config::unset_user_config_value(key)?;
+                return ctx.out.emit(
+                    &Unset {
+                        key,
+                        removed,
+                        scope: "user".into(),
+                    },
+                    |t| {
+                        if removed {
+                            t.line(format_args!("Unset {} (user)", key.cyan()));
+                        } else {
+                            t.line(format_args!(
+                                "{} was not set in the user config",
+                                key.cyan()
+                            ));
+                        }
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    // --- end cli-ux
     let mut repo = ctx.open()?;
     match args.command {
         ConfigCommand::List { show_origin } => {
