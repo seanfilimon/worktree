@@ -1,11 +1,14 @@
 import { act, screen, within, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { installDomPolyfills } from "@/test/dom.history";
 import { FakeEventSource } from "@/test/fakeEventSource";
 import * as fx from "@/test/fixtures";
 import { json } from "@/test/mockFetch";
 import { renderApp, treeRoutes } from "@/test/renderApp";
 
 const T = "/api/v1/trees/acme/web";
+
+installDomPolyfills();
 
 describe("tree detail", () => {
   it("redirects the tree root to the overview tab", async () => {
@@ -30,7 +33,7 @@ describe("tree detail", () => {
       route: "/trees/acme/web/history",
       api: treeRoutes({ [`GET ${T}/snapshots`]: fx.snapshots }),
     });
-    const list = await screen.findByRole("list", { name: "Snapshots on main" });
+    const list = await screen.findByRole("region", { name: "Snapshots on main" });
     const items = within(list).getAllByRole("listitem");
     expect(items).toHaveLength(3);
     expect(within(items[0]!).getByText("Add login page")).toBeInTheDocument();
@@ -39,8 +42,9 @@ describe("tree detail", () => {
     expect(within(items[0]!).queryByText("auto")).not.toBeInTheDocument();
     expect(fetchMock.find(`GET ${T}/snapshots`)[0]?.url.searchParams.get("branch")).toBe("main");
 
-    await user.selectOptions(screen.getByLabelText("Branch"), "feature/login");
-    expect(await screen.findByRole("list", { name: "Snapshots on feature/login" })).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Branch" }));
+    await user.click(await screen.findByRole("option", { name: "feature/login" }));
+    expect(await screen.findByRole("region", { name: "Snapshots on feature/login" })).toBeInTheDocument();
     expect(fetchMock.find(`GET ${T}/snapshots`).at(-1)?.url.searchParams.get("branch")).toBe("feature/login");
   });
 
@@ -143,7 +147,7 @@ describe("tree detail", () => {
     });
   });
 
-  it("shows tags with links to their target snapshot", async () => {
+  it("shows tags with links to their target snapshot detail", async () => {
     renderApp({
       route: "/trees/acme/web/tags",
       api: treeRoutes({
@@ -152,6 +156,6 @@ describe("tree detail", () => {
     });
     const table = await screen.findByRole("table", { name: "Tags" });
     expect(within(table).getByText("v1.0.0")).toBeInTheDocument();
-    expect(within(table).getByRole("link", { name: "snap3" })).toHaveAttribute("href", "/trees/acme/web/files?snapshot=snap-3");
+    expect(within(table).getByRole("link", { name: "snap3" })).toHaveAttribute("href", "/trees/acme/web/snapshots/snap-3");
   });
 });
