@@ -367,7 +367,7 @@ func TestApprove(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []domain.Approval{{AccountID: bob.AccountID, Username: "bob", At: fixedNow}}
+		want := []domain.Approval{{AccountID: bob.AccountID, Username: "bob", At: fixedNow, SnapshotID: s3, Decision: domain.ReviewApproved}}
 		if !reflect.DeepEqual(mr.Approvals, want) {
 			t.Fatalf("approvals = %+v", mr.Approvals)
 		}

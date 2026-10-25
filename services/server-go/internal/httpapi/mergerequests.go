@@ -139,7 +139,11 @@ func (a *api) mrAction(action string) handlerFunc {
 		case "approve":
 			mr, err = a.d.Review.Approve(ctx, p, tree, n)
 		case "merge":
+			// Readiness failures (change requests, CI, TODOs, linear
+			// history, linked groups) answer 409 merge_blocked /
+			// linked_group; missing approvals stay 403 review_required.
 			mr, err = a.d.Review.Merge(ctx, p, tree, n)
+			err = reviewError(err)
 		case "close":
 			mr, err = a.d.Review.Close(ctx, p, tree, n)
 		}

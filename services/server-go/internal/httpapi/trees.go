@@ -322,6 +322,10 @@ func (a *api) handlePutProtection(w http.ResponseWriter, r *http.Request) error 
 			return badRequestf("allowed_pushers entries must be non-empty usernames")
 		}
 	}
+	// review-ci (§13.4): v0.5 protection fields.
+	if err := validateRequiredChecks(&p); err != nil {
+		return err
+	}
 	if err := a.d.Store.PutProtection(r.Context(), &p); err != nil {
 		return err
 	}

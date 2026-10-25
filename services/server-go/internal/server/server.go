@@ -127,6 +127,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	accessCfg := accesscfg.New(accesscfg.Deps(v5))
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	_ = todos // started below by its owning workstream
+	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
+	rev.SetLogger(log)
+	rev.Start(ctx)
+	ciSvc.Start(ctx)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
@@ -140,7 +144,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Audit:   auditLog,
 		Version: cfg.Version,
 
-		PushChecks: []domain.PushChecker{},
+		// review-ci (§13.4): rev enforces RequireLinear on direct pushes.
+		PushChecks: []domain.PushChecker{rev},
 		AccessCfg:  accessCfg,
 	})
 	_ = pathACL // becomes a PushChecker in its workstream

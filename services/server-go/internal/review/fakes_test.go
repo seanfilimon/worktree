@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/meta"
 )
 
 // fakeStore implements the subset of domain.MetaStore used by the review
@@ -30,6 +31,9 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
+		// Document collections (comments, CI, TODOs, groups, tag
+		// protections) and trees fall through to a real in-memory store.
+		MetaStore:   meta.NewMemory(),
 		branches:    map[string]domain.Branch{},
 		protections: map[string][]domain.BranchProtection{},
 		mrs:         map[string][]domain.MergeRequest{},
@@ -184,6 +188,40 @@ func (h *fakeHistory) IsAncestor(_ context.Context, ancestor, descendant string)
 		queue = append(queue, h.parents[id]...)
 	}
 	return false, nil
+}
+
+// Missing returns the snapshots reachable from tip but not from haves,
+// parents first (merge snapshots listed in merges have two parents).
+func (h *fakeHistory) Missing(_ context.Context, tip string, haves []string) ([]domain.Snapshot, error) {
+	have := map[string]bool{}
+	var mark func(id string)
+	mark = func(id string) {
+		if have[id] {
+			return
+		}
+		have[id] = true
+		for _, p := range h.parents[id] {
+			mark(p)
+		}
+	}
+	for _, id := range haves {
+		mark(id)
+	}
+	var out []domain.Snapshot
+	seen := map[string]bool{}
+	var walk func(id string)
+	walk = func(id string) {
+		if have[id] || seen[id] {
+			return
+		}
+		seen[id] = true
+		for _, p := range h.parents[id] {
+			walk(p)
+		}
+		out = append(out, domain.Snapshot{ID: id, Parents: h.parents[id]})
+	}
+	walk(tip)
+	return out, nil
 }
 
 // fakeAuthz grants actions per username. Denials return a distinct error

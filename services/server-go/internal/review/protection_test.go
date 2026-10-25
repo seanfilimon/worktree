@@ -81,24 +81,24 @@ func TestResolve(t *testing.T) {
 		{"main", Effective{
 			Branch: "main", Patterns: []string{"main", "*", "ma*"},
 			NoDirectPush: true, RequiredApprovals: 2, NoDelete: true,
-			RestrictPushers: true, AllowedPushers: []string{"bob", "carol"},
+			RestrictPushers: true, AllowedPushers: []string{"bob", "carol"}, RequiredChecks: []string{},
 		}},
 		{"feature", Effective{
 			Branch: "feature", Patterns: []string{"*"}, RequiredApprovals: 2,
-			RestrictPushers: true, AllowedPushers: []string{"alice", "bob", "carol"},
+			RestrictPushers: true, AllowedPushers: []string{"alice", "bob", "carol"}, RequiredChecks: []string{},
 		}},
 		{"release/2.0", Effective{
 			Branch: "release/2.0", Patterns: []string{"release/**"},
-			RestrictPushers: true, AllowedPushers: []string{"zed"},
+			RestrictPushers: true, AllowedPushers: []string{"zed"}, RequiredChecks: []string{},
 		}},
 		{"release/1.0", Effective{ // disjoint lists: nobody may push
 			Branch: "release/1.0", Patterns: []string{"release/**", "release/1.0"},
-			RestrictPushers: true, AllowedPushers: []string{},
+			RestrictPushers: true, AllowedPushers: []string{}, RequiredChecks: []string{},
 		}},
 		{"dev/x", Effective{ // blank names add no restriction
-			Branch: "dev/x", Patterns: []string{"dev/**"}, AllowedPushers: []string{},
+			Branch: "dev/x", Patterns: []string{"dev/**"}, AllowedPushers: []string{}, RequiredChecks: []string{},
 		}},
-		{"hotfix/a/b", Effective{Branch: "hotfix/a/b", Patterns: []string{}, AllowedPushers: []string{}}},
+		{"hotfix/a/b", Effective{Branch: "hotfix/a/b", Patterns: []string{}, AllowedPushers: []string{}, RequiredChecks: []string{}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.branch, func(t *testing.T) {
