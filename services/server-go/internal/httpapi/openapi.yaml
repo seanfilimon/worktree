@@ -2554,6 +2554,125 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  # ---- storage-backends (§15.2): server backups ----
+  /api/v1/admin/backups:
+    post:
+      operationId: createBackup
+      summary: Create a backup
+      description: |
+        v0.7 (§15.2). Writes a backup now and answers when it is complete:
+        a consistent snapshot of the metadata database plus every object,
+        streamed into `<data>/backups/<id>.wtbak` (a zstd-compressed tar
+        holding `meta.db`, `objects/<2-hex>/<62-hex>` and `manifest.json`).
+        Works with the disk and the S3 object store. The backup continues
+        when the client disconnects. The body is optional. Restore is
+        offline: `worktree-server restore --data DIR FILE`.
+      tags: [Admin]
+      x-wt-action: server:admin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBackupRequest"
+      responses:
+        "201":
+          description: The backup.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`backup_running`: another backup is being written."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    get:
+      operationId: listBackups
+      summary: List backups
+      description: |
+        v0.7 (§15.2). The backup configuration (directory, schedule, keep
+        count), the object store being backed up, whether a backup is
+        running, the next scheduled run and every backup, newest first.
+        Archives found in the backup directory without an index entry (for
+        example after a restore) are listed with what their file reveals.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: Backup status and backups.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/backups/{id}/download:
+    parameters:
+      - $ref: "#/components/parameters/BackupID"
+    get:
+      operationId: downloadBackup
+      summary: Download a backup
+      description: v0.7 (§15.2). The `.wtbak` archive as an attachment; `Range` requests are supported.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: The archive.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "206":
+          description: The requested range of the archive.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/backups/{id}:
+    parameters:
+      - $ref: "#/components/parameters/BackupID"
+    delete:
+      operationId: deleteBackup
+      summary: Delete a backup
+      description: v0.7 (§15.2). Removes the archive and its index entry.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  # ---- end storage-backends ----
   /api/v1/admin/tenants/{tenant}/limits:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -6558,6 +6677,14 @@ components:
       description: Tree name within the tenant.
       schema:
         type: string
+    BackupID:
+      name: id
+      in: path
+      required: true
+      description: "Backup id (`bk-<yyyymmdd>T<hhmmss>Z-<6 hex>`). storage-backends (§15.2)."
+      schema:
+        type: string
+        pattern: "^bk-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$"
     Limit:
       name: limit
       in: query
@@ -6848,6 +6975,113 @@ components:
           type: boolean
         sso:
           $ref: "#/components/schemas/SSOProviderInfo"
+    # ---- storage-backends (§15.2) ----
+    BackupConfig:
+      type: object
+      description: "Backup configuration (server flags `--backup-interval`, `--backup-keep`)."
+      required: [dir, interval, interval_seconds, keep]
+      properties:
+        dir:
+          type: string
+          description: "Directory on the server holding the archives (`<data>/backups`)."
+        interval:
+          type: string
+          description: "Schedule as a Go duration (`0s` = no scheduled backups)."
+        interval_seconds:
+          type: integer
+          format: int64
+        keep:
+          type: integer
+          description: "Scheduled backups kept (0 keeps all). Backups created by people are never pruned."
+    BackupInfo:
+      type: object
+      description: "BackupInfo describes one server backup."
+      required: [id, path, size_bytes, objects, created_at, created_by]
+      properties:
+        id:
+          type: string
+        path:
+          type: string
+          description: "file path on the server"
+        size_bytes:
+          type: integer
+          format: int64
+          description: "Archive size."
+        objects:
+          type: integer
+          format: int64
+          description: "Objects in the archive (0 for unindexed archives)."
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          description: "Username, `system` for scheduled backups, empty for unindexed archives."
+        note:
+          type: string
+    BackupStatus:
+      type: object
+      description: "Response of GET /api/v1/admin/backups."
+      required: [config, store, supported, running, backups]
+      properties:
+        config:
+          $ref: "#/components/schemas/BackupConfig"
+        store:
+          $ref: "#/components/schemas/BackupStoreInfo"
+        supported:
+          type: boolean
+          description: "False when this server's stores cannot be backed up (e.g. an in-memory metadata store)."
+        running:
+          type: boolean
+          description: "A backup is being written now."
+        next_run_at:
+          type: string
+          format: date-time
+          description: "Next scheduled backup (absent when there is no schedule)."
+        last_error:
+          type: string
+          description: "Failure of the last scheduled backup, if it failed."
+        backups:
+          type: array
+          description: "Newest first."
+          items:
+            $ref: "#/components/schemas/BackupInfo"
+    BackupStoreInfo:
+      type: object
+      description: "The object store being backed up (`--object-store`)."
+      required: [kind, compress]
+      properties:
+        kind:
+          type: string
+          enum: [disk, s3, other]
+        root:
+          type: string
+          description: "Disk store: the data directory."
+        endpoint:
+          type: string
+          description: "S3: host[:port] of the API."
+        bucket:
+          type: string
+        prefix:
+          type: string
+          description: "S3: key prefix (empty or ending in `/`)."
+        region:
+          type: string
+        secure:
+          type: boolean
+          description: "S3: HTTPS."
+        compress:
+          type: boolean
+          description: "New objects are stored WTZ1-compressed (`--compress-objects`)."
+    CreateBackupRequest:
+      type: object
+      description: "CreateBackupRequest is the (optional) body of POST /api/v1/admin/backups."
+      properties:
+        note:
+          type: string
+          maxLength: 500
+          description: "Note is a free-form description stored with the backup."
+    # ---- end storage-backends ----
     BlameLine:
       type: object
       description: "BlameLine attributes one line of a file to the snapshot that last changed it."

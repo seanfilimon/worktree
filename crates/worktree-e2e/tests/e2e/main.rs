@@ -54,3 +54,4 @@ mod webhooks;
 
 // v0.7 build-out (ENGINEERING_PLAN §15).
 mod sparse_checkout;
+mod backups; // storage-backends (§15.2)

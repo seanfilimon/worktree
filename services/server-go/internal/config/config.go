@@ -122,6 +122,22 @@ type Config struct {
 	// --compress-objects, env WT_COMPRESS_OBJECTS (default true).
 	CompressObjects bool
 
+	// ---- storage backends and backups (§15.2, backends.go) ----
+
+	// ObjectStore selects the object store: "disk" (default, objects/
+	// under DataDir) or "s3". Flag --object-store, env WT_OBJECT_STORE.
+	ObjectStore string
+	// S3 holds the --s3-* settings used when ObjectStore is "s3".
+	S3 S3Config
+	// BackupInterval is the period of automatic backups (0 = off). Flag
+	// --backup-interval, env WT_BACKUP_INTERVAL.
+	BackupInterval time.Duration
+	// BackupKeep is how many scheduled backups are kept (0 keeps all).
+	// Flag --backup-keep, env WT_BACKUP_KEEP (default 7).
+	BackupKeep int
+
+	// ---- end storage backends ----
+
 	// The fields below are set programmatically, not from flags.
 
 	// Version is the server version reported by /healthz, Ping and logs.
@@ -273,6 +289,7 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		}
 	}
 	// ---- end storage ----
+	errs = append(errs, backendsFromEnv(&cfg, lookup)...) // storage backends (§15.2)
 	return cfg, errors.Join(errs...)
 }
 
@@ -318,6 +335,9 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 
 	// Storage (§14.6).
 	fs.BoolVar(&cfg.CompressObjects, "compress-objects", cfg.CompressObjects, "store new objects zstd-compressed when that saves at least 10% (env WT_COMPRESS_OBJECTS)")
+
+	// Storage backends and backups (§15.2).
+	backendFlags(fs, cfg)
 	return fs
 }
 
@@ -327,6 +347,7 @@ func Usage(w io.Writer) {
 	fs := newFlagSet(&cfg, w)
 	fmt.Fprintf(w, "Usage: worktree-server [flags]\n\nRuns the W0rkTree server (gRPC sync + REST API + admin panel) on one port.\n\nFlags:\n")
 	fs.PrintDefaults()
+	restoreUsageHint(w) // storage backends (§15.2): `worktree-server restore`
 }
 
 func splitList(v string) []string {
@@ -383,6 +404,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, c.validateOps()...)
+	errs = append(errs, c.validateBackends()...) // storage backends (§15.2)
 	return errors.Join(errs...)
 }
 

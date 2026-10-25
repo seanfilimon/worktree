@@ -29,6 +29,10 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// storage-backends (§15.2): offline restore subcommand.
+	if len(args) > 0 && args[0] == "restore" {
+		return runRestore(args[1:], stdout, stderr)
+	}
 	cfg, err := config.Load(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):

@@ -200,3 +200,102 @@ impl Drop for Server {
         self.stop();
     }
 }
+
+// --- storage-backends (ENGINEERING_PLAN §15.2): restart on the same data ---
+
+impl Server {
+    /// Start the server again (after [`Server::stop`]) on the same port,
+    /// data directory and admin password, so saved credentials keep
+    /// working, e.g. after restoring a backup into `data_dir`. Panics when
+    /// it does not become ready.
+    #[track_caller]
+    pub fn restart(&mut self, extra_args: &[&str]) {
+        self.stop();
+        let bin = bins::server_bin();
+        let dir = self
+            .stdout_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.data_dir.clone());
+        let mut n = 1;
+        while dir.join(format!("server-restart-{n}.stdout.log")).exists() {
+            n += 1;
+        }
+        self.stdout_path = dir.join(format!("server-restart-{n}.stdout.log"));
+        self.stderr_path = dir.join(format!("server-restart-{n}.stderr.log"));
+        let started = Instant::now();
+        loop {
+            let out = File::create(&self.stdout_path).expect("create stdout log");
+            let err = File::create(&self.stderr_path).expect("create stderr log");
+            let child = Command::new(&bin)
+                .arg("--addr")
+                .arg(format!("127.0.0.1:{}", self.port))
+                .arg("--data")
+                .arg(&self.data_dir)
+                .arg("--admin-user")
+                .arg(&self.admin_user)
+                .arg("--admin-password")
+                .arg(&self.admin_password)
+                .args(extra_args)
+                .current_dir(&dir)
+                .env_remove("WT_ADDR")
+                .env_remove("WT_DATA")
+                .env_remove("WT_ADMIN_USER")
+                .env_remove("WT_ADMIN_PASSWORD")
+                .env_remove("WT_ADMIN_DIR")
+                .env_remove("WT_ALLOW_REGISTRATION")
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(out))
+                .stderr(Stdio::from(err))
+                .spawn()
+                .unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()));
+            self.child = Some(child);
+            match self.wait_ready() {
+                Ok(()) => return,
+                // The port may still be held briefly by the old process.
+                Err(e) if started.elapsed() < START_TIMEOUT && e.contains("exited") => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(e) => panic!("server did not restart: {e}"),
+            }
+        }
+    }
+
+    /// Wait for the readiness line or a healthy `/healthz`.
+    fn wait_ready(&mut self) -> Result<(), String> {
+        let probe = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .no_proxy()
+            .build()
+            .expect("reqwest client");
+        let started = Instant::now();
+        loop {
+            if let Some(child) = self.child.as_mut() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    self.child = None;
+                    return Err(format!(
+                        "server exited during startup ({status})\n{}",
+                        self.logs()
+                    ));
+                }
+            }
+            if read_lossy(&self.stdout_path).contains(READY_LINE) {
+                return Ok(());
+            }
+            if let Ok(r) = probe.get(format!("{}/healthz", self.url)).send() {
+                if r.status().as_u16() == 200 {
+                    return Ok(());
+                }
+            }
+            if started.elapsed() > START_TIMEOUT {
+                return Err(format!(
+                    "not ready after {START_TIMEOUT:?}\n{}",
+                    self.logs()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+// --- end storage-backends ---
