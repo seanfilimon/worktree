@@ -2,6 +2,7 @@ package meta
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -72,6 +73,105 @@ func populate(t *testing.T, s domain.MetaStore) {
 			t.Fatalf("populate step %d: %v", i, err)
 		}
 	}
+	populateIAM(t, s)
+}
+
+// populateIAM writes one of every IAM record (with fixed ids and
+// timestamps, except store-managed UpdatedAt values that dumpIAM clears).
+func populateIAM(t *testing.T, s domain.MetaStore) {
+	t.Helper()
+	ctx := context.Background()
+	nb, enabled, accepted, used := at(100), at(101), at(102), at(103)
+	exp := at(9001)
+	pol := samplePolicy()
+	pol.ID = "pol1"
+	pol.CreatedAt = at(30)
+	pol.UpdatedAt = at(30)
+	pol.Statements[0].Conditions.NotBefore = &nb
+	steps := []error{
+		s.CreateTeam(ctx, &domain.Team{ID: "team1", TenantID: "t1", Slug: "core", Name: "Core", Description: "d", CreatedAt: at(22), UpdatedAt: at(23)}),
+		s.CreateTeam(ctx, &domain.Team{ID: "team2", TenantID: "t1", Slug: "ops", Name: "Ops", CreatedAt: at(24), UpdatedAt: at(24)}),
+		s.PutTeamMember(ctx, &domain.TeamMember{TeamID: "team1", AccountID: "a1", Role: domain.TeamRoleMaintainer, CreatedAt: at(25)}),
+		s.PutTeamMember(ctx, &domain.TeamMember{TeamID: "team1", AccountID: "a2", CreatedAt: at(26)}),
+		s.PutTeamMember(ctx, &domain.TeamMember{TeamID: "team2", AccountID: "a2", CreatedAt: at(27)}),
+		s.PutRole(ctx, &domain.CustomRole{TenantID: "t1", Name: "releaser", Description: "r", Permissions: []domain.Action{domain.ActTreeRead, "mr:*"}, CreatedAt: at(28)}),
+		s.CreatePolicy(ctx, pol),
+		s.CreateServiceAccount(ctx, &domain.ServiceAccount{ID: "sa1", TenantID: "t1", Name: "ci", Description: "bot", Role: domain.RoleDeveloper, CreatedBy: "alice", CreatedAt: at(31), UpdatedAt: at(31)}),
+		s.CreateToken(ctx, &domain.APIToken{ID: "k2", ServiceAccountID: "sa1", Name: "deploy", TokenHash: "sahash", Kind: domain.TokenService, Scopes: []string{"tree:*"}, CreatedAt: at(32), ExpiresAt: &exp}),
+		s.CreateToken(ctx, &domain.APIToken{ID: "k3", AccountID: "a1", Name: "session", TokenHash: "sesshash", Kind: domain.TokenSession, MFA: true, LastIP: "10.1.2.3", UserAgent: "ua", CreatedAt: at(33), LastUsedAt: &used}),
+		s.PutGrant(ctx, &domain.Grant{TreeID: "tr1", SubjectType: domain.SubjectTeam, SubjectID: "team1", Subject: "core", Role: domain.RoleMaintainer, CreatedBy: "alice", CreatedAt: at(34)}),
+		s.PutGrant(ctx, &domain.Grant{TreeID: "tr1", SubjectType: domain.SubjectServiceAccount, SubjectID: "sa1", Subject: "ci", Role: "releaser", CreatedAt: at(35)}),
+		s.PutGrant(ctx, &domain.Grant{TreeID: "tr1", SubjectType: domain.SubjectUser, SubjectID: "a2", Subject: "bob", Role: domain.RoleAdmin, CreatedAt: at(36)}),
+		s.PutMFA(ctx, &domain.MFAState{AccountID: "a1", TOTPEnabled: true, TOTPSecret: "TOTPSECRET", PendingSecret: "PEND", RecoveryCodeHashes: []string{"rc1", "rc2"}, LastUsedStep: 77, EnabledAt: &enabled}),
+		s.CreateInvitation(ctx, &domain.Invitation{ID: "inv1", TenantID: "t1", Email: "c@x", Role: domain.RoleViewer, TeamID: "team1", CodeHash: "invhash1", InvitedBy: "alice", CreatedAt: at(37), ExpiresAt: at(9002)}),
+		s.CreateInvitation(ctx, &domain.Invitation{ID: "inv2", TenantID: "t1", Username: "bob", Role: domain.RoleDeveloper, CodeHash: "invhash2", CreatedAt: at(38), ExpiresAt: at(9003), AcceptedAt: &accepted, AcceptedBy: "bob"}),
+		s.PutPasswordReset(ctx, &domain.PasswordReset{CodeHash: "resethash", AccountID: "a2", CreatedBy: "alice", CreatedAt: at(39), ExpiresAt: at(9004)}),
+		s.PutSSOConfig(ctx, &domain.SSOConfig{Enabled: true, Name: "Okta", Issuer: "https://idp", ClientID: "cid", ClientSecret: "csecret", RedirectURL: "https://wt/cb", Scopes: []string{"openid"}, AutoCreate: true, UsernameClaim: "preferred_username"}),
+		s.PutSSOIdentity(ctx, &domain.SSOIdentity{Issuer: "https://idp", Subject: "sub1", AccountID: "a1", Email: "a@x", CreatedAt: at(40), LastLoginAt: at(41)}),
+	}
+	for i, err := range steps {
+		if err != nil {
+			t.Fatalf("populateIAM step %d: %v", i, err)
+		}
+	}
+}
+
+// dumpIAM reads every IAM record back through the public API (including
+// secret fields), clearing store-managed "now" timestamps.
+func dumpIAM(t *testing.T, s domain.MetaStore, out map[string]any) {
+	t.Helper()
+	ctx := context.Background()
+	get := func(name string, v any, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("dumpIAM %s: %v", name, err)
+		}
+		out[name] = v
+	}
+	v1, err := s.ListTeams(ctx, "t1")
+	get("teams", v1, err)
+	v2, err := s.GetTeamBySlug(ctx, "t1", "ops")
+	get("teamBySlug", v2, err)
+	v3, err := s.ListTeamMembers(ctx, "team1")
+	get("teamMembers", v3, err)
+	v4, err := s.ListAccountTeams(ctx, "a2")
+	get("accountTeams", v4, err)
+	v5, err := s.ListRoles(ctx, "t1")
+	for i := range v5 {
+		v5[i].UpdatedAt = time.Time{}
+	}
+	get("roles", v5, err)
+	v6, err := s.ListPolicies(ctx, "t1")
+	get("policies", v6, err)
+	v7, err := s.ListGrants(ctx, "tr1")
+	get("grants", v7, err)
+	v8, err := s.ListSubjectGrants(ctx, domain.SubjectServiceAccount, "sa1")
+	get("subjectGrants", v8, err)
+	v9, err := s.ListServiceAccounts(ctx, "t1")
+	get("serviceAccounts", v9, err)
+	v10, err := s.GetServiceAccountByName(ctx, "t1", "ci")
+	get("serviceAccountByName", v10, err)
+	v11, err := s.ListServiceAccountTokens(ctx, "sa1")
+	get("serviceAccountTokens", v11, err)
+	v12, err := s.GetTokenByHash(ctx, "sahash")
+	get("serviceKeyByHash", v12, err)
+	v13, err := s.GetMFA(ctx, "a1")
+	get("mfa", v13, err)
+	v14, err := s.ListInvitations(ctx, "t1")
+	get("invitations", v14, err)
+	v15, err := s.GetInvitationByCodeHash(ctx, "invhash2")
+	get("invitationByCode", v15, err)
+	v16, err := s.GetPasswordReset(ctx, "resethash")
+	get("passwordReset", v16, err)
+	v17, err := s.GetSSOConfig(ctx)
+	if v17 != nil {
+		v17.UpdatedAt = time.Time{}
+	}
+	get("ssoConfig", v17, err)
+	v18, err := s.ListAccountSSOIdentities(ctx, "a1")
+	get("ssoIdentities", v18, err)
+	v19, err := s.GetSSOIdentity(ctx, "https://idp", "sub1")
+	get("ssoIdentity", v19, err)
 }
 
 // dump reads every record back through the public API.
@@ -129,6 +229,7 @@ func dump(t *testing.T, s domain.MetaStore) map[string]any {
 	get("stagedCount", v19, err)
 	v20, err := NewHistory(s).Missing(ctx, "s2", nil)
 	get("history", v20, err)
+	dumpIAM(t, s, out)
 	return out
 }
 
@@ -172,6 +273,52 @@ func TestBoltPersistence(t *testing.T) {
 	must(t, err)
 	if a.PasswordHash != "ph" {
 		t.Fatalf("PasswordHash after reopen = %q", a.PasswordHash)
+	}
+	mfa, err := s2.GetMFA(ctx, "a1")
+	must(t, err)
+	if mfa.TOTPSecret != "TOTPSECRET" || mfa.PendingSecret != "PEND" || mfa.LastUsedStep != 77 ||
+		len(mfa.RecoveryCodeHashes) != 2 || mfa.RecoveryCodesLeft != 2 {
+		t.Fatalf("MFA secrets after reopen: %+v", mfa)
+	}
+	inv, err := s2.GetInvitation(ctx, "t1", "inv1")
+	must(t, err)
+	if inv.CodeHash != "invhash1" {
+		t.Fatalf("Invitation.CodeHash after reopen = %q", inv.CodeHash)
+	}
+	reset, err := s2.GetPasswordReset(ctx, "resethash")
+	must(t, err)
+	if reset.CodeHash != "resethash" || reset.AccountID != "a2" {
+		t.Fatalf("PasswordReset after reopen: %+v", reset)
+	}
+	sso, err := s2.GetSSOConfig(ctx)
+	must(t, err)
+	if sso.ClientSecret != "csecret" || !sso.HasSecret {
+		t.Fatalf("SSOConfig secret after reopen: %+v", sso)
+	}
+	key, err := s2.GetTokenByHash(ctx, "sahash")
+	must(t, err)
+	if key.ServiceAccountID != "sa1" || key.AccountID != "" || key.Kind != domain.TokenService || len(key.Scopes) != 1 {
+		t.Fatalf("service key after reopen: %+v", key)
+	}
+	sess, err := s2.GetTokenByHash(ctx, "sesshash")
+	must(t, err)
+	if !sess.MFA || sess.LastIP != "10.1.2.3" || sess.UserAgent != "ua" || sess.Kind != domain.TokenSession {
+		t.Fatalf("session token after reopen: %+v", sess)
+	}
+	// IAM unique indexes and cascades work on the reopened database.
+	wantErr(t, s2.CreateTeam(ctx, &domain.Team{TenantID: "t1", Slug: "core"}), domain.ErrAlreadyExists)
+	wantErr(t, s2.CreateServiceAccount(ctx, &domain.ServiceAccount{TenantID: "t1", Name: "ci"}), domain.ErrAlreadyExists)
+	wantErr(t, s2.CreateInvitation(ctx, &domain.Invitation{TenantID: "t1", CodeHash: "invhash1"}), domain.ErrAlreadyExists)
+	must(t, s2.DeleteServiceAccount(ctx, "sa1"))
+	if _, err := s2.GetTokenByHash(ctx, "sahash"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("service key survived cascade after reopen: %v", err)
+	}
+	must(t, s2.DeleteTeam(ctx, "team1"))
+	if gs, err := s2.ListGrants(ctx, "tr1"); err != nil || len(gs) != 1 || gs[0].SubjectType != domain.SubjectUser {
+		t.Fatalf("grants after cascades on reopened db: %+v, %v", gs, err)
+	}
+	if ts, err := s2.ListAccountTeams(ctx, "a2"); err != nil || len(ts) != 1 || ts[0].TeamID != "team2" {
+		t.Fatalf("account teams after cascade on reopened db: %+v, %v", ts, err)
 	}
 	// Counters continue where they left off.
 	mr := &domain.MergeRequest{TreeID: "tr1"}

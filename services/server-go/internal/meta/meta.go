@@ -34,6 +34,12 @@
 //     except DeleteStaged, which is idempotent (it is called on every push).
 //   - Key components (ids, names, slugs, patterns) must be non-empty and
 //     must not contain NUL bytes; violations wrap [domain.ErrInvalid].
+//   - A token is owned by exactly one of AccountID or ServiceAccountID;
+//     service-account keys are listed by ListServiceAccountTokens, never by
+//     ListTokens.
+//
+// IAM-specific orderings, referential checks, cascades and derived fields
+// are documented in iam.go.
 package meta
 
 import (
@@ -173,6 +179,7 @@ func normToken(t domain.APIToken) domain.APIToken {
 	t.CreatedAt = utc(t.CreatedAt)
 	t.ExpiresAt = utcPtr(t.ExpiresAt)
 	t.LastUsedAt = utcPtr(t.LastUsedAt)
+	t.Scopes = cloneOmitEmpty(t.Scopes)
 	return t
 }
 
