@@ -53,7 +53,6 @@ func (f *fixture) iamSec() *iamSecurity { return f.deps.Security.(*iamSecurity) 
 func (f *fixture) iamAcc() *iamAccess   { return f.deps.Access.(*iamAccess) }
 func noAccess(d *Deps)                  { d.Access = nil }
 func noSecurity(d *Deps)                { d.Security = nil }
-func withValidatingAccess(d *Deps)      { d.Access = &validatingAccess{} }
 func validStatement() domain.PolicyStatement {
 	return domain.PolicyStatement{Effect: "deny", Actions: []string{"branch:push"}, Resources: []string{"wt:branch/acme/web/main"}, Principals: []string{"role:developer"}}
 }
@@ -417,40 +416,22 @@ func TestIAMPolicies(t *testing.T) {
 	})
 }
 
-func TestIAMPolicyEngineValidator(t *testing.T) {
+// Validation is the authorization engine's own (authz.ValidateStatements),
+// so field paths and messages are the engine's.
+func TestIAMPolicyValidationUsesEngine(t *testing.T) {
 	runIAMCases(t, []endpointCase{
-		{name: "engine errors are used", method: "POST", path: "/api/v1/tenants/acme/policies/validate", as: "alice",
-			body: map[string]any{"statements": []any{map[string]any{"sid": "ok", "effect": "allow"}, map[string]any{"sid": "bad", "effect": "allow"}}}, status: 200,
+		{name: "engine rejects an unknown resource kind", method: "POST", path: "/api/v1/tenants/acme/policies/validate", as: "alice",
+			body: map[string]any{"statements": []any{
+				map[string]any{"effect": "allow", "actions": []string{"tree:read"}, "resources": []string{"*"}, "principals": []string{"*"}},
+				map[string]any{"effect": "allow", "actions": []string{"tree:read"}, "resources": []string{"wt:repo/x"}, "principals": []string{"*"}},
+			}}, status: 200,
 			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
 				v := decode[validatePolicyResponse](t, rec)
-				if v.Valid || len(v.Errors) != 1 || v.Errors[0] != (ValidationErr{Statement: 1, Field: "sid", Message: "engine rejects sid bad"}) {
+				if v.Valid || len(v.Errors) != 1 || v.Errors[0].Statement != 1 || !strings.HasPrefix(v.Errors[0].Field, "resources") {
 					t.Fatalf("validate = %s", rec.Body.String())
 				}
 			}},
-		{name: "create rejected by engine", method: "POST", path: "/api/v1/tenants/acme/policies", as: "alice",
-			body: map[string]any{"name": "x", "statements": []any{map[string]any{"sid": "bad"}}}, status: 400,
-			check: func(t *testing.T, f *fixture, rec *httptest.ResponseRecorder) {
-				if !strings.Contains(rec.Body.String(), "engine rejects sid bad") {
-					t.Fatalf("body = %s", rec.Body.String())
-				}
-			}},
-	}, withValidatingAccess)
-}
-
-func TestCheckResourcePattern(t *testing.T) {
-	for _, tc := range []struct {
-		in string
-		ok bool
-	}{
-		{"*", true}, {"wt:tenant/acme", true}, {"wt:tenant/*", true}, {"wt:tree/acme/web", true}, {"wt:tree/acme/**", true},
-		{"wt:branch/acme/web/release/*", true}, {"wt:path/acme/web/src/**", true}, {"wt:path/**", true},
-		{"tenant/acme", false}, {"wt:tenant/acme/x", false}, {"wt:tree/acme", false}, {"wt:branch/acme/web", false},
-		{"wt:repo/x", false}, {"wt:tree/acme//web", false}, {"wt:path/acme/web/a**b", false},
-	} {
-		if got := checkResourcePattern(tc.in) == ""; got != tc.ok {
-			t.Errorf("checkResourcePattern(%q) ok = %v, want %v (%s)", tc.in, got, tc.ok, checkResourcePattern(tc.in))
-		}
-	}
+	})
 }
 
 func TestIAMGrants(t *testing.T) {

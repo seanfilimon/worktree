@@ -799,24 +799,3 @@ func (e *iamAccess) EffectivePermissions(_ context.Context, p *domain.Principal,
 	e.lastP, e.lastTree = &pc, tree
 	return []domain.Action{domain.ActTreeWrite, domain.ActTreeRead, domain.ActTreeRead}, nil
 }
-
-// foreignValidationErr mimics a validation result type defined by another
-// package (e.g. authz), exercising the reflective adapter.
-type foreignValidationErr struct {
-	Index   int
-	Path    string
-	Message string
-}
-
-// validatingAccess is an AccessEvaluator that also validates statements.
-type validatingAccess struct{ iamAccess }
-
-func (*validatingAccess) ValidateStatements(stmts []domain.PolicyStatement) []*foreignValidationErr {
-	var out []*foreignValidationErr
-	for i, s := range stmts {
-		if s.Sid == "bad" {
-			out = append(out, &foreignValidationErr{Index: i, Path: "sid", Message: "engine rejects sid bad"})
-		}
-	}
-	return out
-}
