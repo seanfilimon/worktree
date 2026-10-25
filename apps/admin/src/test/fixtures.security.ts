@@ -107,6 +107,7 @@ export const ssoConfig: SsoConfig = {
   scopes: ["openid", "email", "profile"],
   allowed_domains: ["example.com"],
   auto_create: false,
+  link_by_email: false,
   username_claim: "preferred_username",
   updated_at: recent(60 * 24 * 3),
 };

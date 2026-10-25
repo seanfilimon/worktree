@@ -56,6 +56,10 @@ pub struct SetArgs {
     /// Create accounts on first SSO login
     #[arg(long, value_name = "BOOL", action = ArgAction::Set)]
     pub auto_create: Option<bool>,
+    /// Link first-time identities to existing accounts by verified email
+    /// (only if local emails are trustworthy: they are not verified)
+    #[arg(long, value_name = "BOOL", action = ArgAction::Set)]
+    pub link_by_email: Option<bool>,
     /// ID-token claim used as the username
     #[arg(long, value_name = "CLAIM")]
     pub username_claim: Option<String>,
@@ -85,6 +89,8 @@ struct SsoConfig {
     #[serde(default)]
     auto_create: bool,
     #[serde(default)]
+    link_by_email: bool,
+    #[serde(default)]
     username_claim: String,
     #[serde(default, skip_serializing)]
     updated_at: String,
@@ -101,6 +107,7 @@ impl SetArgs {
             && self.scopes.is_empty()
             && self.allowed_domains.is_empty()
             && self.auto_create.is_none()
+            && self.link_by_email.is_none()
             && self.username_claim.is_none()
     }
 
@@ -117,6 +124,7 @@ impl SetArgs {
         set(&mut config.client_id, self.client_id);
         set(&mut config.redirect_url, self.redirect_url);
         set(&mut config.auto_create, self.auto_create);
+        set(&mut config.link_by_email, self.link_by_email);
         set(&mut config.username_claim, self.username_claim);
         if !self.scopes.is_empty() {
             config.scopes = self.scopes;
@@ -181,6 +189,7 @@ fn config_text(t: &mut Text, c: &SsoConfig) {
             ("scopes", c.scopes.join(" ")),
             ("allowed domains", c.allowed_domains.join(", ")),
             ("auto-create", onoff(c.auto_create)),
+            ("link by email", onoff(c.link_by_email)),
             ("username claim", c.username_claim.clone()),
             ("updated", when(&c.updated_at)),
         ],
@@ -263,6 +272,7 @@ mod tests {
             scopes: vec![],
             allowed_domains: vec!["a.io".into(), "b.io".into()],
             auto_create: None,
+            link_by_email: None,
             username_claim: None,
         };
         assert!(!args.is_empty());
@@ -274,7 +284,7 @@ mod tests {
                 "enabled": true, "name": "Okta", "issuer": "https://idp", "client_id": "c2",
                 "redirect_url": "https://wt/cb", "scopes": ["openid"],
                 "allowed_domains": ["a.io", "b.io"], "auto_create": true,
-                "username_claim": "preferred_username"
+                "link_by_email": false, "username_claim": "preferred_username"
             })
         );
         config.client_secret = Some("s".into());

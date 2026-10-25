@@ -123,6 +123,8 @@ export interface SsoConfig {
   scopes: string[] | null;
   allowed_domains: string[] | null;
   auto_create: boolean;
+  /** Link first-time identities to existing accounts by verified email (off by default). */
+  link_by_email: boolean;
   username_claim: string;
   updated_at?: ISODateString;
 }
@@ -138,6 +140,7 @@ export interface SsoConfigUpdate {
   scopes: string[];
   allowed_domains: string[];
   auto_create: boolean;
+  link_by_email: boolean;
   username_claim: string;
 }
 

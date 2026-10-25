@@ -276,6 +276,7 @@ describe("SSO settings", () => {
       scopes: ["openid", "email", "profile"],
       allowed_domains: ["example.com"],
       auto_create: false,
+      link_by_email: false,
       username_claim: "preferred_username",
     });
 

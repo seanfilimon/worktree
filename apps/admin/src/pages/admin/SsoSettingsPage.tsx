@@ -34,6 +34,7 @@ const EMPTY: SsoConfig = {
   scopes: DEFAULT_SCOPES,
   allowed_domains: [],
   auto_create: false,
+  link_by_email: false,
   username_claim: DEFAULT_USERNAME_CLAIM,
 };
 
@@ -96,10 +97,12 @@ function SsoForm({ config }: { config: SsoConfig }) {
   const [scopes, setScopes] = useState((config.scopes?.length ? config.scopes : DEFAULT_SCOPES).join(" "));
   const [domains, setDomains] = useState((config.allowed_domains ?? []).join(", "));
   const [autoCreate, setAutoCreate] = useState(config.auto_create);
+  const [linkByEmail, setLinkByEmail] = useState(config.link_by_email);
   const [usernameClaim, setUsernameClaim] = useState(config.username_claim || DEFAULT_USERNAME_CLAIM);
   const [submitted, setSubmitted] = useState(false);
   const enabledId = useId();
   const autoCreateId = useId();
+  const linkByEmailId = useId();
 
   const save = useMutation({
     mutationFn: sec.admin.saveSso,
@@ -146,6 +149,7 @@ function SsoForm({ config }: { config: SsoConfig }) {
       scopes: scopeList,
       allowed_domains: splitList(domains).map((d) => d.replace(/^@/, "").toLowerCase()),
       auto_create: autoCreate,
+      link_by_email: linkByEmail,
       username_claim: usernameClaim.trim(),
       ...(secret ? { client_secret: secret } : {}),
     };
@@ -298,10 +302,20 @@ function SsoForm({ config }: { config: SsoConfig }) {
             <div className="grid gap-0.5">
               <Label htmlFor={autoCreateId}>Create accounts on first sign-in</Label>
               <p className="text-xs text-muted-foreground">
-                Otherwise an account with a matching email must already exist.
+                Otherwise only identities already linked to an account can sign in.
               </p>
             </div>
             <Switch id={autoCreateId} checked={autoCreate} onCheckedChange={setAutoCreate} />
+          </div>
+          <div className="flex items-start justify-between gap-4 rounded-md border p-3">
+            <div className="grid gap-0.5">
+              <Label htmlFor={linkByEmailId}>Link existing accounts by verified email</Label>
+              <p className="text-xs text-muted-foreground">
+                Only enable this if local account emails are trustworthy: W0rkTree does not verify them, so anyone
+                who registered with someone&apos;s address would receive their first sign-in.
+              </p>
+            </div>
+            <Switch id={linkByEmailId} checked={linkByEmail} onCheckedChange={setLinkByEmail} />
           </div>
         </CardContent>
         <CardFooter className="flex-col items-stretch gap-3 border-t sm:flex-row sm:items-center sm:justify-between">
