@@ -25,12 +25,20 @@ use std::path::{Path, PathBuf};
 
 use worktree_sdk::Repository;
 
-use crate::error::Result;
+use crate::error::{GitCompatError, Result};
+use crate::license::LicensePolicy;
+use crate::remote::auth::GitAuth;
+use crate::remote::PushOptions;
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
-    /// Only import these branches (default: all local branches).
+    /// Only import these branches (default: all local branches). A name
+    /// without a local branch selects the remote-tracking branch of that
+    /// name.
     pub branches: Vec<String>,
+    /// Also import remote-tracking branches (`refs/remotes/*/*`) that have
+    /// no local branch of the same name.
+    pub all_branches: bool,
     /// Name for the new worktree (default: destination dir name).
     pub name: Option<String>,
     /// Import tags.
@@ -39,7 +47,10 @@ pub struct ImportOptions {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportReport {
+    /// Directory of the tree that received the history.
     pub dest: PathBuf,
+    /// Name of that tree.
+    pub tree: String,
     pub branches: Vec<String>,
     pub snapshots: usize,
     pub blobs: usize,
@@ -57,6 +68,17 @@ pub fn import_repository(
     crate::import::import_repository(git_path, dest, opts)
 }
 
+/// Import the Git repository at `git_path` into the existing tree `tree`
+/// of `repo` (incremental; existing branches must fast-forward).
+pub fn import_into_tree(
+    repo: &Repository,
+    tree: &str,
+    git_path: &Path,
+    opts: &ImportOptions,
+) -> Result<ImportReport> {
+    crate::import::import_into_tree(repo, tree, git_path, opts)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
     /// Tree to export (default: root tree).
@@ -66,6 +88,11 @@ pub struct ExportOptions {
     pub include_tags: bool,
     /// Create the target as a bare repository if it does not exist.
     pub bare: bool,
+    /// License-aware export (§13.8): every commit is built from the
+    /// snapshot's manifest without the paths whose license forbids
+    /// redistribution, plus a generated `LICENSES/NOTICE`. `None` exports
+    /// snapshots unchanged (and keeps `.wt/git-map.json` up to date).
+    pub license: Option<LicensePolicy>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -75,6 +102,8 @@ pub struct ExportReport {
     /// Newly written commits (already-mapped snapshots are skipped).
     pub commits: usize,
     pub tags: usize,
+    /// Paths left out of at least one commit by the license policy (sorted).
+    pub restricted: Vec<String>,
 }
 
 /// Export `repo` into the Git repository at `git_path` (created if missing).
@@ -84,6 +113,103 @@ pub fn export_repository(
     opts: &ExportOptions,
 ) -> Result<ExportReport> {
     crate::export::export_repository(repo, git_path, opts)
+}
+
+/// What [`push_repository`] does.
+#[derive(Debug, Clone, Default)]
+pub struct PushRepoOptions {
+    /// Tree to push (default: root tree).
+    pub tree: Option<String>,
+    /// Branches to push (default: all branches of the tree).
+    pub branches: Vec<String>,
+    /// Overwrite remote branches even when the update is not a fast-forward.
+    pub force: bool,
+    /// See [`ExportOptions::license`].
+    pub license: Option<LicensePolicy>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PushRepoReport {
+    pub url: String,
+    pub branches: Vec<String>,
+    /// Commits written to the bridge repository for this push.
+    pub commits: usize,
+    /// Full ref names pushed.
+    pub refs: Vec<String>,
+    /// See [`ExportReport::restricted`].
+    pub restricted: Vec<String>,
+}
+
+/// The bare "bridge" Git repository a tree is exported into before pushing:
+/// `.wt/git/<tree>.git`.
+pub fn bridge_path(repo: &Repository, tree: &str) -> PathBuf {
+    repo.wt_dir().join("git").join(format!("{tree}.git"))
+}
+
+/// Export a tree and push it to the Git remote `url` (URL or local path).
+///
+/// The tree is exported into its bridge repository ([`bridge_path`]) after
+/// fetching the remote's branches and tags into it, so commits that came
+/// from that remote (e.g. through `wt git import`) are reused and pushes
+/// fast-forward. A local path that does not exist yet is created as a bare
+/// repository. Tags are pushed along with the branches.
+pub fn push_repository(
+    repo: &Repository,
+    url: &str,
+    opts: &PushRepoOptions,
+    auth: &GitAuth,
+) -> Result<PushRepoReport> {
+    let tree = match &opts.tree {
+        Some(name) => repo.tree(name)?,
+        None => repo.root_tree()?,
+    };
+    if crate::source::is_local(url) {
+        let path = crate::source::local_path(url);
+        if !path.exists() {
+            git2::Repository::init_bare(&path)?;
+        }
+    }
+    let bridge = bridge_path(repo, &tree.name);
+    // Seed the bridge with what the remote already has. A failure here
+    // (e.g. an empty or unreachable remote) only costs reuse; the push
+    // itself reports real connection problems.
+    if let Err(e) = crate::remote::fetch_mirror(&bridge, url, auth) {
+        tracing::debug!(url, error = %e, "could not fetch the Git remote before pushing");
+    }
+    let export = export_repository(
+        repo,
+        &bridge,
+        &ExportOptions {
+            tree: Some(tree.name.clone()),
+            branches: opts.branches.clone(),
+            include_tags: true,
+            bare: true,
+            license: opts.license.clone(),
+        },
+    )?;
+    if export.branches.is_empty() {
+        return Err(GitCompatError::ExportError(format!(
+            "tree {} has no branches with snapshots to push",
+            tree.name
+        )));
+    }
+    let pushed = crate::remote::push(
+        &bridge,
+        url,
+        &PushOptions {
+            branches: export.branches.clone(),
+            include_tags: true,
+            force: opts.force,
+        },
+        auth,
+    )?;
+    Ok(PushRepoReport {
+        url: url.to_owned(),
+        branches: export.branches,
+        commits: export.commits,
+        refs: pushed.refs,
+        restricted: export.restricted,
+    })
 }
 
 /// End-to-end tests over the real SDK repository engine.
@@ -396,6 +522,7 @@ mod tests {
                 branches: vec!["feature".to_owned()],
                 name: Some("only-feature".to_owned()),
                 include_tags: true,
+                ..ImportOptions::default()
             },
         )
         .unwrap();
@@ -561,6 +688,306 @@ mod tests {
         let report = export_repository(&repo, s.fx.path(), &ExportOptions::default()).unwrap();
         assert_eq!(report.commits, 0);
         assert_eq!(s.fx.repo.refname_to_id("refs/heads/main").unwrap(), tip);
+    }
+
+    fn rule(glob: &str, spdx: &str, grant: &str) -> crate::license::LicenseRule {
+        crate::license::LicenseRule {
+            path_glob: glob.into(),
+            spdx: spdx.into(),
+            grant: grant.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn license_aware_export_skips_restricted_paths_and_adds_notice() {
+        isolate_wt_home();
+        let s = sample();
+        let dest = tempfile::tempdir().unwrap();
+        import_all(s.fx.path(), dest.path());
+        let repo = Repository::open(dest.path()).unwrap();
+        let policy = LicensePolicy::new(
+            vec![
+                rule("src/**", "MIT", ""),
+                rule("scripts/**", "LicenseRef-Proprietary", "read-only"),
+            ],
+            false,
+        );
+        let out_dir = tempfile::tempdir().unwrap();
+        let out_path = out_dir.path().join("licensed.git");
+        let opts = ExportOptions {
+            bare: true,
+            branches: vec!["main".into()],
+            license: Some(policy.clone()),
+            ..ExportOptions::default()
+        };
+        let report = export_repository(&repo, &out_path, &opts).unwrap();
+        assert_eq!(report.restricted, vec!["scripts/build.sh".to_owned()]);
+        let out = git2::Repository::open(&out_path).unwrap();
+        let main = out.refname_to_id("refs/heads/main").unwrap();
+        let tree = out.find_commit(main).unwrap().tree().unwrap();
+        assert!(tree.get_path(Path::new("scripts/build.sh")).is_err());
+        assert!(tree.get_path(Path::new("README.md")).is_ok());
+        let notice = tree.get_path(Path::new("LICENSES/NOTICE")).unwrap();
+        let blob = out.find_blob(notice.id()).unwrap();
+        let text = String::from_utf8_lossy(blob.content()).into_owned();
+        assert!(text.contains("\nMIT\n    src/lib/util/mod.rs\n    src/main.rs\n"));
+        assert!(text.contains("1 path was omitted"));
+        // Same history shape: every commit of main was rebuilt.
+        assert_eq!(report.commits, 5);
+
+        // The git map still points at the original (unfiltered) commits.
+        let map = GitMap::load(&repo.wt_dir()).unwrap();
+        assert_eq!(
+            map.commit_for(&snapshot_id_for_commit(s.m)),
+            Some(s.m.to_string().as_str())
+        );
+
+        // Deterministic and incremental.
+        let again = export_repository(&repo, &out_path, &opts).unwrap();
+        assert_eq!(again.commits, 0);
+        assert_eq!(out.refname_to_id("refs/heads/main").unwrap(), main);
+
+        // --include-restricted keeps the script.
+        let keep = out_dir.path().join("keep.git");
+        let opts = ExportOptions {
+            license: Some(LicensePolicy::new(policy.rules, true)),
+            ..opts
+        };
+        let report = export_repository(&repo, &keep, &opts).unwrap();
+        assert!(report.restricted.is_empty());
+        let keep = git2::Repository::open(&keep).unwrap();
+        let tip = keep.refname_to_id("refs/heads/main").unwrap();
+        let tree = keep.find_commit(tip).unwrap().tree().unwrap();
+        assert!(tree.get_path(Path::new("scripts/build.sh")).is_ok());
+    }
+
+    #[test]
+    fn import_from_file_url_with_all_branches() {
+        isolate_wt_home();
+        let s = sample();
+        // A non-bare clone with only `main` local and `feature` remote-tracking.
+        let clone_dir = tempfile::tempdir().unwrap();
+        let clone =
+            git2::Repository::clone(&crate::source::file_url(s.fx.path()), clone_dir.path())
+                .unwrap();
+        assert!(clone
+            .find_branch("feature", git2::BranchType::Local)
+            .is_err());
+
+        let dest = tempfile::tempdir().unwrap();
+        let report = import_repository(
+            clone_dir.path(),
+            &dest.path().join("default"),
+            &ImportOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.branches, vec!["main".to_owned()]);
+
+        let report = import_repository(
+            clone_dir.path(),
+            &dest.path().join("all"),
+            &ImportOptions {
+                all_branches: true,
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            report.branches,
+            vec!["feature".to_owned(), "main".to_owned()]
+        );
+
+        let report = import_repository(
+            clone_dir.path(),
+            &dest.path().join("named"),
+            &ImportOptions {
+                branches: vec!["feature".into()],
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.branches, vec!["feature".to_owned()]);
+        assert_eq!(report.snapshots, 3);
+
+        // A URL source is mirrored first (works offline for file://).
+        let source = crate::source::GitSource::open(
+            &crate::source::file_url(s.fx.path()),
+            dest.path(),
+            &crate::remote::auth::GitAuth::auto(),
+        )
+        .unwrap();
+        let report = import_repository(
+            source.path(),
+            &dest.path().join("from-url"),
+            &ImportOptions {
+                include_tags: true,
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.snapshots, 5);
+        assert_eq!(report.tags, 2);
+        assert_eq!(report.checked_out.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn import_into_existing_tree_is_incremental_and_refuses_divergence() {
+        isolate_wt_home();
+        let s = sample();
+        let wt = tempfile::tempdir().unwrap();
+        let repo = Repository::init(wt.path(), worktree_sdk::InitOptions::default()).unwrap();
+        let nested = repo.add_tree("vendor", Path::new("vendor")).unwrap();
+        let opts = ImportOptions {
+            include_tags: true,
+            ..ImportOptions::default()
+        };
+        let report = import_into_tree(&repo, &nested.name, s.fx.path(), &opts).unwrap();
+        assert_eq!(report.tree, "vendor");
+        assert_eq!(report.snapshots, 5);
+        assert_eq!(report.checked_out.as_deref(), Some("main"));
+        assert_eq!(
+            fs::read_to_string(wt.path().join("vendor/src/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+        assert_eq!(
+            repo.branch_tip("vendor", "main").unwrap(),
+            Some(snapshot_id_for_commit(s.m))
+        );
+        let snap = repo.get_snapshot(&snapshot_id_for_commit(s.m)).unwrap();
+        assert_eq!(snap.tree_id, nested.id);
+
+        // New upstream commit: re-import fast-forwards and updates files.
+        let c3 = s.fx.commit(
+            Some("refs/heads/main"),
+            &[Spec::File("README.md", b"# v3\n")],
+            &[s.m],
+            "Rewrite\n",
+            1_600_000_400,
+        );
+        let report = import_into_tree(&repo, "vendor", s.fx.path(), &opts).unwrap();
+        assert_eq!(report.checked_out.as_deref(), Some("main"));
+        assert_eq!(
+            repo.branch_tip("vendor", "main").unwrap(),
+            Some(snapshot_id_for_commit(c3))
+        );
+        assert_eq!(
+            fs::read_to_string(wt.path().join("vendor/README.md")).unwrap(),
+            "# v3\n"
+        );
+        assert!(!wt.path().join("vendor/src/main.rs").exists());
+        assert!(repo.status("vendor").unwrap().is_clean());
+
+        // Diverged history is refused without moving refs.
+        let other = s.fx.commit(
+            None,
+            &[Spec::File("x", b"x")],
+            &[],
+            "unrelated\n",
+            1_600_000_500,
+        );
+        s.fx.repo
+            .reference("refs/heads/main", other, true, "rewrite")
+            .unwrap();
+        let err = import_into_tree(&repo, "vendor", s.fx.path(), &opts).unwrap_err();
+        assert!(err.to_string().contains("diverged"), "{err}");
+        assert_eq!(
+            repo.branch_tip("vendor", "main").unwrap(),
+            Some(snapshot_id_for_commit(c3))
+        );
+    }
+
+    #[test]
+    fn push_repository_fast_forwards_the_imported_remote() {
+        isolate_wt_home();
+        let s = sample();
+        // A bare "server" repository with the sample history.
+        let server_dir = tempfile::tempdir().unwrap();
+        let server = server_dir.path().join("server.git");
+        crate::remote::fetch_mirror(
+            &server,
+            &crate::source::file_url(s.fx.path()),
+            &crate::remote::auth::GitAuth::auto(),
+        )
+        .unwrap();
+        let url = crate::source::file_url(&server);
+        let source =
+            crate::source::GitSource::open(&url, server_dir.path(), &GitAuth::auto()).unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        import_all(source.path(), dest.path());
+        drop(source);
+        let repo = Repository::open(dest.path()).unwrap();
+        let tree = repo.root_tree().unwrap();
+
+        fs::write(dest.path().join("NEW.md"), "new\n").unwrap();
+        let snap = repo
+            .snapshot(
+                &tree.name,
+                SnapshotOptions {
+                    message: "Add NEW.md".into(),
+                    author: Some("Grace <grace@example.com>".into()),
+                    ..SnapshotOptions::default()
+                },
+            )
+            .unwrap();
+        let report = push_repository(
+            &repo,
+            &url,
+            &PushRepoOptions {
+                branches: vec!["main".into()],
+                ..PushRepoOptions::default()
+            },
+            &GitAuth::auto(),
+        )
+        .unwrap();
+        assert_eq!(report.branches, vec!["main".to_owned()]);
+        assert_eq!(report.commits, 1);
+        assert!(report.refs.contains(&"refs/heads/main".to_owned()));
+        let git = git2::Repository::open(&server).unwrap();
+        let tip = git.refname_to_id("refs/heads/main").unwrap();
+        let commit = git.find_commit(tip).unwrap();
+        // Fast-forward on top of the original merge commit.
+        assert_eq!(commit.parent_ids().collect::<Vec<_>>(), vec![s.m]);
+        assert_eq!(
+            GitMap::load(&repo.wt_dir()).unwrap().commit_for(&snap.id),
+            Some(tip.to_string().as_str())
+        );
+        assert!(bridge_path(&repo, &tree.name).is_dir());
+
+        // Pushing to a new local path creates a bare repository.
+        let fresh = server_dir.path().join("fresh.git");
+        let report = push_repository(
+            &repo,
+            &fresh.to_string_lossy(),
+            &PushRepoOptions::default(),
+            &GitAuth::auto(),
+        )
+        .unwrap();
+        assert_eq!(
+            report.branches,
+            vec!["feature".to_owned(), "main".to_owned()]
+        );
+        let fresh = git2::Repository::open(&fresh).unwrap();
+        assert!(fresh.is_bare());
+        assert_eq!(fresh.refname_to_id("refs/heads/main").unwrap(), tip);
+        assert!(fresh.find_reference("refs/tags/v1.0").is_ok());
+
+        // A rewritten (license-filtered) history needs --force.
+        let licensed = PushRepoOptions {
+            branches: vec!["main".into()],
+            license: Some(LicensePolicy::new(vec![rule("**", "MIT", "")], false)),
+            ..PushRepoOptions::default()
+        };
+        assert!(push_repository(&repo, &url, &licensed, &GitAuth::auto()).is_err());
+        let forced = PushRepoOptions {
+            force: true,
+            ..licensed
+        };
+        push_repository(&repo, &url, &forced, &GitAuth::auto()).unwrap();
+        let git = git2::Repository::open(&server).unwrap();
+        let tip = git.refname_to_id("refs/heads/main").unwrap();
+        let tree = git.find_commit(tip).unwrap().tree().unwrap();
+        assert!(tree.get_path(Path::new("LICENSES/NOTICE")).is_ok());
     }
 
     #[test]

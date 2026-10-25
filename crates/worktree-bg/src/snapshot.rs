@@ -167,6 +167,7 @@ mod tests {
             secret_scanning: Default::default(),
             hooks: Default::default(),
             signing: Default::default(),
+            git_remote: Default::default(), // git-export (§13.8)
         }
     }
 

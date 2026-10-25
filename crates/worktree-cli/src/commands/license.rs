@@ -10,6 +10,9 @@ use crate::context::Context;
 use crate::error::{CliError, Result};
 use crate::output::Text;
 
+/// `wt license detect` (git-export, §13.8).
+mod detect;
+
 #[derive(Debug, Args)]
 pub struct LicenseArgs {
     #[command(subcommand)]
@@ -43,6 +46,32 @@ pub enum LicenseCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Guess the SPDX licenses of the tree's files (LICENSE files and
+    /// SPDX-License-Identifier headers) and propose license rules
+    ///
+    /// A LICENSE/LICENCE/COPYING file proposes a rule for its directory
+    /// (several license files in one directory combine with OR); a file
+    /// whose SPDX header differs from its directory's license proposes a
+    /// rule for that file. `--apply` creates the proposed rules on the
+    /// tree's server (rules that already exist are skipped).
+    Detect {
+        /// File or directory to scan (default: the whole tree)
+        path: Option<std::path::PathBuf>,
+        /// Create the proposed rules on the server
+        #[arg(long)]
+        apply: bool,
+        /// Grant for the created rules
+        #[arg(
+            long,
+            value_name = "GRANT",
+            default_value = "read-only",
+            requires = "apply"
+        )]
+        grant: Grant,
+        /// Do not ask for confirmation
+        #[arg(long, requires = "apply")]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -63,6 +92,16 @@ struct LicenseRule {
 }
 
 pub fn run(ctx: &Context, args: LicenseArgs) -> Result<()> {
+    // git-export (§13.8): `detect` works offline unless --apply is given.
+    if let LicenseCommand::Detect {
+        path,
+        apply,
+        grant,
+        yes,
+    } = args.command
+    {
+        return detect::run(ctx, path, apply, grant, yes);
+    }
     let api = Api::connect(ctx)?;
     let out = &ctx.out;
     match args.command {
@@ -85,6 +124,8 @@ pub fn run(ctx: &Context, args: LicenseArgs) -> Result<()> {
                 ));
             })
         }
+        // Handled before connecting (git-export, §13.8).
+        LicenseCommand::Detect { .. } => Ok(()),
         LicenseCommand::Remove { tree, glob, yes } => {
             let tree = tree_or_default(ctx, tree)?;
             confirm(

@@ -172,9 +172,9 @@ impl BlobSink for MemStore {
 }
 
 impl BlobSource for MemStore {
-    fn read_blob(&self, hash: &ObjectHash) -> Result<Vec<u8>> {
+    fn read_blob(&self, entry: &worktree_sdk::ManifestEntry) -> Result<Vec<u8>> {
         self.reads.set(self.reads.get() + 1);
-        self.get(hash)
-            .ok_or_else(|| SdkError::ObjectNotFound(hash.to_hex()).into())
+        self.get(&entry.hash)
+            .ok_or_else(|| SdkError::ObjectNotFound(entry.hash.to_hex()).into())
     }
 }
