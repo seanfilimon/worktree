@@ -151,6 +151,8 @@ oldest first:
 | `GET /audit` | 100 | 1000 (`format=ndjson` streams every match) |
 | `GET /events/recent` | 50 | 200 |
 | `GET /search` | 20 | 50 |
+| `GET /search/code` | 50 | 1000 (`truncated` marks a cut result) |
+| `GET .../webhooks/{id}/deliveries` | 50 | 200 |
 
 To page further back, narrow the query with the endpoint's filters, such as
 `until=` on `/audit` or `branch=` on snapshots. Small collections (members,

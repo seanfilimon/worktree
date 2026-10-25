@@ -32,11 +32,14 @@ import (
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
 	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
+	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
+	"github.com/seanfilimon/worktree/services/server-go/internal/policyhist"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
 	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
+	"github.com/seanfilimon/worktree/services/server-go/internal/webhooks"
 )
 
 // openAPITypes maps component schema names to the Go types they describe.
@@ -199,6 +202,18 @@ var openAPITypes = map[string]any{
 	"TreeSummary":                 treeSummary{},
 	"CreateTreeRequest":           createTreeRequest{},
 	"PatchTreeRequest":            patchTreeRequest{},
+	// v0.6 (§14)
+	"WebhookList":              webhookList{},
+	"WebhookDeliveryList":      deliveryList{},
+	"CreatedWebhook":           createdWebhook{},
+	"BlameResponse":            blameResponse{},
+	"RollbackPolicyRequest":    rollbackRequest{},
+	"MergeMRRequest":           mergeMRRequest{},
+	"MergeConflictError":       mergeConflictBody{},
+	"MergeConflictErrorDetail": mergeConflictDetail{},
+	"FsckReport":               fsckReport{},
+	"FsckMissing":              fsckMissing{},
+	"StagedFilesResponse":      stagedFilesResponse{},
 
 	// Service types encoded or decoded directly by handlers.
 	"CIReport":             ci.Report{},
@@ -218,11 +233,21 @@ var openAPITypes = map[string]any{
 	"TodoSummary":          review.TodoSummary{},
 	"CreateCommentRequest": review.CommentInput{},
 	"UpdateCommentRequest": review.CommentPatch{},
+	// v0.6 (§14)
+	"Mergeability":          review.Mergeability{},
+	"MergeConflict":         review.Conflict{},
+	"CreateWebhookRequest":  webhooks.CreateInput{},
+	"PatchWebhookRequest":   webhooks.Patch{},
+	"CodeSearchResult":      codesearch.Result{},
+	"PolicyDiff":            policyhist.DiffResult{},
+	"PolicyStatementChange": policyhist.StatementChange{},
+	"PolicyFieldChange":     policyhist.FieldChange{},
 }
 
 // openAPICommentDirs are the package directories whose doc comments feed
 // generated schema descriptions.
-var openAPICommentDirs = []string{".", "../domain", "../ci", "../limits", "../todo", "../release", "../accesscfg", "../review"}
+var openAPICommentDirs = []string{".", "../domain", "../ci", "../limits", "../todo", "../release", "../accesscfg", "../review",
+	"../webhooks", "../codesearch", "../policyhist"}
 
 // jsonField is one member of a struct's JSON object encoding.
 type jsonField struct {
