@@ -78,23 +78,26 @@ const ALL_TREE_DATA = [
   "mr-comments",
   "todos",
   "dependencies",
+  // v0.6 (§14.9, api/v06.ts keys)
+  "mergeability",
+  "staged-files",
 ];
 
 /** Query-key suffixes (under ["tree", tenant, tree]) to refresh per event type. */
 const INVALIDATE: Record<string, string[]> = {
-  "snapshot.staged": ["staged", "staged-summary"],
-  "staged.cleared": ["staged", "staged-summary"],
+  "snapshot.staged": ["staged", "staged-summary", "staged-files"],
+  "staged.cleared": ["staged", "staged-summary", "staged-files"],
   "branch.pushed": ALL_TREE_DATA,
   "branch.created": ["branches", "compare"],
   "branch.deleted": ["branches", "compare", "mr-checks"],
   "tag.pushed": ["tags", "compare", "releases"],
   "tag.deleted": ["tags", "compare", "releases"],
   "mr.opened": ["mrs"],
-  "mr.approved": ["mrs", "mr", "mr-checks"],
+  "mr.approved": ["mrs", "mr", "mr-checks", "mergeability"],
   "mr.merged": ALL_TREE_DATA,
   "mr.closed": ["mrs", "mr", "mr-checks"],
   // v0.5 events (§13.4, §13.5)
-  "mr.reviewed": ["mrs", "mr", "mr-checks"],
+  "mr.reviewed": ["mrs", "mr", "mr-checks", "mergeability"],
   "mr.commented": ["mr-comments"],
   "ci.status": ["ci", "mr-checks"],
   "todo.created": ["todos", "dependencies", "mr-checks"],

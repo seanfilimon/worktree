@@ -29,7 +29,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { CommentThreads, ReviewForm } from "./v05/MrDiscussion";
 import { ChecksPanel, LinkedGroupCard, ServerReadiness } from "./v05/MrPanels";
-import { describeV05MergeError } from "./v05/util";
+import { useMergeability, useV06Api, mergeConflictsOf, MERGE_METHOD_LABEL, isMergeMethod, type MergeMethod } from "@/api/v06";
+import { ConflictList, MergeOptionsFields } from "./v06/merge";
+import { applyMergeability, defaultMethod, describeV06MergeError, mergeMethodSummary } from "./v06/mergeUtil";
 import { useHotkeys } from "@/components/mr/useHotkeys";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -167,12 +169,23 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
   const counted = reviews.filter((r) => stateOf(r) === "approved");
   const changesRequested = reviews.filter((r) => stateOf(r) === "changes_requested");
   const have = counted.length;
-  const { checks, blocker: clientBlocker } = readiness({
+  const { checks: clientChecks } = readiness({
     mr: { ...m, approvals: counted },
     required,
     relation: cmp.relation,
     relationProblem: cmp.problem,
   });
+  // v0.6 (§14.1): server-side merges. Without the mergeability endpoint
+  // (older servers) the client-side fast-forward check stands.
+  const v06 = useV06Api();
+  const mergeability = useMergeability(tenant, tree, m.number, open);
+  const mergeInfo = mergeability.data;
+  const checks = applyMergeability(clientChecks, mergeInfo, m.target_branch);
+  const failedCheck = checks.find((c) => c.status !== "pass");
+  const clientBlocker = failedCheck ? (failedCheck.detail ?? failedCheck.label) : null;
+  const [pickedMethod, setPickedMethod] = useState<MergeMethod | undefined>(undefined);
+  const [mergeMessage, setMergeMessage] = useState("");
+  const method = pickedMethod && mergeInfo?.methods.includes(pickedMethod) ? pickedMethod : defaultMethod(mergeInfo);
   const serverChecks = useMrChecks(tenant, tree, m.number, open);
   const blocker =
     clientBlocker ??
@@ -185,7 +198,15 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
           : null);
 
   const act = useMutation({
-    mutationFn: (action: Action) => api.mergeRequests[action](tenant, tree, m.number),
+    mutationFn: (action: Action) =>
+      action === "merge"
+        ? v06.mergeRequests.merge(
+            tenant,
+            tree,
+            m.number,
+            mergeInfo && method ? { method, message: method === "fast-forward" ? undefined : mergeMessage } : undefined,
+          )
+        : api.mergeRequests[action](tenant, tree, m.number),
     meta: { inlineError: true },
     onSuccess: async (updated: MergeRequest, action) => {
       queryClient.setQueryData(keys.mergeRequest(tenant, tree, m.number), updated);
@@ -200,7 +221,8 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
   const approvedByMe = counted.some((a) => a.account_id === account?.id);
   const canApprove = open && !isAuthor && !approvedByMe && !act.isPending;
   const canMerge = open && blocker === null && !protections.isPending && !act.isPending;
-  const error = act.isError ? describeV05MergeError(act.error) : null;
+  const error = act.isError ? describeV06MergeError(act.error) : null;
+  const errorConflicts = act.isError ? mergeConflictsOf(act.error) : null;
   const ciRef = m.state === "merged" ? { snapshot: m.merged_snapshot } : sourceTip ? { snapshot: sourceTip } : { branch: m.source_branch };
   const snapshotHref = (id: string) => treePath(tenant, tree, `snapshots/${encodeURIComponent(id)}`);
 
@@ -260,6 +282,7 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
               {have} of {required} required approvals.
             </p>
           )}
+          {errorConflicts && <ConflictList conflicts={errorConflicts} />}
         </MergeErrorAlert>
       )}
 
@@ -387,9 +410,21 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
                         <AlertDialogDescription>
                           {cmp.relation === "up_to_date"
                             ? `${m.target_branch} already contains ${m.source_branch}; the merge request will be marked merged.`
-                            : `${m.target_branch} will be fast-forwarded to the tip of ${m.source_branch}.`}
+                            : mergeInfo && method
+                              ? mergeMethodSummary(method, m)
+                              : `${m.target_branch} will be fast-forwarded to the tip of ${m.source_branch}.`}
                         </AlertDialogDescription>
                       </AlertDialogHeader>
+                      {mergeInfo && method && cmp.relation !== "up_to_date" && (
+                        <MergeOptionsFields
+                          mr={m}
+                          mergeability={mergeInfo}
+                          method={method}
+                          onMethod={setPickedMethod}
+                          message={mergeMessage}
+                          onMessage={setMergeMessage}
+                        />
+                      )}
                       <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction onClick={() => act.mutate("merge")}>Merge</AlertDialogAction>
@@ -592,6 +627,12 @@ function ReviewCard({
   );
 }
 
+/** v0.6: how a merged request was merged ("" on pre-v0.6 records = fast-forward). */
+function mergedVia(m: MergeRequest): MergeMethod {
+  const v = (m as MergeRequest & { merge_method?: string }).merge_method;
+  return isMergeMethod(v) ? v : "fast-forward";
+}
+
 function OutcomeCard({ mr: m, snapshotHref }: { mr: MergeRequest; snapshotHref: (id: string) => string }) {
   const merged = m.state === "merged";
   return (
@@ -605,8 +646,14 @@ function OutcomeCard({ mr: m, snapshotHref }: { mr: MergeRequest; snapshotHref: 
       <CardContent className="px-4 text-sm text-muted-foreground">
         {merged ? (
           <p>
-            <span className="font-mono text-foreground">{m.target_branch}</span> was fast-forwarded{" "}
+            <span className="font-mono text-foreground">{m.target_branch}</span>{" "}
+            {mergedVia(m) === "fast-forward" ? "was fast-forwarded" : mergedVia(m) === "squash" ? "got a squash snapshot" : "got a merge snapshot"}{" "}
             <Timestamp value={m.merged_at} />
+            {mergedVia(m) !== "fast-forward" && (
+              <Badge variant="outline" className="ml-1">
+                {MERGE_METHOD_LABEL[mergedVia(m)]}
+              </Badge>
+            )}
             {m.merged_snapshot && (
               <>
                 {" to "}

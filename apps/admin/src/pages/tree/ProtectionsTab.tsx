@@ -1,9 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, BadgeCheck, CircleCheck, GitCommitHorizontal, Info, ListTodo, Lock, Pencil, Plus, ShieldCheck } from "lucide-react";
+import { Ban, BadgeCheck, CircleCheck, GitCommitHorizontal, GitMerge, Info, ListTodo, Lock, Pencil, Plus, ShieldCheck } from "lucide-react";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { useApi } from "@/api/context";
 import { keys, useBranches, useProtections } from "@/api/queries";
 import type { BranchProtectionV05 } from "@/api/v05tree";
+import { isMergeMethod, MERGE_METHOD_LABEL, MERGE_METHODS, type MergeMethod } from "@/api/v06";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ChipsInput } from "@/components/files/ChipsInput";
 import { ConfirmDelete } from "@/components/files/ConfirmDelete";
 import { MatchPreview } from "@/components/files/MatchPreview";
@@ -33,6 +35,8 @@ interface FormState {
   require_signed: boolean;
   require_linear: boolean;
   block_on_todos: boolean;
+  // v0.6 (§14.1): allowed merge methods; empty = all.
+  merge_methods: MergeMethod[];
 }
 
 const NEW_RULE: FormState = {
@@ -46,7 +50,13 @@ const NEW_RULE: FormState = {
   require_signed: false,
   require_linear: false,
   block_on_todos: false,
+  merge_methods: [],
 };
+
+/** Allowed merge methods of a rule (v0.6 field, absent before). */
+function ruleMethods(p: BranchProtectionV05): MergeMethod[] {
+  return ((p as BranchProtectionV05 & { merge_methods?: string[] | null }).merge_methods ?? []).filter(isMergeMethod);
+}
 
 function toForm(p: BranchProtectionV05): FormState {
   return {
@@ -60,6 +70,7 @@ function toForm(p: BranchProtectionV05): FormState {
     require_signed: p.require_signed ?? false,
     require_linear: p.require_linear ?? false,
     block_on_todos: p.block_on_todos ?? false,
+    merge_methods: ruleMethods(p),
   };
 }
 
@@ -80,6 +91,10 @@ function toBody(treeId: string, pattern: string, approvals: number, f: FormState
   if (f.require_signed) body.require_signed = true;
   if (f.require_linear) body.require_linear = true;
   if (f.block_on_todos) body.block_on_todos = true;
+  // Every method selected is the same as none: "all".
+  if (f.merge_methods.length > 0 && f.merge_methods.length < MERGE_METHODS.length) {
+    (body as BranchProtectionV05 & { merge_methods?: MergeMethod[] }).merge_methods = MERGE_METHODS.filter((m) => f.merge_methods.includes(m));
+  }
   return body;
 }
 
@@ -320,6 +335,34 @@ function ProtectionDialog({
             onChange={(v) => set("block_on_todos", v)}
           />
         </fieldset>
+        <fieldset className="grid gap-2" aria-describedby={`${id}-methods-hint`}>
+          <legend className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">Merge methods</legend>
+          <div className="flex flex-wrap gap-2">
+            {MERGE_METHODS.map((m) => {
+              const disabled = m === "merge" && form.require_linear;
+              return (
+                <Label
+                  key={m}
+                  className="flex items-center gap-2 rounded-md border px-3 py-2 font-normal has-[[data-state=checked]]:border-foreground has-[:disabled]:opacity-60"
+                >
+                  <Checkbox
+                    checked={form.merge_methods.includes(m)}
+                    disabled={disabled}
+                    onCheckedChange={(v) =>
+                      set("merge_methods", v === true ? [...form.merge_methods, m] : form.merge_methods.filter((x) => x !== m))
+                    }
+                    aria-label={`Allow ${MERGE_METHOD_LABEL[m]}`}
+                  />
+                  <span className={disabled ? "line-through" : undefined}>{MERGE_METHOD_LABEL[m]}</span>
+                </Label>
+              );
+            })}
+          </div>
+          <p id={`${id}-methods-hint`} className="text-xs text-muted-foreground">
+            How merge requests may merge into matching branches. None selected = every method.
+            {form.require_linear && " Linear history forbids merge snapshots."}
+          </p>
+        </fieldset>
       </form>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>
@@ -368,13 +411,20 @@ function Explanation() {
 }
 
 function hasV05Rule(p: BranchProtectionV05): boolean {
-  return !!(p.require_ci_pass || p.require_signed || p.require_linear || p.block_on_todos);
+  return !!(p.require_ci_pass || p.require_signed || p.require_linear || p.block_on_todos || ruleMethods(p).length > 0);
 }
 
 function V05RuleBadges({ rule: p }: { rule: BranchProtectionV05 }) {
   const checks = p.required_checks ?? [];
+  const methods = ruleMethods(p);
   return (
     <>
+      {methods.length > 0 && (
+        <Badge variant="outline" title="Allowed merge methods">
+          <GitMerge aria-hidden="true" />
+          {methods.join(", ")} only
+        </Badge>
+      )}
       {p.require_ci_pass && (
         <Badge variant="outline" title={checks.length ? `Required checks: ${checks.join(", ")}` : "Every reported check must pass"}>
           <CircleCheck aria-hidden="true" />

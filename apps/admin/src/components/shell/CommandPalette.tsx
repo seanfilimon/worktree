@@ -2,6 +2,7 @@ import {
   Building2,
   Check,
   CircleAlert,
+  FileSearch,
   FolderTree,
   GitBranch,
   Loader2,
@@ -14,6 +15,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { errorMessage } from "@/api/client";
 import { useSearch } from "@/api/queries";
+import { MIN_CODE_QUERY } from "@/api/v06";
 import { useAuth } from "@/auth/context";
 import {
   Command,
@@ -142,10 +144,15 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [selected, setSelected] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const firstResult = results ? firstResultValue(results, accounts) : "";
+  // v0.6 (§14.9): "Search code for …" jumps to the code search page.
+  const codeValue = term.length >= MIN_CODE_QUERY ? `code-search:${term}` : "";
   useEffect(() => {
     if (!firstResult) return;
     setSelected((current) => {
-      const rendered = current && rootRef.current?.querySelector(`[cmdk-item][data-value="${CSS.escape(current)}"]`);
+      const rendered =
+        current &&
+        !current.startsWith("code-search:") &&
+        rootRef.current?.querySelector(`[cmdk-item][data-value="${CSS.escape(current)}"]`);
       return rendered ? current : firstResult;
     });
   }, [firstResult]);
@@ -279,6 +286,20 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                     {a.display_name ? `${a.display_name} (@${a.username})` : `@${a.username}`}
                   </Item>
                 ))}
+              </CommandGroup>
+            )}
+
+            {codeValue && (
+              <CommandGroup heading="Code" forceMount>
+                <Item
+                  value={codeValue}
+                  forceMount
+                  icon={FileSearch}
+                  hint="all trees"
+                  onSelect={() => go(`/search/code?q=${enc(term)}`)}
+                >
+                  Search code for “<span className="font-mono">{term}</span>”
+                </Item>
               </CommandGroup>
             )}
 

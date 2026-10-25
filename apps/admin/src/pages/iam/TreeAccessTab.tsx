@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Plus, Trash2 } from "lucide-react";
+import { FileCode2, KeyRound, Plus, Trash2 } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import {
@@ -26,6 +26,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { absoluteTime, relativeTime } from "@/lib/format";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "@/pages/tree/context";
+import { AccessConfigTab } from "./AccessConfigTab";
 import { ConfirmAction, FieldErrors, IamRoleBadge, RoleSelect, SubjectIcon, SubjectLabel, TableCard } from "./shared";
 import { SUBJECT_LABEL } from "./util";
 
@@ -121,6 +122,19 @@ export function TreeAccessTab() {
           </Table>
         )}
       </TableCard>
+      {/* v0.6 (§14.9): the tree-level declarative access document (deny statements only). */}
+      <section aria-labelledby="tree-access-config" className="mt-6 flex flex-col gap-3">
+        <div>
+          <h2 id="tree-access-config" className="flex items-center gap-2 font-semibold">
+            <FileCode2 aria-hidden="true" className="size-4" />
+            Tree access config
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Deny policies scoped to {tenant}/{tree}, applied from <span className="font-mono">.wt-tree/access/policies.toml</span>.
+          </p>
+        </div>
+        <AccessConfigTab slug={tenant} tree={tree} editable={editable} />
+      </section>
       {editable && adding && <AddGrantDialog onClose={() => setAdding(false)} />}
       <ConfirmAction
         open={removing !== null}
