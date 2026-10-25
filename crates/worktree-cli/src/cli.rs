@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use crate::commands::{
-    archive, auth, branch, config, daemon, diff, git, history, ignore, init, merge, remote,
-    snapshot, status, sync, tag, tree,
+    admin, archive, audit, auth, branch, config, daemon, diff, events, git, grant, history, iam,
+    ignore, init, invite, license, merge, mfa, mr, policy, protect, remote, role, sa, search,
+    session, snapshot, sso, status, sync, tag, team, tenant, token, tree, trees,
 };
 
 #[derive(Debug, Parser)]
@@ -46,6 +47,10 @@ pub struct GlobalArgs {
     /// Disable colored output
     #[arg(long, global = true)]
     pub no_color: bool,
+
+    /// Server for server-side commands (default: this worktree's origin, else the only saved login)
+    #[arg(long, value_name = "URL", global = true, env = "WT_SERVER")]
+    pub server: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -108,6 +113,46 @@ pub enum Command {
     Git(git::GitArgs),
     /// Control the background daemon
     Daemon(daemon::DaemonArgs),
+    /// Manage tenants (organizations) and their members on the server
+    Tenant(tenant::TenantArgs),
+    /// Manage trees on the server: create, settings, branches, tags, compare, stats
+    Trees(trees::TreesArgs),
+    /// Merge requests: list, open, review, approve, merge, close
+    Mr(mr::MrArgs),
+    /// Branch protection rules of a server tree
+    Protect(protect::ProtectArgs),
+    /// Path license rules of a server tree
+    License(license::LicenseArgs),
+    /// Query the server audit log
+    Audit(audit::AuditArgs),
+    /// Server administration: accounts, system information, statistics
+    Admin(admin::AdminArgs),
+    /// Search tenants, trees, branches and accounts on the server
+    Search(search::SearchArgs),
+    /// Stream live server events
+    Events(events::EventsArgs),
+    /// Teams within a tenant and their members
+    Team(team::TeamArgs),
+    /// Custom roles of a tenant
+    Role(role::RoleArgs),
+    /// Access policies (allow/deny statements) of a tenant
+    Policy(policy::PolicyArgs),
+    /// Per-tree access grants for users, teams and service accounts
+    Grant(grant::GrantArgs),
+    /// Service accounts and their keys
+    Sa(sa::SaArgs),
+    /// Your personal API tokens
+    Token(token::TokenArgs),
+    /// Your sign-in sessions
+    Session(session::SessionArgs),
+    /// Two-factor authentication (TOTP) and recovery codes
+    Mfa(mfa::MfaArgs),
+    /// Tenant invitations
+    Invite(invite::InviteArgs),
+    /// Inspect access: simulate requests, effective permissions, action catalog
+    Iam(iam::IamArgs),
+    /// Single sign-on (OpenID Connect) configuration
+    Sso(sso::SsoArgs),
 }
 
 #[cfg(test)]

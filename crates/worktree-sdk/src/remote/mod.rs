@@ -30,6 +30,7 @@ mod convert;
 pub mod credentials;
 mod fetch;
 mod push;
+pub mod rest;
 mod server_url;
 mod session;
 mod stage;
@@ -38,6 +39,7 @@ pub use client::{ObjectKind, RemoteBranch, RemoteTree, SyncClient, MAX_MESSAGE_S
 pub use clone::ORIGIN;
 pub use credentials::CredentialStore;
 pub use push::rejection_message;
+pub use rest::RestClient;
 pub use server_url::normalize_server_url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

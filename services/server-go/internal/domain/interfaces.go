@@ -10,6 +10,8 @@ import (
 // ErrNotFound / ErrAlreadyExists / ErrConflict (wrapped) where applicable.
 // List methods return an empty (non-nil) slice when nothing matches.
 type MetaStore interface {
+	IAMStore // v0.4 (iam.go)
+
 	// Tenants
 	CreateTenant(ctx context.Context, t *Tenant) error
 	GetTenant(ctx context.Context, id string) (*Tenant, error)

@@ -64,6 +64,16 @@ type Deps struct {
 	// GET /api/v1/admin/system reports it and the size of <DataDir>/meta.db.
 	// "" = unknown.
 	DataDir string
+
+	// v0.4 IAM (docs/ENGINEERING_PLAN.md §12).
+	// Security handles MFA, sessions, scoped tokens, service-account keys,
+	// invitations and password resets.
+	Security domain.AccountSecurity
+	// Access is the full policy engine (simulator, effective permissions).
+	// nil = the IAM simulator endpoints answer 501.
+	Access domain.AccessEvaluator
+	// SSO is the OpenID Connect provider. nil = SSO disabled.
+	SSO domain.SSOProvider
 }
 
 // defaultCORSOrigin is the Vite dev server of apps/admin.
@@ -181,6 +191,10 @@ func (a *api) routes() {
 	// v0.3 admin expansion (docs/ENGINEERING_PLAN.md §11).
 	a.registerInsightRoutes(tree)
 	a.registerManageRoutes(tree)
+
+	// v0.4 IAM (docs/ENGINEERING_PLAN.md §12).
+	a.registerIAMRoutes(tree)
+	a.registerSSORoutes()
 
 	// Unknown API paths answer with the JSON envelope (404 or 405).
 	a.handle("/api/", a.handleAPINotFound)

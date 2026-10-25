@@ -1,22 +1,42 @@
 //! Command implementations, one module per command group.
 
+pub mod admin;
 pub mod archive;
+pub mod audit;
 pub mod auth;
 pub mod branch;
 pub mod config;
 pub mod daemon;
 pub mod diff;
+pub mod events;
 pub mod git;
+pub mod grant;
 pub mod history;
+pub mod iam;
 pub mod ignore;
 pub mod init;
+pub mod invite;
+pub mod license;
 pub mod merge;
+pub mod mfa;
+pub mod mr;
+pub mod policy;
+pub mod protect;
 pub mod remote;
+pub mod role;
+pub mod sa;
+pub mod search;
+pub mod session;
 pub mod snapshot;
+pub mod sso;
 pub mod status;
 pub mod sync;
 pub mod tag;
+pub mod team;
+pub mod tenant;
+pub mod token;
 pub mod tree;
+pub mod trees;
 
 use crate::cli::Command;
 use crate::context::Context;
@@ -53,5 +73,25 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Archive(args) => archive::run(ctx, args),
         Command::Git(args) => git::run(ctx, args),
         Command::Daemon(args) => daemon::run(ctx, args),
+        Command::Tenant(args) => tenant::run(ctx, args),
+        Command::Trees(args) => trees::run(ctx, args),
+        Command::Mr(args) => mr::run(ctx, args),
+        Command::Protect(args) => protect::run(ctx, args),
+        Command::License(args) => license::run(ctx, args),
+        Command::Audit(args) => audit::run(ctx, args),
+        Command::Admin(args) => admin::run(ctx, args),
+        Command::Search(args) => search::run(ctx, args),
+        Command::Events(args) => events::run(ctx, args),
+        Command::Team(args) => team::run(ctx, args),
+        Command::Role(args) => role::run(ctx, args),
+        Command::Policy(args) => policy::run(ctx, args),
+        Command::Grant(args) => grant::run(ctx, args),
+        Command::Sa(args) => sa::run(ctx, args),
+        Command::Token(args) => token::run(ctx, args),
+        Command::Session(args) => session::run(ctx, args),
+        Command::Mfa(args) => mfa::run(ctx, args),
+        Command::Invite(args) => invite::run(ctx, args),
+        Command::Iam(args) => iam::run(ctx, args),
+        Command::Sso(args) => sso::run(ctx, args),
     }
 }

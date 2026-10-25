@@ -288,3 +288,194 @@ detected by file extension (top 10 by bytes, rest "Other").
 * Dense, professional, keyboard friendly; Inter + JetBrains Mono; tables with
   sticky headers; empty states, skeletons; responsive to 375 px.
 * Tests: vitest + Testing Library; each page keeps or gains coverage.
+
+## 12. v0.4 IAM and full CLI
+
+Go types/interfaces: `services/server-go/internal/domain/iam.go` (authoritative
+JSON field names; `json:"-"` fields never leave the server). All endpoints
+below are under `/api/v1`, same envelope/auth/error rules as §7. `{t}` =
+tenant slug, `{tree}` = `/trees/{tenant}/{tree}`.
+
+### 12.1 Authorization model
+
+Package `internal/authz`: `authz.New(store domain.MetaStore, opts authz.Options) *authz.Authorizer`,
+implementing `domain.Authorizer` and `domain.AccessEvaluator`. Evaluation for
+(principal, action, resource):
+
+1. Disabled account or disabled service account: deny.
+2. Server admin: allow. Admins bypass policies, but token scopes still apply.
+3. Token scopes: when `p.Scopes` is non-empty the action must match a scope
+   pattern (`tree:read`, `tree:*`, `*`), else deny (source `token_scope`).
+4. Role grants: tenant membership role; team grants (every team the account
+   is in, `Grant{SubjectType:"team"}` on the tree); direct tree grants for the
+   user or service account; a service account's own `Role` in its tenant.
+   Roles are built-in (§7 matrix, `iam.RoleAllows`) or custom
+   (`CustomRole.Permissions`, supporting `area:*`). Visibility (public read
+   for everyone, internal read for any authenticated principal) adds
+   `tree:read` / `tenant:read`.
+5. Enabled policies of the resource tenant: a matching **deny** statement is
+   an explicit deny (overrides 4 and every allow). A matching **allow** grants
+   the action even without a role.
+6. Otherwise allowed iff some role grants the action, else `implicit_deny`.
+
+`branch:push` on a branch resource is allowed iff `tree:write` is allowed and
+no deny statement matches `wt:branch/...`. `syncsvc.Push` must evaluate
+`branch:push` with the branch (the iam-authz workstream owns that call-site
+change). `Decision.Reasons` records every contributing source for the
+simulator. Statement matching supports `*` and `**` wildcards (see the domain
+comments); conditions are CIDR ranges, MFA, not_before / not_after and a
+weekly time window in an IANA timezone.
+
+### 12.2 Authentication additions
+
+`internal/iam.Service` implements `domain.AccountSecurity`.
+
+* Tokens gain `Kind`, `Scopes`, `MFA`, `LastIP`, `UserAgent`. `Authenticate`
+  fills `Principal.{Kind,Scopes,MFA,TokenID}`. Service-account keys resolve
+  to a service-account principal (`Username "sa:<tenant>/<name>"`, `TenantID`
+  = owning tenant, `AccountID ""`).
+* MFA: TOTP (RFC 6238, SHA-1, 6 digits, 30 s, one step of skew, replay
+  protected via LastUsedStep); 20 random secret bytes, base32;
+  `otpauth://totp/W0rkTree:<user>?secret=...&issuer=W0rkTree`; 10 recovery
+  codes `xxxx-xxxx`, stored as sha256, single use. Logging in with MFA
+  enabled returns `{mfa_required:true, mfa_token}` (valid 5 minutes);
+  `/auth/login/mfa` exchanges it plus a TOTP or recovery code for a session.
+* Sessions are tokens of Kind session (listing shows id, created, last used,
+  last IP, user agent, mfa, current).
+* Invitations: 7-day default TTL, one-time code `wti_<base64url>`. Accepting
+  adds the membership (and team) for the signed-in account; when the
+  invitation names an email or username it must match the accepting account.
+* Password resets: admin-issued one-time code `wtr_<base64url>`, 1 h default.
+
+### 12.3 REST endpoints
+
+IAM management needs `iam:admin` on the tenant, reads need `iam:read`
+(built-in owner and admin have both, maintainer has `iam:read`). Every
+mutating call is audited.
+
+```
+[iam-http]
+GET    /iam/actions                                   -> [{action, description, area}]   (public)
+GET    /tenants/{t}/teams                             -> [team]
+POST   /tenants/{t}/teams          {slug,name,description}           -> 201 team
+GET    /tenants/{t}/teams/{team}                      -> {team, members:[{account, role}], grants:[grant]}
+PATCH  /tenants/{t}/teams/{team}   {name?,description?}              -> team
+DELETE /tenants/{t}/teams/{team}                      -> 204
+PUT    /tenants/{t}/teams/{team}/members/{username} {role}           -> member   (team maintainers may manage their own team)
+DELETE /tenants/{t}/teams/{team}/members/{username}   -> 204
+GET    /tenants/{t}/roles                             -> [{name, description, permissions, builtin}]   (built-ins first, read-only)
+POST   /tenants/{t}/roles          {name, description, permissions}  -> 201 role
+GET/PATCH/DELETE /tenants/{t}/roles/{name}            (PATCH {description?, permissions?}; DELETE 409 while assigned)
+GET    /tenants/{t}/policies                          -> [policy]
+POST   /tenants/{t}/policies       {name, description, enabled, statements} -> 201 policy
+POST   /tenants/{t}/policies/validate {statements}   -> {valid, errors:[{statement, field, message}]}
+GET/PUT/DELETE /tenants/{t}/policies/{id}             (PUT = full replace; version++)
+GET    {tree}/grants                                  -> [grant]
+PUT    {tree}/grants  {subject_type, subject, role}   -> grant   (subject = username | team slug | service-account name)
+DELETE {tree}/grants?subject_type=&subject=           -> 204
+GET    /tenants/{t}/service-accounts                  -> [service_account]
+POST   /tenants/{t}/service-accounts {name, description, role}       -> 201 service_account
+GET    /tenants/{t}/service-accounts/{name}           -> {service_account, keys:[api_token]}
+PATCH  /tenants/{t}/service-accounts/{name} {description?, role?, disabled?} -> service_account
+DELETE /tenants/{t}/service-accounts/{name}           -> 204
+POST   /tenants/{t}/service-accounts/{name}/keys {name, ttl_hours, scopes} -> 201 {token, api_token}
+DELETE /tenants/{t}/service-accounts/{name}/keys/{id} -> 204
+POST   /auth/tokens                                   (existing; body gains optional "scopes": [...])
+GET    /auth/sessions                                 -> [{...api_token, current: bool}]
+DELETE /auth/sessions/{id}                            -> 204
+POST   /auth/sessions/revoke-others                   -> {revoked: n}
+GET    /auth/mfa                                      -> mfa_state
+POST   /auth/mfa/totp/enroll                          -> {secret, otpauth_url}
+POST   /auth/mfa/totp/confirm  {code}                 -> {recovery_codes: [...]}
+DELETE /auth/mfa/totp          {password}             -> 204
+POST   /auth/mfa/recovery-codes {code}                -> {recovery_codes: [...]}
+POST   /auth/login                                    -> {token, account} | {mfa_required: true, mfa_token, account: {username}}
+POST   /auth/login/mfa {mfa_token, code}              -> {token, account}
+GET    /tenants/{t}/invitations                       -> [invitation]
+POST   /tenants/{t}/invitations {email?|username?, role, team?} -> 201 {invitation, code}
+DELETE /tenants/{t}/invitations/{id}                  -> 204   (revoke)
+GET    /invitations/{code}                            -> {invitation, tenant}   (public preview)
+POST   /invitations/{code}/accept                     -> invitation   (signed in)
+POST   /admin/accounts/{username}/reset-code {ttl_hours?} -> {code, expires_at}   (server admin)
+POST   /auth/password-reset {code, new_password}      -> 204   (public)
+POST   /iam/simulate {principal:{type:"user"|"service_account", name, tenant?}, action, tenant, tree?, branch?, path?, context:{ip?, mfa?}} -> Decision
+GET    /iam/effective?tenant=&tree=&principal=user:<name>|sa:<tenant>/<name> -> {role, team_roles:[{team, role}], grants:[grant], permissions:[action]}   (default principal = caller)
+
+[iam-sso]
+GET    /auth/providers                                -> {password: true, registration: bool, sso: {enabled, name}}   (public)
+GET    /auth/sso/start?redirect=/admin/              -> 302 to the IdP (state + PKCE + nonce)
+GET    /auth/sso/callback?code=&state=               -> 302 to <redirect>#sso_token=<token>   (errors: 302 to /admin/login#sso_error=<message>)
+GET    /admin/sso                                     -> sso_config   (server admin)
+PUT    /admin/sso    {enabled,name,issuer,client_id,client_secret?,redirect_url,scopes,allowed_domains,auto_create,username_claim} -> sso_config
+```
+
+### 12.4 CLI surface
+
+All server-side commands honour `--server` and `--json`. The server is
+resolved by `Context::rest()` (`worktree_sdk::remote::RestClient::resolve`):
+`--server` / `WT_SERVER`, else the worktree origin, else the only saved
+login. `TREE` arguments are `tenant/tree` and default, inside a worktree, to
+the origin tenant plus the current tree's remote name.
+
+```
+[cli-collab]
+wt tenant list | create SLUG [--name N] | show T | rename T NAME | plan T free|pro|enterprise
+wt tenant members T | add-member T USER [--role R] | set-role T USER ROLE | remove-member T USER
+wt trees list [--tenant T] | create T/NAME [--description D] [--visibility V] [--default-branch B]
+wt trees show TREE | update TREE [--description] [--visibility] [--default-branch] | delete TREE [--yes]
+wt trees branches TREE | branch-create TREE NAME [--from REV] | branch-delete TREE NAME
+wt trees tags TREE | tag-create TREE NAME --target REV [-m MSG] | tag-delete TREE NAME
+wt trees log TREE [--branch B] [-n N] | compare TREE [--from REV] --to REV [--stat|--patch] | stats TREE [--days N] | file-log TREE PATH | staged TREE
+wt mr list [TREE] [--state open|merged|closed|all] | show N [TREE] [--diff] | create [TREE] --source B --target B --title T [--description D]
+wt mr approve N [TREE] | merge N [TREE] | close N [TREE]
+wt protect list [TREE] | set [TREE] PATTERN [--no-direct-push] [--approvals N] [--pusher U]... [--no-delete] | remove [TREE] PATTERN
+wt license list [TREE] | set [TREE] GLOB SPDX [--grant read-only|modify|redistribute] | remove [TREE] GLOB
+wt audit [--tenant T] [--action A] [--since RFC3339] [-n N]
+wt admin accounts | account-create USER --email E [--admin] [--password-stdin] | account-set USER [--admin true|false] [--disabled true|false]
+wt admin password USER [--password-stdin] | reset-code USER [--ttl-hours N] | system | stats
+wt search QUERY [-n N]
+wt events [--tenant T] [--tree TREE] [--type TYPE]...   (streams until Ctrl-C; with --json one JSON object per line)
+
+[cli-iam]
+wt team list T | create T SLUG [--name N] [--description D] | show T SLUG | update T SLUG [--name] [--description] | delete T SLUG
+wt team add T SLUG USER [--maintainer] | remove T SLUG USER
+wt role list T | create T NAME --permission ACTION... [--description D] | show T NAME | update T NAME [--permission ...] | delete T NAME
+wt policy list T | show T ID | create T --file policy.json|- | update T ID --file F | delete T ID | validate T --file F | enable T ID | disable T ID
+wt grant list TREE | set TREE (--user U|--team SLUG|--sa NAME) --role R | remove TREE (--user U|--team SLUG|--sa NAME)
+wt sa list T | create T NAME --role R [--description D] | show T NAME | update T NAME [--role] [--disable|--enable] | delete T NAME
+wt sa key-create T NAME [--name K] [--ttl-hours N] [--scope S]... | key-delete T NAME KEY_ID
+wt token list | create NAME [--ttl-hours N] [--scope S]... | revoke ID
+wt session list | revoke ID | revoke-others
+wt mfa status | enable | disable [--password-stdin] | recovery-codes
+wt invite list T | create T (--email E|--user U) [--role R] [--team SLUG] | revoke T ID | show CODE | accept CODE
+wt iam actions | effective [--tenant T] [--tree TREE] [--principal user:U|sa:T/NAME]
+wt iam simulate --principal user:U|sa:T/N --action A --tenant T [--tree TREE] [--branch B] [--path P] [--ip IP] [--mfa]
+wt sso show | set [--enabled true|false] [--name] [--issuer] [--client-id] [--client-secret-stdin] [--redirect-url] [--allowed-domain D]... [--auto-create true|false]
+wt login: on mfa_required, prompt for a code (or --mfa-code / WT_MFA_CODE) and call /auth/login/mfa   (cli-iam owns auth.rs and sdk remote/auth.rs for this)
+wt password-reset CODE [--password-stdin]   (cli-iam; new subcommand in auth.rs)
+```
+
+`wt mfa enable` prints the secret and otpauth URL, prompts for a code and
+prints the recovery codes. Human output uses aligned tables with headers;
+`--json` prints the server JSON. Destructive commands require `--yes` when
+stdin is not a terminal.
+
+### 12.5 Admin panel additions
+
+* **ui-iam:** tenant detail gains tabs Teams (CRUD and members), Roles
+  (built-in matrix plus a custom-role editor with an action checklist grouped
+  by area), Policies (list, enable toggle, editor with a visual statement
+  builder and a JSON mode validated live by `/policies/validate`), Service
+  accounts (CRUD, keys with one-time reveal) and Invitations (create with a
+  copyable link `/admin/invite/<code>`, revoke). Trees gain an **Access** tab
+  (grants for users, teams and service accounts). New page **Access
+  simulator** (`/iam/simulator`): pick principal, action and resource to see
+  the Decision with reasons, plus an effective-permissions view.
+* **ui-security:** Settings → Security: MFA enrollment (QR code rendered
+  client-side, manual secret, confirm, recovery codes download), disable,
+  regenerate; Sessions (current marked, revoke, revoke others); API tokens
+  gain scopes. Login page: MFA step (TOTP or recovery code), a "Sign in with
+  <SSO name>" button from `/auth/providers`, handling `#sso_token` and
+  `#sso_error`. Public pages `/invite/:code` (preview and accept, sign-in
+  redirect) and `/reset-password` (code and new password). Admin → SSO
+  settings page; the Accounts page gains "Issue reset code".

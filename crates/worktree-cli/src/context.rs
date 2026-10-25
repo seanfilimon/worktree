@@ -4,6 +4,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
+use worktree_sdk::remote::RestClient;
 use worktree_sdk::{Repository, TreeInfo};
 
 use crate::cli::GlobalArgs;
@@ -15,6 +16,7 @@ pub struct Context {
     pub out: Output,
     cwd: PathBuf,
     tree: Option<String>,
+    server: Option<String>,
 }
 
 impl Context {
@@ -26,6 +28,7 @@ impl Context {
             out: Output::new(global.json),
             cwd,
             tree: global.tree.clone(),
+            server: global.server.clone(),
         })
     }
 
@@ -77,6 +80,18 @@ impl Context {
             out.push(rel);
         }
         Ok(out)
+    }
+
+    /// REST client for server-side commands: `--server` / `WT_SERVER`, else
+    /// the origin remote of the worktree containing the cwd (if any), else
+    /// the only server with a saved login.
+    pub fn rest(&self) -> Result<RestClient> {
+        let repo = Repository::open(&self.cwd).ok();
+        Ok(RestClient::resolve(
+            self.server.as_deref(),
+            repo.as_ref(),
+            "origin",
+        )?)
     }
 
     /// Convert a cwd-relative path into a path relative to the worktree root.

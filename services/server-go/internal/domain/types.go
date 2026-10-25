@@ -91,6 +91,15 @@ type APIToken struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+
+	// v0.4 IAM (§12). Empty Kind is treated as TokenSession when Name is
+	// "session", else TokenAPI (tokens created before v0.4).
+	Kind             string   `json:"kind,omitempty"`
+	ServiceAccountID string   `json:"service_account_id,omitempty"` // TokenService only (AccountID empty)
+	Scopes           []string `json:"scopes,omitempty"`
+	MFA              bool     `json:"mfa,omitempty"` // session created after a second factor
+	LastIP           string   `json:"last_ip,omitempty"`
+	UserAgent        string   `json:"user_agent,omitempty"`
 }
 
 type Tree struct {
@@ -221,10 +230,22 @@ type LicenseRule struct {
 
 // Principal is the authenticated caller attached to a request context.
 type Principal struct {
-	AccountID string `json:"account_id"`
-	Username  string `json:"username"`
-	TenantID  string `json:"tenant_id"` // personal tenant
+	AccountID string `json:"account_id"` // "" for service accounts
+	Username  string `json:"username"`   // service accounts: "sa:<tenant>/<name>"
+	TenantID  string `json:"tenant_id"`  // personal tenant (service accounts: owning tenant)
 	IsAdmin   bool   `json:"is_admin"`
+
+	// v0.4 IAM (§12). Zero values mean a full-access user session.
+	Kind             string   `json:"kind,omitempty"`               // PrincipalUser (default) | PrincipalServiceAccount
+	ServiceAccountID string   `json:"service_account_id,omitempty"` // set for service accounts
+	Scopes           []string `json:"scopes,omitempty"`             // token scopes (action patterns); empty = unrestricted
+	MFA              bool     `json:"mfa,omitempty"`                // session established with a second factor
+	TokenID          string   `json:"token_id,omitempty"`
+}
+
+// IsServiceAccount reports whether p authenticates as a service account.
+func (p *Principal) IsServiceAccount() bool {
+	return p != nil && p.Kind == PrincipalServiceAccount
 }
 
 // Anonymous returns true for a nil principal.

@@ -128,6 +128,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 
 		AllowRegistration: cfg.AllowRegistration,
 		DataDir:           cfg.DataDir,
+
+		Security: iamSvc,
 	})
 
 	srv := newHTTPServer(mux(grpcServer, api), log)

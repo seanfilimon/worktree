@@ -23,7 +23,8 @@ ignore = "0.4"
 
 # --- sdk-remote: gRPC + REST client for the W0rkTree server ---
 tonic = { version = "0.12", features = ["tls", "tls-native-roots", "tls-webpki-roots"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "rustls-tls-native-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio-stream = "0.1"
 url = "2"
 
