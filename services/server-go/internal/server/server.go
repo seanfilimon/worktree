@@ -140,8 +140,11 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Audit:   auditLog,
 		Version: cfg.Version,
 
-		PushChecks: []domain.PushChecker{pathACL}, // sec-paths: path ACLs run first (§13.1)
-		AccessCfg:  accessCfg,
+		PushChecks: []domain.PushChecker{
+			pathACL, // sec-paths (§13.1): path ACLs run first
+			signer,  // signing (§13.6): verifies signatures, sets Verified; keep last
+		},
+		AccessCfg: accessCfg,
 	})
 
 	// ---- gRPC ----

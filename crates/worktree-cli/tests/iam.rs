@@ -1087,3 +1087,59 @@ fn server_errors_and_missing_login() {
         .code(1)
         .stderr(predicate::str::contains("iam:read required"));
 }
+
+// --- signing (ENGINEERING_PLAN §13.6): `wt identity register|revoke` ---
+
+#[test]
+fn identity_register_and_revoke() {
+    let sb = Sandbox::logged_in();
+    let key = sb.json(&["identity", "generate", "laptop"]);
+    let fingerprint = key["fingerprint"].as_str().unwrap().to_string();
+    sb.server.on(
+        "POST",
+        "/api/v1/auth/keys",
+        201,
+        json!({"id": "key-1", "account_id": "acct-ada", "name": "laptop", "algorithm": "ed25519",
+               "public_key": "AA==", "fingerprint": fingerprint, "created_at": "2026-01-02T03:04:05Z"}),
+    );
+    let out = sb.ok(&["identity", "register", "laptop"]);
+    assert!(
+        out.contains("Registered signing key laptop as key-1"),
+        "{out}"
+    );
+    let req = sb.server.request("POST", "/api/v1/auth/keys");
+    assert_eq!(
+        req.auth.as_deref(),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+    assert_eq!(req.body["name"], "laptop");
+    assert_eq!(req.body["algorithm"], "ed25519");
+    assert_eq!(req.body["public_key"].as_str().unwrap().len(), 44);
+
+    let shown = sb.json(&["identity", "show", "laptop"]);
+    assert_eq!(shown["key_id"], "key-1");
+    assert_eq!(shown["server"], sb.server.url.as_str());
+
+    // Revoke by local key name resolves the server id.
+    sb.server
+        .on("DELETE", "/api/v1/auth/keys/key-1", 204, json!(null));
+    let out = sb.json(&["identity", "revoke", "laptop", "--yes"]);
+    assert_eq!(out["id"], "key-1");
+    assert_eq!(out["local_key"], "laptop");
+    sb.server.request("DELETE", "/api/v1/auth/keys/key-1");
+    let shown = sb.json(&["identity", "show", "laptop"]);
+    assert!(shown.get("key_id").is_none(), "{shown}");
+
+    // Conflicts surface the server message.
+    sb.server.on(
+        "POST",
+        "/api/v1/auth/keys",
+        409,
+        json!({"error": {"code": "conflict", "message": "public key is already registered"}}),
+    );
+    sb.wt(&["identity", "register", "laptop"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("already registered"));
+}
+// --- end signing ---

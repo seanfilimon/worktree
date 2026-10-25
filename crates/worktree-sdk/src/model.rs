@@ -421,6 +421,10 @@ pub struct SnapshotOptions {
     pub skip_secret_scan: bool,
     /// Dependencies to record on the snapshot (`wt snapshot --depend`).
     pub dependencies: Vec<Dependency>,
+    /// signing (§13.6): sign this snapshot even when `[signing] auto` is
+    /// off (`wt snapshot --sign`).
+    #[serde(default)]
+    pub sign: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

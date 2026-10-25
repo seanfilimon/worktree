@@ -21,6 +21,12 @@ prost = "0.13"
 prost-types = "0.13"
 ignore = "0.4"
 
+# --- signing (ENGINEERING_PLAN §13.6): Ed25519 snapshot signatures ---
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+sha2 = "0.10.9"
+base64 = "0.22.1"
+
 # --- sdk-remote: gRPC + REST client for the W0rkTree server ---
 tonic = { version = "0.12", features = ["tls", "tls-native-roots", "tls-webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "rustls-tls-native-roots"] }
