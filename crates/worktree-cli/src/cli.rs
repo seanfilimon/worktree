@@ -97,6 +97,8 @@ pub enum Command {
     Whoami(auth::WhoamiArgs),
     /// Create an account on a server
     Register(auth::RegisterArgs),
+    /// Set a new password with a one-time reset code from an administrator
+    PasswordReset(auth::PasswordResetArgs),
     /// Upload a branch to a remote
     Push(sync::PushArgs),
     /// Download remote branches without touching local ones

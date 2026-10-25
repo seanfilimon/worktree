@@ -13,6 +13,7 @@ pub mod git;
 pub mod grant;
 pub mod history;
 pub mod iam;
+pub mod iam_common;
 pub mod ignore;
 pub mod init;
 pub mod invite;
@@ -65,6 +66,7 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Logout(args) => auth::logout(ctx, args),
         Command::Whoami(args) => auth::whoami(ctx, args),
         Command::Register(args) => auth::register(ctx, args),
+        Command::PasswordReset(args) => auth::password_reset(ctx, args),
         Command::Push(args) => sync::push(ctx, args),
         Command::Fetch(args) => sync::fetch(ctx, args),
         Command::Pull(args) => sync::pull(ctx, args),

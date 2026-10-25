@@ -8,7 +8,7 @@
 //! - [`credentials`] — the credential file ([`CredentialStore`])
 //! - [`client`] — typed gRPC client ([`SyncClient`]) with batched,
 //!   streaming object transfer
-//! - `auth` — REST login/register
+//! - `auth` — REST login (including the MFA second step) and register
 //! - `push`, `fetch` (fetch + pull), `clone`, `stage` — the sync flows of
 //!   ENGINEERING_PLAN §2, built on the `Repository` public API
 //!
@@ -51,6 +51,25 @@ pub struct LoginInfo {
     pub token: String,
 }
 
+/// The second step an account with MFA enabled must complete after a
+/// password login: a short-lived (5 minute) token to exchange, together
+/// with a TOTP or recovery code, via [`login_mfa`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MfaChallenge {
+    pub server: String,
+    pub username: String,
+    pub mfa_token: String,
+}
+
+/// Result of the first login step ([`login_start`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginOutcome {
+    /// Logged in; the credential is saved.
+    LoggedIn(LoginInfo),
+    /// The account needs a second factor; nothing is saved yet.
+    MfaRequired(MfaChallenge),
+}
+
 /// Saved credentials for one server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credential {
@@ -81,7 +100,9 @@ pub fn logged_in_username(server: &str) -> Option<String> {
     load_credential(server).ok().flatten().map(|c| c.username)
 }
 
-/// POST /api/v1/auth/login; saves the credential on success.
+/// POST /api/v1/auth/login; saves the credential on success. Accounts with
+/// MFA enabled fail with a `PermissionDenied` error mentioning MFA; use
+/// [`login_start`] and [`login_mfa`] for them.
 pub async fn login(server: &str, username: &str, password: &str) -> Result<LoginInfo> {
     auth::login(
         &CredentialStore::default_location(),
@@ -90,6 +111,23 @@ pub async fn login(server: &str, username: &str, password: &str) -> Result<Login
         password,
     )
     .await
+}
+
+/// POST /api/v1/auth/login: a session (saved) or an MFA challenge.
+pub async fn login_start(server: &str, username: &str, password: &str) -> Result<LoginOutcome> {
+    auth::login_start(
+        &CredentialStore::default_location(),
+        server,
+        username,
+        password,
+    )
+    .await
+}
+
+/// POST /api/v1/auth/login/mfa with a TOTP or recovery code; saves the
+/// credential on success.
+pub async fn login_mfa(challenge: &MfaChallenge, code: &str) -> Result<LoginInfo> {
+    auth::login_mfa(&CredentialStore::default_location(), challenge, code).await
 }
 
 /// POST /api/v1/auth/register; saves the credential on success.
