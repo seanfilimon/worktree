@@ -5590,6 +5590,19 @@ components:
         at:
           type: string
           format: date-time
+    BlameResponse:
+      type: object
+      description: "blameResponse is the body of GET {tree}/blame/{rev}/{path...}."
+      required: [lines, snapshot]
+      properties:
+        lines:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/BlameLine"
+          description: "The file's lines (or the requested range), in order."
+        snapshot:
+          $ref: "#/components/schemas/Snapshot"
+          description: "the snapshot REV resolved to"
     Branch:
       type: object
       required: [tree_id, name, tip, protected, created_at, updated_at]
@@ -5652,7 +5665,8 @@ components:
           type: array
           items:
             type: string
-          description: "v0.6 (§14): merge methods allowed into matching branches (empty = all)."
+            enum: [fast-forward, merge, squash]
+          description: "v0.6 (§14.1): merge methods allowed into matching branches (empty = all). The lists of all matching rules intersect. `require_linear` also forbids `merge`, `require_signed` forbids `merge` and `squash`. Unknown names answer 400; the stored list is deduplicated in preference order (fast-forward, merge, squash)."
     CICombinedStatus:
       type: object
       description: "Combined CI view of one snapshot (ci.Status). state is failure if any check failed or errored, else pending if any is pending, else success; \"\" when no check was reported."
@@ -5762,6 +5776,21 @@ components:
           type: array
           items:
             type: string
+    CodeSearchResult:
+      type: object
+      description: "Result is the answer to a code search (codesearch.Result). Hits are ordered by tenant, tree, path and line."
+      required: [hits, truncated, searched_trees]
+      properties:
+        hits:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/CodeSearchHit"
+        truncated:
+          type: boolean
+          description: "More than `limit` hits exist, or the 5 s time budget ran out; the hits found so far are returned."
+        searched_trees:
+          type: integer
+          description: "Number of trees searched (trees whose index could not be built are skipped)."
     CompareResult:
       type: object
       description: "compareResult is CompareResult of apps/admin/src/api/types.ts."
@@ -6010,6 +6039,71 @@ components:
           type: string
         default_branch:
           type: string
+    CreateWebhookRequest:
+      type: object
+      description: "CreateInput is the body of POST .../webhooks."
+      properties:
+        url:
+          type: string
+          description: "Absolute http:// or https:// URL (at most 2048 bytes). Hosts that are or resolve to loopback, link-local or private addresses are refused unless the server runs with --webhook-allow-private."
+        events:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "1-50 event-type patterns: a type (\"branch.pushed\"), a prefix (\"mr.*\") or \"*\". Duplicates are dropped."
+        secret:
+          type: string
+          description: "Signing secret (1-256 bytes of UTF-8); empty = the server generates one and returns it once."
+        description:
+          type: string
+          description: "At most 1000 bytes of UTF-8."
+        active:
+          type: boolean
+          description: "Default true."
+    CreatedWebhook:
+      type: object
+      description: "createdWebhook is the create response: the hook plus its secret when the server generated it (shown only this once)."
+      required: [id, tenant_id, url, events, active, has_secret, created_by, created_at, updated_at, failure_count]
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        tree_id:
+          type: string
+        url:
+          type: string
+        description:
+          type: string
+        events:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Events are event-type patterns (\"branch.pushed\", \"mr.*\", \"*\")."
+        active:
+          type: boolean
+        has_secret:
+          type: boolean
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_delivery_at:
+          type: string
+          format: date-time
+        last_status:
+          type: integer
+          description: "HTTP status of the last attempt (0 = network error)"
+        failure_count:
+          type: integer
+          description: "consecutive failed deliveries"
+        secret:
+          type: string
+          description: "The generated signing secret; present only when the request supplied none. It is never returned again."
     CustomRole:
       type: object
       description: "CustomRole is a tenant-defined role. Name must not collide with a built-in role. Members are assigned custom roles exactly like built-ins (Membership.Role, Grant.Role, TeamGrant, ServiceAccount.Role)."
@@ -6613,13 +6707,13 @@ components:
       properties:
         kind:
           type: string
-          description: "state | source | linked_group | approvals | changes_requested | ci | todos | linear | diverged"
+          description: "state | source | linked_group | approvals | changes_requested | ci | todos | linear | diverged | conflicts | merge_method. Since v0.6, linear, diverged, conflicts and merge_method are reported only when no allowed merge method can merge the request."
         message:
           type: string
     MergeChecks:
       type: object
       description: "MergeChecks is the merge readiness of a merge request (review.MergeChecks)."
-      required: [mergeable, blockers, approvals, ci, todos]
+      required: [mergeable, blockers, approvals, ci, todos, methods, conflicts]
       properties:
         mergeable:
           type: boolean
@@ -6633,6 +6727,73 @@ components:
           $ref: "#/components/schemas/CISummary"
         todos:
           $ref: "#/components/schemas/TodoSummary"
+        methods:
+          type: [array, "null"]
+          items:
+            type: string
+            enum: [fast-forward, merge, squash]
+          description: "v0.6 (§14.1): the merge methods that are allowed and possible, in preference order (the first is the default)."
+        conflicts:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/MergeConflict"
+          description: "v0.6 (§14.1): the conflicts of the three-way merge when the branches diverged (empty otherwise)."
+    MergeConflict:
+      type: object
+      description: "Conflict is one path a server-side merge cannot resolve (review.Conflict). Tree is set for linked-group merges (\"tenant/tree\")."
+      required: [path, kind]
+      properties:
+        tree:
+          type: string
+        path:
+          type: string
+        kind:
+          type: string
+          enum: [content, modify_delete, add_add, binary, chunked, executable, file_directory]
+          description: "content: both sides changed overlapping lines of a text file; modify_delete: one side modified, the other deleted; add_add: both sides added the path with different content; binary / chunked: a binary or chunked (large) file changed on both sides; executable: same content added with different executable bits; file_directory: the merged tree would hold a file and a directory at one path."
+    MergeConflictError:
+      type: object
+      description: "mergeConflictBody is the 409 merge_conflict response: the standard error envelope plus the conflicting paths, both at the top level and inside \"error\"."
+      required: [error, conflicts]
+      properties:
+        error:
+          $ref: "#/components/schemas/MergeConflictErrorDetail"
+        conflicts:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/MergeConflict"
+    MergeConflictErrorDetail:
+      type: object
+      description: "The `error` member of a merge_conflict response (`code` = `merge_conflict`)."
+      required: [code, message, conflicts]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        conflicts:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/MergeConflict"
+    MergeGroupRequest:
+      type: object
+      description: "Optional body of POST /tenants/{tenant}/linked-groups/{id}/merge (an anonymous struct in the handler)."
+      properties:
+        method:
+          type: string
+          enum: ["", fast-forward, merge, squash]
+          description: "Merge method for every member; empty = each member's default method."
+    MergeMRRequest:
+      type: object
+      description: "mergeMRRequest is the optional body of POST .../merge-requests/{n}/merge."
+      properties:
+        method:
+          type: string
+          enum: ["", fast-forward, merge, squash]
+          description: "Merge method; empty = the default, the first of fast-forward, merge, squash that is allowed and possible (see the mergeability endpoint)."
+        message:
+          type: string
+          description: "Snapshot message of a merge or squash (at most 64 KiB of UTF-8; default \"Merge branch '<source>' into <target> (!N)\" for merge, the merge request title for squash). Ignored by fast-forward."
     MergeRequest:
       type: object
       properties:
@@ -6677,7 +6838,43 @@ components:
           description: "v0.5 (§13)."
         merge_method:
           type: string
-          description: "v0.6 (§14): the method used to merge (MergeFastForward when empty on merged requests from before v0.6)."
+          description: "v0.6 (§14.1): the method used to merge: `fast-forward`, `merge` or `squash` (empty on open and closed requests, and on requests merged before v0.6, which were fast-forwarded)."
+    Mergeability:
+      type: object
+      description: "Mergeability reports which merge methods can merge a merge request (review.Mergeability). It does not consider approvals, CI or TODOs (see the checks endpoint)."
+      required: [fast_forward, up_to_date, methods, default, allowed, conflicts, reasons]
+      properties:
+        fast_forward:
+          type: boolean
+          description: "FastForward is true when the target can be fast-forwarded to the source (or already contains it), whatever the protection allows."
+        up_to_date:
+          type: boolean
+          description: "UpToDate is true when the target already contains the source."
+        methods:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Methods lists the methods that are allowed and possible, in preference order; Default is the first of them (\"\" = none)."
+        default:
+          type: string
+        allowed:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Allowed lists the methods branch protection allows."
+        merge_base:
+          type: string
+          description: "MergeBase is the best common ancestor of target and source tips."
+        conflicts:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/MergeConflict"
+          description: "Conflicts of the three-way merge (empty when it is clean or when the target can be fast-forwarded)."
+        reasons:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+          description: "Reasons explains, per method, why it is not offered."
     PasswordResetRequest:
       type: object
       properties:
@@ -6740,6 +6937,22 @@ components:
           type: [string, "null"]
         default_branch:
           type: [string, "null"]
+    PatchWebhookRequest:
+      type: object
+      description: "Patch is the body of PATCH .../webhooks/{id}; absent fields are unchanged (same limits as on create). Reactivating a hook resets its failure count."
+      properties:
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+        description:
+          type: string
+        active:
+          type: boolean
     Policy:
       type: object
       description: "Policy is a named, versioned set of statements scoped to one tenant. Evaluation: an explicit deny in any enabled policy overrides every allow (roles, grants and policy allows). Policy allows extend role grants."
@@ -6796,6 +7009,37 @@ components:
           format: date-time
         time_window:
           $ref: "#/components/schemas/TimeWindow"
+    PolicyDiff:
+      type: object
+      description: "DiffResult answers GET .../policies/{id}/diff (policyhist.DiffResult)."
+      required: [from, to, changes, fields]
+      properties:
+        from:
+          type: integer
+          description: "version; 0 = the empty policy"
+        to:
+          type: integer
+        changes:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/PolicyStatementChange"
+          description: "Changes lists the added and changed statements in the order of the `to` version, followed by the removed ones in the order of `from`."
+        fields:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/PolicyFieldChange"
+    PolicyFieldChange:
+      type: object
+      description: "FieldChange is a difference in a policy-level field (name, description, enabled)."
+      required: [field, before, after]
+      properties:
+        field:
+          type: string
+          enum: [name, description, enabled]
+        before:
+          description: "Any JSON value (null when the `from` side is the empty policy)."
+        after:
+          description: "Any JSON value (null when the `to` side is the empty policy)."
     PolicyRequest:
       type: object
       properties:
@@ -6856,6 +7100,28 @@ components:
             type: string
         conditions:
           $ref: "#/components/schemas/PolicyConditions"
+    PolicyStatementChange:
+      type: object
+      description: "StatementChange is one statement-level difference between two versions. Statements are matched by sid; a sid that occurs more than once is matched occurrence by occurrence. Statements without a sid are matched by position among the statements without a sid: the n-th one of `from` is compared with the n-th one of `to`."
+      required: [op, sid, index]
+      properties:
+        op:
+          type: string
+          enum: [add, remove, change]
+        sid:
+          type: string
+          description: "\"\" for statements without a sid"
+        index:
+          type: integer
+          description: "Index is the statement's position in the `to` version (add, change) or in the `from` version (remove)."
+        statement:
+          $ref: "#/components/schemas/PolicyStatement"
+          description: "Statement is the added or removed statement."
+        before:
+          $ref: "#/components/schemas/PolicyStatement"
+          description: "Before and After are the two sides of a changed statement."
+        after:
+          $ref: "#/components/schemas/PolicyStatement"
     PolicyVersion:
       type: object
       description: "PolicyVersion is a stored revision of a policy (every create, update, delete and rollback appends one)."
@@ -7135,6 +7401,17 @@ components:
         updated_at:
           type: string
           format: date-time
+    RollbackPolicyRequest:
+      type: object
+      description: "rollbackRequest is the body of POST .../policies/{id}/rollback."
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: "The history version to restore."
+        comment:
+          type: string
+          description: "Optional note (at most 1000 bytes of UTF-8), recorded as \"rollback to version N: <comment>\"."
     SSOConfig:
       type: object
       description: "SSOConfig configures OpenID Connect single sign-on (one provider)."
@@ -8121,3 +8398,21 @@ components:
           format: date-time
         redelivery:
           type: boolean
+    WebhookDeliveryList:
+      type: object
+      description: "Body of GET .../webhooks/{id}/deliveries (newest first)."
+      required: [deliveries]
+      properties:
+        deliveries:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/WebhookDelivery"
+    WebhookList:
+      type: object
+      description: "Body of GET .../webhooks (oldest first)."
+      required: [webhooks]
+      properties:
+        webhooks:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/Webhook"
