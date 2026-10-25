@@ -1,0 +1,76 @@
+# W0rkTree server as a hardened system service.
+#
+# Install (as root):
+#   useradd --system --home-dir /var/lib/worktree --shell /usr/sbin/nologin worktree
+#   install -m 0755 worktree-server /usr/local/bin/
+#   mkdir -p /usr/local/share/worktree/admin && tar -xzf worktree-admin-*.tar.gz --strip-components=1 -C /usr/local/share/worktree/admin
+#   install -D -m 0640 -g worktree server.env.example /etc/worktree/server.env   # then edit it
+#   install -m 0644 worktree-server.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now worktree-server
+#
+# Data lives in /var/lib/worktree (StateDirectory). Configuration is the
+# WT_* environment in /etc/worktree/server.env (see docs/deploy.md); flags
+# can be appended to ExecStart with a drop-in (systemctl edit worktree-server).
+
+[Unit]
+Description=W0rkTree server (gRPC sync, REST API, admin panel)
+Documentation=https://github.com/seanfilimon/worktree/blob/main/docs/deploy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=worktree
+Group=worktree
+Environment=WT_ADDR=:7420
+Environment=WT_DATA=/var/lib/worktree
+Environment=WT_ADMIN_DIR=/usr/local/share/worktree/admin
+Environment=WT_LOG_FORMAT=json
+Environment=HOME=/var/lib/worktree
+EnvironmentFile=-/etc/worktree/server.env
+ExecStart=/usr/local/bin/worktree-server
+Restart=on-failure
+RestartSec=5
+# Graceful shutdown drains streams for up to WT_SHUTDOWN_TIMEOUT (15 s).
+TimeoutStopSec=30
+KillSignal=SIGTERM
+LimitNOFILE=65536
+
+StateDirectory=worktree
+StateDirectoryMode=0750
+UMask=0027
+
+# Hardening. The server only needs its state directory, outbound network
+# (webhooks, mirrors, S3, SMTP) and git (for mirrors) from /usr/bin.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+# To listen on a port below 1024 (e.g. WT_ADDR=:443) instead of using a
+# reverse proxy, set in a drop-in:
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

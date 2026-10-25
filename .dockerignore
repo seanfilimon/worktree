@@ -1,6 +1,7 @@
-# Build context for Dockerfile.server and apps/web/Dockerfile (both use the
-# repository root as context). Patterns are anchored at the context root, so
-# nested artifacts need a **/ prefix.
+# Build context for deploy/docker/Dockerfile (server + admin),
+# deploy/docker/Dockerfile.cli (wt + worktree-bg), Dockerfile.server and
+# apps/web/Dockerfile. All use the repository root as context. Patterns are
+# anchored at the context root, so nested artifacts need a **/ prefix.
 
 # VCS / CI / tooling
 .git
@@ -11,11 +12,9 @@
 .vscode/
 .idea/
 
-# Rust (not needed by any image)
+# Rust build output (sources and Cargo.lock ARE needed by Dockerfile.cli)
 target/
 **/target
-crates/
-Cargo.lock
 **/*.rs.bk
 
 # Dependencies (installed fresh in the image)
@@ -32,6 +31,7 @@ Cargo.lock
 **/next-env.d.ts
 services/server-go/worktree-server
 services/server-go/worktree-server.exe
+release/
 
 # Runtime data
 **/wt-data
@@ -60,10 +60,13 @@ tests/
 **/.DS_Store
 **/Thumbs.db
 
-# Docs & misc not needed by images
+# Docs, deployment manifests & misc not needed by images
 docs/
 video/
 scripts/
+deploy/helm/
+deploy/systemd/
+deploy/launchd/
 **/*.md
 !apps/web/content/**/*.md
 !apps/web/content/**/*.mdx

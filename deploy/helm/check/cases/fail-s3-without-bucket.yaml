@@ -1,0 +1,2 @@
+# expect-error: objectStore=s3 requires s3.bucket
+objectStore: s3

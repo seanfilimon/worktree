@@ -1,0 +1,61 @@
+{{- include "worktree.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "worktree.fullname" . }}
+  labels:
+    {{- include "worktree.labels" . | nindent 4 }}
+data:
+  WT_ADDR: {{ printf ":%d" (int .Values.server.port) | quote }}
+  WT_DATA: "/data"
+  WT_ADMIN_DIR: "/app/admin"
+  WT_ADMIN_USER: {{ .Values.server.adminUser | quote }}
+  WT_ALLOW_REGISTRATION: {{ .Values.server.allowRegistration | toString | quote }}
+  WT_LOG_LEVEL: {{ .Values.server.logLevel | quote }}
+  WT_LOG_FORMAT: {{ .Values.server.logFormat | quote }}
+  {{- with .Values.server.publicURL }}
+  WT_PUBLIC_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.server.corsOrigins }}
+  WT_CORS_ORIGINS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.server.trustedProxies }}
+  WT_TRUSTED_PROXIES: {{ join "," . | quote }}
+  {{- end }}
+  WT_GC_INTERVAL: {{ .Values.server.gcInterval | toString | quote }}
+  WT_GC_GRACE: {{ .Values.server.gcGrace | toString | quote }}
+  WT_STAGED_RETENTION: {{ .Values.server.stagedRetention | toString | quote }}
+  WT_AUDIT_RETENTION: {{ .Values.server.auditRetention | toString | quote }}
+  WT_RATE_LIMIT: {{ .Values.server.rateLimit | int | toString | quote }}
+  WT_DEFAULT_MAX_TREES: {{ .Values.server.defaultMaxTrees | int | toString | quote }}
+  WT_DEFAULT_MAX_STORAGE: {{ .Values.server.defaultMaxStorage | int64 | toString | quote }}
+  WT_COMPRESS_OBJECTS: {{ .Values.server.compressObjects | toString | quote }}
+  WT_WEBHOOK_ALLOW_PRIVATE: {{ .Values.server.webhookAllowPrivate | toString | quote }}
+  {{- if .Values.server.tls.enabled }}
+  WT_TLS_CERT: "/etc/worktree/tls/tls.crt"
+  WT_TLS_KEY: "/etc/worktree/tls/tls.key"
+  {{- if .Values.server.tls.clientCASecretName }}
+  WT_TLS_CLIENT_CA: "/etc/worktree/client-ca/ca.crt"
+  {{- end }}
+  {{- end }}
+  {{- if eq .Values.objectStore "s3" }}
+  WT_OBJECT_STORE: "s3"
+  WT_S3_BUCKET: {{ .Values.s3.bucket | quote }}
+  {{- with .Values.s3.endpoint }}
+  WT_S3_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.s3.prefix }}
+  WT_S3_PREFIX: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.s3.region }}
+  WT_S3_REGION: {{ . | quote }}
+  {{- end }}
+  WT_S3_INSECURE: {{ .Values.s3.insecure | toString | quote }}
+  {{- end }}
+  {{- with .Values.smtp.from }}
+  WT_SMTP_FROM: {{ . | quote }}
+  {{- end }}
+  {{- if ne (toString .Values.backup.interval) "0" }}
+  WT_BACKUP_INTERVAL: {{ .Values.backup.interval | toString | quote }}
+  WT_BACKUP_KEEP: {{ .Values.backup.keep | int | toString | quote }}
+  {{- end }}

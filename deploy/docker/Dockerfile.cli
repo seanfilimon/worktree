@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.7
+#
+# W0rkTree CLI image: statically linked (musl) `wt` and `worktree-bg`.
+# Useful for CI jobs and scripted pushes; also a convenient way to copy the
+# static binaries out:
+#
+#   docker build -f deploy/docker/Dockerfile.cli -t worktree-cli .
+#   docker run --rm -v "$PWD:/work" worktree-cli status
+#   docker create --name wt worktree-cli && docker cp wt:/usr/local/bin/wt . && docker rm wt
+#
+# The builder compiles natively for the target platform (multi-arch builds
+# of this image use emulation for the arm64 variant).
+
+ARG RUST_VERSION=1
+ARG ALPINE_VERSION=3.22
+
+# ---------------------------------------------------------------------------
+# Build: Rust on Alpine targets *-unknown-linux-musl, which links statically.
+# libgit2 / libssh2 are built from source by their -sys crates; OpenSSL and
+# zlib come from Alpine's static archives. protoc comes from Alpine as well
+# (the protoc-bin-vendored binary needs glibc).
+FROM rust:${RUST_VERSION}-alpine AS build
+# (protoc is its own subpackage on newer Alpine releases, part of
+# protobuf-dev's dependencies on older ones.)
+RUN apk add --no-cache build-base musl-dev perl pkgconf \
+      openssl-dev openssl-libs-static zlib-dev zlib-static protobuf-dev \
+ && { apk add --no-cache protoc 2>/dev/null || true; } \
+ && protoc --version \
+ && test -f /usr/include/google/protobuf/timestamp.proto
+ENV OPENSSL_STATIC=1 \
+    OPENSSL_NO_VENDOR=1 \
+    LIBZ_SYS_STATIC=1 \
+    PROTOC=/usr/bin/protoc \
+    CARGO_TERM_COLOR=never \
+    CARGO_INCREMENTAL=0
+WORKDIR /src
+# rust-toolchain.toml is deliberately not copied: the image's toolchain is
+# used as-is instead of downloading the pinned channel again.
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p worktree-cli -p worktree-bg \
+ && mkdir -p /out \
+ && cp target/release/wt target/release/worktree-bg /out/ \
+ && strip /out/wt /out/worktree-bg
+
+# ---------------------------------------------------------------------------
+# Proof that the binaries are static: an empty image has no libc or loader,
+# so these RUN steps only succeed for fully static executables.
+FROM scratch AS verify
+COPY --from=build /out/wt /out/worktree-bg /bin/
+RUN ["/bin/wt", "--version"]
+RUN ["/bin/worktree-bg", "--version"]
+
+# ---------------------------------------------------------------------------
+# Runtime: tiny Alpine base for CA certificates, a shell and a non-root user.
+FROM alpine:${ALPINE_VERSION}
+ARG VERSION=dev
+ARG COMMIT=unknown
+LABEL org.opencontainers.image.title="worktree-cli" \
+      org.opencontainers.image.description="W0rkTree command-line client (wt) and background daemon (worktree-bg), statically linked" \
+      org.opencontainers.image.source="https://github.com/seanfilimon/worktree" \
+      org.opencontainers.image.licenses="LicenseRef-W0rkTree-Public-License-1.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}"
+
+RUN apk add --no-cache ca-certificates \
+ && addgroup -S -g 10001 wt \
+ && adduser -S -D -h /home/wt -u 10001 -G wt -s /bin/sh wt \
+ && mkdir -p /work \
+ && chown wt:wt /work
+
+COPY --from=verify /bin/wt /bin/worktree-bg /usr/local/bin/
+
+ENV WT_HOME=/home/wt/.wt
+USER 10001:10001
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/wt"]
+CMD ["--help"]

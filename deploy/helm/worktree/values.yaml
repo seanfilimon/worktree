@@ -1,0 +1,186 @@
+# Default values for the W0rkTree server chart.
+#
+# The server keeps its metadata in a single bbolt file, so it runs as ONE
+# replica (a StatefulSet with a persistent volume). Scale vertically; use the
+# S3 object store and backups for durability.
+
+image:
+  repository: ghcr.io/seanfilimon/worktree-server
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Server settings, rendered into a ConfigMap of WT_* environment variables.
+server:
+  # Container port for gRPC (h2c) + HTTP.
+  port: 7420
+  adminUser: admin
+  allowRegistration: true
+  # Externally visible base URL, e.g. https://wt.example.com (SSO redirects,
+  # links in notification e-mail).
+  publicURL: ""
+  # Extra browser origins allowed to call the REST API.
+  corsOrigins: []
+  # Reverse proxies whose X-Forwarded-For is trusted (IPs or CIDRs). Set
+  # this to your ingress controller's pod network so rate limits, IP
+  # policy conditions and audit see real client addresses.
+  trustedProxies: []
+  logLevel: info
+  logFormat: json
+  # Operations (Go durations; "0" disables where noted in docs/deploy.md).
+  gcInterval: 24h
+  gcGrace: 720h
+  stagedRetention: 168h
+  auditRetention: "0"
+  rateLimit: 1200
+  defaultMaxTrees: 0
+  defaultMaxStorage: 0
+  compressObjects: true
+  webhookAllowPrivate: false
+  # Server-side TLS: mount a kubernetes.io/tls Secret and serve HTTPS + gRPC
+  # over TLS directly from the pod (end-to-end TLS). Usually TLS terminates
+  # at the ingress instead (ingress.tls).
+  tls:
+    enabled: false
+    secretName: ""
+    # Optional Secret with ca.crt to require client certificates (mTLS).
+    clientCASecretName: ""
+
+# Admin password bootstrap. Either set adminPassword, or point
+# existingSecret at a Secret holding the keys listed under secretKeys.
+# When neither is given a random password is generated on install and kept
+# on upgrades (read it with the command printed by NOTES.txt).
+adminPassword: ""
+existingSecret: ""
+secretKeys:
+  adminPassword: WT_ADMIN_PASSWORD
+  s3AccessKey: WT_S3_ACCESS_KEY
+  s3SecretKey: WT_S3_SECRET_KEY
+  smtpURL: WT_SMTP_URL
+
+# Object storage: "disk" keeps objects on the data volume, "s3" uses any
+# S3-compatible store (AWS S3, MinIO, R2, ...). Requires server v0.7+.
+objectStore: disk
+s3:
+  endpoint: ""
+  bucket: ""
+  prefix: ""
+  region: ""
+  # Plain-HTTP endpoint (in-cluster MinIO without TLS).
+  insecure: false
+  accessKey: ""
+  secretKey: ""
+
+# Notification e-mail (server v0.7+). The URL may embed credentials:
+# smtp://user:pass@smtp.example.com:587
+smtp:
+  url: ""
+  from: ""
+
+# Scheduled backups into <data>/backups (server v0.7+). "0" = off.
+backup:
+  interval: "0"
+  keep: 7
+
+# Extra environment variables (list of EnvVar) and extra flags.
+extraEnv: []
+extraArgs: []
+
+persistence:
+  enabled: true
+  # Use an existing PersistentVolumeClaim instead of the StatefulSet's
+  # volumeClaimTemplate.
+  existingClaim: ""
+  storageClass: ""
+  accessModes: ["ReadWriteOnce"]
+  size: 20Gi
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 7420
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: worktree.example.com
+  tls: []
+  #  - secretName: worktree-tls
+  #    hosts: [worktree.example.com]
+  # gRPC needs HTTP/2 to the backend. Controllers that pick the backend
+  # protocol per Ingress (ingress-nginx) get a second Ingress for the sync
+  # service path with these annotations; leave grpc.enabled=false for
+  # controllers that speak h2c via the Service's appProtocol (Traefik,
+  # Contour, Envoy Gateway).
+  grpc:
+    enabled: true
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: GRPC
+
+probes:
+  startup:
+    enabled: true
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    failureThreshold: 60
+  liveness:
+    enabled: true
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 1Gi
+
+# Size of the in-memory /tmp volume (the root filesystem is read-only).
+tmpSize: 256Mi
+
+terminationGracePeriodSeconds: 30
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+tests:
+  # `helm test` pod that calls /healthz through the Service.
+  enabled: true
+  image: curlimages/curl:8.11.1

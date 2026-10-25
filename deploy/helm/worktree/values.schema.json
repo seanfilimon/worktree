@@ -1,0 +1,161 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "W0rkTree server chart values",
+  "type": "object",
+  "required": ["image", "server", "persistence", "service", "ingress", "objectStore"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": { "type": "array" },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object" },
+        "automountServiceAccountToken": { "type": "boolean" }
+      }
+    },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "server": {
+      "type": "object",
+      "required": ["port", "adminUser"],
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "adminUser": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$" },
+        "allowRegistration": { "type": "boolean" },
+        "publicURL": { "type": "string", "pattern": "^(https?://.+)?$" },
+        "corsOrigins": { "type": "array", "items": { "type": "string" } },
+        "trustedProxies": { "type": "array", "items": { "type": "string" } },
+        "logLevel": { "enum": ["debug", "info", "warn", "error", "DEBUG", "INFO", "WARN", "ERROR"] },
+        "logFormat": { "enum": ["text", "json"] },
+        "gcInterval": { "type": ["string", "integer"] },
+        "gcGrace": { "type": ["string", "integer"] },
+        "stagedRetention": { "type": ["string", "integer"] },
+        "auditRetention": { "type": ["string", "integer"] },
+        "rateLimit": { "type": "integer", "minimum": 0 },
+        "defaultMaxTrees": { "type": "integer", "minimum": 0 },
+        "defaultMaxStorage": { "type": "integer", "minimum": 0 },
+        "compressObjects": { "type": "boolean" },
+        "webhookAllowPrivate": { "type": "boolean" },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" },
+            "clientCASecretName": { "type": "string" }
+          }
+        }
+      }
+    },
+    "adminPassword": { "type": "string" },
+    "existingSecret": { "type": "string" },
+    "secretKeys": {
+      "type": "object",
+      "properties": {
+        "adminPassword": { "type": "string", "minLength": 1 },
+        "s3AccessKey": { "type": "string", "minLength": 1 },
+        "s3SecretKey": { "type": "string", "minLength": 1 },
+        "smtpURL": { "type": "string", "minLength": 1 }
+      }
+    },
+    "objectStore": { "enum": ["disk", "s3"] },
+    "s3": {
+      "type": "object",
+      "properties": {
+        "endpoint": { "type": "string" },
+        "bucket": { "type": "string" },
+        "prefix": { "type": "string" },
+        "region": { "type": "string" },
+        "insecure": { "type": "boolean" },
+        "accessKey": { "type": "string" },
+        "secretKey": { "type": "string" }
+      }
+    },
+    "smtp": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "pattern": "^(smtps?://.+)?$" },
+        "from": { "type": "string" }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "properties": {
+        "interval": { "type": ["string", "integer"] },
+        "keep": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "extraEnv": { "type": "array" },
+    "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingClaim": { "type": "string" },
+        "storageClass": { "type": "string" },
+        "accessModes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "size": { "type": "string" },
+        "annotations": { "type": "object" }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "annotations": { "type": "object" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["host"],
+            "properties": { "host": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "tls": { "type": "array" },
+        "grpc": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "annotations": { "type": "object" }
+          }
+        }
+      }
+    },
+    "probes": { "type": "object" },
+    "resources": { "type": "object" },
+    "tmpSize": { "type": "string" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string" }
+      }
+    }
+  }
+}

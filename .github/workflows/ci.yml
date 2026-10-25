@@ -17,6 +17,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CI: true
+  NODE_VERSION: 22
 
 jobs:
   rust:
@@ -72,6 +73,11 @@ jobs:
       - name: go test
         if: runner.os != 'Linux'
         run: go test -count=1 ./...
+      - name: go test (WT_INTEGRATION)
+        if: runner.os == 'Linux'
+        env:
+          WT_INTEGRATION: "1"
+        run: go test -count=1 ./internal/server/...
 
   go-lint:
     name: go (golangci-lint, advisory)
@@ -115,6 +121,35 @@ jobs:
             exit 1
           fi
 
+  admin:
+    name: admin (apps/admin)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/admin
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: npm ci
+        working-directory: .
+        run: npm ci --no-audit --no-fund
+      - name: lint
+        run: npm run lint
+      - name: typecheck
+        run: npx tsc -b
+      - name: test
+        run: npx vitest run
+      - name: build
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admin-dist
+          path: apps/admin/dist
+          retention-days: 3
+
   web:
     name: web (apps/web)
     runs-on: ubuntu-latest
@@ -122,43 +157,16 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: lint
+        run: npm run lint --workspace=apps/web
       - name: build
         run: npm run build --workspace=apps/web
-      - name: lint
-        # Advisory: apps/web's `lint` script still calls `next lint`, which
-        # Next.js 16 removed. Make this blocking once it runs `eslint .`.
-        continue-on-error: true
-        run: npm run lint --workspace=apps/web
-
-  admin:
-    name: admin (apps/admin)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - name: lint
-        run: npm run lint --workspace=apps/admin --if-present
-      - name: typecheck
-        run: npm run typecheck --workspace=apps/admin --if-present
-      - name: test
-        run: npm run test --workspace=apps/admin --if-present
-      - name: build
-        run: npm run build --workspace=apps/admin
-      - uses: actions/upload-artifact@v4
-        with:
-          name: admin-dist
-          path: apps/admin/dist
-          retention-days: 3
 
   e2e:
-    name: e2e
+    name: e2e (linux)
     needs: [rust, go, admin]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -174,10 +182,131 @@ jobs:
         with:
           name: admin-dist
           path: apps/admin/dist
-      - name: Build Rust binaries
-        run: cargo build --workspace --bins
-      - name: Build Go server
-        working-directory: services/server-go
-        run: go build -trimpath -o "$GITHUB_WORKSPACE/target/go/worktree-server" .
       - name: Run end-to-end suite
+        # scripts/e2e.sh builds wt, worktree-bg and worktree-server itself.
         run: bash scripts/e2e.sh
+
+  # ------------------------------------------------------------------ packaging
+  packaging:
+    name: packaging (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/server-go/go.mod
+          cache-dependency-path: |
+            services/server-go/go.sum
+            deploy/helm/check/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: npm ci (js-yaml for the file checks)
+        run: npm ci --no-audit --no-fund
+      - uses: azure/setup-helm@v4
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate packaging assets
+        # shellcheck, docker compose, helm and actionlint are all present
+        # here, so --strict fails if any of them is skipped.
+        run: bash deploy/validate.sh --strict
+
+  docker:
+    name: docker images (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [server, cli]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/${{ matrix.image == 'server' && 'Dockerfile' || 'Dockerfile.cli' }}
+          load: true
+          push: false
+          tags: worktree-${{ matrix.image }}:ci
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Smoke test (server)
+        if: matrix.image == 'server'
+        run: |
+          set -euo pipefail
+          docker run -d --name wt -p 7420:7420 -e WT_ADMIN_PASSWORD=ci-password-123 worktree-server:ci
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' wt 2>/dev/null || echo starting)"
+            if curl -fsS http://127.0.0.1:7420/healthz; then echo; break; fi
+            [ "$i" = 30 ] && { docker logs wt; exit 1; }
+            echo "waiting ($status)"; sleep 2
+          done
+          curl -fsS -o /dev/null http://127.0.0.1:7420/admin/
+          docker exec wt git --version
+          docker exec wt /usr/local/bin/wt-healthcheck
+          docker exec wt id -u | grep -qx 10001
+          docker rm -f wt
+      - name: Smoke test (cli)
+        if: matrix.image == 'cli'
+        run: |
+          set -euo pipefail
+          docker run --rm worktree-cli:ci --version
+          docker run --rm --entrypoint worktree-bg worktree-cli:ci --version
+
+  release-smoke:
+    name: release + install (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/server-go/go.mod
+          cache-dependency-path: services/server-go/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: scripts/release.sh (host target + admin)
+        run: bash scripts/release.sh --out dist
+      - name: install.sh from the local dist/
+        run: |
+          set -euo pipefail
+          bash scripts/install.sh --base-url "$PWD/dist" --dir "$RUNNER_TEMP/bin" --with-server
+          "$RUNNER_TEMP/bin/wt" --version
+          "$RUNNER_TEMP/bin/worktree-bg" --version
+          "$RUNNER_TEMP/bin/worktree-server" --version
+          bash scripts/install.sh --base-url "file://$PWD/dist" --dir "$RUNNER_TEMP/bin2"
+          test -x "$RUNNER_TEMP/bin2/wt"
+      - name: install.sh rejects a tampered archive
+        run: |
+          set -euo pipefail
+          cp -r dist "$RUNNER_TEMP/bad"
+          for f in "$RUNNER_TEMP"/bad/worktree-*-x86_64-unknown-linux-gnu.tar.gz; do
+            printf 'x' >> "$f"
+          done
+          if bash scripts/install.sh --base-url "$RUNNER_TEMP/bad" --dir "$RUNNER_TEMP/bad-bin"; then
+            echo "::error::install.sh accepted a corrupted archive"; exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/bad-bin/wt"
+      - name: install.ps1 (pwsh) from the local dist/
+        shell: pwsh
+        run: |
+          ./scripts/install.ps1 -BaseUrl "$PWD/dist" -InstallDir "$env:RUNNER_TEMP/psbin" -WithServer
+          & "$env:RUNNER_TEMP/psbin/wt" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-dist
+          path: dist/*
+          retention-days: 3

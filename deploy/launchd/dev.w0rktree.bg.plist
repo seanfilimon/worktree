@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  W0rkTree background daemon as a launchd user agent (macOS).
+
+    cp dev.w0rktree.bg.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.w0rktree.bg.plist
+    launchctl kickstart -k gui/$(id -u)/dev.w0rktree.bg     # restart
+    launchctl bootout gui/$(id -u)/dev.w0rktree.bg          # stop and unload
+
+  The binary is started through /bin/sh so that $HOME expands; the default
+  path is where scripts/install.sh installs it (~/.local/bin). The daemon
+  logs to $WT_HOME/bg.log (default ~/.wt/bg.log); launchd output goes to
+  /tmp only for crashes before logging starts.
+  `worktree-bg service` prints an equivalent plist with an absolute path.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.w0rktree.bg</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>exec "${WT_BG_BIN:-$HOME/.local/bin/worktree-bg}" run</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/dev.w0rktree.bg.err</string>
+</dict>
+</plist>

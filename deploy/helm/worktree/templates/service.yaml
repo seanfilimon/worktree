@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worktree.fullname" . }}
+  labels:
+    {{- include "worktree.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "worktree.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      # gRPC and HTTP share the port; cleartext HTTP/2 (h2c) unless the
+      # server terminates TLS itself.
+      appProtocol: {{ if .Values.server.tls.enabled }}https{{ else }}kubernetes.io/h2c{{ end }}
+---
+# Governing (headless) Service of the StatefulSet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worktree.fullname" . }}-headless
+  labels:
+    {{- include "worktree.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "worktree.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

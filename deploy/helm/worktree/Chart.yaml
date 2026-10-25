@@ -1,0 +1,21 @@
+apiVersion: v2
+name: worktree
+description: W0rkTree version control server (gRPC sync, REST API and admin panel on one port)
+type: application
+# Chart version and appVersion follow the workspace version in Cargo.toml:
+# deploy/validate.sh fails when appVersion differs, and the release workflow
+# packages the chart with --version/--app-version set to the release.
+version: 0.6.0
+appVersion: "0.6.0"
+home: https://github.com/seanfilimon/worktree
+sources:
+  - https://github.com/seanfilimon/worktree
+keywords:
+  - version-control
+  - vcs
+  - worktree
+maintainers:
+  - name: W0rkTree maintainers
+    url: https://github.com/seanfilimon/worktree
+annotations:
+  artifacthub.io/license: LicenseRef-W0rkTree-Public-License-1.0

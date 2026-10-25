@@ -1,0 +1,33 @@
+W0rkTree server {{ .Chart.AppVersion }} is deployed as {{ include "worktree.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+{{- if .Values.ingress.enabled }}
+
+Open the admin panel:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/admin/
+{{- end }}
+{{- else }}
+
+Reach it locally:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "worktree.fullname" . }} 7420:{{ .Values.service.port }}
+  open http://localhost:7420/admin/
+{{- end }}
+
+Admin user: {{ .Values.server.adminUser }}
+{{- if and (not .Values.existingSecret) (not .Values.adminPassword) }}
+A random admin password was generated. Read it with:
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ include "worktree.secretName" . }} -o jsonpath="{.data.{{ .Values.secretKeys.adminPassword }}}" | base64 -d; echo
+{{- end }}
+
+Log in from the CLI:
+  wt login <server URL> -u {{ .Values.server.adminUser }}
+
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled; all data is lost when the pod restarts.
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.server.trustedProxies) }}
+
+NOTE: server.trustedProxies is empty, so the server sees the ingress
+controller as the client address. Set it to the controller's pod CIDR.
+{{- end }}

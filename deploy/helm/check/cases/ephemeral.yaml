@@ -1,0 +1,12 @@
+# No persistence (demo clusters): emptyDir data volume, no claim template.
+# expect: StatefulSet/my-wt, Secret/my-wt, Pod/my-wt-test-healthz
+# expect-not: Ingress/my-wt
+# expect-text: emptyDir: {}
+# expect-text: http://my-wt:8080/healthz
+fullnameOverride: my-wt
+persistence:
+  enabled: false
+service:
+  port: 8080
+server:
+  port: 8080

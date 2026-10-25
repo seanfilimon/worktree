@@ -1,67 +1,80 @@
 name: Release
 
+# Tag v<version> (matching [workspace.package] version in Cargo.toml) to
+# publish: per-target archives built by scripts/release.sh, the admin panel
+# archive, the Helm chart, SHA256SUMS, and multi-arch server + CLI images
+# on GHCR.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build, e.g. v0.7.0
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  NODE_VERSION: 22
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  admin:
-    name: admin panel
+  version:
+    name: check version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
         with:
-          node-version: 24
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - run: npm run build --workspace=apps/admin
-      - name: Package
-        shell: bash
+          ref: ${{ env.TAG }}
+      - id: v
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          name="worktree-admin-${version}"
-          mkdir -p dist
-          tar -C apps/admin/dist -czf "dist/${name}.tar.gz" .
-          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-admin
-          path: dist/*
-          if-no-files-found: error
+          version="${TAG#v}"
+          cargo="$(awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p && $1=="version"{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)"
+          if [ "$version" != "$cargo" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $cargo"; exit 1
+          fi
+          chart="$(awk '$1=="appVersion:"{gsub(/"/,"",$2); print $2}' deploy/helm/worktree/Chart.yaml)"
+          if [ "$chart" != "$cargo" ]; then
+            echo "::warning::deploy/helm/worktree/Chart.yaml appVersion $chart != $cargo; the packaged chart is stamped with $cargo"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;; *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;; esac
 
   binaries:
     name: ${{ matrix.target }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # Linux builds use 22.04 runners for a broadly compatible glibc baseline.
-          - { target: x86_64-unknown-linux-gnu,  os: ubuntu-22.04,     goos: linux,   goarch: amd64 }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, goos: linux,   goarch: arm64 }
-          - { target: x86_64-apple-darwin,       os: macos-15-intel,   goos: darwin,  goarch: amd64 }
-          - { target: aarch64-apple-darwin,      os: macos-latest,     goos: darwin,  goarch: arm64 }
-          - { target: x86_64-pc-windows-msvc,    os: windows-latest,   goos: windows, goarch: amd64 }
+          - { target: x86_64-unknown-linux-gnu,  os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-apple-darwin,       os: macos-15-intel }
+          - { target: aarch64-apple-darwin,      os: macos-latest }
+          - { target: x86_64-pc-windows-msvc,    os: windows-latest }
           # Cross-compiled with the ARM64 MSVC toolset preinstalled on windows-latest.
-          - { target: aarch64-pc-windows-msvc,   os: windows-latest,   goos: windows, goarch: arm64 }
+          - { target: aarch64-pc-windows-msvc,   os: windows-latest }
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -72,62 +85,142 @@ jobs:
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: services/server-go/go.sum
-
-      - name: Build wt + worktree-bg
-        run: |
-          locked=""; [ -f Cargo.lock ] && locked="--locked"
-          cargo build --release $locked --target "${{ matrix.target }}" -p worktree-cli -p worktree-bg
-
-      - name: Build worktree-server
-        working-directory: services/server-go
-        env:
-          CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          ext=""; [ "${{ matrix.goos }}" = windows ] && ext=".exe"
-          go build -trimpath \
-            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME#v} -X main.commit=${GITHUB_SHA}" \
-            -o "$GITHUB_WORKSPACE/target/go/worktree-server${ext}" .
-
-      - name: Package
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          target="${{ matrix.target }}"
-          name="worktree-${version}-${target}"
-          ext=""; [ "${{ matrix.goos }}" = windows ] && ext=".exe"
-          stage="stage/${name}"
-          mkdir -p "$stage" dist
-          for bin in wt worktree-bg; do
-            cp "target/${target}/release/${bin}${ext}" "$stage/"
-          done
-          cp "target/go/worktree-server${ext}" "$stage/"
-          cp LICENSE README.md "$stage/"
-          if [ "${{ matrix.goos }}" = windows ]; then
-            archive="${name}.zip"
-            (cd stage && 7z a -tzip -bso0 "../dist/${archive}" "${name}")
-          else
-            archive="${name}.tar.gz"
-            tar -C stage -czf "dist/${archive}" "${name}"
-          fi
-          cd dist
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$archive" > "${archive}.sha256"
-          else
-            shasum -a 256 "$archive" > "${archive}.sha256"
-          fi
-          cat "${archive}.sha256"
-
+      - name: scripts/release.sh
+        run: bash scripts/release.sh --strict --target "${{ matrix.target }}" --skip-admin --no-sums --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
+  admin:
+    name: admin panel
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: scripts/release.sh --admin-only
+        run: bash scripts/release.sh --admin-only --no-sums --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-admin
+          path: dist/*
+          if-no-files-found: error
+
+  chart:
+    name: helm chart
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+      - uses: azure/setup-helm@v4
+      - name: Lint and package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm lint --strict deploy/helm/worktree
+          mkdir -p dist
+          helm package deploy/helm/worktree --version "$VERSION" --app-version "$VERSION" -d dist
+          (cd dist && sha256sum "worktree-$VERSION.tgz" > "worktree-$VERSION.tgz.sha256")
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-chart
+          path: dist/*
+          if-no-files-found: error
+
+  images:
+    name: image ${{ matrix.image }} (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [server, cli]
+        arch: [amd64, arm64]
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: server, dockerfile: deploy/docker/Dockerfile, name: worktree-server }
+          - { image: cli, dockerfile: deploy/docker/Dockerfile.cli, name: worktree-cli }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: ref
+        run: echo "image=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+      # Each architecture builds natively on its own runner (the CLI image
+      # compiles Rust; emulation would take far longer) and pushes an
+      # arch-suffixed tag that the manifest job merges.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: false
+          tags: ${{ steps.ref.outputs.image }}:${{ needs.version.outputs.version }}-${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+  manifests:
+    name: image manifests
+    needs: [version, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Merge per-arch images
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          minor="${VERSION%.*}"
+          for name in worktree-server worktree-cli; do
+            image="ghcr.io/$owner/$name"
+            tags=(-t "$image:$VERSION")
+            if [ "$PRERELEASE" != true ]; then
+              tags+=(-t "$image:$minor" -t "$image:latest")
+            fi
+            docker buildx imagetools create "${tags[@]}" "$image:$VERSION-amd64" "$image:$VERSION-arm64"
+            docker buildx imagetools inspect "$image:$VERSION"
+          done
+
   publish:
     name: GitHub release
-    needs: [admin, binaries]
+    needs: [version, binaries, admin, chart]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -137,60 +230,22 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
-      - name: Aggregate checksums
+      - name: SHA256SUMS
         working-directory: dist
-        run: cat ./*.sha256 | sort -k2 > SHA256SUMS && cat SHA256SUMS
+        run: |
+          set -euo pipefail
+          sha256sum worktree-*.tar.gz worktree-*.zip worktree-*.tgz | LC_ALL=C sort -k2 > SHA256SUMS
+          cat SHA256SUMS
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            prerelease=""
-            case "$tag" in *-*) prerelease="--prerelease" ;; esac
-            gh release create "$tag" --verify-tag --title "$tag" --generate-notes $prerelease
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            flags=()
+            [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
           fi
-          gh release upload "$tag" dist/* --clobber
-
-  image:
-    name: container image
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/worktree-server
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-          flavor: |
-            latest=auto
-      - id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.server
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          gh release upload "$TAG" dist/* --clobber

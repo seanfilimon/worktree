@@ -1,0 +1,56 @@
+# Ingress with TLS, S3 object store, SMTP, backups, trusted proxies.
+# expect: Ingress/wt-worktree, Ingress/wt-worktree-grpc, Secret/wt-worktree, StatefulSet/wt-worktree, Service/wt-worktree, Service/wt-worktree-headless, ConfigMap/wt-worktree
+# expect-text: WT_OBJECT_STORE: "s3"
+# expect-text: WT_S3_ENDPOINT: "minio.storage.svc:9000"
+# expect-text: WT_SMTP_FROM: "W0rkTree <wt@example.com>"
+# expect-text: WT_BACKUP_INTERVAL: "24h"
+# expect-text: WT_TRUSTED_PROXIES: "10.0.0.0/8,fd00::/8"
+# expect-text: WT_PUBLIC_URL: "https://wt.example.com"
+# expect-text: nginx.ingress.kubernetes.io/backend-protocol: GRPC
+# expect-text: path: /worktree.sync.v1.SyncService
+# expect-text: name: WT_SMTP_URL
+# expect-text: storageClassName: "fast-ssd"
+adminPassword: s3cret-pass
+server:
+  publicURL: https://wt.example.com
+  trustedProxies: ["10.0.0.0/8", "fd00::/8"]
+  corsOrigins: ["https://app.example.com"]
+  allowRegistration: false
+  defaultMaxStorage: 10737418240
+objectStore: s3
+s3:
+  endpoint: minio.storage.svc:9000
+  bucket: worktree
+  region: us-east-1
+  insecure: true
+  accessKey: minio
+  secretKey: minio-secret
+smtp:
+  url: smtp://mailer:pw@smtp.example.com:587
+  from: W0rkTree <wt@example.com>
+backup:
+  interval: 24h
+  keep: 14
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+  hosts:
+    - host: wt.example.com
+  tls:
+    - secretName: wt-tls
+      hosts: [wt.example.com]
+persistence:
+  storageClass: fast-ssd
+  size: 100Gi
+extraEnv:
+  - name: TZ
+    value: Europe/Berlin
+extraArgs: ["--log-level", "debug"]
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/path: /metrics
+nodeSelector:
+  kubernetes.io/os: linux

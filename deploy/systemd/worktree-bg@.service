@@ -1,0 +1,31 @@
+# W0rkTree background daemon as a systemd *user* unit, one instance per
+# $WT_HOME. The instance name is the systemd-escaped WT_HOME path:
+#
+#   install -D -m 0644 worktree-bg@.service ~/.config/systemd/user/worktree-bg@.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now "worktree-bg@$(systemd-escape --path "$HOME/.wt").service"
+#   # keep it running while logged out:
+#   loginctl enable-linger "$USER"
+#
+# The daemon logs to $WT_HOME/bg.log (level from WT_LOG). The binary is
+# expected where scripts/install.sh puts it (~/.local/bin); change ExecStart
+# with `systemctl --user edit worktree-bg@...` if it lives elsewhere.
+# For a single default instance `worktree-bg service` prints an equivalent
+# plain unit.
+
+[Unit]
+Description=W0rkTree background daemon (auto-snapshots) for %f
+Documentation=https://github.com/seanfilimon/worktree/blob/main/docs/daemon.md
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=WT_HOME=%f
+ExecStart=%h/.local/bin/worktree-bg run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

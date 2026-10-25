@@ -1,0 +1,116 @@
+# W0rkTree server (+ bundled admin panel) with optional MinIO (S3 object
+# store) and Mailpit (SMTP sink) companions.
+#
+#   cd deploy
+#   WT_ADMIN_PASSWORD=change-me docker compose up -d --build
+#       server / admin : http://localhost:7420  (admin panel at /admin/)
+#
+#   # objects in S3 (MinIO, console at http://localhost:9001)
+#   WT_ADMIN_PASSWORD=change-me WT_OBJECT_STORE=s3 docker compose --profile s3 up -d
+#
+#   # notification e-mail captured by Mailpit (UI at http://localhost:8025)
+#   WT_ADMIN_PASSWORD=change-me WT_SMTP_URL=smtp://mailpit:1025 docker compose --profile smtp up -d
+#
+# Every WT_* variable below can be set in the shell or in deploy/.env.
+# Variables that are empty are ignored by the server. The S3 and SMTP
+# settings only take effect with a server that implements them (v0.7+).
+name: worktree
+
+x-minio-credentials: &minio-credentials
+  MINIO_ROOT_USER: ${WT_S3_ACCESS_KEY:-worktree}
+  MINIO_ROOT_PASSWORD: ${WT_S3_SECRET_KEY:-worktree-secret}
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        VERSION: ${WT_VERSION:-dev}
+    image: ${WT_IMAGE:-ghcr.io/seanfilimon/worktree-server}:${WT_VERSION:-dev}
+    restart: unless-stopped
+    ports:
+      - "${WT_PORT:-7420}:7420"
+    environment:
+      WT_ADMIN_USER: ${WT_ADMIN_USER:-admin}
+      WT_ADMIN_PASSWORD: ${WT_ADMIN_PASSWORD:?set WT_ADMIN_PASSWORD to bootstrap the admin account}
+      WT_ALLOW_REGISTRATION: ${WT_ALLOW_REGISTRATION:-true}
+      WT_PUBLIC_URL: ${WT_PUBLIC_URL:-}
+      WT_CORS_ORIGINS: ${WT_CORS_ORIGINS:-}
+      WT_TRUSTED_PROXIES: ${WT_TRUSTED_PROXIES:-}
+      WT_LOG_FORMAT: ${WT_LOG_FORMAT:-json}
+      WT_LOG_LEVEL: ${WT_LOG_LEVEL:-info}
+      # Object store: disk (default, under /data/objects) or s3.
+      WT_OBJECT_STORE: ${WT_OBJECT_STORE:-disk}
+      WT_S3_ENDPOINT: ${WT_S3_ENDPOINT:-minio:9000}
+      WT_S3_BUCKET: ${WT_S3_BUCKET:-worktree}
+      WT_S3_PREFIX: ${WT_S3_PREFIX:-}
+      WT_S3_REGION: ${WT_S3_REGION:-us-east-1}
+      WT_S3_ACCESS_KEY: ${WT_S3_ACCESS_KEY:-worktree}
+      WT_S3_SECRET_KEY: ${WT_S3_SECRET_KEY:-worktree-secret}
+      WT_S3_INSECURE: ${WT_S3_INSECURE:-true}
+      # Notification e-mail (empty = off).
+      WT_SMTP_URL: ${WT_SMTP_URL:-}
+      WT_SMTP_FROM: ${WT_SMTP_FROM:-W0rkTree <worktree@localhost>}
+      # Backups (0 = no scheduled backups).
+      WT_BACKUP_INTERVAL: ${WT_BACKUP_INTERVAL:-0}
+      WT_BACKUP_KEEP: ${WT_BACKUP_KEEP:-7}
+    volumes:
+      - wt-data:/data
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+        required: false
+      mailpit:
+        condition: service_started
+        required: false
+
+  # ---------------------------------------------------------------- s3
+  minio:
+    profiles: [s3]
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment: *minio-credentials
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Creates the bucket once MinIO is healthy, then exits.
+  minio-init:
+    profiles: [s3]
+    image: ${MINIO_MC_IMAGE:-minio/mc:latest}
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *minio-credentials
+      WT_S3_BUCKET: ${WT_S3_BUCKET:-worktree}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$$WT_S3_BUCKET"
+
+  # ---------------------------------------------------------------- smtp
+  mailpit:
+    profiles: [smtp]
+    image: ${MAILPIT_IMAGE:-axllent/mailpit:latest}
+    restart: unless-stopped
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+
+volumes:
+  wt-data:
+  minio-data:

@@ -1,0 +1,35 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "worktree.fullname" . }}-test-healthz
+  labels:
+    {{- include "worktree.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: healthz
+      image: {{ .Values.tests.image | quote }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      args:
+        - --fail
+        - --silent
+        - --show-error
+        - --insecure
+        - --retry
+        - "5"
+        - --retry-connrefused
+        - {{ printf "%s://%s:%v/healthz" (include "worktree.scheme" . | lower) (include "worktree.fullname" .) .Values.service.port | quote }}
+{{- end }}

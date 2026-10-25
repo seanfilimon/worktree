@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  W0rkTree server as a launchd system daemon (macOS).
+
+    sudo sysadminctl -addUser _worktree -UID 399 -roleAccount     # service account (UID 200-400)
+    sudo install -m 0755 worktree-server /usr/local/bin/
+    sudo mkdir -p /usr/local/var/worktree /usr/local/var/log /usr/local/share/worktree
+    sudo tar -xzf worktree-admin-*.tar.gz -C /usr/local/share/worktree && sudo mv /usr/local/share/worktree/worktree-admin-* /usr/local/share/worktree/admin
+    sudo touch /usr/local/var/log/worktree-server.log
+    sudo chown -R _worktree /usr/local/var/worktree /usr/local/var/log/worktree-server.log
+    sudo cp dev.w0rktree.server.plist /Library/LaunchDaemons/   # then set WT_ADMIN_PASSWORD below
+    sudo chmod 0600 /Library/LaunchDaemons/dev.w0rktree.server.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/dev.w0rktree.server.plist
+
+  Configuration is the WT_* environment below (see docs/deploy.md). Remove
+  WT_ADMIN_PASSWORD after the first start if you prefer; the account stays.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.w0rktree.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/worktree-server</string>
+  </array>
+  <key>UserName</key>
+  <string>_worktree</string>
+  <key>WorkingDirectory</key>
+  <string>/usr/local/var/worktree</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WT_ADDR</key>
+    <string>:7420</string>
+    <key>WT_DATA</key>
+    <string>/usr/local/var/worktree</string>
+    <key>WT_ADMIN_DIR</key>
+    <string>/usr/local/share/worktree/admin</string>
+    <key>WT_ADMIN_USER</key>
+    <string>admin</string>
+    <key>WT_ADMIN_PASSWORD</key>
+    <string></string>
+    <key>WT_LOG_FORMAT</key>
+    <string>json</string>
+    <key>HOME</key>
+    <string>/usr/local/var/worktree</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>65536</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/worktree-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/worktree-server.log</string>
+</dict>
+</plist>
