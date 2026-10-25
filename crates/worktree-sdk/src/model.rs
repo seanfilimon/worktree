@@ -436,6 +436,124 @@ pub struct MergeOptions {
     pub message: Option<String>,
     pub no_fast_forward: bool,
     pub author: Option<String>,
+    /// How conflicting changes are resolved (default: conflict markers).
+    #[serde(default)]
+    pub strategy: MergeStrategy,
+}
+
+/// How a three-way merge resolves changes that conflict
+/// (`wt merge --strategy`). Non-conflicting changes from both sides are
+/// always combined; the strategy only decides overlapping hunks and
+/// file-level conflicts (modify/delete, binary, add/add).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeStrategy {
+    /// Write diff3 conflict markers and stop for the user to resolve.
+    #[default]
+    Manual,
+    /// Resolve every conflict in favour of the current branch.
+    Ours,
+    /// Resolve every conflict in favour of the merged source.
+    Theirs,
+}
+
+impl MergeStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Ours => "ours",
+            Self::Theirs => "theirs",
+        }
+    }
+}
+
+impl std::str::FromStr for MergeStrategy {
+    type Err = SdkError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "manual" => Ok(Self::Manual),
+            "ours" => Ok(Self::Ours),
+            "theirs" => Ok(Self::Theirs),
+            other => Err(SdkError::InvalidArgument(format!(
+                "unknown merge strategy {other:?} (expected ours, theirs or manual)"
+            ))),
+        }
+    }
+}
+
+/// One conflicting region of a file, in 1-based line numbers of each side's
+/// version of the file. A zero-length side starts at the line before the
+/// region (0 at the start of the file), as in unified diffs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictHunk {
+    pub ours_start: usize,
+    pub ours_len: usize,
+    pub theirs_start: usize,
+    pub theirs_len: usize,
+}
+
+/// How to resolve one conflicted path (`wt merge resolve`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictResolution {
+    /// Resolve conflicting hunks with the current branch's side (text files
+    /// keep the source's non-conflicting changes); for file-level conflicts
+    /// keep (or delete) the current branch's version.
+    Ours,
+    /// As `Ours`, favouring the merged source.
+    Theirs,
+    /// Use exactly these bytes as the resolved content.
+    Content(Vec<u8>),
+}
+
+/// Options for `Repository::revert_with` (`wt revert`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RevertOptions {
+    /// Message of the revert snapshot (default: `Revert "<subject>"`).
+    pub message: Option<String>,
+    /// 1-based parent to revert against; required for merge snapshots
+    /// (the parent whose line of history is kept).
+    pub parent: Option<usize>,
+}
+
+/// One conflict of an in-progress merge, as reported by
+/// `Repository::merge_status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictStatus {
+    pub path: String,
+    pub kind: ConflictKind,
+    #[serde(default)]
+    pub hunks: Vec<ConflictHunk>,
+    /// Explicitly resolved (`wt merge resolve`), or a text conflict whose
+    /// markers are gone.
+    pub resolved: bool,
+}
+
+/// An in-progress conflicted merge (`wt merge status`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeStatus {
+    pub tree: String,
+    pub branch: String,
+    pub source_branch: String,
+    pub source_tip: SnapshotId,
+    pub target_tip: Option<SnapshotId>,
+    pub base: Option<SnapshotId>,
+    pub message: String,
+    pub conflicts: Vec<ConflictStatus>,
+}
+
+impl MergeStatus {
+    /// Paths that still block `wt merge --continue` or need attention.
+    pub fn unresolved(&self) -> impl Iterator<Item = &ConflictStatus> {
+        self.conflicts.iter().filter(|c| !c.resolved)
+    }
+}
+
+/// Result of `Repository::expire_reflog`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReflogExpireReport {
+    pub removed: usize,
+    pub kept: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +573,10 @@ pub enum ConflictKind {
 pub struct ConflictInfo {
     pub path: String,
     pub kind: ConflictKind,
+    /// Conflicting regions of a text conflict (empty for file-level
+    /// conflicts and records written before v0.5).
+    #[serde(default)]
+    pub hunks: Vec<ConflictHunk>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,6 +604,9 @@ pub struct MergeState {
     pub base: Option<SnapshotId>,
     pub conflicts: Vec<ConflictInfo>,
     pub message: String,
+    /// Paths resolved with `wt merge resolve` (never re-checked for markers).
+    #[serde(default)]
+    pub resolved: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,6 +617,14 @@ pub struct DiffOptions {
     pub name_only: bool,
     /// Restrict to these paths (prefix match); empty = all.
     pub paths: Vec<String>,
+    /// Detect renames: deleted/added pairs with identical content, or whose
+    /// line similarity is at least this percentage (0-100). `None` = off.
+    #[serde(default)]
+    pub find_renames: Option<u8>,
+    /// Patches mark changed words inline (`[-old-]{+new+}`) instead of
+    /// whole lines.
+    #[serde(default)]
+    pub word_diff: bool,
 }
 
 impl Default for DiffOptions {
@@ -500,6 +633,8 @@ impl Default for DiffOptions {
             context: 3,
             name_only: false,
             paths: Vec::new(),
+            find_renames: None,
+            word_diff: false,
         }
     }
 }
@@ -515,6 +650,13 @@ pub struct FileDiff {
     pub patch: Option<String>,
     pub added: usize,
     pub removed: usize,
+    /// Set when the file was renamed (or moved) from this path; `kind` is
+    /// then `Modified` and `path` is the new path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    /// Similarity percentage of a detected rename (100 = identical).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

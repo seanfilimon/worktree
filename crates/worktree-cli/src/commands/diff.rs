@@ -24,12 +24,47 @@ pub struct DiffArgs {
     pub paths: Vec<PathBuf>,
 
     /// Show only the names of changed files
-    #[arg(long, conflicts_with = "stat")]
+    #[arg(long, conflicts_with_all = ["stat", "name_status"])]
     pub name_only: bool,
+
+    /// Show each changed file's status letter and name (A, M, D, or
+    /// R<similarity> OLD NEW for renames)
+    #[arg(long, conflicts_with = "stat")]
+    pub name_status: bool,
 
     /// Show a diffstat instead of patches
     #[arg(long)]
     pub stat: bool,
+
+    /// Detect renames: deleted/added files with identical content, or at
+    /// least PCT percent similar lines (default 50), are shown as
+    /// `renamed: OLD -> NEW`
+    #[arg(
+        short = 'M',
+        long,
+        value_name = "PCT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "50",
+        value_parser = parse_percent
+    )]
+    pub find_renames: Option<u8>,
+
+    /// Show changed words inline (`[-removed-]{+added+}`) instead of whole
+    /// changed lines
+    #[arg(long, conflicts_with_all = ["name_only", "name_status", "stat"])]
+    pub word_diff: bool,
+}
+
+/// `50`, `50%` -> 50 (0..=100).
+fn parse_percent(value: &str) -> std::result::Result<u8, String> {
+    let digits = value.trim().trim_end_matches('%');
+    match digits.parse::<u8>() {
+        Ok(n) if n <= 100 => Ok(n),
+        _ => Err(format!(
+            "expected a percentage between 0 and 100, got {value:?}"
+        )),
+    }
 }
 
 pub fn run(ctx: &Context, args: DiffArgs) -> Result<()> {
@@ -41,8 +76,10 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<()> {
     )?;
     paths.extend(args.paths);
     let opts = DiffOptions {
-        name_only: args.name_only,
+        name_only: args.name_only || args.name_status,
         paths: ctx.tree_paths(&repo, &tree, &paths)?,
+        find_renames: args.find_renames,
+        word_diff: args.word_diff,
         ..DiffOptions::default()
     };
     let files = match revs.as_slice() {
@@ -56,12 +93,46 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<()> {
             for file in &files {
                 t.line(&file.path);
             }
+        } else if args.name_status {
+            render_name_status(t, &files);
         } else if args.stat {
             render_stat(t, &files);
+        } else if args.word_diff {
+            render_word_patches(t, &files);
         } else {
             render_patches(t, &files);
         }
     })
+}
+
+/// `M\tpath`, `A\tpath`, `D\tpath`, `R087\told\tnew` lines.
+pub fn render_name_status(t: &mut Text, files: &[FileDiff]) {
+    for file in files {
+        match &file.old_path {
+            Some(old) => t.line(format_args!(
+                "R{:03}\t{old}\t{}",
+                file.similarity.unwrap_or(100),
+                file.path
+            )),
+            None => t.line(format_args!("{}\t{}", status_letter(file.kind), file.path)),
+        }
+    }
+}
+
+fn status_letter(kind: ChangeKind) -> char {
+    match kind {
+        ChangeKind::Added => 'A',
+        ChangeKind::Modified => 'M',
+        ChangeKind::Deleted => 'D',
+    }
+}
+
+/// `old -> new` for renames, else the path.
+fn display_path(file: &FileDiff) -> String {
+    match &file.old_path {
+        Some(old) => format!("{old} => {}", file.path),
+        None => file.path.clone(),
+    }
 }
 
 /// Git-style disambiguation of `wt diff` positionals: leading arguments
@@ -93,24 +164,103 @@ fn split_revs_and_paths(
 
 /// Colored unified diffs.
 pub fn render_patches(t: &mut Text, files: &[FileDiff]) {
+    render_files(t, files, |line| colorize_patch_line(line).to_string());
+}
+
+/// Colored word diffs (patches produced with `DiffOptions::word_diff`).
+pub fn render_word_patches(t: &mut Text, files: &[FileDiff]) {
+    render_files(t, files, colorize_word_line);
+}
+
+fn render_files(t: &mut Text, files: &[FileDiff], colorize: impl Fn(&str) -> String) {
     for file in files {
-        t.line(format!("diff --wt a/{0} b/{0}", file.path).bold());
-        match file.kind {
-            ChangeKind::Added => t.line("new file".bold()),
-            ChangeKind::Deleted => t.line("deleted file".bold()),
-            ChangeKind::Modified => {}
+        let old = file.old_path.as_deref().unwrap_or(&file.path);
+        t.line(format!("diff --wt a/{old} b/{}", file.path).bold());
+        if let Some(old) = &file.old_path {
+            t.line(
+                format!(
+                    "renamed: {old} -> {} (similarity {}%)",
+                    file.path,
+                    file.similarity.unwrap_or(100)
+                )
+                .bold(),
+            );
+        } else {
+            match file.kind {
+                ChangeKind::Added => t.line("new file".bold()),
+                ChangeKind::Deleted => t.line("deleted file".bold()),
+                ChangeKind::Modified => {}
+            }
         }
         if file.binary {
             t.line(format_args!(
-                "Binary files a/{0} and b/{0} differ",
+                "Binary files a/{old} and b/{} differ",
                 file.path
             ));
             continue;
         }
         for line in file.patch.as_deref().unwrap_or_default().lines() {
-            t.line(colorize_patch_line(line));
+            t.line(colorize(line));
         }
     }
+}
+
+/// Word-diff line: headers as in patches, `[-x-]` red, `{+x+}` green.
+fn colorize_word_line(line: &str) -> String {
+    if line.starts_with("+++ ") || line.starts_with("--- ") {
+        return line.bold().to_string();
+    }
+    if line.starts_with("@@") {
+        return line.cyan().to_string();
+    }
+    word_segments(line)
+        .into_iter()
+        .map(|(mark, text)| match mark {
+            WordMark::Removed => text.red().to_string(),
+            WordMark::Added => text.green().to_string(),
+            WordMark::Plain => text.to_string(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordMark {
+    Plain,
+    Removed,
+    Added,
+}
+
+/// Splits a word-diff line into plain text and `[-...-]` / `{+...+}`
+/// segments (markers included). Unterminated markers are plain text.
+fn word_segments(line: &str) -> Vec<(WordMark, &str)> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    loop {
+        let next = [
+            ("[-", "-]", WordMark::Removed),
+            ("{+", "+}", WordMark::Added),
+        ]
+        .into_iter()
+        .filter_map(|(open, close, mark)| rest.find(open).map(|i| (i, open, close, mark)))
+        .min_by_key(|(i, ..)| *i);
+        let Some((start, open, close, mark)) = next else {
+            break;
+        };
+        let body_start = start + open.len();
+        let Some(len) = rest[body_start..].find(close) else {
+            break;
+        };
+        let end = body_start + len + close.len();
+        if start > 0 {
+            out.push((WordMark::Plain, &rest[..start]));
+        }
+        out.push((mark, &rest[start..end]));
+        rest = &rest[end..];
+    }
+    if !rest.is_empty() {
+        out.push((WordMark::Plain, rest));
+    }
+    out
 }
 
 fn colorize_patch_line(line: &str) -> colored::ColoredString {
@@ -134,28 +284,25 @@ const STAT_BAR_WIDTH: usize = 40;
 
 /// ` path | 12 +++++-------` lines plus a summary.
 pub fn render_stat(t: &mut Text, files: &[FileDiff]) {
-    let path_width = files
-        .iter()
-        .map(|f| f.path.chars().count())
-        .max()
-        .unwrap_or(0);
+    let paths: Vec<String> = files.iter().map(display_path).collect();
+    let path_width = paths.iter().map(|p| p.chars().count()).max().unwrap_or(0);
     let max_total = files.iter().map(|f| f.added + f.removed).max().unwrap_or(0);
     let count_width = max_total.to_string().len();
     let (mut added, mut removed) = (0, 0);
-    for file in files {
+    for (file, path) in files.iter().zip(&paths) {
         added += file.added;
         removed += file.removed;
         if file.binary {
             t.line(format_args!(
                 " {:<path_width$} | {:>count_width$}",
-                file.path, "Bin"
+                path, "Bin"
             ));
             continue;
         }
         let (plus, minus) = stat_bar(file.added, file.removed, max_total, STAT_BAR_WIDTH);
         t.line(format_args!(
             " {:<path_width$} | {:>count_width$} {}{}",
-            file.path,
+            path,
             file.added + file.removed,
             "+".repeat(plus).green(),
             "-".repeat(minus).red()
@@ -233,7 +380,118 @@ mod tests {
                 .then(|| format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")),
             added,
             removed,
+            old_path: None,
+            similarity: None,
         }
+    }
+
+    fn renamed(old: &str, new: &str, similarity: u8) -> FileDiff {
+        FileDiff {
+            old_path: Some(old.into()),
+            similarity: Some(similarity),
+            patch: None,
+            ..file(new, ChangeKind::Modified, 0, 0, false)
+        }
+    }
+
+    #[test]
+    fn name_status_output() {
+        let files = [
+            file("a.txt", ChangeKind::Modified, 1, 1, false),
+            file("b.txt", ChangeKind::Added, 1, 0, false),
+            file("c.txt", ChangeKind::Deleted, 0, 1, false),
+            renamed("old.rs", "new.rs", 87),
+        ];
+        let mut t = Text::default();
+        render_name_status(&mut t, &files);
+        assert_eq!(
+            t.as_str(),
+            "M\ta.txt\nA\tb.txt\nD\tc.txt\nR087\told.rs\tnew.rs\n"
+        );
+    }
+
+    #[test]
+    fn renames_in_patches_and_stat() {
+        colored::control::set_override(false);
+        let files = [renamed("src/old.rs", "src/new.rs", 100)];
+        let mut t = Text::default();
+        render_patches(&mut t, &files);
+        assert_eq!(
+            t.as_str(),
+            "diff --wt a/src/old.rs b/src/new.rs\nrenamed: src/old.rs -> src/new.rs (similarity 100%)\n"
+        );
+        let mut t = Text::default();
+        render_stat(&mut t, &files);
+        assert!(
+            t.as_str().starts_with(" src/old.rs => src/new.rs | 0 \n"),
+            "{}",
+            t.as_str()
+        );
+    }
+
+    #[test]
+    fn word_lines_split_by_marker() {
+        use WordMark::*;
+        assert_eq!(
+            word_segments("the [-quick-]{+slow+} fox"),
+            [
+                (Plain, "the "),
+                (Removed, "[-quick-]"),
+                (Added, "{+slow+}"),
+                (Plain, " fox")
+            ]
+        );
+        assert_eq!(word_segments("{+all+}"), [(Added, "{+all+}")]);
+        assert_eq!(word_segments("plain [- open"), [(Plain, "plain [- open")]);
+        assert!(word_segments("").is_empty());
+        colored::control::set_override(false);
+        assert_eq!(
+            colorize_word_line("the [-quick-]{+slow+} fox"),
+            "the [-quick-]{+slow+} fox"
+        );
+    }
+
+    #[test]
+    fn percent_values() {
+        assert_eq!(parse_percent("50"), Ok(50));
+        assert_eq!(parse_percent("75%"), Ok(75));
+        assert_eq!(parse_percent("100"), Ok(100));
+        assert!(parse_percent("101").is_err());
+        assert!(parse_percent("x").is_err());
+    }
+
+    #[derive(Debug, clap::Parser)]
+    struct Harness {
+        #[command(flatten)]
+        diff: DiffArgs,
+    }
+
+    fn parse(args: &[&str]) -> std::result::Result<DiffArgs, clap::Error> {
+        use clap::Parser;
+        let mut full = vec!["diff"];
+        full.extend_from_slice(args);
+        Harness::try_parse_from(full).map(|h| h.diff)
+    }
+
+    #[test]
+    fn parses_new_flags() {
+        let a = parse(&["--find-renames"]).unwrap();
+        assert_eq!(a.find_renames, Some(50));
+        let a = parse(&["--find-renames=90%", "HEAD"]).unwrap();
+        assert_eq!(a.find_renames, Some(90));
+        assert_eq!(a.args, ["HEAD"]);
+        // Without `=`, the next argument stays a revision.
+        let a = parse(&["-M", "HEAD"]).unwrap();
+        assert_eq!(
+            (a.find_renames, a.args.as_slice()),
+            (Some(50), &["HEAD".to_string()][..])
+        );
+        assert_eq!(parse(&[]).unwrap().find_renames, None);
+        assert!(parse(&["--word-diff"]).unwrap().word_diff);
+        assert!(parse(&["--name-status"]).unwrap().name_status);
+        assert!(parse(&["--name-status", "--name-only"]).is_err());
+        assert!(parse(&["--name-status", "--stat"]).is_err());
+        assert!(parse(&["--word-diff", "--stat"]).is_err());
     }
 
     #[test]
