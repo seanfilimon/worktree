@@ -11,6 +11,7 @@ import (
 // List methods return an empty (non-nil) slice when nothing matches.
 type MetaStore interface {
 	IAMStore // v0.4 (iam.go)
+	DocStore // v0.5 (v05.go)
 
 	// Tenants
 	CreateTenant(ctx context.Context, t *Tenant) error
@@ -161,7 +162,7 @@ type AuditLog interface {
 // PushDenied is returned by policy checks to reject a push; syncsvc maps
 // Kind to the matching PushRejection oneof.
 type PushDenied struct {
-	Kind    string // "branch_protection" | "access_denied" | "license_violation" | "review_required" | "quota_exceeded"
+	Kind    string // "branch_protection" | "access_denied" | "license_violation" | "review_required" | "quota_exceeded" | "signature_required" | "ci_checks_failed"
 	Reason  string
 	Path    string // license_violation
 	License string // license_violation

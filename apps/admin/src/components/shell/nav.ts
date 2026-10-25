@@ -6,6 +6,7 @@ import {
   ScrollText,
   Server,
   Settings,
+  Wrench,
   ShieldQuestionMark,
   Users,
   type LucideIcon,
@@ -53,6 +54,13 @@ const NAV_GROUPS: NavGroup[] = [
         keywords: ["iam", "permissions", "policies", "authorization", "effective"],
       },
       { to: "/system", label: "System", icon: Server, adminOnly: true, keywords: ["server", "health", "runtime"] },
+      {
+        to: "/operations",
+        label: "Operations",
+        icon: Wrench,
+        adminOnly: true,
+        keywords: ["gc", "garbage collection", "storage", "quotas", "retention", "limits"],
+      },
       {
         to: "/sso",
         label: "Single sign-on",

@@ -236,6 +236,26 @@ func (s *DiskStore) Has(ctx context.Context, h hash.Hash) (bool, error) {
 	return false, fmt.Errorf("objstore: stat object: %w", err)
 }
 
+// Size implements SizeStore.Size.
+func (s *DiskStore) Size(ctx context.Context, h hash.Hash) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var info fs.FileInfo
+	err := retryTransient(ctx, func() error {
+		var serr error
+		info, serr = os.Stat(s.objectPath(h))
+		return serr
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("objstore: stat object: %w", err)
+	}
+	return info.Size(), nil
+}
+
 // Delete implements Store.Delete. Removing a non-existent object is
 // a no-op and returns nil (idempotent delete).
 func (s *DiskStore) Delete(ctx context.Context, h hash.Hash) error {
@@ -351,4 +371,5 @@ var (
 	_ Store     = (*DiskStore)(nil)
 	_ StatStore = (*DiskStore)(nil)
 	_ ListStore = (*DiskStore)(nil)
+	_ SizeStore = (*DiskStore)(nil)
 )

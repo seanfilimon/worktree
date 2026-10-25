@@ -219,6 +219,8 @@ func (a *api) handleDeleteTree(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	a.audit(r, "tree.delete", t.ID, "tree", tree.ID, map[string]string{"name": tree.Name})
+	// v0.5: owners of tree-scoped documents clean up on tree.deleted (§13.14).
+	a.publish(r, domain.EventTreeDeleted, t.ID, tree.ID, map[string]any{"name": tree.Name})
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

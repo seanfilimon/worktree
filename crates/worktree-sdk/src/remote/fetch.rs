@@ -383,6 +383,9 @@ mod tests {
             message: String::new(),
             created_at: Utc::now(),
             auto_generated: false,
+            dependencies: Vec::new(),
+            reverts: None,
+            signature: None,
         }
     }
 

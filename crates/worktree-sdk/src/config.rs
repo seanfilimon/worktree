@@ -34,6 +34,104 @@ pub struct WorktreeConfig {
     /// Named remotes, e.g. `[remote.origin]`.
     #[serde(default)]
     pub remote: std::collections::BTreeMap<String, RemoteSection>,
+    /// v0.5 (ENGINEERING_PLAN §13.9): secret scanning rules.
+    #[serde(default, skip_serializing_if = "SecretScanningSection::is_default")]
+    pub secret_scanning: SecretScanningSection,
+    /// v0.5 (§13.9): snapshot hooks.
+    #[serde(default, skip_serializing_if = "HooksSection::is_default")]
+    pub hooks: HooksSection,
+    /// v0.5 (§13.6): snapshot signing.
+    #[serde(default, skip_serializing_if = "SigningSection::is_default")]
+    pub signing: SigningSection,
+}
+
+/// `[secret_scanning]`: extra patterns and exclusions for the pre-snapshot scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretScanningSection {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Refuse the snapshot on a finding (false = warn only).
+    #[serde(default = "yes")]
+    pub block_on_match: bool,
+    /// Extra rules: `{ name = "...", regex = "..." }`.
+    #[serde(default)]
+    pub patterns: Vec<SecretPattern>,
+    /// Glob patterns of paths never scanned.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+impl Default for SecretScanningSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            block_on_match: true,
+            patterns: Vec::new(),
+            exclude: Vec::new(),
+        }
+    }
+}
+
+impl SecretScanningSection {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretPattern {
+    pub name: String,
+    pub regex: String,
+}
+
+/// `[hooks]`: snapshot hook settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HooksSection {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Kill a hook after this many seconds.
+    #[serde(default = "default_hook_timeout")]
+    pub timeout_secs: u64,
+}
+
+impl Default for HooksSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_secs: default_hook_timeout(),
+        }
+    }
+}
+
+impl HooksSection {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn default_hook_timeout() -> u64 {
+    60
+}
+
+/// `[signing]`: sign new snapshots with a local Ed25519 key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SigningSection {
+    /// Key name under `<wt home>/keys/` ("" = signing disabled).
+    #[serde(default)]
+    pub key: String,
+    /// Sign every snapshot automatically (else only `wt snapshot --sign`).
+    #[serde(default)]
+    pub auto: bool,
+}
+
+impl SigningSection {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +180,16 @@ pub struct SyncSection {
     pub auto_stage: bool,
     /// Remote used by the daemon.
     pub remote: String,
+    /// v0.5 (§13.11): the daemon fetches remote branches (WatchBranches
+    /// stream, with a periodic fallback every `interval_secs`).
+    #[serde(default = "yes")]
+    pub auto_fetch: bool,
+    #[serde(default = "default_sync_interval")]
+    pub interval_secs: u64,
+}
+
+fn default_sync_interval() -> u64 {
+    300
 }
 
 impl Default for SyncSection {
@@ -89,6 +197,8 @@ impl Default for SyncSection {
         Self {
             auto_stage: true,
             remote: "origin".into(),
+            auto_fetch: true,
+            interval_secs: default_sync_interval(),
         }
     }
 }
@@ -131,6 +241,9 @@ impl WorktreeConfig {
             auto_snapshot: AutoSnapshotSection::default(),
             sync: SyncSection::default(),
             remote: std::collections::BTreeMap::new(),
+            secret_scanning: SecretScanningSection::default(),
+            hooks: HooksSection::default(),
+            signing: SigningSection::default(),
         }
     }
 

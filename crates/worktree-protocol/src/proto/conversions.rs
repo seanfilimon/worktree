@@ -451,6 +451,7 @@ impl From<dom::PullResponse> for wire::PullResponse {
             snapshot_chain: d.snapshot_chain.into_iter().map(Into::into).collect(),
             objects_to_fetch: d.objects_to_fetch.into_iter().map(Into::into).collect(),
             snapshots: Vec::new(),
+            stubbed_paths: Vec::new(),
         }
     }
 }
@@ -541,6 +542,8 @@ impl From<dom::AccessConfigSyncRequest> for wire::AccessConfigSyncRequest {
             config_type: wire::AccessConfigType::from(d.config_type) as i32,
             content: d.content,
             config_hash: Some(d.config_hash.into()),
+            tree_id: None,
+            dry_run: false,
             account_id: Some(d.account_id.into()),
         }
     }
@@ -571,6 +574,7 @@ impl From<dom::AccessConfigSyncResponse> for wire::AccessConfigSyncResponse {
         Self {
             accepted: d.accepted,
             validation_errors: d.validation_errors,
+            changes: Vec::new(),
         }
     }
 }
@@ -881,6 +885,7 @@ impl TryFrom<&DomainManifestEntry> for wire::ManifestEntry {
             blob_hash: Some(e.hash.into()),
             size: e.size,
             executable: e.executable,
+            chunked: false,
         })
     }
 }
@@ -1098,6 +1103,10 @@ impl wire::SnapshotRecord {
             message: s.message.clone(),
             created_at: Some(datetime_to_prost(s.timestamp)),
             auto_generated: s.auto_generated,
+            dependencies: Vec::new(),
+            reverts: None,
+            signature: Vec::new(),
+            signing_key_id: String::new(),
         }
     }
 
@@ -1823,6 +1832,7 @@ mod record_tests {
             blob_hash: Some(hash_bytes(data).into()),
             size: data.len() as u64,
             executable: false,
+            chunked: false,
         }
     }
 

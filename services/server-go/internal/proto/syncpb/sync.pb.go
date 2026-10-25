@@ -194,6 +194,7 @@ const (
 	ObjectKind_OBJECT_KIND_UNSPECIFIED ObjectKind = 0
 	ObjectKind_OBJECT_KIND_BLOB        ObjectKind = 1
 	ObjectKind_OBJECT_KIND_MANIFEST    ObjectKind = 2
+	ObjectKind_OBJECT_KIND_CHUNK_LIST  ObjectKind = 3
 )
 
 // Enum value maps for ObjectKind.
@@ -202,11 +203,13 @@ var (
 		0: "OBJECT_KIND_UNSPECIFIED",
 		1: "OBJECT_KIND_BLOB",
 		2: "OBJECT_KIND_MANIFEST",
+		3: "OBJECT_KIND_CHUNK_LIST",
 	}
 	ObjectKind_value = map[string]int32{
 		"OBJECT_KIND_UNSPECIFIED": 0,
 		"OBJECT_KIND_BLOB":        1,
 		"OBJECT_KIND_MANIFEST":    2,
+		"OBJECT_KIND_CHUNK_LIST":  3,
 	}
 )
 
@@ -1136,7 +1139,10 @@ type PullResponse struct {
 	SnapshotChain  []*SnapshotId          `protobuf:"bytes,3,rep,name=snapshot_chain,json=snapshotChain,proto3" json:"snapshot_chain,omitempty"`
 	ObjectsToFetch []*ContentHash         `protobuf:"bytes,4,rep,name=objects_to_fetch,json=objectsToFetch,proto3" json:"objects_to_fetch,omitempty"`
 	// Full records for every snapshot in `snapshot_chain` (oldest first).
-	Snapshots     []*SnapshotRecord `protobuf:"bytes,5,rep,name=snapshots,proto3" json:"snapshots,omitempty"`
+	Snapshots []*SnapshotRecord `protobuf:"bytes,5,rep,name=snapshots,proto3" json:"snapshots,omitempty"`
+	// v0.5: paths whose content the caller may not read (license rules); their
+	// blobs are not in objects_to_fetch and DownloadObjects refuses them.
+	StubbedPaths  []string `protobuf:"bytes,6,rep,name=stubbed_paths,json=stubbedPaths,proto3" json:"stubbed_paths,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1202,6 +1208,13 @@ func (x *PullResponse) GetObjectsToFetch() []*ContentHash {
 func (x *PullResponse) GetSnapshots() []*SnapshotRecord {
 	if x != nil {
 		return x.Snapshots
+	}
+	return nil
+}
+
+func (x *PullResponse) GetStubbedPaths() []string {
+	if x != nil {
+		return x.StubbedPaths
 	}
 	return nil
 }
@@ -1386,12 +1399,17 @@ func (x *StageUploadResponse) GetError() string {
 
 // Sync access configuration changes.
 type AccessConfigSyncRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TenantId      *TenantId              `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	ConfigType    AccessConfigType       `protobuf:"varint,2,opt,name=config_type,json=configType,proto3,enum=worktree.sync.v1.AccessConfigType" json:"config_type,omitempty"`
-	Content       []byte                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
-	ConfigHash    *ContentHash           `protobuf:"bytes,4,opt,name=config_hash,json=configHash,proto3" json:"config_hash,omitempty"`
-	AccountId     *AccountId             `protobuf:"bytes,5,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	TenantId   *TenantId              `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ConfigType AccessConfigType       `protobuf:"varint,2,opt,name=config_type,json=configType,proto3,enum=worktree.sync.v1.AccessConfigType" json:"config_type,omitempty"`
+	Content    []byte                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	ConfigHash *ContentHash           `protobuf:"bytes,4,opt,name=config_hash,json=configHash,proto3" json:"config_hash,omitempty"`
+	AccountId  *AccountId             `protobuf:"bytes,5,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	// v0.5: tree-level documents (from <tree>/.wt-tree/access/) may only
+	// restrict access (deny statements).
+	TreeId *TreeId `protobuf:"bytes,6,opt,name=tree_id,json=treeId,proto3,oneof" json:"tree_id,omitempty"`
+	// v0.5: validate and report the changes without applying them.
+	DryRun        bool `protobuf:"varint,7,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1461,13 +1479,29 @@ func (x *AccessConfigSyncRequest) GetAccountId() *AccountId {
 	return nil
 }
 
+func (x *AccessConfigSyncRequest) GetTreeId() *TreeId {
+	if x != nil {
+		return x.TreeId
+	}
+	return nil
+}
+
+func (x *AccessConfigSyncRequest) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
+}
+
 // Server validation response.
 type AccessConfigSyncResponse struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Accepted         bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
 	ValidationErrors []string               `protobuf:"bytes,2,rep,name=validation_errors,json=validationErrors,proto3" json:"validation_errors,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// v0.5: human-readable plan, e.g. "policy protect-main: update (2 statements)".
+	Changes       []string `protobuf:"bytes,3,rep,name=changes,proto3" json:"changes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AccessConfigSyncResponse) Reset() {
@@ -1510,6 +1544,13 @@ func (x *AccessConfigSyncResponse) GetAccepted() bool {
 func (x *AccessConfigSyncResponse) GetValidationErrors() []string {
 	if x != nil {
 		return x.ValidationErrors
+	}
+	return nil
+}
+
+func (x *AccessConfigSyncResponse) GetChanges() []string {
+	if x != nil {
+		return x.Changes
 	}
 	return nil
 }
@@ -1682,6 +1723,112 @@ func (x *SyncEnvelope) GetSequence() uint64 {
 	return 0
 }
 
+// A large file stored as content-defined chunks (each chunk is a BLOB).
+// The file content is the concatenation of the chunks in order.
+type ChunkList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Size          uint64                 `protobuf:"varint,1,opt,name=size,proto3" json:"size,omitempty"` // total file size in bytes
+	Chunks        []*Chunk               `protobuf:"bytes,2,rep,name=chunks,proto3" json:"chunks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChunkList) Reset() {
+	*x = ChunkList{}
+	mi := &file_sync_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChunkList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChunkList) ProtoMessage() {}
+
+func (x *ChunkList) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChunkList.ProtoReflect.Descriptor instead.
+func (*ChunkList) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ChunkList) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *ChunkList) GetChunks() []*Chunk {
+	if x != nil {
+		return x.Chunks
+	}
+	return nil
+}
+
+type Chunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hash          *ContentHash           `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"` // BLAKE3 of the chunk bytes (a BLOB object)
+	Size          uint64                 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunk) Reset() {
+	*x = Chunk{}
+	mi := &file_sync_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunk) ProtoMessage() {}
+
+func (x *Chunk) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunk.ProtoReflect.Descriptor instead.
+func (*Chunk) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *Chunk) GetHash() *ContentHash {
+	if x != nil {
+		return x.Hash
+	}
+	return nil
+}
+
+func (x *Chunk) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
 type ObjectData struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Hash          *ContentHash           `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
@@ -1693,7 +1840,7 @@ type ObjectData struct {
 
 func (x *ObjectData) Reset() {
 	*x = ObjectData{}
-	mi := &file_sync_proto_msgTypes[21]
+	mi := &file_sync_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1705,7 +1852,7 @@ func (x *ObjectData) String() string {
 func (*ObjectData) ProtoMessage() {}
 
 func (x *ObjectData) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[21]
+	mi := &file_sync_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1718,7 +1865,7 @@ func (x *ObjectData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectData.ProtoReflect.Descriptor instead.
 func (*ObjectData) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{21}
+	return file_sync_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ObjectData) GetHash() *ContentHash {
@@ -1753,7 +1900,7 @@ type UploadObjectsResponse struct {
 
 func (x *UploadObjectsResponse) Reset() {
 	*x = UploadObjectsResponse{}
-	mi := &file_sync_proto_msgTypes[22]
+	mi := &file_sync_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1765,7 +1912,7 @@ func (x *UploadObjectsResponse) String() string {
 func (*UploadObjectsResponse) ProtoMessage() {}
 
 func (x *UploadObjectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[22]
+	mi := &file_sync_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1778,7 +1925,7 @@ func (x *UploadObjectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadObjectsResponse.ProtoReflect.Descriptor instead.
 func (*UploadObjectsResponse) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{22}
+	return file_sync_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *UploadObjectsResponse) GetReceived() uint32 {
@@ -1805,18 +1952,20 @@ func (x *UploadObjectsResponse) GetRejected() []*ContentHash {
 // One file in a manifest. Paths are '/'-separated, relative to the tree root,
 // sorted lexicographically, unique.
 type ManifestEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
-	BlobHash      *ContentHash           `protobuf:"bytes,2,opt,name=blob_hash,json=blobHash,proto3" json:"blob_hash,omitempty"`
-	Size          uint64                 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
-	Executable    bool                   `protobuf:"varint,4,opt,name=executable,proto3" json:"executable,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Path       string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	BlobHash   *ContentHash           `protobuf:"bytes,2,opt,name=blob_hash,json=blobHash,proto3" json:"blob_hash,omitempty"`
+	Size       uint64                 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
+	Executable bool                   `protobuf:"varint,4,opt,name=executable,proto3" json:"executable,omitempty"`
+	// When true, blob_hash names a CHUNK_LIST object instead of a BLOB.
+	Chunked       bool `protobuf:"varint,5,opt,name=chunked,proto3" json:"chunked,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ManifestEntry) Reset() {
 	*x = ManifestEntry{}
-	mi := &file_sync_proto_msgTypes[23]
+	mi := &file_sync_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1828,7 +1977,7 @@ func (x *ManifestEntry) String() string {
 func (*ManifestEntry) ProtoMessage() {}
 
 func (x *ManifestEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[23]
+	mi := &file_sync_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1841,7 +1990,7 @@ func (x *ManifestEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManifestEntry.ProtoReflect.Descriptor instead.
 func (*ManifestEntry) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{23}
+	return file_sync_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ManifestEntry) GetPath() string {
@@ -1872,6 +2021,13 @@ func (x *ManifestEntry) GetExecutable() bool {
 	return false
 }
 
+func (x *ManifestEntry) GetChunked() bool {
+	if x != nil {
+		return x.Chunked
+	}
+	return false
+}
+
 type ManifestRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Entries       []*ManifestEntry       `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
@@ -1881,7 +2037,7 @@ type ManifestRecord struct {
 
 func (x *ManifestRecord) Reset() {
 	*x = ManifestRecord{}
-	mi := &file_sync_proto_msgTypes[24]
+	mi := &file_sync_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1893,7 +2049,7 @@ func (x *ManifestRecord) String() string {
 func (*ManifestRecord) ProtoMessage() {}
 
 func (x *ManifestRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[24]
+	mi := &file_sync_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1906,7 +2062,7 @@ func (x *ManifestRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManifestRecord.ProtoReflect.Descriptor instead.
 func (*ManifestRecord) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{24}
+	return file_sync_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ManifestRecord) GetEntries() []*ManifestEntry {
@@ -1927,13 +2083,21 @@ type SnapshotRecord struct {
 	Message       string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	AutoGenerated bool                   `protobuf:"varint,9,opt,name=auto_generated,json=autoGenerated,proto3" json:"auto_generated,omitempty"`
+	// v0.5: declared dependencies on other trees/branches (become TODOs).
+	Dependencies []*Dependency `protobuf:"bytes,10,rep,name=dependencies,proto3" json:"dependencies,omitempty"`
+	// v0.5: set on revert snapshots (the snapshot whose changes are undone).
+	Reverts *SnapshotId `protobuf:"bytes,11,opt,name=reverts,proto3,oneof" json:"reverts,omitempty"`
+	// v0.5: Ed25519 signature over SignedSnapshotPayload (see §13.6) and the
+	// id of the account signing key that produced it. Empty = unsigned.
+	Signature     []byte `protobuf:"bytes,12,opt,name=signature,proto3" json:"signature,omitempty"`
+	SigningKeyId  string `protobuf:"bytes,13,opt,name=signing_key_id,json=signingKeyId,proto3" json:"signing_key_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SnapshotRecord) Reset() {
 	*x = SnapshotRecord{}
-	mi := &file_sync_proto_msgTypes[25]
+	mi := &file_sync_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1945,7 +2109,7 @@ func (x *SnapshotRecord) String() string {
 func (*SnapshotRecord) ProtoMessage() {}
 
 func (x *SnapshotRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[25]
+	mi := &file_sync_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1958,7 +2122,7 @@ func (x *SnapshotRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRecord.ProtoReflect.Descriptor instead.
 func (*SnapshotRecord) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{25}
+	return file_sync_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SnapshotRecord) GetId() *SnapshotId {
@@ -2024,6 +2188,542 @@ func (x *SnapshotRecord) GetAutoGenerated() bool {
 	return false
 }
 
+func (x *SnapshotRecord) GetDependencies() []*Dependency {
+	if x != nil {
+		return x.Dependencies
+	}
+	return nil
+}
+
+func (x *SnapshotRecord) GetReverts() *SnapshotId {
+	if x != nil {
+		return x.Reverts
+	}
+	return nil
+}
+
+func (x *SnapshotRecord) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+func (x *SnapshotRecord) GetSigningKeyId() string {
+	if x != nil {
+		return x.SigningKeyId
+	}
+	return ""
+}
+
+// A dependency declared on a snapshot. The target is a tree of the same
+// tenant (tenant_slug empty) or of another tenant, optionally a branch.
+type Dependency struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantSlug    string                 `protobuf:"bytes,1,opt,name=tenant_slug,json=tenantSlug,proto3" json:"tenant_slug,omitempty"`
+	Tree          string                 `protobuf:"bytes,2,opt,name=tree,proto3" json:"tree,omitempty"`
+	Branch        string                 `protobuf:"bytes,3,opt,name=branch,proto3" json:"branch,omitempty"` // "" = the tree's default branch
+	Title         string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`
+	Details       string                 `protobuf:"bytes,5,opt,name=details,proto3" json:"details,omitempty"`
+	Priority      string                 `protobuf:"bytes,6,opt,name=priority,proto3" json:"priority,omitempty"`  // "low" | "medium" | "high" | "critical"
+	Blocking      bool                   `protobuf:"varint,7,opt,name=blocking,proto3" json:"blocking,omitempty"` // the dependent branch may not merge until done
+	Linked        bool                   `protobuf:"varint,8,opt,name=linked,proto3" json:"linked,omitempty"`     // the branches must merge together (linked group)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Dependency) Reset() {
+	*x = Dependency{}
+	mi := &file_sync_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Dependency) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Dependency) ProtoMessage() {}
+
+func (x *Dependency) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Dependency.ProtoReflect.Descriptor instead.
+func (*Dependency) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *Dependency) GetTenantSlug() string {
+	if x != nil {
+		return x.TenantSlug
+	}
+	return ""
+}
+
+func (x *Dependency) GetTree() string {
+	if x != nil {
+		return x.Tree
+	}
+	return ""
+}
+
+func (x *Dependency) GetBranch() string {
+	if x != nil {
+		return x.Branch
+	}
+	return ""
+}
+
+func (x *Dependency) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *Dependency) GetDetails() string {
+	if x != nil {
+		return x.Details
+	}
+	return ""
+}
+
+func (x *Dependency) GetPriority() string {
+	if x != nil {
+		return x.Priority
+	}
+	return ""
+}
+
+func (x *Dependency) GetBlocking() bool {
+	if x != nil {
+		return x.Blocking
+	}
+	return false
+}
+
+func (x *Dependency) GetLinked() bool {
+	if x != nil {
+		return x.Linked
+	}
+	return false
+}
+
+// Canonical bytes that a snapshot signature covers: the SnapshotRecord with
+// signature and signing_key_id cleared, protobuf-encoded deterministically.
+type SignedSnapshotPayload struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Record        *SnapshotRecord        `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignedSnapshotPayload) Reset() {
+	*x = SignedSnapshotPayload{}
+	mi := &file_sync_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignedSnapshotPayload) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignedSnapshotPayload) ProtoMessage() {}
+
+func (x *SignedSnapshotPayload) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignedSnapshotPayload.ProtoReflect.Descriptor instead.
+func (*SignedSnapshotPayload) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *SignedSnapshotPayload) GetRecord() *SnapshotRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+type WatchBranchesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TreeIds       []*TreeId              `protobuf:"bytes,1,rep,name=tree_ids,json=treeIds,proto3" json:"tree_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchBranchesRequest) Reset() {
+	*x = WatchBranchesRequest{}
+	mi := &file_sync_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchBranchesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchBranchesRequest) ProtoMessage() {}
+
+func (x *WatchBranchesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchBranchesRequest.ProtoReflect.Descriptor instead.
+func (*WatchBranchesRequest) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *WatchBranchesRequest) GetTreeIds() []*TreeId {
+	if x != nil {
+		return x.TreeIds
+	}
+	return nil
+}
+
+type BranchEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TreeId        *TreeId                `protobuf:"bytes,1,opt,name=tree_id,json=treeId,proto3" json:"tree_id,omitempty"`
+	BranchName    string                 `protobuf:"bytes,2,opt,name=branch_name,json=branchName,proto3" json:"branch_name,omitempty"`
+	OldTip        *SnapshotId            `protobuf:"bytes,3,opt,name=old_tip,json=oldTip,proto3,oneof" json:"old_tip,omitempty"`
+	NewTip        *SnapshotId            `protobuf:"bytes,4,opt,name=new_tip,json=newTip,proto3,oneof" json:"new_tip,omitempty"` // unset when the branch was deleted
+	Actor         string                 `protobuf:"bytes,5,opt,name=actor,proto3" json:"actor,omitempty"`
+	At            *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=at,proto3" json:"at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BranchEvent) Reset() {
+	*x = BranchEvent{}
+	mi := &file_sync_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BranchEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BranchEvent) ProtoMessage() {}
+
+func (x *BranchEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BranchEvent.ProtoReflect.Descriptor instead.
+func (*BranchEvent) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *BranchEvent) GetTreeId() *TreeId {
+	if x != nil {
+		return x.TreeId
+	}
+	return nil
+}
+
+func (x *BranchEvent) GetBranchName() string {
+	if x != nil {
+		return x.BranchName
+	}
+	return ""
+}
+
+func (x *BranchEvent) GetOldTip() *SnapshotId {
+	if x != nil {
+		return x.OldTip
+	}
+	return nil
+}
+
+func (x *BranchEvent) GetNewTip() *SnapshotId {
+	if x != nil {
+		return x.NewTip
+	}
+	return nil
+}
+
+func (x *BranchEvent) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *BranchEvent) GetAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.At
+	}
+	return nil
+}
+
+type UnstageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TreeId        *TreeId                `protobuf:"bytes,1,opt,name=tree_id,json=treeId,proto3" json:"tree_id,omitempty"`
+	BranchName    string                 `protobuf:"bytes,2,opt,name=branch_name,json=branchName,proto3" json:"branch_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnstageRequest) Reset() {
+	*x = UnstageRequest{}
+	mi := &file_sync_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnstageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnstageRequest) ProtoMessage() {}
+
+func (x *UnstageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnstageRequest.ProtoReflect.Descriptor instead.
+func (*UnstageRequest) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *UnstageRequest) GetTreeId() *TreeId {
+	if x != nil {
+		return x.TreeId
+	}
+	return nil
+}
+
+func (x *UnstageRequest) GetBranchName() string {
+	if x != nil {
+		return x.BranchName
+	}
+	return ""
+}
+
+type UnstageResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Removed       bool                   `protobuf:"varint,1,opt,name=removed,proto3" json:"removed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnstageResponse) Reset() {
+	*x = UnstageResponse{}
+	mi := &file_sync_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnstageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnstageResponse) ProtoMessage() {}
+
+func (x *UnstageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnstageResponse.ProtoReflect.Descriptor instead.
+func (*UnstageResponse) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *UnstageResponse) GetRemoved() bool {
+	if x != nil {
+		return x.Removed
+	}
+	return false
+}
+
+type GetAccessConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      *TenantId              `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TreeId        *TreeId                `protobuf:"bytes,2,opt,name=tree_id,json=treeId,proto3,oneof" json:"tree_id,omitempty"`
+	ConfigType    AccessConfigType       `protobuf:"varint,3,opt,name=config_type,json=configType,proto3,enum=worktree.sync.v1.AccessConfigType" json:"config_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAccessConfigRequest) Reset() {
+	*x = GetAccessConfigRequest{}
+	mi := &file_sync_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAccessConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAccessConfigRequest) ProtoMessage() {}
+
+func (x *GetAccessConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAccessConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetAccessConfigRequest) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *GetAccessConfigRequest) GetTenantId() *TenantId {
+	if x != nil {
+		return x.TenantId
+	}
+	return nil
+}
+
+func (x *GetAccessConfigRequest) GetTreeId() *TreeId {
+	if x != nil {
+		return x.TreeId
+	}
+	return nil
+}
+
+func (x *GetAccessConfigRequest) GetConfigType() AccessConfigType {
+	if x != nil {
+		return x.ConfigType
+	}
+	return AccessConfigType_ACCESS_CONFIG_TYPE_UNSPECIFIED
+}
+
+type GetAccessConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Found         bool                   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	Content       []byte                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	ConfigHash    *ContentHash           `protobuf:"bytes,3,opt,name=config_hash,json=configHash,proto3" json:"config_hash,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	UpdatedBy     string                 `protobuf:"bytes,5,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAccessConfigResponse) Reset() {
+	*x = GetAccessConfigResponse{}
+	mi := &file_sync_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAccessConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAccessConfigResponse) ProtoMessage() {}
+
+func (x *GetAccessConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sync_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAccessConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetAccessConfigResponse) Descriptor() ([]byte, []int) {
+	return file_sync_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GetAccessConfigResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *GetAccessConfigResponse) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *GetAccessConfigResponse) GetConfigHash() *ContentHash {
+	if x != nil {
+		return x.ConfigHash
+	}
+	return nil
+}
+
+func (x *GetAccessConfigResponse) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *GetAccessConfigResponse) GetUpdatedBy() string {
+	if x != nil {
+		return x.UpdatedBy
+	}
+	return ""
+}
+
 type ResolveTreeRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	TenantSlug      string                 `protobuf:"bytes,1,opt,name=tenant_slug,json=tenantSlug,proto3" json:"tenant_slug,omitempty"`
@@ -2035,7 +2735,7 @@ type ResolveTreeRequest struct {
 
 func (x *ResolveTreeRequest) Reset() {
 	*x = ResolveTreeRequest{}
-	mi := &file_sync_proto_msgTypes[26]
+	mi := &file_sync_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2047,7 +2747,7 @@ func (x *ResolveTreeRequest) String() string {
 func (*ResolveTreeRequest) ProtoMessage() {}
 
 func (x *ResolveTreeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[26]
+	mi := &file_sync_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2060,7 +2760,7 @@ func (x *ResolveTreeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveTreeRequest.ProtoReflect.Descriptor instead.
 func (*ResolveTreeRequest) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{26}
+	return file_sync_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ResolveTreeRequest) GetTenantSlug() string {
@@ -2098,7 +2798,7 @@ type TreeInfo struct {
 
 func (x *TreeInfo) Reset() {
 	*x = TreeInfo{}
-	mi := &file_sync_proto_msgTypes[27]
+	mi := &file_sync_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2110,7 +2810,7 @@ func (x *TreeInfo) String() string {
 func (*TreeInfo) ProtoMessage() {}
 
 func (x *TreeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[27]
+	mi := &file_sync_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2123,7 +2823,7 @@ func (x *TreeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TreeInfo.ProtoReflect.Descriptor instead.
 func (*TreeInfo) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{27}
+	return file_sync_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *TreeInfo) GetTreeId() *TreeId {
@@ -2177,7 +2877,7 @@ type ListBranchesRequest struct {
 
 func (x *ListBranchesRequest) Reset() {
 	*x = ListBranchesRequest{}
-	mi := &file_sync_proto_msgTypes[28]
+	mi := &file_sync_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2189,7 +2889,7 @@ func (x *ListBranchesRequest) String() string {
 func (*ListBranchesRequest) ProtoMessage() {}
 
 func (x *ListBranchesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[28]
+	mi := &file_sync_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2202,7 +2902,7 @@ func (x *ListBranchesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBranchesRequest.ProtoReflect.Descriptor instead.
 func (*ListBranchesRequest) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{28}
+	return file_sync_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListBranchesRequest) GetTreeId() *TreeId {
@@ -2224,7 +2924,7 @@ type BranchInfo struct {
 
 func (x *BranchInfo) Reset() {
 	*x = BranchInfo{}
-	mi := &file_sync_proto_msgTypes[29]
+	mi := &file_sync_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2236,7 +2936,7 @@ func (x *BranchInfo) String() string {
 func (*BranchInfo) ProtoMessage() {}
 
 func (x *BranchInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[29]
+	mi := &file_sync_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2249,7 +2949,7 @@ func (x *BranchInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BranchInfo.ProtoReflect.Descriptor instead.
 func (*BranchInfo) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{29}
+	return file_sync_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *BranchInfo) GetName() string {
@@ -2289,7 +2989,7 @@ type ListBranchesResponse struct {
 
 func (x *ListBranchesResponse) Reset() {
 	*x = ListBranchesResponse{}
-	mi := &file_sync_proto_msgTypes[30]
+	mi := &file_sync_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2301,7 +3001,7 @@ func (x *ListBranchesResponse) String() string {
 func (*ListBranchesResponse) ProtoMessage() {}
 
 func (x *ListBranchesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[30]
+	mi := &file_sync_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2314,7 +3014,7 @@ func (x *ListBranchesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBranchesResponse.ProtoReflect.Descriptor instead.
 func (*ListBranchesResponse) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{30}
+	return file_sync_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ListBranchesResponse) GetBranches() []*BranchInfo {
@@ -2334,7 +3034,7 @@ type ListStagedRequest struct {
 
 func (x *ListStagedRequest) Reset() {
 	*x = ListStagedRequest{}
-	mi := &file_sync_proto_msgTypes[31]
+	mi := &file_sync_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2346,7 +3046,7 @@ func (x *ListStagedRequest) String() string {
 func (*ListStagedRequest) ProtoMessage() {}
 
 func (x *ListStagedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[31]
+	mi := &file_sync_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2359,7 +3059,7 @@ func (x *ListStagedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStagedRequest.ProtoReflect.Descriptor instead.
 func (*ListStagedRequest) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{31}
+	return file_sync_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ListStagedRequest) GetTreeId() *TreeId {
@@ -2393,7 +3093,7 @@ type StagedInfo struct {
 
 func (x *StagedInfo) Reset() {
 	*x = StagedInfo{}
-	mi := &file_sync_proto_msgTypes[32]
+	mi := &file_sync_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2405,7 +3105,7 @@ func (x *StagedInfo) String() string {
 func (*StagedInfo) ProtoMessage() {}
 
 func (x *StagedInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[32]
+	mi := &file_sync_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2418,7 +3118,7 @@ func (x *StagedInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StagedInfo.ProtoReflect.Descriptor instead.
 func (*StagedInfo) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{32}
+	return file_sync_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *StagedInfo) GetSnapshotId() *SnapshotId {
@@ -2493,7 +3193,7 @@ type ListStagedResponse struct {
 
 func (x *ListStagedResponse) Reset() {
 	*x = ListStagedResponse{}
-	mi := &file_sync_proto_msgTypes[33]
+	mi := &file_sync_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2505,7 +3205,7 @@ func (x *ListStagedResponse) String() string {
 func (*ListStagedResponse) ProtoMessage() {}
 
 func (x *ListStagedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[33]
+	mi := &file_sync_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2518,7 +3218,7 @@ func (x *ListStagedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStagedResponse.ProtoReflect.Descriptor instead.
 func (*ListStagedResponse) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{33}
+	return file_sync_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ListStagedResponse) GetStaged() []*StagedInfo {
@@ -2541,7 +3241,7 @@ type TagRecord struct {
 
 func (x *TagRecord) Reset() {
 	*x = TagRecord{}
-	mi := &file_sync_proto_msgTypes[34]
+	mi := &file_sync_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2553,7 +3253,7 @@ func (x *TagRecord) String() string {
 func (*TagRecord) ProtoMessage() {}
 
 func (x *TagRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[34]
+	mi := &file_sync_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2566,7 +3266,7 @@ func (x *TagRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TagRecord.ProtoReflect.Descriptor instead.
 func (*TagRecord) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{34}
+	return file_sync_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *TagRecord) GetName() string {
@@ -2614,7 +3314,7 @@ type PushTagRequest struct {
 
 func (x *PushTagRequest) Reset() {
 	*x = PushTagRequest{}
-	mi := &file_sync_proto_msgTypes[35]
+	mi := &file_sync_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2626,7 +3326,7 @@ func (x *PushTagRequest) String() string {
 func (*PushTagRequest) ProtoMessage() {}
 
 func (x *PushTagRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[35]
+	mi := &file_sync_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2639,7 +3339,7 @@ func (x *PushTagRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushTagRequest.ProtoReflect.Descriptor instead.
 func (*PushTagRequest) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{35}
+	return file_sync_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *PushTagRequest) GetTreeId() *TreeId {
@@ -2666,7 +3366,7 @@ type PushTagResponse struct {
 
 func (x *PushTagResponse) Reset() {
 	*x = PushTagResponse{}
-	mi := &file_sync_proto_msgTypes[36]
+	mi := &file_sync_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2678,7 +3378,7 @@ func (x *PushTagResponse) String() string {
 func (*PushTagResponse) ProtoMessage() {}
 
 func (x *PushTagResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[36]
+	mi := &file_sync_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2691,7 +3391,7 @@ func (x *PushTagResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushTagResponse.ProtoReflect.Descriptor instead.
 func (*PushTagResponse) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{36}
+	return file_sync_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *PushTagResponse) GetAccepted() bool {
@@ -2717,7 +3417,7 @@ type ListTagsRequest struct {
 
 func (x *ListTagsRequest) Reset() {
 	*x = ListTagsRequest{}
-	mi := &file_sync_proto_msgTypes[37]
+	mi := &file_sync_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2729,7 +3429,7 @@ func (x *ListTagsRequest) String() string {
 func (*ListTagsRequest) ProtoMessage() {}
 
 func (x *ListTagsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[37]
+	mi := &file_sync_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2742,7 +3442,7 @@ func (x *ListTagsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTagsRequest.ProtoReflect.Descriptor instead.
 func (*ListTagsRequest) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{37}
+	return file_sync_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListTagsRequest) GetTreeId() *TreeId {
@@ -2761,7 +3461,7 @@ type ListTagsResponse struct {
 
 func (x *ListTagsResponse) Reset() {
 	*x = ListTagsResponse{}
-	mi := &file_sync_proto_msgTypes[38]
+	mi := &file_sync_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2773,7 +3473,7 @@ func (x *ListTagsResponse) String() string {
 func (*ListTagsResponse) ProtoMessage() {}
 
 func (x *ListTagsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[38]
+	mi := &file_sync_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2786,7 +3486,7 @@ func (x *ListTagsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTagsResponse.ProtoReflect.Descriptor instead.
 func (*ListTagsResponse) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{38}
+	return file_sync_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListTagsResponse) GetTags() []*TagRecord {
@@ -2804,7 +3504,7 @@ type PingRequest struct {
 
 func (x *PingRequest) Reset() {
 	*x = PingRequest{}
-	mi := &file_sync_proto_msgTypes[39]
+	mi := &file_sync_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2816,7 +3516,7 @@ func (x *PingRequest) String() string {
 func (*PingRequest) ProtoMessage() {}
 
 func (x *PingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[39]
+	mi := &file_sync_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2829,7 +3529,7 @@ func (x *PingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingRequest.ProtoReflect.Descriptor instead.
 func (*PingRequest) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{39}
+	return file_sync_proto_rawDescGZIP(), []int{49}
 }
 
 type PingResponse struct {
@@ -2844,7 +3544,7 @@ type PingResponse struct {
 
 func (x *PingResponse) Reset() {
 	*x = PingResponse{}
-	mi := &file_sync_proto_msgTypes[40]
+	mi := &file_sync_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2856,7 +3556,7 @@ func (x *PingResponse) String() string {
 func (*PingResponse) ProtoMessage() {}
 
 func (x *PingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[40]
+	mi := &file_sync_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2869,7 +3569,7 @@ func (x *PingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingResponse.ProtoReflect.Descriptor instead.
 func (*PingResponse) Descriptor() ([]byte, []int) {
-	return file_sync_proto_rawDescGZIP(), []int{40}
+	return file_sync_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *PingResponse) GetServerVersion() string {
@@ -2910,7 +3610,7 @@ type PushRejection_ConflictDetected struct {
 
 func (x *PushRejection_ConflictDetected) Reset() {
 	*x = PushRejection_ConflictDetected{}
-	mi := &file_sync_proto_msgTypes[41]
+	mi := &file_sync_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2922,7 +3622,7 @@ func (x *PushRejection_ConflictDetected) String() string {
 func (*PushRejection_ConflictDetected) ProtoMessage() {}
 
 func (x *PushRejection_ConflictDetected) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[41]
+	mi := &file_sync_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2955,7 +3655,7 @@ type PushRejection_BranchProtection struct {
 
 func (x *PushRejection_BranchProtection) Reset() {
 	*x = PushRejection_BranchProtection{}
-	mi := &file_sync_proto_msgTypes[42]
+	mi := &file_sync_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2967,7 +3667,7 @@ func (x *PushRejection_BranchProtection) String() string {
 func (*PushRejection_BranchProtection) ProtoMessage() {}
 
 func (x *PushRejection_BranchProtection) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[42]
+	mi := &file_sync_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3000,7 +3700,7 @@ type PushRejection_AccessDenied struct {
 
 func (x *PushRejection_AccessDenied) Reset() {
 	*x = PushRejection_AccessDenied{}
-	mi := &file_sync_proto_msgTypes[43]
+	mi := &file_sync_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3012,7 +3712,7 @@ func (x *PushRejection_AccessDenied) String() string {
 func (*PushRejection_AccessDenied) ProtoMessage() {}
 
 func (x *PushRejection_AccessDenied) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[43]
+	mi := &file_sync_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3046,7 +3746,7 @@ type PushRejection_LicenseViolation struct {
 
 func (x *PushRejection_LicenseViolation) Reset() {
 	*x = PushRejection_LicenseViolation{}
-	mi := &file_sync_proto_msgTypes[44]
+	mi := &file_sync_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3058,7 +3758,7 @@ func (x *PushRejection_LicenseViolation) String() string {
 func (*PushRejection_LicenseViolation) ProtoMessage() {}
 
 func (x *PushRejection_LicenseViolation) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[44]
+	mi := &file_sync_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3098,7 +3798,7 @@ type PushRejection_CiChecksFailed struct {
 
 func (x *PushRejection_CiChecksFailed) Reset() {
 	*x = PushRejection_CiChecksFailed{}
-	mi := &file_sync_proto_msgTypes[45]
+	mi := &file_sync_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3110,7 +3810,7 @@ func (x *PushRejection_CiChecksFailed) String() string {
 func (*PushRejection_CiChecksFailed) ProtoMessage() {}
 
 func (x *PushRejection_CiChecksFailed) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[45]
+	mi := &file_sync_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3144,7 +3844,7 @@ type PushRejection_ReviewRequired struct {
 
 func (x *PushRejection_ReviewRequired) Reset() {
 	*x = PushRejection_ReviewRequired{}
-	mi := &file_sync_proto_msgTypes[46]
+	mi := &file_sync_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3156,7 +3856,7 @@ func (x *PushRejection_ReviewRequired) String() string {
 func (*PushRejection_ReviewRequired) ProtoMessage() {}
 
 func (x *PushRejection_ReviewRequired) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[46]
+	mi := &file_sync_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3196,7 +3896,7 @@ type PushRejection_QuotaExceeded struct {
 
 func (x *PushRejection_QuotaExceeded) Reset() {
 	*x = PushRejection_QuotaExceeded{}
-	mi := &file_sync_proto_msgTypes[47]
+	mi := &file_sync_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3208,7 +3908,7 @@ func (x *PushRejection_QuotaExceeded) String() string {
 func (*PushRejection_QuotaExceeded) ProtoMessage() {}
 
 func (x *PushRejection_QuotaExceeded) ProtoReflect() protoreflect.Message {
-	mi := &file_sync_proto_msgTypes[47]
+	mi := &file_sync_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3318,14 +4018,15 @@ const file_sync_proto_rawDesc = "" +
 	"account_id\x18\x05 \x01(\v2\x1b.worktree.sync.v1.AccountIdR\taccountId\x12\x19\n" +
 	"\x05depth\x18\x06 \x01(\rH\x01R\x05depth\x88\x01\x01B\x0e\n" +
 	"\f_current_tipB\b\n" +
-	"\x06_depthJ\x05\bd\x10\xc8\x01\"\xcc\x02\n" +
+	"\x06_depthJ\x05\bd\x10\xc8\x01\"\xf1\x02\n" +
 	"\fPullResponse\x12\x1f\n" +
 	"\vhas_updates\x18\x01 \x01(\bR\n" +
 	"hasUpdates\x12:\n" +
 	"\anew_tip\x18\x02 \x01(\v2\x1c.worktree.sync.v1.SnapshotIdH\x00R\x06newTip\x88\x01\x01\x12C\n" +
 	"\x0esnapshot_chain\x18\x03 \x03(\v2\x1c.worktree.sync.v1.SnapshotIdR\rsnapshotChain\x12G\n" +
 	"\x10objects_to_fetch\x18\x04 \x03(\v2\x1d.worktree.sync.v1.ContentHashR\x0eobjectsToFetch\x12>\n" +
-	"\tsnapshots\x18\x05 \x03(\v2 .worktree.sync.v1.SnapshotRecordR\tsnapshotsB\n" +
+	"\tsnapshots\x18\x05 \x03(\v2 .worktree.sync.v1.SnapshotRecordR\tsnapshots\x12#\n" +
+	"\rstubbed_paths\x18\x06 \x03(\tR\fstubbedPathsB\n" +
 	"\n" +
 	"\b_new_tipJ\x05\bd\x10\xc8\x01\"\x99\x04\n" +
 	"\x12StageUploadRequest\x127\n" +
@@ -3350,7 +4051,7 @@ const file_sync_proto_rawDesc = "" +
 	"\x13StageUploadResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x19\n" +
 	"\x05error\x18\x02 \x01(\tH\x00R\x05error\x88\x01\x01B\b\n" +
-	"\x06_errorJ\x05\bd\x10\xc8\x01\"\xb4\x02\n" +
+	"\x06_errorJ\x05\bd\x10\xc8\x01\"\x91\x03\n" +
 	"\x17AccessConfigSyncRequest\x127\n" +
 	"\ttenant_id\x18\x01 \x01(\v2\x1a.worktree.sync.v1.TenantIdR\btenantId\x12C\n" +
 	"\vconfig_type\x18\x02 \x01(\x0e2\".worktree.sync.v1.AccessConfigTypeR\n" +
@@ -3359,10 +4060,15 @@ const file_sync_proto_rawDesc = "" +
 	"\vconfig_hash\x18\x04 \x01(\v2\x1d.worktree.sync.v1.ContentHashR\n" +
 	"configHash\x12:\n" +
 	"\n" +
-	"account_id\x18\x05 \x01(\v2\x1b.worktree.sync.v1.AccountIdR\taccountIdJ\x05\bd\x10\xc8\x01\"j\n" +
+	"account_id\x18\x05 \x01(\v2\x1b.worktree.sync.v1.AccountIdR\taccountId\x126\n" +
+	"\atree_id\x18\x06 \x01(\v2\x18.worktree.sync.v1.TreeIdH\x00R\x06treeId\x88\x01\x01\x12\x17\n" +
+	"\adry_run\x18\a \x01(\bR\x06dryRunB\n" +
+	"\n" +
+	"\b_tree_idJ\x05\bd\x10\xc8\x01\"\x84\x01\n" +
 	"\x18AccessConfigSyncResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12+\n" +
-	"\x11validation_errors\x18\x02 \x03(\tR\x10validationErrorsJ\x05\bd\x10\xc8\x01\"\x86\x03\n" +
+	"\x11validation_errors\x18\x02 \x03(\tR\x10validationErrors\x12\x18\n" +
+	"\achanges\x18\x03 \x03(\tR\achangesJ\x05\bd\x10\xc8\x01\"\x86\x03\n" +
 	"\tSyncState\x12<\n" +
 	"\tlast_sync\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\blastSync\x88\x01\x01\x12>\n" +
 	"\tlocal_tip\x18\x02 \x01(\v2\x1c.worktree.sync.v1.SnapshotIdH\x01R\blocalTip\x88\x01\x01\x12@\n" +
@@ -3382,7 +4088,13 @@ const file_sync_proto_rawDesc = "" +
 	"\fmessage_type\x18\x01 \x01(\x0e2!.worktree.sync.v1.SyncMessageTypeR\vmessageType\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x128\n" +
 	"\ttimestamp\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x1a\n" +
-	"\bsequence\x18\x04 \x01(\x04R\bsequenceJ\x05\bd\x10\xc8\x01\"\x8c\x01\n" +
+	"\bsequence\x18\x04 \x01(\x04R\bsequenceJ\x05\bd\x10\xc8\x01\"W\n" +
+	"\tChunkList\x12\x12\n" +
+	"\x04size\x18\x01 \x01(\x04R\x04size\x12/\n" +
+	"\x06chunks\x18\x02 \x03(\v2\x17.worktree.sync.v1.ChunkR\x06chunksJ\x05\bd\x10\xc8\x01\"U\n" +
+	"\x05Chunk\x121\n" +
+	"\x04hash\x18\x01 \x01(\v2\x1d.worktree.sync.v1.ContentHashR\x04hash\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\x04R\x04sizeJ\x05\bd\x10\xc8\x01\"\x8c\x01\n" +
 	"\n" +
 	"ObjectData\x121\n" +
 	"\x04hash\x18\x01 \x01(\v2\x1d.worktree.sync.v1.ContentHashR\x04hash\x120\n" +
@@ -3391,16 +4103,17 @@ const file_sync_proto_rawDesc = "" +
 	"\x15UploadObjectsResponse\x12\x1a\n" +
 	"\breceived\x18\x01 \x01(\rR\breceived\x12\x16\n" +
 	"\x06stored\x18\x02 \x01(\rR\x06stored\x129\n" +
-	"\brejected\x18\x03 \x03(\v2\x1d.worktree.sync.v1.ContentHashR\brejectedJ\x05\bd\x10\xc8\x01\"\x9a\x01\n" +
+	"\brejected\x18\x03 \x03(\v2\x1d.worktree.sync.v1.ContentHashR\brejectedJ\x05\bd\x10\xc8\x01\"\xb4\x01\n" +
 	"\rManifestEntry\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12:\n" +
 	"\tblob_hash\x18\x02 \x01(\v2\x1d.worktree.sync.v1.ContentHashR\bblobHash\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x04R\x04size\x12\x1e\n" +
 	"\n" +
 	"executable\x18\x04 \x01(\bR\n" +
-	"executableJ\x05\bd\x10\xc8\x01\"R\n" +
+	"executable\x12\x18\n" +
+	"\achunked\x18\x05 \x01(\bR\achunkedJ\x05\bd\x10\xc8\x01\"R\n" +
 	"\x0eManifestRecord\x129\n" +
-	"\aentries\x18\x01 \x03(\v2\x1f.worktree.sync.v1.ManifestEntryR\aentriesJ\x05\bd\x10\xc8\x01\"\xa9\x03\n" +
+	"\aentries\x18\x01 \x03(\v2\x1f.worktree.sync.v1.ManifestEntryR\aentriesJ\x05\bd\x10\xc8\x01\"\xf8\x04\n" +
 	"\x0eSnapshotRecord\x12,\n" +
 	"\x02id\x18\x01 \x01(\v2\x1c.worktree.sync.v1.SnapshotIdR\x02id\x121\n" +
 	"\atree_id\x18\x02 \x01(\v2\x18.worktree.sync.v1.TreeIdR\x06treeId\x12\x1f\n" +
@@ -3412,7 +4125,63 @@ const file_sync_proto_rawDesc = "" +
 	"\amessage\x18\a \x01(\tR\amessage\x129\n" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12%\n" +
-	"\x0eauto_generated\x18\t \x01(\bR\rautoGeneratedJ\x05\bd\x10\xc8\x01\"\x85\x01\n" +
+	"\x0eauto_generated\x18\t \x01(\bR\rautoGenerated\x12@\n" +
+	"\fdependencies\x18\n" +
+	" \x03(\v2\x1c.worktree.sync.v1.DependencyR\fdependencies\x12;\n" +
+	"\areverts\x18\v \x01(\v2\x1c.worktree.sync.v1.SnapshotIdH\x00R\areverts\x88\x01\x01\x12\x1c\n" +
+	"\tsignature\x18\f \x01(\fR\tsignature\x12$\n" +
+	"\x0esigning_key_id\x18\r \x01(\tR\fsigningKeyIdB\n" +
+	"\n" +
+	"\b_revertsJ\x05\bd\x10\xc8\x01\"\xe0\x01\n" +
+	"\n" +
+	"Dependency\x12\x1f\n" +
+	"\vtenant_slug\x18\x01 \x01(\tR\n" +
+	"tenantSlug\x12\x12\n" +
+	"\x04tree\x18\x02 \x01(\tR\x04tree\x12\x16\n" +
+	"\x06branch\x18\x03 \x01(\tR\x06branch\x12\x14\n" +
+	"\x05title\x18\x04 \x01(\tR\x05title\x12\x18\n" +
+	"\adetails\x18\x05 \x01(\tR\adetails\x12\x1a\n" +
+	"\bpriority\x18\x06 \x01(\tR\bpriority\x12\x1a\n" +
+	"\bblocking\x18\a \x01(\bR\bblocking\x12\x16\n" +
+	"\x06linked\x18\b \x01(\bR\x06linkedJ\x05\bd\x10\xc8\x01\"X\n" +
+	"\x15SignedSnapshotPayload\x128\n" +
+	"\x06record\x18\x01 \x01(\v2 .worktree.sync.v1.SnapshotRecordR\x06recordJ\x05\bd\x10\xc8\x01\"R\n" +
+	"\x14WatchBranchesRequest\x123\n" +
+	"\btree_ids\x18\x01 \x03(\v2\x18.worktree.sync.v1.TreeIdR\atreeIdsJ\x05\bd\x10\xc8\x01\"\xba\x02\n" +
+	"\vBranchEvent\x121\n" +
+	"\atree_id\x18\x01 \x01(\v2\x18.worktree.sync.v1.TreeIdR\x06treeId\x12\x1f\n" +
+	"\vbranch_name\x18\x02 \x01(\tR\n" +
+	"branchName\x12:\n" +
+	"\aold_tip\x18\x03 \x01(\v2\x1c.worktree.sync.v1.SnapshotIdH\x00R\x06oldTip\x88\x01\x01\x12:\n" +
+	"\anew_tip\x18\x04 \x01(\v2\x1c.worktree.sync.v1.SnapshotIdH\x01R\x06newTip\x88\x01\x01\x12\x14\n" +
+	"\x05actor\x18\x05 \x01(\tR\x05actor\x12*\n" +
+	"\x02at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x02atB\n" +
+	"\n" +
+	"\b_old_tipB\n" +
+	"\n" +
+	"\b_new_tipJ\x05\bd\x10\xc8\x01\"k\n" +
+	"\x0eUnstageRequest\x121\n" +
+	"\atree_id\x18\x01 \x01(\v2\x18.worktree.sync.v1.TreeIdR\x06treeId\x12\x1f\n" +
+	"\vbranch_name\x18\x02 \x01(\tR\n" +
+	"branchNameJ\x05\bd\x10\xc8\x01\"2\n" +
+	"\x0fUnstageResponse\x12\x18\n" +
+	"\aremoved\x18\x01 \x01(\bR\aremovedJ\x05\bd\x10\xc8\x01\"\xe1\x01\n" +
+	"\x16GetAccessConfigRequest\x127\n" +
+	"\ttenant_id\x18\x01 \x01(\v2\x1a.worktree.sync.v1.TenantIdR\btenantId\x126\n" +
+	"\atree_id\x18\x02 \x01(\v2\x18.worktree.sync.v1.TreeIdH\x00R\x06treeId\x88\x01\x01\x12C\n" +
+	"\vconfig_type\x18\x03 \x01(\x0e2\".worktree.sync.v1.AccessConfigTypeR\n" +
+	"configTypeB\n" +
+	"\n" +
+	"\b_tree_idJ\x05\bd\x10\xc8\x01\"\xea\x01\n" +
+	"\x17GetAccessConfigResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\x12>\n" +
+	"\vconfig_hash\x18\x03 \x01(\v2\x1d.worktree.sync.v1.ContentHashR\n" +
+	"configHash\x129\n" +
+	"\n" +
+	"updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_by\x18\x05 \x01(\tR\tupdatedByJ\x05\bd\x10\xc8\x01\"\x85\x01\n" +
 	"\x12ResolveTreeRequest\x12\x1f\n" +
 	"\vtenant_slug\x18\x01 \x01(\tR\n" +
 	"tenantSlug\x12\x1b\n" +
@@ -3515,12 +4284,14 @@ const file_sync_proto_rawDesc = "" +
 	"\x1bACCESS_CONFIG_TYPE_POLICIES\x10\x02\x12$\n" +
 	" ACCESS_CONFIG_TYPE_TENANT_ACCESS\x10\x03\x12(\n" +
 	"$ACCESS_CONFIG_TYPE_BRANCH_PROTECTION\x10\x04\x12\x1e\n" +
-	"\x1aACCESS_CONFIG_TYPE_LICENSE\x10\x05*Y\n" +
+	"\x1aACCESS_CONFIG_TYPE_LICENSE\x10\x05*u\n" +
 	"\n" +
 	"ObjectKind\x12\x1b\n" +
 	"\x17OBJECT_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10OBJECT_KIND_BLOB\x10\x01\x12\x18\n" +
-	"\x14OBJECT_KIND_MANIFEST\x10\x022\xd2\b\n" +
+	"\x14OBJECT_KIND_MANIFEST\x10\x02\x12\x1a\n" +
+	"\x16OBJECT_KIND_CHUNK_LIST\x10\x032\xe4\n" +
+	"\n" +
 	"\vSyncService\x12T\n" +
 	"\x05Stage\x12$.worktree.sync.v1.StageUploadRequest\x1a%.worktree.sync.v1.StageUploadResponse\x12E\n" +
 	"\x04Push\x12\x1d.worktree.sync.v1.PushRequest\x1a\x1e.worktree.sync.v1.PushResponse\x12E\n" +
@@ -3535,7 +4306,10 @@ const file_sync_proto_rawDesc = "" +
 	"ListStaged\x12#.worktree.sync.v1.ListStagedRequest\x1a$.worktree.sync.v1.ListStagedResponse\x12N\n" +
 	"\aPushTag\x12 .worktree.sync.v1.PushTagRequest\x1a!.worktree.sync.v1.PushTagResponse\x12Q\n" +
 	"\bListTags\x12!.worktree.sync.v1.ListTagsRequest\x1a\".worktree.sync.v1.ListTagsResponse\x12E\n" +
-	"\x04Ping\x12\x1d.worktree.sync.v1.PingRequest\x1a\x1e.worktree.sync.v1.PingResponseBJZHgithub.com/seanfilimon/worktree/services/server-go/internal/proto/syncpbb\x06proto3"
+	"\x04Ping\x12\x1d.worktree.sync.v1.PingRequest\x1a\x1e.worktree.sync.v1.PingResponse\x12X\n" +
+	"\rWatchBranches\x12&.worktree.sync.v1.WatchBranchesRequest\x1a\x1d.worktree.sync.v1.BranchEvent0\x01\x12N\n" +
+	"\aUnstage\x12 .worktree.sync.v1.UnstageRequest\x1a!.worktree.sync.v1.UnstageResponse\x12f\n" +
+	"\x0fGetAccessConfig\x12(.worktree.sync.v1.GetAccessConfigRequest\x1a).worktree.sync.v1.GetAccessConfigResponseBJZHgithub.com/seanfilimon/worktree/services/server-go/internal/proto/syncpbb\x06proto3"
 
 var (
 	file_sync_proto_rawDescOnce sync.Once
@@ -3550,7 +4324,7 @@ func file_sync_proto_rawDescGZIP() []byte {
 }
 
 var file_sync_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_sync_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
+var file_sync_proto_msgTypes = make([]protoimpl.MessageInfo, 58)
 var file_sync_proto_goTypes = []any{
 	(SyncMessageType)(0),                   // 0: worktree.sync.v1.SyncMessageType
 	(AccessConfigType)(0),                  // 1: worktree.sync.v1.AccessConfigType
@@ -3576,140 +4350,173 @@ var file_sync_proto_goTypes = []any{
 	(*AccessConfigSyncResponse)(nil),       // 21: worktree.sync.v1.AccessConfigSyncResponse
 	(*SyncState)(nil),                      // 22: worktree.sync.v1.SyncState
 	(*SyncEnvelope)(nil),                   // 23: worktree.sync.v1.SyncEnvelope
-	(*ObjectData)(nil),                     // 24: worktree.sync.v1.ObjectData
-	(*UploadObjectsResponse)(nil),          // 25: worktree.sync.v1.UploadObjectsResponse
-	(*ManifestEntry)(nil),                  // 26: worktree.sync.v1.ManifestEntry
-	(*ManifestRecord)(nil),                 // 27: worktree.sync.v1.ManifestRecord
-	(*SnapshotRecord)(nil),                 // 28: worktree.sync.v1.SnapshotRecord
-	(*ResolveTreeRequest)(nil),             // 29: worktree.sync.v1.ResolveTreeRequest
-	(*TreeInfo)(nil),                       // 30: worktree.sync.v1.TreeInfo
-	(*ListBranchesRequest)(nil),            // 31: worktree.sync.v1.ListBranchesRequest
-	(*BranchInfo)(nil),                     // 32: worktree.sync.v1.BranchInfo
-	(*ListBranchesResponse)(nil),           // 33: worktree.sync.v1.ListBranchesResponse
-	(*ListStagedRequest)(nil),              // 34: worktree.sync.v1.ListStagedRequest
-	(*StagedInfo)(nil),                     // 35: worktree.sync.v1.StagedInfo
-	(*ListStagedResponse)(nil),             // 36: worktree.sync.v1.ListStagedResponse
-	(*TagRecord)(nil),                      // 37: worktree.sync.v1.TagRecord
-	(*PushTagRequest)(nil),                 // 38: worktree.sync.v1.PushTagRequest
-	(*PushTagResponse)(nil),                // 39: worktree.sync.v1.PushTagResponse
-	(*ListTagsRequest)(nil),                // 40: worktree.sync.v1.ListTagsRequest
-	(*ListTagsResponse)(nil),               // 41: worktree.sync.v1.ListTagsResponse
-	(*PingRequest)(nil),                    // 42: worktree.sync.v1.PingRequest
-	(*PingResponse)(nil),                   // 43: worktree.sync.v1.PingResponse
-	(*PushRejection_ConflictDetected)(nil), // 44: worktree.sync.v1.PushRejection.ConflictDetected
-	(*PushRejection_BranchProtection)(nil), // 45: worktree.sync.v1.PushRejection.BranchProtection
-	(*PushRejection_AccessDenied)(nil),     // 46: worktree.sync.v1.PushRejection.AccessDenied
-	(*PushRejection_LicenseViolation)(nil), // 47: worktree.sync.v1.PushRejection.LicenseViolation
-	(*PushRejection_CiChecksFailed)(nil),   // 48: worktree.sync.v1.PushRejection.CiChecksFailed
-	(*PushRejection_ReviewRequired)(nil),   // 49: worktree.sync.v1.PushRejection.ReviewRequired
-	(*PushRejection_QuotaExceeded)(nil),    // 50: worktree.sync.v1.PushRejection.QuotaExceeded
-	(*timestamppb.Timestamp)(nil),          // 51: google.protobuf.Timestamp
+	(*ChunkList)(nil),                      // 24: worktree.sync.v1.ChunkList
+	(*Chunk)(nil),                          // 25: worktree.sync.v1.Chunk
+	(*ObjectData)(nil),                     // 26: worktree.sync.v1.ObjectData
+	(*UploadObjectsResponse)(nil),          // 27: worktree.sync.v1.UploadObjectsResponse
+	(*ManifestEntry)(nil),                  // 28: worktree.sync.v1.ManifestEntry
+	(*ManifestRecord)(nil),                 // 29: worktree.sync.v1.ManifestRecord
+	(*SnapshotRecord)(nil),                 // 30: worktree.sync.v1.SnapshotRecord
+	(*Dependency)(nil),                     // 31: worktree.sync.v1.Dependency
+	(*SignedSnapshotPayload)(nil),          // 32: worktree.sync.v1.SignedSnapshotPayload
+	(*WatchBranchesRequest)(nil),           // 33: worktree.sync.v1.WatchBranchesRequest
+	(*BranchEvent)(nil),                    // 34: worktree.sync.v1.BranchEvent
+	(*UnstageRequest)(nil),                 // 35: worktree.sync.v1.UnstageRequest
+	(*UnstageResponse)(nil),                // 36: worktree.sync.v1.UnstageResponse
+	(*GetAccessConfigRequest)(nil),         // 37: worktree.sync.v1.GetAccessConfigRequest
+	(*GetAccessConfigResponse)(nil),        // 38: worktree.sync.v1.GetAccessConfigResponse
+	(*ResolveTreeRequest)(nil),             // 39: worktree.sync.v1.ResolveTreeRequest
+	(*TreeInfo)(nil),                       // 40: worktree.sync.v1.TreeInfo
+	(*ListBranchesRequest)(nil),            // 41: worktree.sync.v1.ListBranchesRequest
+	(*BranchInfo)(nil),                     // 42: worktree.sync.v1.BranchInfo
+	(*ListBranchesResponse)(nil),           // 43: worktree.sync.v1.ListBranchesResponse
+	(*ListStagedRequest)(nil),              // 44: worktree.sync.v1.ListStagedRequest
+	(*StagedInfo)(nil),                     // 45: worktree.sync.v1.StagedInfo
+	(*ListStagedResponse)(nil),             // 46: worktree.sync.v1.ListStagedResponse
+	(*TagRecord)(nil),                      // 47: worktree.sync.v1.TagRecord
+	(*PushTagRequest)(nil),                 // 48: worktree.sync.v1.PushTagRequest
+	(*PushTagResponse)(nil),                // 49: worktree.sync.v1.PushTagResponse
+	(*ListTagsRequest)(nil),                // 50: worktree.sync.v1.ListTagsRequest
+	(*ListTagsResponse)(nil),               // 51: worktree.sync.v1.ListTagsResponse
+	(*PingRequest)(nil),                    // 52: worktree.sync.v1.PingRequest
+	(*PingResponse)(nil),                   // 53: worktree.sync.v1.PingResponse
+	(*PushRejection_ConflictDetected)(nil), // 54: worktree.sync.v1.PushRejection.ConflictDetected
+	(*PushRejection_BranchProtection)(nil), // 55: worktree.sync.v1.PushRejection.BranchProtection
+	(*PushRejection_AccessDenied)(nil),     // 56: worktree.sync.v1.PushRejection.AccessDenied
+	(*PushRejection_LicenseViolation)(nil), // 57: worktree.sync.v1.PushRejection.LicenseViolation
+	(*PushRejection_CiChecksFailed)(nil),   // 58: worktree.sync.v1.PushRejection.CiChecksFailed
+	(*PushRejection_ReviewRequired)(nil),   // 59: worktree.sync.v1.PushRejection.ReviewRequired
+	(*PushRejection_QuotaExceeded)(nil),    // 60: worktree.sync.v1.PushRejection.QuotaExceeded
+	(*timestamppb.Timestamp)(nil),          // 61: google.protobuf.Timestamp
 }
 var file_sync_proto_depIdxs = []int32{
-	8,  // 0: worktree.sync.v1.HaveMessage.hashes:type_name -> worktree.sync.v1.ContentHash
-	8,  // 1: worktree.sync.v1.WantMessage.hashes:type_name -> worktree.sync.v1.ContentHash
-	8,  // 2: worktree.sync.v1.ObjectTransferPlan.objects_to_send:type_name -> worktree.sync.v1.ContentHash
-	9,  // 3: worktree.sync.v1.NegotiateRequest.have:type_name -> worktree.sync.v1.HaveMessage
-	10, // 4: worktree.sync.v1.NegotiateRequest.want:type_name -> worktree.sync.v1.WantMessage
-	6,  // 5: worktree.sync.v1.PushRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
-	3,  // 6: worktree.sync.v1.PushRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	5,  // 7: worktree.sync.v1.PushRequest.branch_id:type_name -> worktree.sync.v1.BranchId
-	4,  // 8: worktree.sync.v1.PushRequest.old_tip:type_name -> worktree.sync.v1.SnapshotId
-	4,  // 9: worktree.sync.v1.PushRequest.new_tip:type_name -> worktree.sync.v1.SnapshotId
-	4,  // 10: worktree.sync.v1.PushRequest.snapshot_chain:type_name -> worktree.sync.v1.SnapshotId
-	7,  // 11: worktree.sync.v1.PushRequest.account_id:type_name -> worktree.sync.v1.AccountId
-	28, // 12: worktree.sync.v1.PushRequest.snapshots:type_name -> worktree.sync.v1.SnapshotRecord
-	15, // 13: worktree.sync.v1.PushResponse.rejection_reason:type_name -> worktree.sync.v1.PushRejection
-	4,  // 14: worktree.sync.v1.PushResponse.new_tip:type_name -> worktree.sync.v1.SnapshotId
-	44, // 15: worktree.sync.v1.PushRejection.conflict_detected:type_name -> worktree.sync.v1.PushRejection.ConflictDetected
-	45, // 16: worktree.sync.v1.PushRejection.branch_protection:type_name -> worktree.sync.v1.PushRejection.BranchProtection
-	46, // 17: worktree.sync.v1.PushRejection.access_denied:type_name -> worktree.sync.v1.PushRejection.AccessDenied
-	47, // 18: worktree.sync.v1.PushRejection.license_violation:type_name -> worktree.sync.v1.PushRejection.LicenseViolation
-	48, // 19: worktree.sync.v1.PushRejection.ci_checks_failed:type_name -> worktree.sync.v1.PushRejection.CiChecksFailed
-	49, // 20: worktree.sync.v1.PushRejection.review_required:type_name -> worktree.sync.v1.PushRejection.ReviewRequired
-	50, // 21: worktree.sync.v1.PushRejection.quota_exceeded:type_name -> worktree.sync.v1.PushRejection.QuotaExceeded
-	6,  // 22: worktree.sync.v1.PullRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
-	3,  // 23: worktree.sync.v1.PullRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	5,  // 24: worktree.sync.v1.PullRequest.branch_id:type_name -> worktree.sync.v1.BranchId
-	4,  // 25: worktree.sync.v1.PullRequest.current_tip:type_name -> worktree.sync.v1.SnapshotId
-	7,  // 26: worktree.sync.v1.PullRequest.account_id:type_name -> worktree.sync.v1.AccountId
-	4,  // 27: worktree.sync.v1.PullResponse.new_tip:type_name -> worktree.sync.v1.SnapshotId
-	4,  // 28: worktree.sync.v1.PullResponse.snapshot_chain:type_name -> worktree.sync.v1.SnapshotId
-	8,  // 29: worktree.sync.v1.PullResponse.objects_to_fetch:type_name -> worktree.sync.v1.ContentHash
-	28, // 30: worktree.sync.v1.PullResponse.snapshots:type_name -> worktree.sync.v1.SnapshotRecord
-	6,  // 31: worktree.sync.v1.StageUploadRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
-	3,  // 32: worktree.sync.v1.StageUploadRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	5,  // 33: worktree.sync.v1.StageUploadRequest.branch_id:type_name -> worktree.sync.v1.BranchId
-	4,  // 34: worktree.sync.v1.StageUploadRequest.snapshot_id:type_name -> worktree.sync.v1.SnapshotId
-	7,  // 35: worktree.sync.v1.StageUploadRequest.account_id:type_name -> worktree.sync.v1.AccountId
-	6,  // 36: worktree.sync.v1.AccessConfigSyncRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
-	1,  // 37: worktree.sync.v1.AccessConfigSyncRequest.config_type:type_name -> worktree.sync.v1.AccessConfigType
-	8,  // 38: worktree.sync.v1.AccessConfigSyncRequest.config_hash:type_name -> worktree.sync.v1.ContentHash
-	7,  // 39: worktree.sync.v1.AccessConfigSyncRequest.account_id:type_name -> worktree.sync.v1.AccountId
-	51, // 40: worktree.sync.v1.SyncState.last_sync:type_name -> google.protobuf.Timestamp
-	4,  // 41: worktree.sync.v1.SyncState.local_tip:type_name -> worktree.sync.v1.SnapshotId
-	4,  // 42: worktree.sync.v1.SyncState.remote_tip:type_name -> worktree.sync.v1.SnapshotId
-	0,  // 43: worktree.sync.v1.SyncEnvelope.message_type:type_name -> worktree.sync.v1.SyncMessageType
-	51, // 44: worktree.sync.v1.SyncEnvelope.timestamp:type_name -> google.protobuf.Timestamp
-	8,  // 45: worktree.sync.v1.ObjectData.hash:type_name -> worktree.sync.v1.ContentHash
-	2,  // 46: worktree.sync.v1.ObjectData.kind:type_name -> worktree.sync.v1.ObjectKind
-	8,  // 47: worktree.sync.v1.UploadObjectsResponse.rejected:type_name -> worktree.sync.v1.ContentHash
-	8,  // 48: worktree.sync.v1.ManifestEntry.blob_hash:type_name -> worktree.sync.v1.ContentHash
-	26, // 49: worktree.sync.v1.ManifestRecord.entries:type_name -> worktree.sync.v1.ManifestEntry
-	4,  // 50: worktree.sync.v1.SnapshotRecord.id:type_name -> worktree.sync.v1.SnapshotId
-	3,  // 51: worktree.sync.v1.SnapshotRecord.tree_id:type_name -> worktree.sync.v1.TreeId
-	4,  // 52: worktree.sync.v1.SnapshotRecord.parents:type_name -> worktree.sync.v1.SnapshotId
-	8,  // 53: worktree.sync.v1.SnapshotRecord.manifest_hash:type_name -> worktree.sync.v1.ContentHash
-	51, // 54: worktree.sync.v1.SnapshotRecord.created_at:type_name -> google.protobuf.Timestamp
-	3,  // 55: worktree.sync.v1.TreeInfo.tree_id:type_name -> worktree.sync.v1.TreeId
-	6,  // 56: worktree.sync.v1.TreeInfo.tenant_id:type_name -> worktree.sync.v1.TenantId
-	3,  // 57: worktree.sync.v1.ListBranchesRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	4,  // 58: worktree.sync.v1.BranchInfo.tip:type_name -> worktree.sync.v1.SnapshotId
-	51, // 59: worktree.sync.v1.BranchInfo.updated_at:type_name -> google.protobuf.Timestamp
-	32, // 60: worktree.sync.v1.ListBranchesResponse.branches:type_name -> worktree.sync.v1.BranchInfo
-	3,  // 61: worktree.sync.v1.ListStagedRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	4,  // 62: worktree.sync.v1.StagedInfo.snapshot_id:type_name -> worktree.sync.v1.SnapshotId
-	51, // 63: worktree.sync.v1.StagedInfo.staged_at:type_name -> google.protobuf.Timestamp
-	35, // 64: worktree.sync.v1.ListStagedResponse.staged:type_name -> worktree.sync.v1.StagedInfo
-	4,  // 65: worktree.sync.v1.TagRecord.target:type_name -> worktree.sync.v1.SnapshotId
-	51, // 66: worktree.sync.v1.TagRecord.created_at:type_name -> google.protobuf.Timestamp
-	3,  // 67: worktree.sync.v1.PushTagRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	37, // 68: worktree.sync.v1.PushTagRequest.tag:type_name -> worktree.sync.v1.TagRecord
-	3,  // 69: worktree.sync.v1.ListTagsRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	37, // 70: worktree.sync.v1.ListTagsResponse.tags:type_name -> worktree.sync.v1.TagRecord
-	7,  // 71: worktree.sync.v1.PingResponse.account_id:type_name -> worktree.sync.v1.AccountId
-	4,  // 72: worktree.sync.v1.PushRejection.ConflictDetected.server_tip:type_name -> worktree.sync.v1.SnapshotId
-	18, // 73: worktree.sync.v1.SyncService.Stage:input_type -> worktree.sync.v1.StageUploadRequest
-	13, // 74: worktree.sync.v1.SyncService.Push:input_type -> worktree.sync.v1.PushRequest
-	16, // 75: worktree.sync.v1.SyncService.Pull:input_type -> worktree.sync.v1.PullRequest
-	12, // 76: worktree.sync.v1.SyncService.Negotiate:input_type -> worktree.sync.v1.NegotiateRequest
-	20, // 77: worktree.sync.v1.SyncService.SyncAccessConfig:input_type -> worktree.sync.v1.AccessConfigSyncRequest
-	24, // 78: worktree.sync.v1.SyncService.UploadObjects:input_type -> worktree.sync.v1.ObjectData
-	10, // 79: worktree.sync.v1.SyncService.DownloadObjects:input_type -> worktree.sync.v1.WantMessage
-	29, // 80: worktree.sync.v1.SyncService.ResolveTree:input_type -> worktree.sync.v1.ResolveTreeRequest
-	31, // 81: worktree.sync.v1.SyncService.ListBranches:input_type -> worktree.sync.v1.ListBranchesRequest
-	34, // 82: worktree.sync.v1.SyncService.ListStaged:input_type -> worktree.sync.v1.ListStagedRequest
-	38, // 83: worktree.sync.v1.SyncService.PushTag:input_type -> worktree.sync.v1.PushTagRequest
-	40, // 84: worktree.sync.v1.SyncService.ListTags:input_type -> worktree.sync.v1.ListTagsRequest
-	42, // 85: worktree.sync.v1.SyncService.Ping:input_type -> worktree.sync.v1.PingRequest
-	19, // 86: worktree.sync.v1.SyncService.Stage:output_type -> worktree.sync.v1.StageUploadResponse
-	14, // 87: worktree.sync.v1.SyncService.Push:output_type -> worktree.sync.v1.PushResponse
-	17, // 88: worktree.sync.v1.SyncService.Pull:output_type -> worktree.sync.v1.PullResponse
-	11, // 89: worktree.sync.v1.SyncService.Negotiate:output_type -> worktree.sync.v1.ObjectTransferPlan
-	21, // 90: worktree.sync.v1.SyncService.SyncAccessConfig:output_type -> worktree.sync.v1.AccessConfigSyncResponse
-	25, // 91: worktree.sync.v1.SyncService.UploadObjects:output_type -> worktree.sync.v1.UploadObjectsResponse
-	24, // 92: worktree.sync.v1.SyncService.DownloadObjects:output_type -> worktree.sync.v1.ObjectData
-	30, // 93: worktree.sync.v1.SyncService.ResolveTree:output_type -> worktree.sync.v1.TreeInfo
-	33, // 94: worktree.sync.v1.SyncService.ListBranches:output_type -> worktree.sync.v1.ListBranchesResponse
-	36, // 95: worktree.sync.v1.SyncService.ListStaged:output_type -> worktree.sync.v1.ListStagedResponse
-	39, // 96: worktree.sync.v1.SyncService.PushTag:output_type -> worktree.sync.v1.PushTagResponse
-	41, // 97: worktree.sync.v1.SyncService.ListTags:output_type -> worktree.sync.v1.ListTagsResponse
-	43, // 98: worktree.sync.v1.SyncService.Ping:output_type -> worktree.sync.v1.PingResponse
-	86, // [86:99] is the sub-list for method output_type
-	73, // [73:86] is the sub-list for method input_type
-	73, // [73:73] is the sub-list for extension type_name
-	73, // [73:73] is the sub-list for extension extendee
-	0,  // [0:73] is the sub-list for field type_name
+	8,   // 0: worktree.sync.v1.HaveMessage.hashes:type_name -> worktree.sync.v1.ContentHash
+	8,   // 1: worktree.sync.v1.WantMessage.hashes:type_name -> worktree.sync.v1.ContentHash
+	8,   // 2: worktree.sync.v1.ObjectTransferPlan.objects_to_send:type_name -> worktree.sync.v1.ContentHash
+	9,   // 3: worktree.sync.v1.NegotiateRequest.have:type_name -> worktree.sync.v1.HaveMessage
+	10,  // 4: worktree.sync.v1.NegotiateRequest.want:type_name -> worktree.sync.v1.WantMessage
+	6,   // 5: worktree.sync.v1.PushRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
+	3,   // 6: worktree.sync.v1.PushRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	5,   // 7: worktree.sync.v1.PushRequest.branch_id:type_name -> worktree.sync.v1.BranchId
+	4,   // 8: worktree.sync.v1.PushRequest.old_tip:type_name -> worktree.sync.v1.SnapshotId
+	4,   // 9: worktree.sync.v1.PushRequest.new_tip:type_name -> worktree.sync.v1.SnapshotId
+	4,   // 10: worktree.sync.v1.PushRequest.snapshot_chain:type_name -> worktree.sync.v1.SnapshotId
+	7,   // 11: worktree.sync.v1.PushRequest.account_id:type_name -> worktree.sync.v1.AccountId
+	30,  // 12: worktree.sync.v1.PushRequest.snapshots:type_name -> worktree.sync.v1.SnapshotRecord
+	15,  // 13: worktree.sync.v1.PushResponse.rejection_reason:type_name -> worktree.sync.v1.PushRejection
+	4,   // 14: worktree.sync.v1.PushResponse.new_tip:type_name -> worktree.sync.v1.SnapshotId
+	54,  // 15: worktree.sync.v1.PushRejection.conflict_detected:type_name -> worktree.sync.v1.PushRejection.ConflictDetected
+	55,  // 16: worktree.sync.v1.PushRejection.branch_protection:type_name -> worktree.sync.v1.PushRejection.BranchProtection
+	56,  // 17: worktree.sync.v1.PushRejection.access_denied:type_name -> worktree.sync.v1.PushRejection.AccessDenied
+	57,  // 18: worktree.sync.v1.PushRejection.license_violation:type_name -> worktree.sync.v1.PushRejection.LicenseViolation
+	58,  // 19: worktree.sync.v1.PushRejection.ci_checks_failed:type_name -> worktree.sync.v1.PushRejection.CiChecksFailed
+	59,  // 20: worktree.sync.v1.PushRejection.review_required:type_name -> worktree.sync.v1.PushRejection.ReviewRequired
+	60,  // 21: worktree.sync.v1.PushRejection.quota_exceeded:type_name -> worktree.sync.v1.PushRejection.QuotaExceeded
+	6,   // 22: worktree.sync.v1.PullRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
+	3,   // 23: worktree.sync.v1.PullRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	5,   // 24: worktree.sync.v1.PullRequest.branch_id:type_name -> worktree.sync.v1.BranchId
+	4,   // 25: worktree.sync.v1.PullRequest.current_tip:type_name -> worktree.sync.v1.SnapshotId
+	7,   // 26: worktree.sync.v1.PullRequest.account_id:type_name -> worktree.sync.v1.AccountId
+	4,   // 27: worktree.sync.v1.PullResponse.new_tip:type_name -> worktree.sync.v1.SnapshotId
+	4,   // 28: worktree.sync.v1.PullResponse.snapshot_chain:type_name -> worktree.sync.v1.SnapshotId
+	8,   // 29: worktree.sync.v1.PullResponse.objects_to_fetch:type_name -> worktree.sync.v1.ContentHash
+	30,  // 30: worktree.sync.v1.PullResponse.snapshots:type_name -> worktree.sync.v1.SnapshotRecord
+	6,   // 31: worktree.sync.v1.StageUploadRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
+	3,   // 32: worktree.sync.v1.StageUploadRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	5,   // 33: worktree.sync.v1.StageUploadRequest.branch_id:type_name -> worktree.sync.v1.BranchId
+	4,   // 34: worktree.sync.v1.StageUploadRequest.snapshot_id:type_name -> worktree.sync.v1.SnapshotId
+	7,   // 35: worktree.sync.v1.StageUploadRequest.account_id:type_name -> worktree.sync.v1.AccountId
+	6,   // 36: worktree.sync.v1.AccessConfigSyncRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
+	1,   // 37: worktree.sync.v1.AccessConfigSyncRequest.config_type:type_name -> worktree.sync.v1.AccessConfigType
+	8,   // 38: worktree.sync.v1.AccessConfigSyncRequest.config_hash:type_name -> worktree.sync.v1.ContentHash
+	7,   // 39: worktree.sync.v1.AccessConfigSyncRequest.account_id:type_name -> worktree.sync.v1.AccountId
+	3,   // 40: worktree.sync.v1.AccessConfigSyncRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	61,  // 41: worktree.sync.v1.SyncState.last_sync:type_name -> google.protobuf.Timestamp
+	4,   // 42: worktree.sync.v1.SyncState.local_tip:type_name -> worktree.sync.v1.SnapshotId
+	4,   // 43: worktree.sync.v1.SyncState.remote_tip:type_name -> worktree.sync.v1.SnapshotId
+	0,   // 44: worktree.sync.v1.SyncEnvelope.message_type:type_name -> worktree.sync.v1.SyncMessageType
+	61,  // 45: worktree.sync.v1.SyncEnvelope.timestamp:type_name -> google.protobuf.Timestamp
+	25,  // 46: worktree.sync.v1.ChunkList.chunks:type_name -> worktree.sync.v1.Chunk
+	8,   // 47: worktree.sync.v1.Chunk.hash:type_name -> worktree.sync.v1.ContentHash
+	8,   // 48: worktree.sync.v1.ObjectData.hash:type_name -> worktree.sync.v1.ContentHash
+	2,   // 49: worktree.sync.v1.ObjectData.kind:type_name -> worktree.sync.v1.ObjectKind
+	8,   // 50: worktree.sync.v1.UploadObjectsResponse.rejected:type_name -> worktree.sync.v1.ContentHash
+	8,   // 51: worktree.sync.v1.ManifestEntry.blob_hash:type_name -> worktree.sync.v1.ContentHash
+	28,  // 52: worktree.sync.v1.ManifestRecord.entries:type_name -> worktree.sync.v1.ManifestEntry
+	4,   // 53: worktree.sync.v1.SnapshotRecord.id:type_name -> worktree.sync.v1.SnapshotId
+	3,   // 54: worktree.sync.v1.SnapshotRecord.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 55: worktree.sync.v1.SnapshotRecord.parents:type_name -> worktree.sync.v1.SnapshotId
+	8,   // 56: worktree.sync.v1.SnapshotRecord.manifest_hash:type_name -> worktree.sync.v1.ContentHash
+	61,  // 57: worktree.sync.v1.SnapshotRecord.created_at:type_name -> google.protobuf.Timestamp
+	31,  // 58: worktree.sync.v1.SnapshotRecord.dependencies:type_name -> worktree.sync.v1.Dependency
+	4,   // 59: worktree.sync.v1.SnapshotRecord.reverts:type_name -> worktree.sync.v1.SnapshotId
+	30,  // 60: worktree.sync.v1.SignedSnapshotPayload.record:type_name -> worktree.sync.v1.SnapshotRecord
+	3,   // 61: worktree.sync.v1.WatchBranchesRequest.tree_ids:type_name -> worktree.sync.v1.TreeId
+	3,   // 62: worktree.sync.v1.BranchEvent.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 63: worktree.sync.v1.BranchEvent.old_tip:type_name -> worktree.sync.v1.SnapshotId
+	4,   // 64: worktree.sync.v1.BranchEvent.new_tip:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 65: worktree.sync.v1.BranchEvent.at:type_name -> google.protobuf.Timestamp
+	3,   // 66: worktree.sync.v1.UnstageRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	6,   // 67: worktree.sync.v1.GetAccessConfigRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
+	3,   // 68: worktree.sync.v1.GetAccessConfigRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	1,   // 69: worktree.sync.v1.GetAccessConfigRequest.config_type:type_name -> worktree.sync.v1.AccessConfigType
+	8,   // 70: worktree.sync.v1.GetAccessConfigResponse.config_hash:type_name -> worktree.sync.v1.ContentHash
+	61,  // 71: worktree.sync.v1.GetAccessConfigResponse.updated_at:type_name -> google.protobuf.Timestamp
+	3,   // 72: worktree.sync.v1.TreeInfo.tree_id:type_name -> worktree.sync.v1.TreeId
+	6,   // 73: worktree.sync.v1.TreeInfo.tenant_id:type_name -> worktree.sync.v1.TenantId
+	3,   // 74: worktree.sync.v1.ListBranchesRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 75: worktree.sync.v1.BranchInfo.tip:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 76: worktree.sync.v1.BranchInfo.updated_at:type_name -> google.protobuf.Timestamp
+	42,  // 77: worktree.sync.v1.ListBranchesResponse.branches:type_name -> worktree.sync.v1.BranchInfo
+	3,   // 78: worktree.sync.v1.ListStagedRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 79: worktree.sync.v1.StagedInfo.snapshot_id:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 80: worktree.sync.v1.StagedInfo.staged_at:type_name -> google.protobuf.Timestamp
+	45,  // 81: worktree.sync.v1.ListStagedResponse.staged:type_name -> worktree.sync.v1.StagedInfo
+	4,   // 82: worktree.sync.v1.TagRecord.target:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 83: worktree.sync.v1.TagRecord.created_at:type_name -> google.protobuf.Timestamp
+	3,   // 84: worktree.sync.v1.PushTagRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	47,  // 85: worktree.sync.v1.PushTagRequest.tag:type_name -> worktree.sync.v1.TagRecord
+	3,   // 86: worktree.sync.v1.ListTagsRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	47,  // 87: worktree.sync.v1.ListTagsResponse.tags:type_name -> worktree.sync.v1.TagRecord
+	7,   // 88: worktree.sync.v1.PingResponse.account_id:type_name -> worktree.sync.v1.AccountId
+	4,   // 89: worktree.sync.v1.PushRejection.ConflictDetected.server_tip:type_name -> worktree.sync.v1.SnapshotId
+	18,  // 90: worktree.sync.v1.SyncService.Stage:input_type -> worktree.sync.v1.StageUploadRequest
+	13,  // 91: worktree.sync.v1.SyncService.Push:input_type -> worktree.sync.v1.PushRequest
+	16,  // 92: worktree.sync.v1.SyncService.Pull:input_type -> worktree.sync.v1.PullRequest
+	12,  // 93: worktree.sync.v1.SyncService.Negotiate:input_type -> worktree.sync.v1.NegotiateRequest
+	20,  // 94: worktree.sync.v1.SyncService.SyncAccessConfig:input_type -> worktree.sync.v1.AccessConfigSyncRequest
+	26,  // 95: worktree.sync.v1.SyncService.UploadObjects:input_type -> worktree.sync.v1.ObjectData
+	10,  // 96: worktree.sync.v1.SyncService.DownloadObjects:input_type -> worktree.sync.v1.WantMessage
+	39,  // 97: worktree.sync.v1.SyncService.ResolveTree:input_type -> worktree.sync.v1.ResolveTreeRequest
+	41,  // 98: worktree.sync.v1.SyncService.ListBranches:input_type -> worktree.sync.v1.ListBranchesRequest
+	44,  // 99: worktree.sync.v1.SyncService.ListStaged:input_type -> worktree.sync.v1.ListStagedRequest
+	48,  // 100: worktree.sync.v1.SyncService.PushTag:input_type -> worktree.sync.v1.PushTagRequest
+	50,  // 101: worktree.sync.v1.SyncService.ListTags:input_type -> worktree.sync.v1.ListTagsRequest
+	52,  // 102: worktree.sync.v1.SyncService.Ping:input_type -> worktree.sync.v1.PingRequest
+	33,  // 103: worktree.sync.v1.SyncService.WatchBranches:input_type -> worktree.sync.v1.WatchBranchesRequest
+	35,  // 104: worktree.sync.v1.SyncService.Unstage:input_type -> worktree.sync.v1.UnstageRequest
+	37,  // 105: worktree.sync.v1.SyncService.GetAccessConfig:input_type -> worktree.sync.v1.GetAccessConfigRequest
+	19,  // 106: worktree.sync.v1.SyncService.Stage:output_type -> worktree.sync.v1.StageUploadResponse
+	14,  // 107: worktree.sync.v1.SyncService.Push:output_type -> worktree.sync.v1.PushResponse
+	17,  // 108: worktree.sync.v1.SyncService.Pull:output_type -> worktree.sync.v1.PullResponse
+	11,  // 109: worktree.sync.v1.SyncService.Negotiate:output_type -> worktree.sync.v1.ObjectTransferPlan
+	21,  // 110: worktree.sync.v1.SyncService.SyncAccessConfig:output_type -> worktree.sync.v1.AccessConfigSyncResponse
+	27,  // 111: worktree.sync.v1.SyncService.UploadObjects:output_type -> worktree.sync.v1.UploadObjectsResponse
+	26,  // 112: worktree.sync.v1.SyncService.DownloadObjects:output_type -> worktree.sync.v1.ObjectData
+	40,  // 113: worktree.sync.v1.SyncService.ResolveTree:output_type -> worktree.sync.v1.TreeInfo
+	43,  // 114: worktree.sync.v1.SyncService.ListBranches:output_type -> worktree.sync.v1.ListBranchesResponse
+	46,  // 115: worktree.sync.v1.SyncService.ListStaged:output_type -> worktree.sync.v1.ListStagedResponse
+	49,  // 116: worktree.sync.v1.SyncService.PushTag:output_type -> worktree.sync.v1.PushTagResponse
+	51,  // 117: worktree.sync.v1.SyncService.ListTags:output_type -> worktree.sync.v1.ListTagsResponse
+	53,  // 118: worktree.sync.v1.SyncService.Ping:output_type -> worktree.sync.v1.PingResponse
+	34,  // 119: worktree.sync.v1.SyncService.WatchBranches:output_type -> worktree.sync.v1.BranchEvent
+	36,  // 120: worktree.sync.v1.SyncService.Unstage:output_type -> worktree.sync.v1.UnstageResponse
+	38,  // 121: worktree.sync.v1.SyncService.GetAccessConfig:output_type -> worktree.sync.v1.GetAccessConfigResponse
+	106, // [106:122] is the sub-list for method output_type
+	90,  // [90:106] is the sub-list for method input_type
+	90,  // [90:90] is the sub-list for extension type_name
+	90,  // [90:90] is the sub-list for extension extendee
+	0,   // [0:90] is the sub-list for field type_name
 }
 
 func init() { file_sync_proto_init() }
@@ -3732,20 +4539,24 @@ func file_sync_proto_init() {
 	file_sync_proto_msgTypes[14].OneofWrappers = []any{}
 	file_sync_proto_msgTypes[15].OneofWrappers = []any{}
 	file_sync_proto_msgTypes[16].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[17].OneofWrappers = []any{}
 	file_sync_proto_msgTypes[19].OneofWrappers = []any{}
-	file_sync_proto_msgTypes[29].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[27].OneofWrappers = []any{}
 	file_sync_proto_msgTypes[31].OneofWrappers = []any{}
-	file_sync_proto_msgTypes[32].OneofWrappers = []any{}
 	file_sync_proto_msgTypes[34].OneofWrappers = []any{}
-	file_sync_proto_msgTypes[36].OneofWrappers = []any{}
-	file_sync_proto_msgTypes[40].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[39].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[41].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[42].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[44].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[46].OneofWrappers = []any{}
+	file_sync_proto_msgTypes[50].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sync_proto_rawDesc), len(file_sync_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   48,
+			NumMessages:   58,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

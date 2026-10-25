@@ -479,3 +479,547 @@ stdin is not a terminal.
   `#sso_error`. Public pages `/invite/:code` (preview and accept, sign-in
   redirect) and `/reset-password` (code and new password). Admin → SSO
   settings page; the Accounts page gains "Issue reset code".
+
+## 13. v0.5 spec completeness
+
+Goal: every feature described in `crates/worktree-protocol/specs/` is either
+built (and the spec describes the built behaviour exactly) or listed in the
+spec's **Roadmap** section. This section is the binding contract for the
+v0.5 workstreams; where it is silent, follow the existing code's conventions
+(§9) and the authoritative Go types in `internal/domain/v05.go`.
+
+Shared foundation (already on `main`, do not re-create):
+
+- `sync.proto`: `OBJECT_KIND_CHUNK_LIST`, `ChunkList`/`Chunk`,
+  `ManifestEntry.chunked`, `SnapshotRecord.dependencies/reverts/signature/
+  signing_key_id`, `Dependency`, `PullResponse.stubbed_paths`,
+  `WatchBranches`/`Unstage`/`GetAccessConfig` RPCs,
+  `AccessConfigSyncRequest.tree_id/dry_run`, `AccessConfigSyncResponse.changes`.
+- Go: `domain/v05.go` (types, events, actions `release:create`,
+  `release:delete`, `ci:report`, `PushChecker`, `DocStore`); new fields on
+  `Tenant` (Status, StatusReason, Limits), `Snapshot` (Dependencies, Reverts,
+  Signature, SigningKeyID, Verified), `BranchProtection` (RequireCIPass,
+  RequiredChecks, RequireSigned, RequireLinear, BlockOnTodos), `Approval`
+  (SnapshotID, Decision, Body), `MergeRequest.LinkedGroup`, `AuditFilter`
+  (ResourceType, ResourceID, Until, `"<prefix>.*"` actions), `LicenseRule`
+  (Grantee, ExpiresAt). `meta` implements `DocStore` for both stores with
+  typed helpers `meta.GetDocT/ListDocsT/UpdateDocT/DocPrefix`.
+  `syncsvc.Deps.PushChecks` run after the license check;
+  `objstore.ObjectSize`; `internal/content` reads (chunked) entries.
+  Stub packages `todo release ci signing gc limits accesscfg pathacl`
+  (each `New(Deps)`; wired in `server.go` via a shared Deps conversion —
+  if you add fields to your package's `Deps`, change your line in
+  `server.go` to a composite literal). Stub route files in `httpapi`
+  (`todos.go releases.go ci.go reviews.go keys.go ops.go access_routes.go
+  exports.go`) already registered from `routes()`.
+- Rust: SDK `Snapshot.dependencies/reverts/signature`, `Dependency`,
+  `SnapshotSignature`, `SnapshotOptions.dependencies`,
+  `ManifestEntry.chunked`, `ObjectStore::read_entry` (use it for file
+  content everywhere), config sections `[secret_scanning] [hooks] [signing]`
+  and `sync.auto_fetch/interval_secs`, stub modules `hooks` (called before
+  and after every snapshot) and `signing` (`sign_snapshot` called before
+  every locally created snapshot is written; `signed_payload`). CLI stub
+  command groups `wt todo|deps|release|ci|access|identity`.
+- Admin: stub pages `tree/TodosTab`, `tree/ReleasesTab`, `OperationsPage`,
+  routed and in the navigation.
+
+Errors: features whose service is nil answer `501 not_implemented`. New
+push rejection kinds `signature_required` and `ci_checks_failed` are
+`PushDenied` kinds (mapped to `AccessDenied{reason}` on the wire).
+
+### 13.1 Read/write path security (workstream `sec-paths`)
+
+- `Pull`: compute the paths of the new tip's manifest the caller may not
+  read — license rules (`LicenseChecker.CheckRead` per path; the license
+  package may expose an optional `UnreadablePaths` helper) and
+  `tree:read` path-deny policies (`AccessEvaluator.Evaluate` with
+  `Resource.Path`) — return them in `stubbed_paths` (sorted) and leave
+  their blobs out of `objects_to_fetch`. Audit `license.denied` (once per
+  pull, details: count, first path).
+- `pathacl.Checker` implements `domain.PushChecker`: for every changed path
+  evaluate `tree:write` with `Resource{Path}`; any explicit deny →
+  `PushDenied{Kind:"access_denied", Reason:"writing <path> is denied by
+  policy <name>"}`. Register it in `server.go` `PushChecks` (first).
+- REST reads (`blob`, `files`, `compare`, file history, snapshot file lists):
+  path-denied or license-unreadable paths answer `403 {"code":"path_denied"}`
+  / `451 {"code":"license_restricted"}` for content, and are omitted from
+  listings (listings add `"restricted_count"`). Blob/content handlers read
+  through `content.ReadEntry` (chunked files).
+- License rules: `Grantee` (tenant slug; "" = every non-owning tenant) and
+  `ExpiresAt` honoured by `CheckPush`/`CheckRead`; validated by the license
+  REST handlers; `wt license set --grantee --expires`.
+- Owns: `syncsvc/pull.go`, `internal/pathacl`, `internal/license`,
+  `httpapi/trees.go`, `httpapi/snapshots.go`, `httpapi/insights.go` (read
+  paths only), `crates/worktree-cli/src/commands/license.rs` (flags only).
+
+### 13.2 Chunked large files and shallow sync (workstream `chunks`)
+
+- SDK: files larger than **8 MiB** are stored as FastCDC chunks
+  (`scan::chunk_boundaries`, min 256 KiB / avg 1 MiB / max 4 MiB); each
+  chunk is a blob; the entry hash names a protobuf `ChunkList` object and
+  `chunked = true`. `ObjectStore::read_entry` reassembles; checkout,
+  restore, diff, merge, archive, git export, secret scanning and license
+  detection all read through it. Push uploads chunk lists and chunks
+  (closure expansion), fetch/clone download them, staged uploads include
+  them.
+- Server: `UploadObjects` accepts `CHUNK_LIST`; `Push` step 5 expands
+  chunked entries (chunk list + every chunk must be stored); manifests'
+  reachability (`DownloadObjects` scoping, GC) includes chunk lists and
+  chunks; `DownloadObjects` **requires** `x-wt-tree-id` for non-admins
+  (`FailedPrecondition` otherwise; the SDK always sends it), serves only
+  objects reachable from the tree and refuses blobs of paths the caller may
+  not read (license `CheckRead` per path); objects are labelled with their
+  kind. Max object size stays 64 MiB.
+- SDK handles `stubbed_paths`: those files are not written on checkout,
+  are listed in `.wt/trees/<tree>/stubbed` and reported by `wt status`
+  ("restricted").
+- Shallow sync: `wt clone --depth N`, `wt fetch --depth N`, `wt fetch
+  --deepen N`, `wt pull --depth N` (uses `PullRequest.depth`). Boundary
+  snapshot ids are stored in `.wt/trees/<tree>/shallow`; `wt log` stops
+  there (marking "(shallow boundary)"); merge-base searches that hit the
+  boundary fail with a clear error suggesting `wt fetch --deepen`.
+- Owns: `crates/worktree-sdk/src/{store.rs,scan/cdc.rs,repo/working.rs,
+  remote/{push,fetch,clone,stage,client}.rs}`, `syncsvc/objects.go`,
+  `syncsvc/push.go` (step 5 only), `commands/sync.rs` (depth flags),
+  `commands/status.rs`.
+
+### 13.3 Operations (workstream `ops`)
+
+- Config (flag / env): `--tls-cert/--tls-key` (`WT_TLS_CERT/WT_TLS_KEY`;
+  serves HTTPS + gRPC over TLS with ALPN h2), `--tls-client-ca`
+  (`WT_TLS_CLIENT_CA`, optional mTLS); a warning is logged when listening
+  in cleartext on a non-loopback address. `--gc-interval` (`WT_GC_INTERVAL`,
+  default `24h`, `0` disables), `--gc-grace` (`WT_GC_GRACE`, default `720h`),
+  `--staged-retention` (`WT_STAGED_RETENTION`, default `168h`, `0` keeps),
+  `--audit-retention` (`WT_AUDIT_RETENTION`, default `0` keeps),
+  `--rate-limit` (`WT_RATE_LIMIT`, requests per minute per principal or
+  anonymous IP, default `1200`, `0` disables), `--default-max-trees`,
+  `--default-max-storage` (bytes; `WT_DEFAULT_MAX_TREES`,
+  `WT_DEFAULT_MAX_STORAGE`; default `0` = unlimited).
+- `gc.Collector`: mark from every branch tip, tag, staged snapshot, MR
+  source/target tip and release snapshot/asset (manifests, blobs, chunk
+  lists, chunks); unreachable objects are recorded in doc collection
+  `gc_marks` (key = hex hash, value `{marked_at}`) and deleted once older
+  than the grace period and still unreachable; reachable marked objects are
+  unmarked. Also deletes staged snapshots older than the staged retention
+  and audit events older than the audit retention (add
+  `MetaStore.PruneAudit(ctx, before time.Time) (int, error)`). Runs on the
+  interval ticker and on demand. Doc `gc_runs` (key = RFC3339 start) keeps
+  the last 20 `GCReport`s.
+- `limits.Limiter`: `PushChecker` for tenant quotas (`MaxStorageBytes`
+  using doc `tenant_usage` `{bytes}` updated by new objects of accepted
+  pushes; `MaxBranchesPerTree` for new branches) → `PushDenied{Kind:
+  "quota_exceeded", Reason:"<limit name>"}`; `MaxTrees` and `MaxMembers`
+  enforced by the REST tree-create and member-add handlers (409
+  `quota_exceeded`). Effective limits = tenant `Limits` overriding server
+  defaults. Rate limiting: token bucket per principal (account / service
+  account id) or remote IP; HTTP `429 {"code":"rate_limited"}` with
+  `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`; gRPC
+  `ResourceExhausted` (interceptors in `server.go`). `/healthz` and
+  `/metrics` are exempt.
+- REST: `POST /admin/gc?dry_run=true|false` → `GCReport`; `GET /admin/gc`
+  → `{"config":{...},"runs":[GCReport]}`; `GET|PUT /admin/tenants/{t}/limits`
+  (`TenantLimits`); `GET /tenants/{t}/usage` → `{"trees","branches",
+  "members","storage_bytes","limits":TenantLimits,"effective":TenantLimits}`;
+  `GET /audit` gains `resource_type`, `resource_id`, `until`, action
+  prefixes (`iam.*`) and `format=ndjson` (streams every match, no limit;
+  `Content-Type: application/x-ndjson`).
+- `/healthz`: `{"status":"ok"|"degraded","version","uptime_seconds",
+  "checks":{"meta":"ok","objects":"ok"}}`; `503` when a probe fails.
+- Metrics: `wt_sync_pushes_total{result}`, `wt_sync_pulls_total`,
+  `wt_authz_decisions_total{decision}` (allow/deny, from the HTTP and gRPC
+  layers), `wt_mr_merges_total`, `wt_gc_runs_total`,
+  `wt_gc_deleted_objects_total`, `wt_rate_limited_total`.
+- Audit completeness: `access.denied` for every 403 answered by the REST
+  API and every gRPC `PermissionDenied` (details: method/route, action when
+  known); `server.start` / `server.stop` events.
+- CLI: `wt admin gc [--dry-run]`, `wt admin gc-status`, `wt admin limits
+  <tenant> [--max-trees N] [--max-storage SIZE] [--max-branches N]
+  [--max-members N] [--rate N] [--clear]`, `wt admin usage <tenant>`,
+  `wt audit --resource-type --resource-id --until --format ndjson`.
+- Owns: `internal/{gc,limits,config,audit}`, `server/server.go`
+  (TLS, interceptors, tickers), `httpapi/{ops.go,middleware.go,respond.go,
+  metrics.go,admin.go}`, `httpapi/httpapi.go` (`handleHealth` only), meta
+  audit methods, `commands/{admin,audit}.rs`.
+
+### 13.4 Reviews, CI and linked merges (workstream `review-ci`)
+
+- Approvals record `SnapshotID` = source tip at approval time. Merge counts
+  approvals with decision `approved` whose `SnapshotID` equals the current
+  source tip (`""` = legacy, counts). A `changes_requested` review from a
+  principal with `mr:approve` blocks merging until that principal approves
+  the current tip. `POST {tree}/merge-requests/{n}/review`
+  `{"decision","body"}` (approve endpoint = decision approved; authors
+  cannot approve their own MR; `commented` needs only tree:read).
+- Comments: `GET|POST {tree}/merge-requests/{n}/comments`
+  `{"body","path?","line?","snapshot_id?"}`, `PATCH|DELETE
+  .../comments/{id}` (author, or tree:admin; PATCH may set `resolved`).
+  Doc `mr_comments`, key `DocKey(treeID, %08d number, id)`.
+- CI: `POST {tree}/ci/status` `{"snapshot","context","state",
+  "description?","target_url?"}` requires `ci:report`; `GET
+  {tree}/ci/status?snapshot=ID|branch=NAME` → `{"snapshot","state",
+  "checks":[CIStatus]}`; combined state = `failure` if any failure/error,
+  else `pending` if any pending, else `success` (none → `""`). Doc
+  `ci_status`, key `DocKey(treeID, snapshotID, context)`. Event `ci.status`.
+- Merge readiness: `GET {tree}/merge-requests/{n}/checks` →
+  `{"mergeable","blockers":[{"kind","message"}],"approvals":{"required",
+  "current","stale"},"ci":{"state","required":[..],"missing":[..]},
+  "todos":{"blocking_open"}}`. Merge enforces: required approvals,
+  changes-requested, `RequireCIPass` (every `RequiredChecks` context
+  `success` on the source tip; empty list = every reported check),
+  `BlockOnTodos` (open blocking TODOs whose `TargetBranch` is the source
+  branch in this tree, read from doc collection `todos` §13.5),
+  `RequireLinear` (source must be a fast-forward; also enforced for direct
+  pushes: merge snapshots rejected). Failures: `409` with
+  `{"code":"merge_blocked","message"}`.
+- Linked groups: `POST /tenants/{t}/linked-groups` `{"name","members":
+  [{"tree":"tenant/tree","number"}]}` (caller needs mr:merge on every
+  member tree), `GET /tenants/{t}/linked-groups[/{id}]`, `POST
+  .../{id}/merge` (all members must be mergeable; tips are moved with
+  compare-and-swap in order and rolled back on failure; event
+  `group.merged`), `DELETE .../{id}` closes the group. Members get
+  `MergeRequest.LinkedGroup`; merging a member alone → `409
+  {"code":"linked_group"}`. Doc `linked_groups`, key `DocKey(tenantID, id)`.
+- Tag protections: `GET|PUT|DELETE {tree}/tag-protections` (DELETE
+  `?pattern=`), doc `tag_protections` key `DocKey(treeID, pattern)`;
+  enforced by `PushTag` (NoMove: existing tags cannot be replaced;
+  AllowedTaggers), REST tag create/delete and `DeleteTag` paths.
+- CLI: `wt mr review <n> --approve|--request-changes|--comment [-m]`, `wt mr
+  comment <n> -m [--path --line]`, `wt mr comments <n>`, `wt mr checks <n>`,
+  `wt mr link <name> TREE#N...`, `wt mr merge-group <id>`, `wt mr groups`,
+  `wt ci report --snapshot --context --state [--description --url]`, `wt ci
+  status [--snapshot|--branch]`, `wt protect set ... --require-ci
+  [--check NAME]... --require-signed --require-linear --block-on-todos`,
+  `wt protect tag set|list|remove PATTERN [--no-delete --no-move
+  --tagger U]`.
+- Owns: `internal/{review,ci}`, `httpapi/{mergerequests.go,ci.go,
+  reviews.go,manage.go}`, `syncsvc/trees.go` (PushTag/tag paths),
+  `commands/{mr,protect,ci}.rs`.
+
+### 13.5 Dependencies, TODOs and releases (workstream `deps-releases`)
+
+- `wt snapshot --depend TREE[@BRANCH] [--depend-tenant T] --todo TITLE
+  [--details TEXT] [--priority low|medium|high|critical] [--blocking]
+  [--linked]` (repeatable as a group; `--depend` without `--todo` uses the
+  snapshot message's first line) fills `SnapshotOptions.dependencies`.
+- `todo.Service` subscribes to `branch.pushed`; for each newly pushed
+  snapshot (`History.Missing(new_tip, [old_tip])`) and each dependency it
+  resolves the target tree (dependency tenant slug or the source tenant),
+  requires the pusher to have `tree:read` on it (else audit
+  `todo.skipped`), deduplicates by (source snapshot, target tree, title)
+  and creates a `Todo` (status `open`, number from `NextSeq("todo/" +
+  treeID)`), event `todo.created` in the target tenant. A snapshot pushed
+  to a tree whose message contains a line `Completes: #N` (or
+  `Completes: tenant/tree#N`) marks that TODO `done` with `ResolvedBy`.
+  Doc `todos`, key `DocKey(treeID, %010d number)`; index doc
+  `todo_sources`, key `DocKey(sourceSnapshotID, targetTreeID, title)`.
+- REST: `GET {tree}/todos?status=&branch=&assignee=` → `{"todos":[Todo]}`,
+  `POST {tree}/todos` (manual), `GET {tree}/todos/{n}`, `PATCH {tree}/todos/{n}`
+  (`title, details, priority, blocking, status`), `POST
+  {tree}/todos/{n}/claim` (assign to caller, `in_progress`), `POST
+  .../complete` (`{"snapshot?"}`), `POST .../cancel`; writes need
+  tree:write. `GET {tree}/dependencies?branch=` → `{"outgoing":[{
+  "snapshot_id","dependency":Dependency,"todo":{"tenant","tree","number",
+  "status"}|null}],"incoming":[Todo]}`.
+- Releases: `GET|POST {tree}/releases` (`{"tag","name","notes","draft",
+  "prerelease","snapshot?"}` — creates the tag at `snapshot` when it does
+  not exist), `GET|PATCH|DELETE {tree}/releases/{tag}`, `PUT
+  {tree}/releases/{tag}/assets/{name}` (raw body ≤ 64 MiB, stored in the
+  object store), `GET .../assets/{name}` (download with Content-Type and
+  Content-Disposition), `DELETE .../assets/{name}`. Actions
+  `release:create` / `release:delete`; events `release.created/deleted`.
+  Doc `releases`, key `DocKey(treeID, tag)`.
+- CLI: `wt todo list [--status --all-trees] | show N | claim N | complete N
+  [--snapshot] | cancel N | create TITLE ...`, `wt deps status [--branch]`,
+  `wt deps graph [--format dot]`, `wt release list | create TAG [--name
+  --notes --notes-file --draft --prerelease --snapshot] | show TAG | edit TAG
+  | delete TAG | upload TAG FILE... | download TAG [ASSET] [-o DIR]`.
+- Owns: `internal/{todo,release}`, `httpapi/{todos.go,releases.go}`,
+  `commands/{snapshot,todo,deps,release}.rs`.
+
+### 13.6 Snapshot signing (workstream `signing`)
+
+- Keys: Ed25519 (`ed25519-dalek` in Rust, `crypto/ed25519` in Go). Local
+  private keys at `<wt home>/keys/<name>.key` (hex seed, mode 0600) and
+  `.pub`; `[signing] key = "<name>"`, `auto = true|false`; `wt snapshot
+  --sign` signs one snapshot. Signature = Ed25519 over
+  `signing::signed_payload` (SnapshotRecord protobuf with `signature`,
+  `signing_key_id`, `tree_id`, `branch_name` cleared);
+  `SnapshotSignature.key_id` = server key id (stored in the key's `.pub`
+  metadata after `wt identity register`; unregistered keys sign with the
+  fingerprint as id and the server resolves by fingerprint).
+- Server: `GET|POST /auth/keys` (`{"name","public_key":base64}` →
+  `SigningKey`), `DELETE /auth/keys/{id}` (revokes), `GET
+  /accounts/{username}/keys` (public keys, any authenticated caller).
+  Docs `signing_keys` key `DocKey(accountID, id)` and `signing_key_index`
+  key = id and = fingerprint → `{account_id,id}`. `signing.Service`
+  implements `PushChecker`: every new snapshot carrying a signature must
+  verify against an unrevoked registered key (else
+  `PushDenied{Kind:"signature_required", Reason:"snapshot X has an invalid
+  signature"}`) and is stored with `Verified=true`; on branches whose
+  protection has `RequireSigned`, every new snapshot must be verified.
+  Audit `snapshot.signature_invalid`.
+- CLI: `wt identity generate [NAME] [--force]`, `wt identity list`, `wt
+  identity show [NAME]` (fingerprint, public key), `wt identity register
+  [NAME]` (uploads, records id), `wt identity revoke ID`, `wt identity
+  verify [SNAPSHOT]` (local verification against registered/local keys);
+  `wt log --show-signature` is provided by the history owner via
+  `signing::verify_local`.
+- Owns: `crates/worktree-sdk/src/signing.rs`, `internal/signing`,
+  `httpapi/keys.go`, `commands/identity.rs`, SDK/CLI `--sign` plumbing in
+  `commands/snapshot.rs` (coordinate: `deps-releases` owns the file; add
+  the flag in a separate, clearly marked block).
+
+### 13.7 Declarative access and IAM completeness (workstream `access`)
+
+- Files: `.wt/access/roles.toml`, `.wt/access/policies.toml` (tenant
+  scope) and `<tree>/.wt-tree/access/policies.toml` (tree scope, **deny
+  statements only**). Format:
+
+  ```toml
+  [[role]]
+  name = "release-manager"
+  description = "Cut releases"
+  permissions = ["tree:read", "release:*", "mr:merge"]
+
+  [[policy]]
+  name = "protect-main"
+  description = "Only maintainers push to main"
+  enabled = true
+  [[policy.statement]]
+  sid = "no-direct-main"
+  effect = "deny"            # allow | deny
+  principals = ["role:developer", "team:contractors", "user:bob", "tenant:partner"]
+  actions = ["branch:push"]
+  resources = ["wt:branch/acme/web/main"]
+  conditions = { mfa = true }
+  ```
+
+  Permission aliases accepted in TOML and translated (warning in `plan`):
+  `sync:push`→`branch:push`, `snapshot:create`→`tree:write`,
+  `branch:merge`→`mr:merge`, `tree:delete`→`tree:admin`.
+- Rust: `worktree_protocol::access::declarative::{parse_roles,
+  parse_policies, compile}` → canonical JSON `{"roles":[CustomRole JSON],
+  "policies":[Policy JSON]}` (the Go JSON field names) with validation
+  errors `E2001..` (unknown action, bad principal, bad resource, duplicate
+  name, allow statement in a tree document, …). SDK
+  `remote::access::{plan, apply, pull}` call `SyncAccessConfig` (content =
+  canonical JSON of both roles and policies, `config_type` =
+  `ACCESS_CONFIG_TYPE_POLICIES`, `tree_id` set for tree documents,
+  `dry_run` for plan) and `GetAccessConfig` (pull).
+- Server `accesscfg.Service.Apply(ctx, p, tenant, tree, content, dryRun)`:
+  decode, validate (`authz.ValidateStatements`, roles via
+  `authz.ValidatePermissions`, references to teams/accounts exist), refuse
+  escalation (every permission granted by a role/allow statement must be
+  in the caller's effective permissions unless the caller is an owner or
+  server admin), compute the plan (`create|update|delete` per policy/role
+  managed by config — `Policy.ManagedBy` / `CustomRole.ManagedBy` =
+  `"config"`, add these fields), and when not a dry run replace them
+  atomically, store `AccessConfigDoc` (doc `access_docs`, key
+  `DocKey(tenantID, treeID)`), audit `access.applied` with the plan, event
+  `access.applied`. Policies/roles managed by config are read-only in the
+  REST API (`409 {"code":"managed_by_config"}`) unless `?force=true` by an
+  owner. `SyncAccessConfig` and `GetAccessConfig` use the service.
+- REST: `GET /tenants/{t}/access-config` → `AccessConfigDoc|404`, `POST
+  /tenants/{t}/access-config/plan` and `/apply` (`{"content":<canonical
+  JSON object>}` → `{"accepted","errors","changes"}`), same under
+  `{tree}/access-config`. `POST /iam/simulate` accepts
+  `"candidate_policies":[Policy]` replacing the tenant's policies for the
+  evaluation (dry run of a policy change).
+- Principals: `tenant:<slug>` in policy statements matches every member of
+  that tenant (and its service accounts); grants accept
+  `subject_type:"tenant"` (cross-tenant tree access at the granted role).
+- Lockout guard: policy deny statements never apply to tenant owners for
+  `iam:*` and `tenant:admin` (decision reason `owner_protected`); removing
+  or demoting the last owner of a tenant → `409 {"code":"last_owner"}`.
+- Tenant status: `PATCH /admin/tenants/{t}` `{"status","status_reason"}`
+  (server admin); authz denies every write action for `suspended` tenants
+  (reason `tenant_suspended`) and everything for `deactivated` ones (server
+  admins excepted); suspension revokes nothing. CLI `wt tenant suspend|
+  resume|deactivate <tenant> [--reason]`.
+- CLI: `wt access validate [--dir]`, `wt access plan [--tenant]`, `wt access
+  apply [--tenant] [--yes]`, `wt access pull [--tenant]` (writes TOML),
+  `wt policy simulate --file policy.json ...` (dry run).
+- Owns: `crates/worktree-protocol/src/access/**`, SDK `remote/access.rs`,
+  `internal/{accesscfg,authz,iam}`, `syncsvc/accesscfg.go`,
+  `httpapi/{access_routes.go,iam*.go,tenants.go}`, `domain/iam.go`,
+  `commands/{access,policy,tenant,grant}.rs`.
+
+### 13.8 Git bridge, exports and license tooling (workstream `git-export`)
+
+- `wt git import <URL|PATH> [--branches a,b|--all-branches] [--tree NAME]`
+  clones a Git remote (libgit2/gix as already used) into a new or existing
+  tree; `wt git push <URL|PATH> [--branch B]... [--force]` exports and
+  pushes to a Git remote; `wt git remote add|list|remove NAME URL` stores
+  Git remotes in `.wt/config.toml` `[git_remote.NAME] url`.
+- Archives: `wt archive` and `wt git export` consult the tree's license
+  rules (cached from the server when the tree has a remote; `--no-license`
+  skips) and add a generated `LICENSES/NOTICE` file listing SPDX ids per
+  path; paths whose rule forbids redistribution are skipped with a warning
+  (`--include-restricted` keeps them).
+- Server: `GET {tree}/archive/{snapshot}?format=tar.gz|zip` streams an
+  archive of the snapshot, omitting paths the caller may not read and
+  adding the NOTICE (license-aware export, audit `tree.export`).
+- `wt license detect [PATH]` runs `scan::detect_license` over files and
+  prints SPDX guesses; `wt license detect --apply` proposes server rules.
+- Owns: `crates/worktree-git/**`, `commands/{git,archive}.rs`,
+  `commands/license.rs` (`detect` subcommand; `sec-paths` adds flags to
+  `set`), `httpapi/exports.go`.
+
+### 13.9 Local engine configuration (workstream `local-config`)
+
+- Hierarchy: `<wt home>/config.toml` (user defaults: `[user]`, `[signing]`,
+  `[secret_scanning]`) < `.wt/config.toml` < `<tree>/.wt-tree/config.toml`
+  (`[auto_snapshot]`, `[secret_scanning]`, `[hooks]`). `wt config get
+  --show-origin`, `wt config set --tree NAME|--global`. Unknown keys are
+  preserved on save. `auto_snapshot.inactivity_timeout_secs` is accepted as
+  an alias of `inactivity_secs`; new keys `max_changed_bytes`,
+  `message_format` (`{count}`, `{files}`, `{branch}` placeholders),
+  `on_branch_switch` (`snapshot|stash|refuse`).
+- Ignore: root `.wtignore` patterns cannot be re-included by nested
+  `!pattern`s (fix the deepest-first early return); `<tree>/.wt-tree/ignore`
+  is read as an additional ignore file; `.git/` is always ignored; soft
+  defaults (`__pycache__/`, `*.pyc`, `.env`, `*.log`, `node_modules/`,
+  `.venv/`, `dist/`, `build/`, `target/`) apply unless `!`-negated; compiled
+  matchers are cached per tree.
+- Secret scanning honours `[secret_scanning]` (`enabled`,
+  `block_on_match` = false → warn only, extra `patterns`, `exclude` globs).
+- Hooks (`hooks.rs`): executables `.wt/hooks/<phase>` and
+  `<tree>/.wt-tree/hooks/<phase>` (`pre-snapshot`, `post-snapshot`; on
+  Windows also `<phase>.cmd|.bat|.ps1`), env `WT_HOOK`, `WT_TREE`,
+  `WT_TREE_PATH`, `WT_BRANCH`, `WT_SNAPSHOT` (post), `WT_ROOT`, cwd = tree
+  root, `[hooks] timeout_secs`; a failing pre hook aborts with
+  `SdkError::Other("pre-snapshot hook failed: …")`; post hook failures are
+  logged to stderr. `--no-verify` on `wt snapshot` skips hooks.
+- `wt tree validate [NAME]` checks the tree layout (`.wt-tree/` marker,
+  config parses, ignore parses, no nested `.wt/`) and `wt tree init-config`
+  scaffolds `.wt-tree/{config.toml,ignore,hooks/,access/}`.
+- Owns: `crates/worktree-sdk/src/{config.rs,hooks.rs,repo/ignore_rules.rs,
+  scan/secrets.rs,scan/mod.rs}`, `commands/{config,ignore,tree}.rs`.
+
+### 13.10 Merge, diff and history (workstream `merge-diff`)
+
+- `wt merge --strategy ours|theirs|manual` (default manual: conflict
+  markers); conflict labels use short ids (`<<<<<<< ours (main 1a2b3c4d)`);
+  `ConflictInfo.hunks` (`[{ours_start, ours_len, theirs_start,
+  theirs_len}]`) stored in `.wt/conflicts/`; `wt merge resolve PATH
+  --ours|--theirs|--file F`, `wt merge resolve --all --ours|--theirs`,
+  `wt merge abort`, `wt merge status`.
+- `wt revert SNAPSHOT [--message M] [--parent N]` (merge snapshots need
+  `--parent`); revert snapshots set `reverts`.
+- `wt diff --find-renames[=PCT]` (exact + similarity renames, shown as
+  `renamed: a -> b`), `--word-diff`, `--stat`, `--name-status`.
+- Reflog: `wt reflog [--branch B] [--limit N]`, revisions `@{N}` and
+  `BRANCH@{N}` resolve through the reflog, `wt reflog expire [--older-than
+  90d] [--keep N]` (default retention 90 days / 1000 entries per tree,
+  applied by the daemon maintenance task through an SDK API).
+- `wt log --show-signature` (uses `signing::verify_local` once available;
+  until then prints "unverified"), `wt show` prints dependencies and
+  `Reverts:`.
+- Owns: `crates/worktree-sdk/src/{merge/**,diff/**,repo/{merging,diffing,
+  reflog,history}.rs}`, `commands/{merge,diff,history}.rs`.
+
+### 13.11 Background daemon (workstream `daemon`)
+
+- IPC: `bg.json` gains a random `token`; every IPC request carries it and
+  the daemon rejects others (the CLI reads it from `bg.json`).
+- Sync loop: when `sync.auto_fetch`, the daemon opens `WatchBranches` for
+  the worktree's linked trees and fetches remote branches on each event
+  (exponential backoff 1s→5min when offline, periodic fetch every
+  `sync.interval_secs` as a fallback). Server `WatchBranches` streams
+  `BranchEvent`s for trees the caller can read (subscribes to the event bus:
+  `branch.pushed`, `branch.created`, `branch.deleted`); `Unstage` deletes
+  the caller's staged snapshot (event `staged.cleared`).
+- Snapshot on daemon shutdown and before branch switches when
+  `auto_snapshot.on_branch_switch = "snapshot"`; maintenance every 6 h
+  (reflog expiry, stale lock cleanup); `wt daemon restart`, `wt daemon logs
+  [-n N] [--follow]` (log file `<wt home>/bg.log`), `wt daemon snapshot`
+  (snapshot every tree now), `wt init --watch` / `wt clone --watch` start
+  the daemon; `wt status` hints when the daemon is not running but
+  auto-snapshot is enabled.
+- `wt stage --discard` / `wt unstage` call `Unstage`; REST `DELETE
+  {tree}/staged?branch=` (own entry; tree:admin may pass `account=`).
+- Owns: `crates/worktree-bg/**`, `crates/worktree-sdk/src/ipc.rs`, SDK
+  `remote/watch.rs` (new; add `watch_branches`/`unstage` methods in a
+  separate `impl RemoteClient` block in that file), `syncsvc/watch.go`
+  (new), `httpapi/staged_routes.go` (`registerStagedRoutes`, already
+  registered), `commands/{daemon,init}.rs`, `commands/sync.rs`
+  (`stage --discard`, `unstage`, `--watch` only; `chunks` owns the depth
+  flags).
+
+### 13.12 Admin panel (workstreams `admin-tree`, `admin-ops`)
+
+Same rules as §11.2 (monochrome shadcn, TanStack Query, tests with
+vitest + Testing Library). New API client modules: `api/v05tree.ts`
+(`admin-tree`) and `api/v05ops.ts` (`admin-ops`), each with its own types;
+do not edit `api/types.ts`/`api/queries.ts` except to add query keys at
+the end of `keys` (one line each).
+
+- `admin-tree`: `TodosTab` (filter, claim/complete/cancel, create),
+  `ReleasesTab` (list, create, edit, delete, assets upload/download), MR
+  detail: review decisions (approve / request changes / comment), stale
+  approval badges, comment threads (file/line), CI checks panel, merge
+  readiness blockers, linked group; Protections tab: new rule fields and
+  tag protections; History/Snapshot detail: signature badge (verified),
+  dependencies, reverts link; Files tab: restricted paths notice. Owns
+  `pages/tree/**`, `api/v05tree.ts`.
+- `admin-ops`: `OperationsPage` (run GC / dry run, run history, usage and
+  limits per tenant, server defaults), tenant Settings tab: status
+  (suspend/resume/deactivate) and limits; Settings page: signing keys card
+  (list, add public key, revoke); Audit page: resource/until filters and
+  NDJSON export; tenant IAM: "Access config" tab (last applied document,
+  plan/apply from pasted JSON); `pages/security/scopes.ts` gains the v0.5
+  actions. Owns `pages/{OperationsPage,AuditPage,SettingsPage}.tsx`,
+  `pages/tenants/**`, `pages/iam/**`, `pages/security/**`,
+  `api/v05ops.ts`.
+
+### 13.13 Specs (workstreams `specs-core`, `specs-iam`, `specs-sync`)
+
+Rewrite each spec to describe the system as built after v0.5 (code paths,
+real message/field names, CLI commands, REST paths, config keys), with
+three closing sections: **Implementation status** (built / partial),
+**Roadmap** (described but not built) and **References** (source files).
+Keep design rationale that still holds; delete statements that are false.
+`specs-core`: `WorkTree.md`, `README.md`, `tree/Tree.md`, `dot-wt/DotWt.md`,
+`dot-wt-tree/DotWtTree.md`, `bgprocess/BgProcess.md`. `specs-iam`:
+`iam/{IAM,DeclarativeAccess,TenantModel}.md`, `visibility/*`,
+`licensing/LicenseCompliance.md`, `security/Security.md`. `specs-sync`:
+`server/Server.md`, `sync/*`, `storage/*`.
+
+### 13.14 Document collections (DocStore)
+
+| collection | key | value | owner |
+|---|---|---|---|
+| `todos` | `DocKey(treeID, %010d number)` | `Todo` | deps-releases |
+| `todo_sources` | `DocKey(sourceSnapshotID, targetTreeID, title)` | `{tree_id, number}` | deps-releases |
+| `releases` | `DocKey(treeID, tag)` | `Release` | deps-releases |
+| `ci_status` | `DocKey(treeID, snapshotID, context)` | `CIStatus` | review-ci |
+| `mr_comments` | `DocKey(treeID, %08d number, id)` | `ReviewComment` | review-ci |
+| `linked_groups` | `DocKey(tenantID, id)` | `LinkedGroup` | review-ci |
+| `tag_protections` | `DocKey(treeID, pattern)` | `TagProtection` | review-ci |
+| `signing_keys` | `DocKey(accountID, id)` | `SigningKey` | signing |
+| `signing_key_index` | key id or fingerprint | `{account_id, id}` | signing |
+| `access_docs` | `DocKey(tenantID, treeID)` | `AccessConfigDoc` | access |
+| `gc_marks` | hex hash | `{marked_at}` | ops |
+| `gc_runs` | RFC3339Nano start | `GCReport` | ops |
+| `tenant_usage` | tenantID | `{bytes}` | ops |
+
+Tree deletion: `DELETE {tree}` publishes `tree.deleted` (payload
+`{name}`, TreeID set); owners of tree-scoped collections delete their
+documents from a bus subscriber (`DeleteDocs(coll, meta.DocPrefix(treeID))`).
+
+### 13.15 Rules for every workstream
+
+- Stay inside the files you own (listed above). If you must touch another
+  workstream's file, keep the change minimal, in its own clearly
+  commented block, and say so in your final report.
+- Every feature ships with tests (Go `_test.go` with `meta.NewMemory()`,
+  Rust unit/integration tests, vitest for UI) and must pass §10 commands for
+  the components you touched: `cargo fmt --all --check`, `cargo clippy
+  --workspace --all-targets -- -D warnings`, `cargo test -p <crate>`,
+  `go vet ./... && go test ./...` (in `services/server-go`), admin
+  `npm run lint && npx tsc -b && npx vitest run`.
+- Update `docs/cli-reference.md`-style help text through clap doc comments
+  (the reference is regenerated after merge). Do not edit
+  `docs/ENGINEERING_PLAN.md`.
+- Commit on your branch with a descriptive message; do not merge.

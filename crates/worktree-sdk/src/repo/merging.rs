@@ -127,7 +127,7 @@ impl Repository {
         )?;
 
         if result.conflicts.is_empty() {
-            let snapshot = Snapshot {
+            let mut snapshot = Snapshot {
                 id: uuid::Uuid::new_v4().to_string(),
                 tree_id: rec.id.clone(),
                 branch: branch.clone(),
@@ -137,7 +137,11 @@ impl Repository {
                 message,
                 created_at: Utc::now(),
                 auto_generated: false,
+                dependencies: Vec::new(),
+                reverts: None,
+                signature: None,
             };
+            crate::signing::sign_snapshot(self, &mut snapshot)?;
             self.write_snapshot(&snapshot)?;
             self.write_tip(tree, &branch, Some(&snapshot.id))?;
             self.save_index(tree, &working.index)?;
@@ -306,7 +310,7 @@ impl Repository {
             &mut working.index,
         )?;
         let summary = target.message.lines().next().unwrap_or_default();
-        let snapshot = Snapshot {
+        let mut snapshot = Snapshot {
             id: uuid::Uuid::new_v4().to_string(),
             tree_id: rec.id.clone(),
             branch: branch.clone(),
@@ -319,7 +323,11 @@ impl Repository {
             ),
             created_at: Utc::now(),
             auto_generated: false,
+            dependencies: Vec::new(),
+            reverts: Some(target.id.clone()),
+            signature: None,
         };
+        crate::signing::sign_snapshot(self, &mut snapshot)?;
         self.write_snapshot(&snapshot)?;
         self.write_tip(tree, &branch, Some(&snapshot.id))?;
         self.save_index(tree, &working.index)?;
@@ -505,6 +513,7 @@ impl Repository {
                                 hash,
                                 size: text.len() as u64,
                                 executable,
+                                chunked: false,
                             });
                         }
                         TextMergeResult::Conflicted { merged, .. } => {
@@ -580,6 +589,7 @@ mod tests {
                     hash: hash_bytes(c.as_bytes()),
                     size: c.len() as u64,
                     executable: false,
+                    chunked: false,
                 })
                 .collect(),
         )

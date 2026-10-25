@@ -300,7 +300,8 @@ func TestEffectivePermissions(t *testing.T) {
 	want := []domain.Action{
 		domain.ActTenantRead, domain.ActTreeRead, domain.ActTreeWrite,
 		domain.ActBranchCreate, domain.ActBranchDelete, domain.ActBranchPush,
-		domain.ActMRApprove, domain.ActMRMerge, domain.ActIAMRead,
+		domain.ActMRApprove, domain.ActMRMerge,
+		domain.ActReleaseCreate, domain.ActReleaseDelete, domain.ActCIReport, domain.ActIAMRead,
 	}
 	if !equalActions(got, want) {
 		t.Errorf("tree permissions = %v\nwant %v", got, want)
@@ -312,7 +313,7 @@ func TestEffectivePermissions(t *testing.T) {
 	}
 	want = []domain.Action{
 		domain.ActTenantRead, domain.ActTreeRead, domain.ActTreeWrite, domain.ActBranchCreate,
-		domain.ActBranchPush, domain.ActMRCreate, domain.ActIAMRead,
+		domain.ActBranchPush, domain.ActMRCreate, domain.ActReleaseCreate, domain.ActCIReport, domain.ActIAMRead,
 	}
 	if !equalActions(got, want) {
 		t.Errorf("tenant permissions = %v\nwant %v", got, want)

@@ -255,6 +255,9 @@ message PullResponse {
   repeated ContentHash objects_to_fetch = 4;
   // Full records for every snapshot in `snapshot_chain` (oldest first).
   repeated SnapshotRecord snapshots = 5;
+  // v0.5: paths whose content the caller may not read (license rules); their
+  // blobs are not in objects_to_fetch and DownloadObjects refuses them.
+  repeated string stubbed_paths = 6;
 
   reserved 100 to 199;
 }
@@ -309,6 +312,11 @@ message AccessConfigSyncRequest {
   bytes content = 3;
   ContentHash config_hash = 4;
   AccountId account_id = 5;
+  // v0.5: tree-level documents (from <tree>/.wt-tree/access/) may only
+  // restrict access (deny statements).
+  optional TreeId tree_id = 6;
+  // v0.5: validate and report the changes without applying them.
+  bool dry_run = 7;
 
   reserved 100 to 199;
 }
@@ -317,6 +325,8 @@ message AccessConfigSyncRequest {
 message AccessConfigSyncResponse {
   bool accepted = 1;
   repeated string validation_errors = 2;
+  // v0.5: human-readable plan, e.g. "policy protect-main: update (2 statements)".
+  repeated string changes = 3;
 
   reserved 100 to 199;
 }
@@ -400,14 +410,27 @@ service SyncService {
 
   // Liveness + identity probe ("who am I").
   rpc Ping(PingRequest) returns (PingResponse);
+
+  // ---- v0.5 (docs/ENGINEERING_PLAN.md §13) ----
+
+  // Stream branch updates of the given trees until the client disconnects
+  // (the daemon uses it to fetch remote changes as they land).
+  rpc WatchBranches(WatchBranchesRequest) returns (stream BranchEvent);
+
+  // Discard the caller's staged (WIP) snapshot on a branch.
+  rpc Unstage(UnstageRequest) returns (UnstageResponse);
+
+  // Read back the last applied declarative access document.
+  rpc GetAccessConfig(GetAccessConfigRequest) returns (GetAccessConfigResponse);
 }
 
 // ============================================================
 // Content-addressed objects (WT-PROTO-3)
 //
 // Object hash = BLAKE3 of the exact `data` bytes (32 bytes).
-//   - BLOB:     raw file content
-//   - MANIFEST: protobuf-encoded ManifestRecord
+//   - BLOB:       raw file content (or one chunk of a large file)
+//   - MANIFEST:   protobuf-encoded ManifestRecord
+//   - CHUNK_LIST: protobuf-encoded ChunkList (a large file split by FastCDC)
 // Snapshots are NOT stored as objects; they travel as SnapshotRecord.
 // ============================================================
 
@@ -415,6 +438,23 @@ enum ObjectKind {
   OBJECT_KIND_UNSPECIFIED = 0;
   OBJECT_KIND_BLOB = 1;
   OBJECT_KIND_MANIFEST = 2;
+  OBJECT_KIND_CHUNK_LIST = 3;
+}
+
+// A large file stored as content-defined chunks (each chunk is a BLOB).
+// The file content is the concatenation of the chunks in order.
+message ChunkList {
+  uint64 size = 1;           // total file size in bytes
+  repeated Chunk chunks = 2;
+
+  reserved 100 to 199;
+}
+
+message Chunk {
+  ContentHash hash = 1;      // BLAKE3 of the chunk bytes (a BLOB object)
+  uint64 size = 2;
+
+  reserved 100 to 199;
 }
 
 message ObjectData {
@@ -440,6 +480,8 @@ message ManifestEntry {
   ContentHash blob_hash = 2;
   uint64 size = 3;
   bool executable = 4;
+  // When true, blob_hash names a CHUNK_LIST object instead of a BLOB.
+  bool chunked = 5;
 
   reserved 100 to 199;
 }
@@ -460,6 +502,85 @@ message SnapshotRecord {
   string message = 7;
   google.protobuf.Timestamp created_at = 8;
   bool auto_generated = 9;
+  // v0.5: declared dependencies on other trees/branches (become TODOs).
+  repeated Dependency dependencies = 10;
+  // v0.5: set on revert snapshots (the snapshot whose changes are undone).
+  optional SnapshotId reverts = 11;
+  // v0.5: Ed25519 signature over SignedSnapshotPayload (see §13.6) and the
+  // id of the account signing key that produced it. Empty = unsigned.
+  bytes signature = 12;
+  string signing_key_id = 13;
+
+  reserved 100 to 199;
+}
+
+// A dependency declared on a snapshot. The target is a tree of the same
+// tenant (tenant_slug empty) or of another tenant, optionally a branch.
+message Dependency {
+  string tenant_slug = 1;
+  string tree = 2;
+  string branch = 3;      // "" = the tree's default branch
+  string title = 4;
+  string details = 5;
+  string priority = 6;    // "low" | "medium" | "high" | "critical"
+  bool blocking = 7;      // the dependent branch may not merge until done
+  bool linked = 8;        // the branches must merge together (linked group)
+
+  reserved 100 to 199;
+}
+
+// Canonical bytes that a snapshot signature covers: the SnapshotRecord with
+// signature and signing_key_id cleared, protobuf-encoded deterministically.
+message SignedSnapshotPayload {
+  SnapshotRecord record = 1;
+
+  reserved 100 to 199;
+}
+
+message WatchBranchesRequest {
+  repeated TreeId tree_ids = 1;
+
+  reserved 100 to 199;
+}
+
+message BranchEvent {
+  TreeId tree_id = 1;
+  string branch_name = 2;
+  optional SnapshotId old_tip = 3;
+  optional SnapshotId new_tip = 4;   // unset when the branch was deleted
+  string actor = 5;
+  google.protobuf.Timestamp at = 6;
+
+  reserved 100 to 199;
+}
+
+message UnstageRequest {
+  TreeId tree_id = 1;
+  string branch_name = 2;
+
+  reserved 100 to 199;
+}
+
+message UnstageResponse {
+  bool removed = 1;
+
+  reserved 100 to 199;
+}
+
+message GetAccessConfigRequest {
+  TenantId tenant_id = 1;
+  optional TreeId tree_id = 2;
+  AccessConfigType config_type = 3;
+
+  reserved 100 to 199;
+}
+
+message GetAccessConfigResponse {
+  bool found = 1;
+  bytes content = 2;
+  ContentHash config_hash = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  string updated_by = 5;
 
   reserved 100 to 199;
 }

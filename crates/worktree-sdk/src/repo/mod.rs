@@ -54,6 +54,8 @@ mod snapshotting;
 mod trees;
 mod working;
 
+pub(crate) use trees::TreeRecord;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

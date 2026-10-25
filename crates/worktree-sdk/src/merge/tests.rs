@@ -441,6 +441,7 @@ fn entry(path: &str, content: u8, executable: bool) -> ManifestEntry {
         hash: ObjectHash::from_bytes([content; 32]),
         size: u64::from(content),
         executable,
+        chunked: false,
     }
 }
 

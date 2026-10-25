@@ -26,24 +26,31 @@ var expectedGrants = map[string]map[domain.Action]bool{
 	domain.RoleDeveloper: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
 		domain.ActTreeWrite: true, domain.ActBranchCreate: true, domain.ActBranchPush: true, domain.ActMRCreate: true,
+		domain.ActReleaseCreate: true, domain.ActCIReport: true,
 	},
 	domain.RoleMaintainer: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
 		domain.ActTreeWrite: true, domain.ActBranchCreate: true, domain.ActBranchPush: true, domain.ActMRCreate: true,
+		domain.ActReleaseCreate: true, domain.ActCIReport: true,
 		domain.ActBranchDelete: true, domain.ActMRApprove: true, domain.ActMRMerge: true, domain.ActTreeCreate: true,
-		domain.ActIAMRead: true,
+		domain.ActReleaseDelete: true,
+		domain.ActIAMRead:       true,
 	},
 	domain.RoleAdmin: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
 		domain.ActTreeWrite: true, domain.ActBranchCreate: true, domain.ActBranchPush: true, domain.ActMRCreate: true,
+		domain.ActReleaseCreate: true, domain.ActCIReport: true,
 		domain.ActBranchDelete: true, domain.ActMRApprove: true, domain.ActMRMerge: true, domain.ActTreeCreate: true,
-		domain.ActIAMRead: true, domain.ActTreeAdmin: true, domain.ActTenantAdmin: true, domain.ActIAMAdmin: true,
+		domain.ActReleaseDelete: true,
+		domain.ActIAMRead:       true, domain.ActTreeAdmin: true, domain.ActTenantAdmin: true, domain.ActIAMAdmin: true,
 	},
 	domain.RoleOwner: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
 		domain.ActTreeWrite: true, domain.ActBranchCreate: true, domain.ActBranchPush: true, domain.ActMRCreate: true,
+		domain.ActReleaseCreate: true, domain.ActCIReport: true,
 		domain.ActBranchDelete: true, domain.ActMRApprove: true, domain.ActMRMerge: true, domain.ActTreeCreate: true,
-		domain.ActIAMRead: true, domain.ActTreeAdmin: true, domain.ActTenantAdmin: true, domain.ActIAMAdmin: true,
+		domain.ActReleaseDelete: true,
+		domain.ActIAMRead:       true, domain.ActTreeAdmin: true, domain.ActTenantAdmin: true, domain.ActIAMAdmin: true,
 	},
 	"":            {}, // non-member
 	"custom-role": {}, // undefined custom role

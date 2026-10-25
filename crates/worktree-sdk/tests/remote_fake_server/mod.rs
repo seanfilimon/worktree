@@ -304,6 +304,7 @@ pub fn seed_manifest(server: &FakeServer, files: &[(&str, &[u8])]) -> Vec<u8> {
             blob_hash: Some(hash(&server.put_object(content))),
             size: content.len() as u64,
             executable: false,
+            chunked: false,
         })
         .collect();
     entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -331,6 +332,7 @@ pub fn snapshot_record(
             nanos: 0,
         }),
         auto_generated: false,
+        ..Default::default()
     }
 }
 
@@ -575,6 +577,7 @@ impl SyncService for Svc {
             snapshot_chain: chain.iter().map(|id| sid(id)).collect(),
             objects_to_fetch: objects,
             snapshots,
+            stubbed_paths: Vec::new(),
         }))
     }
 
@@ -805,6 +808,33 @@ impl SyncService for Svc {
             username: caller.as_ref().map(|a| a.username.clone()),
             tenant_slug: caller.map(|a| a.username),
         }))
+    }
+
+    type WatchBranchesStream =
+        tokio_stream::Iter<std::vec::IntoIter<Result<wire::BranchEvent, Status>>>;
+
+    async fn watch_branches(
+        &self,
+        req: Request<wire::WatchBranchesRequest>,
+    ) -> Result<Response<Self::WatchBranchesStream>, Status> {
+        self.require(&req)?;
+        Ok(Response::new(tokio_stream::iter(Vec::new())))
+    }
+
+    async fn unstage(
+        &self,
+        req: Request<wire::UnstageRequest>,
+    ) -> Result<Response<wire::UnstageResponse>, Status> {
+        self.require(&req)?;
+        Ok(Response::new(wire::UnstageResponse { removed: false }))
+    }
+
+    async fn get_access_config(
+        &self,
+        req: Request<wire::GetAccessConfigRequest>,
+    ) -> Result<Response<wire::GetAccessConfigResponse>, Status> {
+        self.require(&req)?;
+        Ok(Response::new(wire::GetAccessConfigResponse::default()))
     }
 }
 

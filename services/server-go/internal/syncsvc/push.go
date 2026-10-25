@@ -134,14 +134,25 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 		}
 	}
 
-	// 7. License policy on changed paths.
-	if s.d.License != nil {
+	// 7. License policy on changed paths, then the pluggable v0.5 checks
+	// (path ACLs, quotas, signatures; ENGINEERING_PLAN §13.1).
+	if s.d.License != nil || len(s.d.PushChecks) > 0 {
 		changed, err := s.changedPaths(ctx, pl, serverTip)
 		if err != nil {
 			return nil, s.toStatus(ctx, err, "compute changed paths")
 		}
-		if err := s.d.License.CheckPush(ctx, p, t, changed); err != nil {
-			return s.policyRejection(ctx, p, t, branch, newTip, err, "license check")
+		if s.d.License != nil {
+			if err := s.d.License.CheckPush(ctx, p, t, changed); err != nil {
+				return s.policyRejection(ctx, p, t, branch, newTip, err, "license check")
+			}
+		}
+		if len(s.d.PushChecks) > 0 {
+			plan := s.pushPlanFor(pl, branch, serverTip, changed)
+			for _, c := range s.d.PushChecks {
+				if err := c.CheckPushPlan(ctx, p, t, plan); err != nil {
+					return s.policyRejection(ctx, p, t, branch, newTip, err, "push check")
+				}
+			}
 		}
 	}
 
@@ -422,6 +433,41 @@ func (s *Service) checkObjects(ctx context.Context, pl *pushPlan) error {
 			"%d referenced object(s) are missing; upload them first (e.g. %s)", nMissing, strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// pushPlanFor builds the domain view of a validated push for PushCheckers.
+func (s *Service) pushPlanFor(pl *pushPlan, branch, serverTip string, changed []string) *domain.PushPlan {
+	seen := make(map[hash.Hash]struct{})
+	var objs []hash.Hash
+	add := func(h hash.Hash) {
+		if _, ok := seen[h]; !ok {
+			seen[h] = struct{}{}
+			objs = append(objs, h)
+		}
+	}
+	for _, snap := range pl.newSnaps {
+		add(snap.ManifestHash)
+		if m, ok := pl.manifests[snap.ManifestHash]; ok {
+			for _, e := range m.GetEntries() {
+				add(hash.Hash(e.GetBlobHash().GetValue()))
+			}
+		}
+	}
+	return &domain.PushPlan{
+		Branch:       branch,
+		OldTip:       serverTip,
+		NewTip:       pl.newTip,
+		NewSnapshots: pl.newSnaps,
+		ChangedPaths: changed,
+		NewObjects:   objs,
+		ObjectSize: func(ctx context.Context, h hash.Hash) int64 {
+			n, err := objstore.ObjectSize(ctx, s.d.Objects, h)
+			if err != nil {
+				return 0
+			}
+			return n
+		},
+	}
 }
 
 // descends reports whether the push's new tip descends from serverTip

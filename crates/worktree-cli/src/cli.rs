@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use crate::commands::{
-    admin, archive, audit, auth, branch, config, daemon, diff, events, git, grant, history, iam,
-    ignore, init, invite, license, merge, mfa, mr, policy, protect, remote, role, sa, search,
-    session, snapshot, sso, status, sync, tag, team, tenant, token, tree, trees,
+    access, admin, archive, audit, auth, branch, ci, config, daemon, deps, diff, events, git,
+    grant, history, iam, identity, ignore, init, invite, license, merge, mfa, mr, policy, protect,
+    release, remote, role, sa, search, session, snapshot, sso, status, sync, tag, team, tenant,
+    todo, token, tree, trees,
 };
 
 #[derive(Debug, Parser)]
@@ -155,6 +156,18 @@ pub enum Command {
     Iam(iam::IamArgs),
     /// Single sign-on (OpenID Connect) configuration
     Sso(sso::SsoArgs),
+    /// TODOs created from snapshot dependencies: list, show, claim, complete, cancel
+    Todo(todo::TodoArgs),
+    /// Dependencies declared by snapshots: status and graph
+    Deps(deps::DepsArgs),
+    /// Releases of a server tree: list, create, show, edit, delete, assets
+    Release(release::ReleaseArgs),
+    /// CI check results: report a status, show checks of a snapshot or branch
+    Ci(ci::CiArgs),
+    /// Declarative access config (.wt/access): validate, plan, apply, pull
+    Access(access::AccessArgs),
+    /// Snapshot signing keys: generate, show, register, list, revoke
+    Identity(identity::IdentityArgs),
 }
 
 #[cfg(test)]

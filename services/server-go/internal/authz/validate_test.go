@@ -158,6 +158,7 @@ func TestActionsCatalog(t *testing.T) {
 		domain.ActMRCreate, domain.ActMRApprove, domain.ActMRMerge,
 		domain.ActTenantRead, domain.ActTenantAdmin, domain.ActServerAdmin,
 		domain.ActIAMRead, domain.ActIAMAdmin,
+		domain.ActReleaseCreate, domain.ActReleaseDelete, domain.ActCIReport,
 	}
 	got := Actions()
 	if len(got) != len(all) {

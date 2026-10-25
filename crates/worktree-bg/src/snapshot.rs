@@ -161,8 +161,12 @@ mod tests {
             sync: SyncSection {
                 auto_stage,
                 remote: "origin".into(),
+                ..SyncSection::default()
             },
             remote: remotes,
+            secret_scanning: Default::default(),
+            hooks: Default::default(),
+            signing: Default::default(),
         }
     }
 

@@ -9,12 +9,14 @@ import (
 
 // Action areas: the part of an action before the colon.
 const (
-	AreaTenant = "tenant"
-	AreaTree   = "tree"
-	AreaBranch = "branch"
-	AreaMR     = "mr"
-	AreaIAM    = "iam"
-	AreaServer = "server"
+	AreaTenant  = "tenant"
+	AreaTree    = "tree"
+	AreaBranch  = "branch"
+	AreaMR      = "mr"
+	AreaIAM     = "iam"
+	AreaRelease = "release" // v0.5
+	AreaCI      = "ci"      // v0.5
+	AreaServer  = "server"
 )
 
 // ActionInfo describes one authorization verb (GET /iam/actions).
@@ -38,6 +40,9 @@ var catalog = []ActionInfo{
 	{domain.ActMRCreate, AreaMR, "Open merge requests"},
 	{domain.ActMRApprove, AreaMR, "Approve merge requests"},
 	{domain.ActMRMerge, AreaMR, "Merge and close merge requests"},
+	{domain.ActReleaseCreate, AreaRelease, "Create and edit releases and upload release assets"},
+	{domain.ActReleaseDelete, AreaRelease, "Delete releases and release assets"},
+	{domain.ActCIReport, AreaCI, "Report CI check results for snapshots"},
 	{domain.ActIAMRead, AreaIAM, "View teams, roles, policies, grants and service accounts"},
 	{domain.ActIAMAdmin, AreaIAM, "Manage teams, roles, policies, grants, service accounts and invitations"},
 	{domain.ActServerAdmin, AreaServer, "Administer the server (server admins only)"},
@@ -84,7 +89,8 @@ func treeScoped(act domain.Action) bool {
 	switch act {
 	case domain.ActTreeRead, domain.ActTreeWrite, domain.ActTreeAdmin,
 		domain.ActBranchCreate, domain.ActBranchDelete, domain.ActBranchPush,
-		domain.ActMRCreate, domain.ActMRApprove, domain.ActMRMerge:
+		domain.ActMRCreate, domain.ActMRApprove, domain.ActMRMerge,
+		domain.ActReleaseCreate, domain.ActReleaseDelete, domain.ActCIReport:
 		return true
 	}
 	return false
@@ -170,20 +176,23 @@ var builtinDescriptions = map[string]string{
 // tree:write, iam:read for maintainer+, iam:admin for admin+). Actions
 // absent from the map (server:admin) are never granted by a role.
 var actionMinRole = map[domain.Action]string{
-	domain.ActTenantRead:   domain.RoleViewer,
-	domain.ActTreeRead:     domain.RoleViewer,
-	domain.ActTreeWrite:    domain.RoleDeveloper,
-	domain.ActBranchCreate: domain.RoleDeveloper,
-	domain.ActBranchPush:   domain.RoleDeveloper,
-	domain.ActMRCreate:     domain.RoleDeveloper,
-	domain.ActBranchDelete: domain.RoleMaintainer,
-	domain.ActMRApprove:    domain.RoleMaintainer,
-	domain.ActMRMerge:      domain.RoleMaintainer,
-	domain.ActTreeCreate:   domain.RoleMaintainer,
-	domain.ActIAMRead:      domain.RoleMaintainer,
-	domain.ActTreeAdmin:    domain.RoleAdmin,
-	domain.ActTenantAdmin:  domain.RoleAdmin,
-	domain.ActIAMAdmin:     domain.RoleAdmin,
+	domain.ActTenantRead:    domain.RoleViewer,
+	domain.ActTreeRead:      domain.RoleViewer,
+	domain.ActTreeWrite:     domain.RoleDeveloper,
+	domain.ActBranchCreate:  domain.RoleDeveloper,
+	domain.ActBranchPush:    domain.RoleDeveloper,
+	domain.ActMRCreate:      domain.RoleDeveloper,
+	domain.ActReleaseCreate: domain.RoleDeveloper,
+	domain.ActCIReport:      domain.RoleDeveloper,
+	domain.ActReleaseDelete: domain.RoleMaintainer,
+	domain.ActBranchDelete:  domain.RoleMaintainer,
+	domain.ActMRApprove:     domain.RoleMaintainer,
+	domain.ActMRMerge:       domain.RoleMaintainer,
+	domain.ActTreeCreate:    domain.RoleMaintainer,
+	domain.ActIAMRead:       domain.RoleMaintainer,
+	domain.ActTreeAdmin:     domain.RoleAdmin,
+	domain.ActTenantAdmin:   domain.RoleAdmin,
+	domain.ActIAMAdmin:      domain.RoleAdmin,
 }
 
 // IsBuiltinRole reports whether name is a built-in role (case-insensitive).

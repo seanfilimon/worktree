@@ -121,6 +121,7 @@ fn snapshot_options_are_honored() {
                 auto_generated: true,
                 allow_empty: false,
                 skip_secret_scan: true,
+                dependencies: Vec::new(),
             },
         )
         .unwrap();
@@ -421,6 +422,9 @@ fn manifest_plumbing_roundtrip() {
         message: "imported".into(),
         created_at: Utc::now(),
         auto_generated: false,
+        dependencies: Vec::new(),
+        reverts: None,
+        signature: None,
     };
     assert!(matches!(
         fx.repo.set_branch_tip(&fx.tree, "main", Some(&snap.id)),

@@ -25,21 +25,29 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
 	"github.com/seanfilimon/worktree/services/server-go/internal/audit"
 	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
+	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
 	"github.com/seanfilimon/worktree/services/server-go/internal/config"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/events"
+	"github.com/seanfilimon/worktree/services/server-go/internal/gc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/httpapi"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
 	"github.com/seanfilimon/worktree/services/server-go/internal/license"
+	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
 	"github.com/seanfilimon/worktree/services/server-go/internal/meta"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
+	"github.com/seanfilimon/worktree/services/server-go/internal/pathacl"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
+	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
+	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
 	"github.com/seanfilimon/worktree/services/server-go/internal/sso"
 	"github.com/seanfilimon/worktree/services/server-go/internal/staged"
 	"github.com/seanfilimon/worktree/services/server-go/internal/syncsvc"
+	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
 )
 
 // maxGRPCMessage is the gRPC message size limit in both directions.
@@ -96,6 +104,30 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	lic := license.New(store)
 	rev := review.New(store, history, authorizer, bus, auditLog)
 	stg := staged.New(store, authorizer, bus)
+
+	// v0.5 components (docs/ENGINEERING_PLAN.md §13).
+	v5 := func() (d struct {
+		Store   domain.MetaStore
+		Objects objstore.Store
+		History domain.History
+		Authz   domain.Authorizer
+		Bus     domain.EventBus
+		Audit   domain.AuditLog
+		Logger  *slog.Logger
+	}) {
+		d.Store, d.Objects, d.History, d.Authz, d.Bus, d.Audit, d.Logger = store, objects, history, authorizer, bus, auditLog, log
+		return d
+	}()
+	todos := todo.New(todo.Deps(v5))
+	releases := release.New(release.Deps(v5))
+	ciSvc := ci.New(ci.Deps(v5))
+	signer := signing.New(signing.Deps(v5))
+	collector := gc.New(gc.Deps(v5))
+	limiter := limits.New(limits.Deps(v5))
+	accessCfg := accesscfg.New(accesscfg.Deps(v5))
+	pathACL := pathacl.New(pathacl.Deps(v5))
+	_ = todos // started below by its owning workstream
+
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
 		Objects: objects,
@@ -107,7 +139,11 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Bus:     bus,
 		Audit:   auditLog,
 		Version: cfg.Version,
+
+		PushChecks: []domain.PushChecker{},
+		AccessCfg:  accessCfg,
 	})
+	_ = pathACL // becomes a PushChecker in its workstream
 
 	// ---- gRPC ----
 	grpcServer, healthSrv := newGRPCServer(iamSvc, syncSvc, log)
@@ -137,6 +173,14 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Security: iamSvc,
 		Access:   authorizer,
 		SSO:      sso.New(store, iamSvc, iamSvc, sso.Options{PublicURL: cfg.PublicURL, Logger: log}),
+
+		Todos:     todos,
+		Releases:  releases,
+		CI:        ciSvc,
+		Signing:   signer,
+		GC:        collector,
+		Limits:    limiter,
+		AccessCfg: accessCfg,
 	})
 
 	srv := newHTTPServer(mux(grpcServer, api), log)

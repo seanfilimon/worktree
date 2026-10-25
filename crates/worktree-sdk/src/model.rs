@@ -20,6 +20,10 @@ pub struct ManifestEntry {
     pub hash: ObjectHash,
     pub size: u64,
     pub executable: bool,
+    /// When true, `hash` names a chunk-list object (large file split into
+    /// content-defined chunks) instead of a blob. See ENGINEERING_PLAN §13.2.
+    #[serde(default)]
+    pub chunked: bool,
 }
 
 /// The complete file listing of a snapshot. Entries are sorted by path and
@@ -67,6 +71,7 @@ impl Manifest {
                     blob_hash: Some(hash_to_wire(&e.hash)),
                     size: e.size,
                     executable: e.executable,
+                    chunked: e.chunked,
                 })
                 .collect(),
         };
@@ -94,6 +99,7 @@ impl Manifest {
                 hash,
                 size: e.size,
                 executable: e.executable,
+                chunked: e.chunked,
             });
         }
         if entries.windows(2).any(|w| w[0].path >= w[1].path) {
@@ -165,6 +171,74 @@ pub struct Snapshot {
     pub message: String,
     pub created_at: DateTime<Utc>,
     pub auto_generated: bool,
+    /// Declared dependencies on other trees/branches (become TODOs on push).
+    #[serde(default)]
+    pub dependencies: Vec<Dependency>,
+    /// Set on revert snapshots: the snapshot whose changes this undoes.
+    #[serde(default)]
+    pub reverts: Option<SnapshotId>,
+    /// Ed25519 signature (ENGINEERING_PLAN §13.6); None = unsigned.
+    #[serde(default)]
+    pub signature: Option<SnapshotSignature>,
+}
+
+/// A dependency declared on a snapshot (`wt snapshot --depend tree[@branch]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dependency {
+    /// Target tenant slug; empty = same tenant as the dependent tree.
+    #[serde(default)]
+    pub tenant: String,
+    pub tree: String,
+    /// Empty = the target tree's default branch.
+    #[serde(default)]
+    pub branch: String,
+    pub title: String,
+    #[serde(default)]
+    pub details: String,
+    /// "low" | "medium" | "high" | "critical" (empty = "medium").
+    #[serde(default)]
+    pub priority: String,
+    #[serde(default)]
+    pub blocking: bool,
+    #[serde(default)]
+    pub linked: bool,
+}
+
+impl Dependency {
+    pub fn to_wire(&self) -> wire::Dependency {
+        wire::Dependency {
+            tenant_slug: self.tenant.clone(),
+            tree: self.tree.clone(),
+            branch: self.branch.clone(),
+            title: self.title.clone(),
+            details: self.details.clone(),
+            priority: self.priority.clone(),
+            blocking: self.blocking,
+            linked: self.linked,
+        }
+    }
+
+    pub fn from_wire(w: &wire::Dependency) -> Self {
+        Self {
+            tenant: w.tenant_slug.clone(),
+            tree: w.tree.clone(),
+            branch: w.branch.clone(),
+            title: w.title.clone(),
+            details: w.details.clone(),
+            priority: w.priority.clone(),
+            blocking: w.blocking,
+            linked: w.linked,
+        }
+    }
+}
+
+/// Signature over the snapshot's canonical record (signature fields cleared).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotSignature {
+    /// Server-side id of the registered signing key.
+    pub key_id: String,
+    /// Raw 64-byte Ed25519 signature.
+    pub signature: Vec<u8>,
 }
 
 impl Snapshot {
@@ -200,6 +274,21 @@ impl Snapshot {
                 nanos: i32::try_from(self.created_at.timestamp_subsec_nanos()).unwrap_or(0),
             }),
             auto_generated: self.auto_generated,
+            dependencies: self.dependencies.iter().map(Dependency::to_wire).collect(),
+            reverts: self
+                .reverts
+                .as_ref()
+                .map(|r| wire::SnapshotId { value: r.clone() }),
+            signature: self
+                .signature
+                .as_ref()
+                .map(|s| s.signature.clone())
+                .unwrap_or_default(),
+            signing_key_id: self
+                .signature
+                .as_ref()
+                .map(|s| s.key_id.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -242,6 +331,16 @@ impl Snapshot {
             message: rec.message.clone(),
             created_at,
             auto_generated: rec.auto_generated,
+            dependencies: rec.dependencies.iter().map(Dependency::from_wire).collect(),
+            reverts: rec
+                .reverts
+                .as_ref()
+                .map(|r| r.value.clone())
+                .filter(|v| !v.is_empty()),
+            signature: (!rec.signature.is_empty()).then(|| SnapshotSignature {
+                key_id: rec.signing_key_id.clone(),
+                signature: rec.signature.clone(),
+            }),
         })
     }
 }
@@ -320,6 +419,8 @@ pub struct SnapshotOptions {
     pub allow_empty: bool,
     /// Skip the pre-snapshot secret scan.
     pub skip_secret_scan: bool,
+    /// Dependencies to record on the snapshot (`wt snapshot --depend`).
+    pub dependencies: Vec<Dependency>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +458,7 @@ pub struct ConflictInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)] // returned once per merge; boxing buys nothing
 pub enum MergeOutcome {
     UpToDate,
     FastForward {
@@ -449,6 +551,7 @@ mod tests {
             hash: hash_bytes(content),
             size: content.len() as u64,
             executable: false,
+            chunked: false,
         }
     }
 
@@ -490,6 +593,7 @@ mod tests {
                         blob_hash: Some(hash_to_wire(&hash_bytes(b"x"))),
                         size: 1,
                         executable: false,
+                        chunked: false,
                     })
                     .collect(),
             }
@@ -536,6 +640,9 @@ mod tests {
             message: "msg".into(),
             created_at: DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
             auto_generated: true,
+            dependencies: Vec::new(),
+            reverts: None,
+            signature: None,
         };
         let rec = snap.to_record();
         assert_eq!(rec.parents.len(), 2);
@@ -556,6 +663,9 @@ mod tests {
             message: String::new(),
             created_at: Utc::now(),
             auto_generated: false,
+            dependencies: Vec::new(),
+            reverts: None,
+            signature: None,
         };
         let mut rec = snap.to_record();
         rec.manifest_hash = Some(wire::ContentHash {

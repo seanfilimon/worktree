@@ -448,6 +448,7 @@ mod tests {
             hash: store.put_blob(data).unwrap(),
             size: data.len() as u64,
             executable,
+            chunked: false,
         }
     }
 
@@ -462,6 +463,9 @@ mod tests {
             message: message.to_owned(),
             created_at: DateTime::from_timestamp(at, 0).unwrap(),
             auto_generated: false,
+            dependencies: Vec::new(),
+            reverts: None,
+            signature: None,
         }
     }
 
@@ -560,6 +564,7 @@ mod tests {
                 hash: hash_bytes(b"never stored"),
                 size: 12,
                 executable: false,
+                chunked: false,
             }],
         };
         let err = TreeWriter::new(&out.repo, &store)

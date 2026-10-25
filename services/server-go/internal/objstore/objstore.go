@@ -66,6 +66,26 @@ type ListStore interface {
 	List(ctx context.Context, fn func(hash.Hash) error) error
 }
 
+// SizeStore is an optional interface implemented by stores that can report
+// the size of one object without reading it.
+type SizeStore interface {
+	// Size returns the stored size of h in bytes, or ErrNotFound.
+	Size(ctx context.Context, h hash.Hash) (int64, error)
+}
+
+// ObjectSize returns the size of h in s, using SizeStore when available
+// and falling back to reading the object.
+func ObjectSize(ctx context.Context, s Store, h hash.Hash) (int64, error) {
+	if ss, ok := s.(SizeStore); ok {
+		return ss.Size(ctx, h)
+	}
+	b, err := s.Get(ctx, h)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(b)), nil
+}
+
 // ErrNotFound is returned by Get when no object exists for the given
 // hash. Callers should match with errors.Is.
 var ErrNotFound = errors.New("objstore: object not found")

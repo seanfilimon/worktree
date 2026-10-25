@@ -12,6 +12,7 @@ import { DashboardPage } from "@/pages/DashboardPage";
 import { AccessSimulatorPage } from "@/pages/iam/AccessSimulatorPage";
 import { TreeAccessTab } from "@/pages/iam/TreeAccessTab";
 import { NotFoundPage } from "@/pages/NotFoundPage";
+import { OperationsPage } from "@/pages/OperationsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SystemPage } from "@/pages/SystemPage";
 import { TenantDetailPage } from "@/pages/tenants/TenantDetailPage";
@@ -24,10 +25,12 @@ import { LicensesTab } from "@/pages/tree/LicensesTab";
 import { MergeRequestDetail } from "@/pages/tree/MergeRequestDetail";
 import { MergeRequestsTab } from "@/pages/tree/MergeRequestsTab";
 import { OverviewTab } from "@/pages/tree/OverviewTab";
+import { ReleasesTab } from "@/pages/tree/ReleasesTab";
 import { ProtectionsTab } from "@/pages/tree/ProtectionsTab";
 import { SnapshotDetail } from "@/pages/tree/SnapshotDetail";
 import { StagedTab } from "@/pages/tree/StagedTab";
 import { TagsTab } from "@/pages/tree/TagsTab";
+import { TodosTab } from "@/pages/tree/TodosTab";
 import { TreeLayout } from "@/pages/tree/TreeLayout";
 import { TreeSettingsTab } from "@/pages/tree/TreeSettingsTab";
 import { TreesPage } from "@/pages/trees/TreesPage";
@@ -61,6 +64,8 @@ export const routes: RouteObject[] = [
               { path: "files", element: <FilesTab /> },
               { path: "staged", element: <StagedTab /> },
               { path: "tags", element: <TagsTab /> },
+              { path: "releases", element: <ReleasesTab /> },
+              { path: "todos", element: <TodosTab /> },
               { path: "merge-requests", element: <MergeRequestsTab /> },
               { path: "merge-requests/:number", element: <MergeRequestDetail /> },
               { path: "protections", element: <ProtectionsTab /> },
@@ -73,6 +78,7 @@ export const routes: RouteObject[] = [
           { path: "iam/simulator", element: <AccessSimulatorPage /> },
           { path: "accounts", element: <AccountsPage /> },
           { path: "system", element: <SystemPage /> },
+          { path: "operations", element: <OperationsPage /> },
           { path: "sso", element: <SsoSettingsPage /> },
           { path: "settings", element: <SettingsPage /> },
           { path: "*", element: <NotFoundPage /> },

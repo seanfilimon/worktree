@@ -44,7 +44,8 @@ type Memory struct {
 	licenses      map[string]map[string]domain.LicenseRule
 	access        map[string][]byte // key(tenantID, kind)
 
-	iam memIAM // v0.4 IAM (iam_memory.go)
+	iam  memIAM  // v0.4 IAM (iam_memory.go)
+	docs memDocs // v0.5 documents (docs.go)
 }
 
 type memAudit struct {
@@ -75,6 +76,7 @@ func NewMemory() *Memory {
 		licenses:      map[string]map[string]domain.LicenseRule{},
 		access:        map[string][]byte{},
 		iam:           newMemIAM(),
+		docs:          newMemDocs(),
 	}
 }
 
@@ -1060,7 +1062,9 @@ func (m *Memory) PutLicenseRule(ctx context.Context, r *domain.LicenseRule) erro
 		if err := checkKeys("tree id", r.TreeID, "path glob", r.PathGlob); err != nil {
 			return err
 		}
-		inner(m.licenses, r.TreeID)[r.PathGlob] = *r
+		rr := *r
+		rr.ExpiresAt = utcPtr(rr.ExpiresAt)
+		inner(m.licenses, r.TreeID)[r.PathGlob] = rr
 		return nil
 	})
 }

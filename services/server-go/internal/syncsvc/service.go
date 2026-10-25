@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
@@ -61,6 +62,13 @@ type Deps struct {
 	Bus     domain.EventBus
 	Audit   domain.AuditLog
 	Version string
+
+	// v0.5 (docs/ENGINEERING_PLAN.md §13). PushChecks run in order after
+	// the license check of Push; nil/empty = none.
+	PushChecks []domain.PushChecker
+	// AccessCfg applies SyncAccessConfig documents; nil = documents are
+	// only stored (v0.4 behaviour).
+	AccessCfg *accesscfg.Service
 }
 
 // Service implements syncpb.SyncServiceServer.

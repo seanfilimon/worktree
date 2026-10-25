@@ -89,6 +89,7 @@ func runConformance(t *testing.T, newStore storeFactory) {
 			tc.fn(t, newStore(t))
 		})
 	}
+	t.Run("Docs", func(t *testing.T) { testDocs(t, newStore(t)) })
 	t.Run("History", func(t *testing.T) { runHistoryConformance(t, newStore) })
 }
 

@@ -111,6 +111,7 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
             hash,
             size,
             executable,
+            chunked: false,
         })
     }
 
@@ -159,6 +160,9 @@ pub(crate) fn snapshot_from_commit(
         message: ident::message_from_git(commit.message_bytes()),
         created_at: ident::git_time_to_utc(commit.time()),
         auto_generated: false,
+        dependencies: Vec::new(),
+        reverts: None,
+        signature: None,
     }
 }
 

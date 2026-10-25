@@ -21,9 +21,16 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
+	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/gc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
+	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
+	"github.com/seanfilimon/worktree/services/server-go/internal/release"
+	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
+	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
 )
 
 // Deps are the collaborators of the HTTP API.
@@ -74,6 +81,16 @@ type Deps struct {
 	Access domain.AccessEvaluator
 	// SSO is the OpenID Connect provider. nil = SSO disabled.
 	SSO domain.SSOProvider
+
+	// v0.5 (docs/ENGINEERING_PLAN.md §13). Each may be nil, in which case
+	// the feature endpoints answer 501 not_implemented.
+	Todos     *todo.Service
+	Releases  *release.Service
+	CI        *ci.Service
+	Signing   *signing.Service
+	GC        *gc.Collector
+	Limits    *limits.Limiter
+	AccessCfg *accesscfg.Service
 }
 
 // defaultCORSOrigin is the Vite dev server of apps/admin.
@@ -195,6 +212,17 @@ func (a *api) routes() {
 	// v0.4 IAM (docs/ENGINEERING_PLAN.md §12).
 	a.registerIAMRoutes(tree)
 	a.registerSSORoutes()
+
+	// v0.5 spec completeness (docs/ENGINEERING_PLAN.md §13).
+	a.registerTodoRoutes(tree)
+	a.registerReleaseRoutes(tree)
+	a.registerCIRoutes(tree)
+	a.registerReviewRoutes(tree)
+	a.registerKeyRoutes()
+	a.registerOpsRoutes()
+	a.registerAccessRoutes(tree)
+	a.registerExportRoutes(tree)
+	a.registerStagedRoutes(tree)
 
 	// Unknown API paths answer with the JSON envelope (404 or 405).
 	a.handle("/api/", a.handleAPINotFound)

@@ -47,6 +47,9 @@ const (
 	SyncService_PushTag_FullMethodName          = "/worktree.sync.v1.SyncService/PushTag"
 	SyncService_ListTags_FullMethodName         = "/worktree.sync.v1.SyncService/ListTags"
 	SyncService_Ping_FullMethodName             = "/worktree.sync.v1.SyncService/Ping"
+	SyncService_WatchBranches_FullMethodName    = "/worktree.sync.v1.SyncService/WatchBranches"
+	SyncService_Unstage_FullMethodName          = "/worktree.sync.v1.SyncService/Unstage"
+	SyncService_GetAccessConfig_FullMethodName  = "/worktree.sync.v1.SyncService/GetAccessConfig"
 )
 
 // SyncServiceClient is the client API for SyncService service.
@@ -79,6 +82,13 @@ type SyncServiceClient interface {
 	ListTags(ctx context.Context, in *ListTagsRequest, opts ...grpc.CallOption) (*ListTagsResponse, error)
 	// Liveness + identity probe ("who am I").
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	// Stream branch updates of the given trees until the client disconnects
+	// (the daemon uses it to fetch remote changes as they land).
+	WatchBranches(ctx context.Context, in *WatchBranchesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BranchEvent], error)
+	// Discard the caller's staged (WIP) snapshot on a branch.
+	Unstage(ctx context.Context, in *UnstageRequest, opts ...grpc.CallOption) (*UnstageResponse, error)
+	// Read back the last applied declarative access document.
+	GetAccessConfig(ctx context.Context, in *GetAccessConfigRequest, opts ...grpc.CallOption) (*GetAccessConfigResponse, error)
 }
 
 type syncServiceClient struct {
@@ -231,6 +241,45 @@ func (c *syncServiceClient) Ping(ctx context.Context, in *PingRequest, opts ...g
 	return out, nil
 }
 
+func (c *syncServiceClient) WatchBranches(ctx context.Context, in *WatchBranchesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BranchEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &SyncService_ServiceDesc.Streams[2], SyncService_WatchBranches_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchBranchesRequest, BranchEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_WatchBranchesClient = grpc.ServerStreamingClient[BranchEvent]
+
+func (c *syncServiceClient) Unstage(ctx context.Context, in *UnstageRequest, opts ...grpc.CallOption) (*UnstageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnstageResponse)
+	err := c.cc.Invoke(ctx, SyncService_Unstage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *syncServiceClient) GetAccessConfig(ctx context.Context, in *GetAccessConfigRequest, opts ...grpc.CallOption) (*GetAccessConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccessConfigResponse)
+	err := c.cc.Invoke(ctx, SyncService_GetAccessConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SyncServiceServer is the server API for SyncService service.
 // All implementations must embed UnimplementedSyncServiceServer
 // for forward compatibility.
@@ -261,6 +310,13 @@ type SyncServiceServer interface {
 	ListTags(context.Context, *ListTagsRequest) (*ListTagsResponse, error)
 	// Liveness + identity probe ("who am I").
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
+	// Stream branch updates of the given trees until the client disconnects
+	// (the daemon uses it to fetch remote changes as they land).
+	WatchBranches(*WatchBranchesRequest, grpc.ServerStreamingServer[BranchEvent]) error
+	// Discard the caller's staged (WIP) snapshot on a branch.
+	Unstage(context.Context, *UnstageRequest) (*UnstageResponse, error)
+	// Read back the last applied declarative access document.
+	GetAccessConfig(context.Context, *GetAccessConfigRequest) (*GetAccessConfigResponse, error)
 	mustEmbedUnimplementedSyncServiceServer()
 }
 
@@ -309,6 +365,15 @@ func (UnimplementedSyncServiceServer) ListTags(context.Context, *ListTagsRequest
 }
 func (UnimplementedSyncServiceServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Ping not implemented")
+}
+func (UnimplementedSyncServiceServer) WatchBranches(*WatchBranchesRequest, grpc.ServerStreamingServer[BranchEvent]) error {
+	return status.Error(codes.Unimplemented, "method WatchBranches not implemented")
+}
+func (UnimplementedSyncServiceServer) Unstage(context.Context, *UnstageRequest) (*UnstageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Unstage not implemented")
+}
+func (UnimplementedSyncServiceServer) GetAccessConfig(context.Context, *GetAccessConfigRequest) (*GetAccessConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAccessConfig not implemented")
 }
 func (UnimplementedSyncServiceServer) mustEmbedUnimplementedSyncServiceServer() {}
 func (UnimplementedSyncServiceServer) testEmbeddedByValue()                     {}
@@ -547,6 +612,53 @@ func _SyncService_Ping_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SyncService_WatchBranches_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchBranchesRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SyncServiceServer).WatchBranches(m, &grpc.GenericServerStream[WatchBranchesRequest, BranchEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_WatchBranchesServer = grpc.ServerStreamingServer[BranchEvent]
+
+func _SyncService_Unstage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnstageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SyncServiceServer).Unstage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SyncService_Unstage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SyncServiceServer).Unstage(ctx, req.(*UnstageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SyncService_GetAccessConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAccessConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SyncServiceServer).GetAccessConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SyncService_GetAccessConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SyncServiceServer).GetAccessConfig(ctx, req.(*GetAccessConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SyncService_ServiceDesc is the grpc.ServiceDesc for SyncService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -598,6 +710,14 @@ var SyncService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Ping",
 			Handler:    _SyncService_Ping_Handler,
 		},
+		{
+			MethodName: "Unstage",
+			Handler:    _SyncService_Unstage_Handler,
+		},
+		{
+			MethodName: "GetAccessConfig",
+			Handler:    _SyncService_GetAccessConfig_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -608,6 +728,11 @@ var SyncService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "DownloadObjects",
 			Handler:       _SyncService_DownloadObjects_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchBranches",
+			Handler:       _SyncService_WatchBranches_Handler,
 			ServerStreams: true,
 		},
 	},

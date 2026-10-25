@@ -213,6 +213,7 @@ impl Repository {
                 hash,
                 size,
                 executable,
+                chunked: false,
             });
         }
         Ok(WorkingState {

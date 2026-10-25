@@ -1,12 +1,15 @@
 //! Command implementations, one module per command group.
 
+pub mod access;
 pub mod admin;
 pub mod archive;
 pub mod audit;
 pub mod auth;
 pub mod branch;
+pub mod ci;
 pub mod config;
 pub mod daemon;
+pub mod deps;
 pub mod diff;
 pub mod events;
 pub mod git;
@@ -14,6 +17,7 @@ pub mod grant;
 pub mod history;
 pub mod iam;
 pub mod iam_common;
+pub mod identity;
 pub mod ignore;
 pub mod init;
 pub mod invite;
@@ -23,6 +27,7 @@ pub mod mfa;
 pub mod mr;
 pub mod policy;
 pub mod protect;
+pub mod release;
 pub mod remote;
 pub mod role;
 pub mod sa;
@@ -36,6 +41,7 @@ pub mod sync;
 pub mod tag;
 pub mod team;
 pub mod tenant;
+pub mod todo;
 pub mod token;
 pub mod tree;
 pub mod trees;
@@ -96,5 +102,11 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Invite(args) => invite::run(ctx, args),
         Command::Iam(args) => iam::run(ctx, args),
         Command::Sso(args) => sso::run(ctx, args),
+        Command::Todo(args) => todo::run(ctx, args),
+        Command::Deps(args) => deps::run(ctx, args),
+        Command::Release(args) => release::run(ctx, args),
+        Command::Ci(args) => ci::run(ctx, args),
+        Command::Access(args) => access::run(ctx, args),
+        Command::Identity(args) => identity::run(ctx, args),
     }
 }

@@ -81,6 +81,19 @@ impl ObjectStore {
         Ok(data)
     }
 
+    /// The full content of a manifest entry. Chunked entries
+    /// (`entry.chunked`, ENGINEERING_PLAN §13.2) are reassembled from their
+    /// chunk list; use this instead of `get(&entry.hash)` for file content.
+    pub fn read_entry(&self, entry: &crate::model::ManifestEntry) -> Result<Vec<u8>> {
+        if entry.chunked {
+            return Err(SdkError::Other(format!(
+                "{}: chunked files are not supported yet",
+                entry.path
+            )));
+        }
+        self.get(&entry.hash)
+    }
+
     /// Whether an object is present.
     pub fn has(&self, hash: &ObjectHash) -> bool {
         self.path_of(hash).is_file()

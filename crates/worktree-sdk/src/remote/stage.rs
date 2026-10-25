@@ -164,6 +164,7 @@ mod tests {
             hash: hash_bytes(content.as_bytes()),
             size: content.len() as u64,
             executable,
+            chunked: false,
         }
     }
 

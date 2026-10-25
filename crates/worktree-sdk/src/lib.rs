@@ -11,16 +11,20 @@
 //! - [`scan`] — secret scanning, license detection, content chunking
 //! - [`remote`] — gRPC/REST client for the W0rkTree server
 //! - [`ipc`] — CLI <-> background daemon protocol
+//! - [`hooks`] — pre/post snapshot hooks (v0.5, §13.9)
+//! - [`signing`] — Ed25519 snapshot signing (v0.5, §13.6)
 
 pub mod config;
 pub mod diff;
 pub mod error;
+pub mod hooks;
 pub mod ipc;
 pub mod merge;
 pub mod model;
 pub mod remote;
 pub mod repo;
 pub mod scan;
+pub mod signing;
 pub mod store;
 
 pub use error::{Result, SdkError};

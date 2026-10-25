@@ -84,6 +84,7 @@ var (
 		bktRoles, bktPolicies, bktGrants, bktGrantsBySubject, bktSAs, bktSAName,
 		bktMFA, bktInvites, bktInviteCode, bktResets, bktSSO, bktSSOIdent,
 		bktSSOIdentByAcct,
+		bktDocs, bktDocSeq, // v0.5 (docs.go)
 	}
 
 	// Per-tree MR, tag... buckets cleared by DeleteTree (keys prefixed by

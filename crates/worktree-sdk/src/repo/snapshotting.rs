@@ -99,6 +99,7 @@ impl Repository {
     ) -> Result<Snapshot> {
         let tree = rec.name.as_str();
         let (branch, head) = self.head_tip(tree)?;
+        crate::hooks::run(self, rec, crate::hooks::Phase::PreSnapshot, &branch, None)?;
         let head_manifest = self.manifest_of_tip(head.as_deref())?;
         let working = self.build_working(rec, &head_manifest, true, !opts.skip_secret_scan)?;
         if !working.findings.is_empty() {
@@ -138,7 +139,7 @@ impl Repository {
         };
 
         let manifest_hash = self.write_manifest(&working.manifest)?;
-        let snapshot = Snapshot {
+        let mut snapshot = Snapshot {
             id: uuid::Uuid::new_v4().to_string(),
             tree_id: rec.id.clone(),
             branch: branch.clone(),
@@ -148,7 +149,11 @@ impl Repository {
             message,
             created_at: Utc::now(),
             auto_generated: opts.auto_generated,
+            dependencies: opts.dependencies.clone(),
+            reverts: None,
+            signature: None,
         };
+        crate::signing::sign_snapshot(self, &mut snapshot)?;
         self.write_snapshot(&snapshot)?;
         self.write_tip(tree, &branch, Some(&snapshot.id))?;
         self.save_index(tree, &working.index)?;
@@ -169,6 +174,13 @@ impl Repository {
                 .unwrap_or_default()
                 .to_string(),
         })?;
+        crate::hooks::run(
+            self,
+            rec,
+            crate::hooks::Phase::PostSnapshot,
+            &snapshot.branch,
+            Some(&snapshot),
+        )?;
         Ok(snapshot)
     }
 }
@@ -248,6 +260,7 @@ mod tests {
                     hash: hash_bytes(c),
                     size: c.len() as u64,
                     executable: *x,
+                    chunked: false,
                 })
                 .collect(),
         )
