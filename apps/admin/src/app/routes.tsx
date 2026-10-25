@@ -13,6 +13,7 @@ import { AccessSimulatorPage } from "@/pages/iam/AccessSimulatorPage";
 import { TreeAccessTab } from "@/pages/iam/TreeAccessTab";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { OperationsPage } from "@/pages/OperationsPage";
+import { CodeSearchPage } from "@/pages/search/CodeSearchPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SystemPage } from "@/pages/SystemPage";
 import { TenantDetailPage } from "@/pages/tenants/TenantDetailPage";
@@ -74,6 +75,7 @@ export const routes: RouteObject[] = [
               { path: "settings", element: <TreeSettingsTab /> },
             ],
           },
+          { path: "search/code", element: <CodeSearchPage /> },
           { path: "audit", element: <AuditPage /> },
           { path: "iam/simulator", element: <AccessSimulatorPage /> },
           { path: "accounts", element: <AccountsPage /> },

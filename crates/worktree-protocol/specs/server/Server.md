@@ -299,11 +299,15 @@ read a path whose license rule withholds it from their tenant.
   (`403 review_required`, kept for compatibility), a member of an open linked
   group merged alone (`409 linked_group`) and a target that moved so the
   merge is no longer a fast-forward (`409 conflict`).
-- **Merge execution.** Merging is **fast-forward only**. The target tip moves
-  to the source tip with CAS, and a merge request that cannot fast-forward is
-  refused. A merge publishes `mr.merged` and `branch.pushed` (so watchers
-  fetch) and increments `worktree_mr_merges_total`. The server never creates merge
-  snapshots.
+- **Merge execution (v0.6).** A merge uses one of three methods (see
+  [Merging.md](./Merging.md)): `fast-forward` (the target tip moves to the
+  source tip), `merge` (the server writes a three-way merge snapshot with
+  parents `[target, source]`) or `squash` (one snapshot with parent
+  `[target]`). The default is the first allowed and possible method;
+  `BranchProtection.MergeMethods` and `RequireLinear` restrict them, and
+  conflicts answer `409 merge_conflict`. The target moves with CAS. A merge
+  publishes `mr.merged` and `branch.pushed` (so watchers fetch) and
+  increments `worktree_mr_merges_total`.
 - **Linked groups.** `POST /tenants/{t}/linked-groups {name,
   members[{tree, number}]}` requires `mr:merge` on every member tree.
   `POST .../{id}/merge` merges all members atomically: every member must be
@@ -601,7 +605,8 @@ method_not_allowed` with `Allow`).
 ## 19. Design constraints
 
 1. **The server is the source of truth.** Branch tips move only on the server,
-   fast-forward only, with compare-and-swap.
+   with compare-and-swap: pushes are fast-forward only; merge requests may add
+   server-written merge or squash snapshots.
 2. **Append-only history.** There is no force push, rebase or rewrite of pushed
    snapshots.
 3. **The server never touches working directories.** It stores snapshots and
@@ -650,9 +655,9 @@ Described in earlier versions of this spec but not built:
 - **Additional gRPC services** (`BranchService`, `TagService`,
   `MergeRequestService`, `AuthService`). These are served by REST plus the
   single `SyncService`.
-- **Server-side merges with conflicts**: creating merge snapshots, three-way
-  content merges, and automatically deleting the source branch after a merge.
-  Merges are fast-forward only.
+- **Interactive conflict resolution on the server** and automatically deleting
+  the source branch after a merge (merge and squash snapshots are built, see
+  Merging.md).
 - **Force push** with a `no_force` protection and an elevated permission.
 - **Physical tenant isolation**: dedicated storage, workers or endpoints per
   tenant.

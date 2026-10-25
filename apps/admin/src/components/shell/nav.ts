@@ -1,5 +1,6 @@
 import {
   Building2,
+  FileSearch,
   FolderTree,
   KeyRound,
   LayoutDashboard,
@@ -40,6 +41,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/trees", label: "Trees", icon: FolderTree, keywords: ["repositories", "repos"] },
       { to: "/tenants", label: "Tenants", icon: Building2, keywords: ["organizations", "orgs", "members"] },
+      // v0.6 (§14.3)
+      { to: "/search/code", label: "Code search", icon: FileSearch, keywords: ["grep", "find", "search", "source", "regex"] },
     ],
   },
   {

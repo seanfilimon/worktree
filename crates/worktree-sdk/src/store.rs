@@ -1,8 +1,18 @@
 //! Content-addressed object store under `.wt/objects/`.
 //!
-//! Objects are stored raw (uncompressed) at `objects/<hh>/<62 hex>` where the
-//! hash is BLAKE3 of the exact bytes. The same bytes and hashes are used on
-//! the wire and on the server, so push/pull is a byte copy.
+//! Objects live at `objects/<hh>/<62 hex>` where the hash is BLAKE3 of the
+//! object's (uncompressed) content. The same content and hashes are used on
+//! the wire and on the server.
+//!
+//! Stored encoding (ENGINEERING_PLAN §14.6, `specs/storage/Compression.md`):
+//! a file is either the raw content or the 4-byte magic `WTZ1` followed by
+//! one zstd frame of the content. Writers compress when the object is at
+//! least [`COMPRESS_MIN_SIZE`] bytes and compression saves at least 10 %;
+//! content that itself starts with the magic is always compressed so that a
+//! leading `WTZ1` is unambiguous. Readers accept both forms. Object ids never
+//! depend on the encoding, so stores may mix raw and compressed files and no
+//! migration is needed. [`ObjectStore::stats`], [`ObjectStore::size`] and
+//! [`ObjectStore::objects`] report stored (on-disk) bytes.
 //!
 //! Writes go to a uniquely named temp file inside the fan-out directory and
 //! are then renamed into place, so readers never observe partial objects and
@@ -10,9 +20,11 @@
 //! store is content-addressed, a rename that loses a race against another
 //! writer of the same object is harmless and treated as success.
 
+use std::borrow::Cow;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use worktree_protocol::proto::sync as wire;
 
@@ -25,6 +37,97 @@ pub use worktree_protocol::core::hash::ContentHash as ObjectHash;
 pub fn hash_bytes(data: &[u8]) -> ObjectHash {
     worktree_protocol::core::hash::hash_bytes(data)
 }
+
+// --- storage (ENGINEERING_PLAN §14.6): WTZ1 object encoding ---
+
+/// Magic prefix of a zstd-compressed object file.
+pub const COMPRESSED_MAGIC: [u8; 4] = *b"WTZ1";
+/// Objects smaller than this are always stored raw (unless their content
+/// starts with [`COMPRESSED_MAGIC`]).
+pub const COMPRESS_MIN_SIZE: usize = 512;
+/// zstd level used by writers (readers accept any level).
+pub const COMPRESSION_LEVEL: i32 = 3;
+
+/// Whether a file of `stored_len` bytes holding content of `content_len`
+/// bytes saves at least 10 %.
+fn saves_enough(stored_len: usize, content_len: usize) -> bool {
+    (stored_len as u128) * 10 <= (content_len as u128) * 9
+}
+
+/// The stored form of `content`: `WTZ1` + a zstd frame when the object is
+/// at least [`COMPRESS_MIN_SIZE`] bytes and that saves at least 10 %, else
+/// the raw content. Content starting with the magic is always compressed.
+pub fn encode_object(content: &[u8]) -> io::Result<Cow<'_, [u8]>> {
+    let must = content.starts_with(&COMPRESSED_MAGIC);
+    if !must && content.len() < COMPRESS_MIN_SIZE {
+        return Ok(Cow::Borrowed(content));
+    }
+    let frame = zstd::bulk::compress(content, COMPRESSION_LEVEL)?;
+    let stored_len = COMPRESSED_MAGIC.len() + frame.len();
+    if !must && !saves_enough(stored_len, content.len()) {
+        return Ok(Cow::Borrowed(content));
+    }
+    let mut out = Vec::with_capacity(stored_len);
+    out.extend_from_slice(&COMPRESSED_MAGIC);
+    out.extend_from_slice(&frame);
+    Ok(Cow::Owned(out))
+}
+
+/// [`encode_object`] restricted to the mandatory case: only content that
+/// starts with the magic is compressed (writers with compression off).
+fn encode_object_uncompressed(content: &[u8]) -> io::Result<Cow<'_, [u8]>> {
+    if content.starts_with(&COMPRESSED_MAGIC) {
+        encode_object(content)
+    } else {
+        Ok(Cow::Borrowed(content))
+    }
+}
+
+/// The content of a stored object file: the zstd frame after a `WTZ1`
+/// prefix decompressed, anything else returned as is. Use
+/// [`ObjectStore::get`] where the hash is known: it also accepts legacy raw
+/// objects whose content happens to start with the magic.
+pub fn decode_object(stored: &[u8]) -> io::Result<Cow<'_, [u8]>> {
+    match stored.strip_prefix(&COMPRESSED_MAGIC) {
+        Some(frame) => Ok(Cow::Owned(zstd::stream::decode_all(frame)?)),
+        None => Ok(Cow::Borrowed(stored)),
+    }
+}
+
+/// Decode `stored` and check it against `hash`.
+fn decode_verified(hash: &ObjectHash, stored: Vec<u8>) -> Result<Vec<u8>> {
+    if stored.starts_with(&COMPRESSED_MAGIC) {
+        if let Ok(content) = zstd::stream::decode_all(&stored[COMPRESSED_MAGIC.len()..]) {
+            if hash_bytes(&content) == *hash {
+                return Ok(content);
+            }
+        }
+        // Fall through: a raw object written before §14.6 whose content
+        // begins with the magic.
+    }
+    let actual = hash_bytes(&stored);
+    if actual != *hash {
+        let detail = if stored.starts_with(&COMPRESSED_MAGIC) {
+            "stored object does not decode to content with this hash".to_string()
+        } else {
+            format!("stored content hashes to {}", actual.to_hex())
+        };
+        return Err(SdkError::CorruptObject(hash.to_hex(), detail));
+    }
+    Ok(stored)
+}
+
+/// One stored object file as listed by [`ObjectStore::objects`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredObject {
+    pub hash: ObjectHash,
+    /// Size of the file on disk (compressed size for `WTZ1` files).
+    pub stored_size: u64,
+    /// Last modification time of the file, when the platform reports it.
+    pub modified: Option<SystemTime>,
+}
+
+// --- end storage ---
 
 /// Files larger than this (8 MiB) are stored as content-defined chunks
 /// (ENGINEERING_PLAN §13.2).
@@ -159,12 +262,30 @@ pub fn file_hash(data: &[u8]) -> (ObjectHash, bool) {
 #[derive(Debug, Clone)]
 pub struct ObjectStore {
     root: PathBuf,
+    /// Compress new objects (WTZ1); readers always accept both encodings.
+    compress: bool,
 }
 
 impl ObjectStore {
     /// Open (or lazily create) a store rooted at `root` (e.g. `.wt/objects`).
+    /// New objects are compressed when worthwhile (see the module docs).
     pub fn open(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            compress: true,
+        }
+    }
+
+    /// The same store with compression of new objects switched on or off.
+    /// Existing objects are read either way.
+    pub fn with_compression(mut self, compress: bool) -> Self {
+        self.compress = compress;
+        self
+    }
+
+    /// Whether new objects are compressed.
+    pub fn compresses(&self) -> bool {
+        self.compress
     }
 
     /// The store's root directory.
@@ -195,21 +316,14 @@ impl ObjectStore {
     /// Read an object; `ObjectNotFound` if absent, `CorruptObject` if the
     /// stored bytes no longer match their hash.
     pub fn get(&self, hash: &ObjectHash) -> Result<Vec<u8>> {
-        let data = match fs::read(self.path_of(hash)) {
+        let stored = match fs::read(self.path_of(hash)) {
             Ok(d) => d,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Err(SdkError::ObjectNotFound(hash.to_hex()))
             }
             Err(e) => return Err(e.into()),
         };
-        let actual = hash_bytes(&data);
-        if actual != *hash {
-            return Err(SdkError::CorruptObject(
-                hash.to_hex(),
-                format!("stored content hashes to {}", actual.to_hex()),
-            ));
-        }
-        Ok(data)
+        decode_verified(hash, stored)
     }
 
     /// The full content of a manifest entry. Chunked entries
@@ -305,7 +419,9 @@ impl ObjectStore {
         self.path_of(hash).is_file()
     }
 
-    /// Filesystem path where `hash` is (or would be) stored.
+    /// Filesystem path where `hash` is (or would be) stored. The file holds
+    /// the *stored* encoding (possibly `WTZ1`-compressed): read objects with
+    /// [`ObjectStore::get`], never directly.
     pub fn path_of(&self, hash: &ObjectHash) -> PathBuf {
         let hex = hash.to_hex();
         let (dir, file) = hex.split_at(2);
@@ -315,20 +431,144 @@ impl ObjectStore {
     /// All stored object hashes (unordered).
     pub fn list(&self) -> Result<Vec<ObjectHash>> {
         let mut out = Vec::new();
-        self.for_each_object(|hash, _| out.push(hash))?;
+        self.for_each_object(|obj| out.push(obj.hash))?;
         Ok(out)
     }
 
-    /// (object count, total bytes).
+    /// (object count, total stored bytes).
     pub fn stats(&self) -> Result<(u64, u64)> {
         let mut count = 0u64;
         let mut bytes = 0u64;
-        self.for_each_object(|_, len| {
+        self.for_each_object(|obj| {
             count += 1;
-            bytes += len;
+            bytes += obj.stored_size;
         })?;
         Ok((count, bytes))
     }
+
+    // --- storage (ENGINEERING_PLAN §14.6): sizes, deletion, compaction ---
+
+    /// Every stored object with its stored size and mtime (unordered).
+    pub fn objects(&self) -> Result<Vec<StoredObject>> {
+        let mut out = Vec::new();
+        self.for_each_object(|obj| out.push(obj))?;
+        Ok(out)
+    }
+
+    /// Stored (on-disk) size of `hash`; `ObjectNotFound` if absent.
+    pub fn size(&self, hash: &ObjectHash) -> Result<u64> {
+        match fs::metadata(self.path_of(hash)) {
+            Ok(m) if m.is_file() => Ok(m.len()),
+            Ok(_) => Err(SdkError::ObjectNotFound(hash.to_hex())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Err(SdkError::ObjectNotFound(hash.to_hex()))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Whether the stored file of `hash` uses the `WTZ1` encoding.
+    pub fn is_compressed(&self, hash: &ObjectHash) -> Result<bool> {
+        let mut file = match fs::File::open(self.path_of(hash)) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(SdkError::ObjectNotFound(hash.to_hex()))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let mut head = [0u8; 4];
+        let mut filled = 0;
+        while filled < head.len() {
+            match file.read(&mut head[filled..])? {
+                0 => break,
+                n => filled += n,
+            }
+        }
+        Ok(filled == head.len() && head == COMPRESSED_MAGIC)
+    }
+
+    /// Delete the object `hash`. Returns whether a file was removed.
+    pub fn delete(&self, hash: &ObjectHash) -> Result<bool> {
+        match fs::remove_file(self.path_of(hash)) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Rewrite a raw object in the compressed encoding when that saves at
+    /// least 10 % (no-op for compressed objects, small objects and stores
+    /// with compression off). Returns `(old, new)` stored sizes when the
+    /// file was rewritten. The content is verified before rewriting.
+    pub fn recompress(&self, hash: &ObjectHash) -> Result<Option<(u64, u64)>> {
+        if !self.compress || self.is_compressed(hash)? {
+            return Ok(None);
+        }
+        let old = self.size(hash)?;
+        if old < COMPRESS_MIN_SIZE as u64 {
+            return Ok(None);
+        }
+        let content = self.get(hash)?;
+        let encoded = encode_object(&content)?;
+        if let Cow::Borrowed(_) = encoded {
+            return Ok(None);
+        }
+        let target = self.path_of(hash);
+        let tmp = fsutil::write_temp(&target, &encoded)?;
+        if let Err(e) = fsutil::rename_with_retry(&tmp, &target) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        Ok(Some((old, encoded.len() as u64)))
+    }
+
+    /// Stale temp files (interrupted writes) in the fan-out directories that
+    /// were last modified before `cutoff`, with their sizes.
+    pub fn stale_temp_files(&self, cutoff: SystemTime) -> Result<Vec<(PathBuf, u64)>> {
+        let mut out = Vec::new();
+        for dir in self.fanout_dirs()? {
+            for entry in fs::read_dir(&dir)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if !name.starts_with(fsutil::TEMP_PREFIX) {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else { continue };
+                let old = meta.modified().map(|m| m < cutoff).unwrap_or(false);
+                if meta.is_file() && old {
+                    out.push((entry.path(), meta.len()));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The two-hex fan-out directories that exist.
+    fn fanout_dirs(&self) -> Result<Vec<PathBuf>> {
+        let fanout = match fs::read_dir(&self.root) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for dir in fanout {
+            let dir = dir?;
+            let name = dir.file_name();
+            let Some(prefix) = name.to_str() else {
+                continue;
+            };
+            if prefix.len() == 2
+                && prefix.bytes().all(|b| b.is_ascii_hexdigit())
+                && dir.file_type()?.is_dir()
+            {
+                out.push(dir.path());
+            }
+        }
+        Ok(out)
+    }
+
+    // --- end storage ---
 
     /// Store `data` whose hash the caller has just computed (skips
     /// re-hashing).
@@ -342,7 +582,12 @@ impl ObjectStore {
         if target.is_file() {
             return Ok(());
         }
-        let tmp = fsutil::write_temp(&target, data)?;
+        let encoded = if self.compress {
+            encode_object(data)?
+        } else {
+            encode_object_uncompressed(data)?
+        };
+        let tmp = fsutil::write_temp(&target, &encoded)?;
         match fsutil::rename_with_retry(&tmp, &target) {
             Ok(()) => Ok(()),
             // Another writer stored the same object first (Windows refuses
@@ -358,24 +603,19 @@ impl ObjectStore {
         }
     }
 
-    /// Visit every well-formed object file with its size. Temp files and
-    /// stray entries are skipped.
-    fn for_each_object(&self, mut f: impl FnMut(ObjectHash, u64)) -> Result<()> {
-        let fanout = match fs::read_dir(&self.root) {
-            Ok(rd) => rd,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        for dir in fanout {
-            let dir = dir?;
-            let dir_name = dir.file_name();
-            let Some(prefix) = dir_name.to_str() else {
+    /// Visit every well-formed object file with its stored size and mtime.
+    /// Temp files and stray entries are skipped.
+    fn for_each_object(&self, mut f: impl FnMut(StoredObject)) -> Result<()> {
+        for dir in self.fanout_dirs()? {
+            let Some(prefix) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
                 continue;
             };
-            if prefix.len() != 2 || !dir.file_type()?.is_dir() {
-                continue;
-            }
-            for obj in fs::read_dir(dir.path())? {
+            let entries = match fs::read_dir(&dir) {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            for obj in entries {
                 let obj = obj?;
                 let obj_name = obj.file_name();
                 let Some(rest) = obj_name.to_str() else {
@@ -387,9 +627,18 @@ impl ObjectStore {
                 let Ok(hash) = format!("{prefix}{rest}").parse::<ObjectHash>() else {
                     continue;
                 };
-                let meta = obj.metadata()?;
+                let meta = match obj.metadata() {
+                    Ok(m) => m,
+                    // Deleted concurrently (e.g. by `wt gc`).
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e.into()),
+                };
                 if meta.is_file() {
-                    f(hash, meta.len());
+                    f(StoredObject {
+                        hash,
+                        stored_size: meta.len(),
+                        modified: meta.modified().ok(),
+                    });
                 }
             }
         }
@@ -593,6 +842,228 @@ mod tests {
         assert!(!store.has_entry(&missing));
         assert_eq!(store.entry_objects(&missing).unwrap(), vec![missing.hash]);
     }
+
+    // --- storage (ENGINEERING_PLAN §14.6): WTZ1 encoding ---
+
+    /// Shared with `objstore/encoding_test.go`: content of the compatibility
+    /// vectors (1296 bytes).
+    fn vector_content() -> Vec<u8> {
+        "W0rkTree WTZ1 compatibility vector: the quick brown fox jumps over the lazy dog.\n"
+            .repeat(16)
+            .into_bytes()
+    }
+
+    /// BLAKE3 of [`vector_content`].
+    const VECTOR_HASH: &str = "bcde4961df8b572156be61dd0a297a62f829f582348332d65ddfa88ef34a3c18";
+
+    /// [`vector_content`] as encoded by the Go server
+    /// (`github.com/klauspost/compress/zstd`, `EncodeObject`).
+    const GO_VECTOR: &str = "57545a3128b52ffd641004c50200c4045730726b547265652057545a3120636f6d7061746962696c69747920766563746f723a2074686520717569636b2062726f776e20666f78206a756d7073206f7665726c617a7920646f672e0a0200bc50e1a320046506b07d279f";
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn noise(len: usize) -> Vec<u8> {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn go_encoded_vector_decodes() {
+        let stored = unhex(GO_VECTOR);
+        assert!(stored.starts_with(&COMPRESSED_MAGIC));
+        let content = decode_object(&stored).unwrap();
+        assert_eq!(content.as_ref(), vector_content().as_slice());
+        assert_eq!(hash_bytes(&content).to_hex(), VECTOR_HASH);
+
+        // Placed in a store by hand, the server's file is readable as is.
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path());
+        let h: ObjectHash = VECTOR_HASH.parse().unwrap();
+        fs::create_dir_all(store.path_of(&h).parent().unwrap()).unwrap();
+        fs::write(store.path_of(&h), &stored).unwrap();
+        assert_eq!(store.get(&h).unwrap(), vector_content());
+        assert!(store.is_compressed(&h).unwrap());
+        assert_eq!(store.size(&h).unwrap(), stored.len() as u64);
+    }
+
+    #[test]
+    fn rust_encoded_vector_decodes() {
+        // RUST_VECTOR was produced by `encode_object` and is decoded by
+        // objstore's TestRustEncodedVector; encoder output may change with
+        // zstd versions, decoding must not.
+        let content = vector_content();
+        let stored = unhex(RUST_VECTOR);
+        assert_eq!(decode_object(&stored).unwrap(), content);
+        let encoded = encode_object(&content).unwrap();
+        assert!(encoded.starts_with(&COMPRESSED_MAGIC));
+        assert_eq!(decode_object(&encoded).unwrap(), content);
+    }
+
+    /// [`vector_content`] as encoded by this crate (zstd 1.5.7, level 3).
+    const RUST_VECTOR: &str = "57545a3128b52ffd601004c50200c4045730726b547265652057545a3120636f6d7061746962696c69747920766563746f723a2074686520717569636b2062726f776e20666f78206a756d7073206f7665726c617a7920646f672e0a0200bc50e1a320046506";
+
+    #[test]
+    fn compressible_objects_are_stored_compressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path());
+        let content = vector_content();
+        let h = store.put(&content).unwrap();
+        assert_eq!(h.to_hex(), VECTOR_HASH, "hash is over the content");
+        assert!(store.is_compressed(&h).unwrap());
+        let stored = fs::read(store.path_of(&h)).unwrap();
+        assert!(stored.starts_with(&COMPRESSED_MAGIC));
+        assert!(stored.len() < content.len() / 2);
+        assert_eq!(store.get(&h).unwrap(), content);
+        assert_eq!(store.size(&h).unwrap(), stored.len() as u64);
+        assert_eq!(store.stats().unwrap(), (1, stored.len() as u64));
+        let objs = store.objects().unwrap();
+        assert_eq!(objs.len(), 1);
+        assert_eq!(objs[0].stored_size, stored.len() as u64);
+        assert!(objs[0].modified.is_some());
+    }
+
+    #[test]
+    fn threshold_rules() {
+        // Below 512 bytes: raw even when compressible.
+        let small = vec![b'a'; COMPRESS_MIN_SIZE - 1];
+        assert!(matches!(encode_object(&small).unwrap(), Cow::Borrowed(_)));
+        // At 512 bytes and compressible: compressed.
+        let at = vec![b'a'; COMPRESS_MIN_SIZE];
+        assert!(encode_object(&at).unwrap().starts_with(&COMPRESSED_MAGIC));
+        // Incompressible: raw (would not save 10 %).
+        let random = noise(4096);
+        assert!(matches!(encode_object(&random).unwrap(), Cow::Borrowed(_)));
+        // Content starting with the magic: always compressed, even tiny.
+        let tricky = b"WTZ1 looks like a header".to_vec();
+        let enc = encode_object(&tricky).unwrap();
+        assert!(enc.starts_with(&COMPRESSED_MAGIC) && enc.len() > tricky.len());
+        assert_eq!(decode_object(&enc).unwrap(), tricky);
+        // The 10 % rule itself.
+        assert!(saves_enough(900, 1000));
+        assert!(!saves_enough(901, 1000));
+    }
+
+    #[test]
+    fn magic_prefixed_content_round_trips_in_both_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        for compress in [true, false] {
+            let store =
+                ObjectStore::open(dir.path().join(compress.to_string())).with_compression(compress);
+            let mut content = b"WTZ1".to_vec();
+            content.extend(noise(2000));
+            let h = store.put(&content).unwrap();
+            assert!(store.is_compressed(&h).unwrap(), "compress={compress}");
+            assert_eq!(store.get(&h).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn legacy_raw_object_starting_with_magic_is_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path());
+        let content = b"WTZ1 but stored raw by an old client".to_vec();
+        let h = hash_bytes(&content);
+        fs::create_dir_all(store.path_of(&h).parent().unwrap()).unwrap();
+        fs::write(store.path_of(&h), &content).unwrap();
+        assert_eq!(store.get(&h).unwrap(), content);
+    }
+
+    #[test]
+    fn mixed_raw_and_compressed_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_writer = ObjectStore::open(dir.path()).with_compression(false);
+        assert!(!raw_writer.compresses());
+        let a = raw_writer.put(&vector_content()).unwrap();
+        assert!(!raw_writer.is_compressed(&a).unwrap());
+
+        let store = ObjectStore::open(dir.path());
+        let mut other = vector_content();
+        other.extend_from_slice(b"one more line\n");
+        let b = store.put(&other).unwrap();
+        let tiny = store.put(b"tiny").unwrap();
+        assert!(store.is_compressed(&b).unwrap());
+        assert!(!store.is_compressed(&tiny).unwrap());
+        // Every reader sees every object regardless of its encoding.
+        for s in [&store, &raw_writer] {
+            assert_eq!(s.get(&a).unwrap(), vector_content());
+            assert_eq!(s.get(&b).unwrap(), other);
+            assert_eq!(s.get(&tiny).unwrap(), b"tiny");
+        }
+        let mut listed = store.list().unwrap();
+        listed.sort();
+        let mut want = vec![a, b, tiny];
+        want.sort();
+        assert_eq!(listed, want);
+        let (count, before) = store.stats().unwrap();
+        assert_eq!(count, 3);
+
+        // Compaction rewrites the raw object; nothing else changes.
+        assert_eq!(raw_writer.recompress(&a).unwrap(), None, "compression off");
+        let (old, new) = store.recompress(&a).unwrap().expect("rewritten");
+        assert_eq!(old, vector_content().len() as u64);
+        assert!(new < old);
+        assert!(store.is_compressed(&a).unwrap());
+        assert_eq!(store.recompress(&a).unwrap(), None);
+        assert_eq!(store.recompress(&tiny).unwrap(), None);
+        assert_eq!(store.get(&a).unwrap(), vector_content());
+        assert_eq!(store.stats().unwrap(), (3, before - old + new));
+    }
+
+    #[test]
+    fn corrupt_compressed_objects_are_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path());
+        let h = store.put(&vector_content()).unwrap();
+        let path = store.path_of(&h);
+        let mut stored = fs::read(&path).unwrap();
+        // Flip a byte inside the frame: the frame no longer decodes (or
+        // decodes to other content).
+        let mid = stored.len() / 2;
+        stored[mid] ^= 0x55;
+        fs::write(&path, &stored).unwrap();
+        assert!(matches!(store.get(&h), Err(SdkError::CorruptObject(..))));
+        // Truncated frame.
+        fs::write(&path, &stored[..10]).unwrap();
+        assert!(matches!(store.get(&h), Err(SdkError::CorruptObject(..))));
+    }
+
+    #[test]
+    fn size_delete_and_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path());
+        let h = store.put(b"abc").unwrap();
+        assert_eq!(store.size(&h).unwrap(), 3);
+        assert!(store.delete(&h).unwrap());
+        assert!(!store.delete(&h).unwrap());
+        assert!(matches!(store.size(&h), Err(SdkError::ObjectNotFound(_))));
+        assert!(matches!(
+            store.is_compressed(&h),
+            Err(SdkError::ObjectNotFound(_))
+        ));
+
+        let tmp = store
+            .path_of(&h)
+            .with_file_name(format!("{}left-over", fsutil::TEMP_PREFIX));
+        fs::write(&tmp, b"partial").unwrap();
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        assert_eq!(store.stale_temp_files(future).unwrap(), vec![(tmp, 7)]);
+        let past = SystemTime::now() - std::time::Duration::from_secs(3600);
+        assert!(store.stale_temp_files(past).unwrap().is_empty());
+    }
+
+    // --- end storage ---
 
     #[test]
     fn stats_of_missing_root_is_zero() {

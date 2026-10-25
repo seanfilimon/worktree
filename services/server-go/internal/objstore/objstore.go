@@ -74,6 +74,7 @@ type SizeStore interface {
 }
 
 // ObjectSize returns the size of h in s, using SizeStore when available
+// (stored bytes: compressed objects report their compressed size, §14.6)
 // and falling back to reading the object.
 func ObjectSize(ctx context.Context, s Store, h hash.Hash) (int64, error) {
 	if ss, ok := s.(SizeStore); ok {

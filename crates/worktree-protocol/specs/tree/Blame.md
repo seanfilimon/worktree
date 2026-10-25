@@ -85,6 +85,7 @@ pub struct BlameLine {
     pub snapshot_id: SnapshotId,
     pub author: String,
     pub message: String,        // first line
+    #[serde(rename = "at")]     // JSON field "at", same as the server's BlameLine
     pub created_at: DateTime<Utc>,
 }
 ```

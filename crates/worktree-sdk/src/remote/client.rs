@@ -3,13 +3,17 @@
 //! [`SyncClient`] wraps the generated tonic client with: endpoint setup
 //! (HTTP/2 prior knowledge for `http://`, TLS for `https://`), a bearer-token
 //! interceptor, 64 MiB message limits, `tonic::Status` → [`SdkError`]
-//! mapping, and bounded, streaming object transfer.
+//! mapping, and bounded, streaming object transfer. Object transfers
+//! (`UploadObjects` / `DownloadObjects`) send and accept gzip-compressed
+//! messages (ENGINEERING_PLAN §14.6), falling back to uncompressed
+//! messages when the server cannot decode gzip.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::codec::CompressionEncoding;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::service::interceptor::InterceptedService;
 use tonic::service::Interceptor;
@@ -154,7 +158,61 @@ pub struct SyncClient {
     authenticated: bool,
     // pub(super): daemon workstream (§13.11) adds RPCs in remote/watch.rs.
     pub(super) inner: Inner,
+    // storage (§14.6): gzip message compression for object transfer; turned
+    // off for the rest of the session when the server cannot decode it.
+    compress: bool,
 }
+
+// --- storage (ENGINEERING_PLAN §14.6): gRPC message compression ---
+
+/// Whether `status` says the server cannot decode gzip-compressed
+/// messages (an older or differently built server).
+pub(crate) fn is_compression_unsupported(status: &Status) -> bool {
+    if status.code() != Code::Unimplemented {
+        return false;
+    }
+    let msg = status.message().to_ascii_lowercase();
+    msg.contains("compress") || msg.contains("encoding")
+}
+
+impl SyncClient {
+    /// The generated client for object transfer: sends gzip-compressed
+    /// requests and accepts gzip-compressed responses (the server answers
+    /// in kind), unless compression was found to be unsupported.
+    fn object_client(&self) -> Inner {
+        let client = self.inner.clone();
+        if self.compress {
+            client
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip)
+        } else {
+            client
+        }
+    }
+
+    /// Whether object transfers currently use gzip compression.
+    pub fn compresses_objects(&self) -> bool {
+        self.compress
+    }
+
+    /// Switch gzip compression of object transfers on or off.
+    pub fn set_object_compression(&mut self, on: bool) {
+        self.compress = on;
+    }
+
+    /// Record that `status` came from a server without gzip support:
+    /// returns true (retry uncompressed) the first time.
+    fn fall_back_from_compression(&mut self, status: &Status) -> bool {
+        if self.compress && is_compression_unsupported(status) {
+            tracing::debug!(server = %self.server, "server does not accept gzip; sending objects uncompressed");
+            self.compress = false;
+            return true;
+        }
+        false
+    }
+}
+
+// --- end storage ---
 
 impl SyncClient {
     /// Connect to `server` (any URL form; it is normalized), authenticating
@@ -188,6 +246,7 @@ impl SyncClient {
             server,
             authenticated: token.is_some(),
             inner,
+            compress: true,
         })
     }
 
@@ -468,10 +527,9 @@ impl SyncClient {
         let sized: Vec<_> = objects
             .iter()
             .map(|&(hash, kind)| {
-                // Size is only a batching hint; a missing file errors on read.
-                let size = std::fs::metadata(store.path_of(&hash))
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                // Size is only a batching hint (stored, possibly compressed
+                // bytes); a missing object errors on read.
+                let size = store.size(&hash).unwrap_or(0);
                 (hash, kind, size)
             })
             .collect();
@@ -489,6 +547,39 @@ impl SyncClient {
         batch: Vec<(ObjectHash, ObjectKind)>,
     ) -> Result<usize> {
         let expected = batch.len();
+        let resp = match self.upload_batch_once(store.clone(), batch.clone()).await? {
+            Ok(resp) => resp,
+            // storage (§14.6): retry uncompressed on a server without gzip.
+            Err(s) if self.fall_back_from_compression(&s) => self
+                .upload_batch_once(store, batch)
+                .await?
+                .map_err(|s| self.status(s))?,
+            Err(s) => return Err(self.status(s)),
+        };
+        if let Some(first) = resp.rejected.first() {
+            let first = hash_from_wire(Some(first))
+                .map(|h| h.to_hex())
+                .unwrap_or_else(|_| "?".into());
+            return Err(SdkError::Remote(format!(
+                "server rejected {} uploaded object(s) as corrupt (first: {first})",
+                resp.rejected.len()
+            )));
+        }
+        if resp.received as usize != expected {
+            return Err(SdkError::Remote(format!(
+                "server acknowledged {} of {expected} uploaded objects",
+                resp.received
+            )));
+        }
+        Ok(expected)
+    }
+
+    /// One `UploadObjects` call; the inner `Err` is the RPC's status.
+    async fn upload_batch_once(
+        &mut self,
+        store: ObjectStore,
+        batch: Vec<(ObjectHash, ObjectKind)>,
+    ) -> Result<std::result::Result<wire::UploadObjectsResponse, Status>> {
         let (tx, rx) = mpsc::channel(UPLOAD_CHANNEL_CAPACITY);
         let producer = tokio::task::spawn_blocking(move || -> Result<()> {
             for (hash, kind) in batch {
@@ -512,27 +603,14 @@ impl SyncClient {
             }
             Ok(())
         });
-        let rpc = self.inner.upload_objects(ReceiverStream::new(rx)).await;
+        let rpc = self
+            .object_client()
+            .upload_objects(ReceiverStream::new(rx))
+            .await;
         producer
             .await
             .map_err(|e| SdkError::Other(format!("object upload task failed: {e}")))??;
-        let resp = rpc.map_err(|s| self.status(s))?.into_inner();
-        if let Some(first) = resp.rejected.first() {
-            let first = hash_from_wire(Some(first))
-                .map(|h| h.to_hex())
-                .unwrap_or_else(|_| "?".into());
-            return Err(SdkError::Remote(format!(
-                "server rejected {} uploaded object(s) as corrupt (first: {first})",
-                resp.rejected.len()
-            )));
-        }
-        if resp.received as usize != expected {
-            return Err(SdkError::Remote(format!(
-                "server acknowledged {} of {expected} uploaded objects",
-                resp.received
-            )));
-        }
-        Ok(expected)
+        Ok(rpc.map(tonic::Response::into_inner))
     }
 
     /// Download `wanted` into `store` (verifying every hash), in bounded
@@ -552,29 +630,53 @@ impl SyncClient {
         let unique = dedup(wanted);
         let mut received = 0;
         for chunk in unique.chunks(HASH_BATCH) {
-            let mut pending: HashSet<ObjectHash> = chunk.iter().copied().collect();
-            let mut req = tonic::Request::new(wire::WantMessage {
-                hashes: chunk.iter().map(wire_hash).collect(),
-            });
-            req.metadata_mut()
-                .insert(TREE_ID_METADATA_KEY, tree_header.clone());
-            let mut stream = self
-                .inner
-                .download_objects(req)
-                .await
-                .map_err(|s| self.status(s))?
-                .into_inner();
-            while let Some(obj) = stream.message().await.map_err(|s| self.status(s))? {
-                let hash = hash_from_wire(obj.hash.as_ref())?;
-                if !pending.remove(&hash) {
-                    tracing::warn!(%hash, "server sent an object that was not requested; ignoring");
-                    continue;
-                }
-                store.put_with_hash(&hash, &obj.data)?;
-                received += 1;
-            }
+            received += match self.download_batch(store, &tree_header, chunk).await? {
+                Ok(n) => n,
+                // storage (§14.6): retry uncompressed on a server without
+                // gzip (the failure comes before any object is sent).
+                Err(s) if self.fall_back_from_compression(&s) => self
+                    .download_batch(store, &tree_header, chunk)
+                    .await?
+                    .map_err(|s| self.status(s))?,
+                Err(s) => return Err(self.status(s)),
+            };
         }
         Ok(received)
+    }
+
+    /// One `DownloadObjects` call; the inner `Err` is the RPC's status.
+    async fn download_batch(
+        &mut self,
+        store: &ObjectStore,
+        tree_header: &MetadataValue<Ascii>,
+        chunk: &[ObjectHash],
+    ) -> Result<std::result::Result<usize, Status>> {
+        let mut pending: HashSet<ObjectHash> = chunk.iter().copied().collect();
+        let mut req = tonic::Request::new(wire::WantMessage {
+            hashes: chunk.iter().map(wire_hash).collect(),
+        });
+        req.metadata_mut()
+            .insert(TREE_ID_METADATA_KEY, tree_header.clone());
+        let mut stream = match self.object_client().download_objects(req).await {
+            Ok(resp) => resp.into_inner(),
+            Err(s) => return Ok(Err(s)),
+        };
+        let mut received = 0;
+        loop {
+            let obj = match stream.message().await {
+                Ok(Some(obj)) => obj,
+                Ok(None) => break,
+                Err(s) => return Ok(Err(s)),
+            };
+            let hash = hash_from_wire(obj.hash.as_ref())?;
+            if !pending.remove(&hash) {
+                tracing::warn!(%hash, "server sent an object that was not requested; ignoring");
+                continue;
+            }
+            store.put_with_hash(&hash, &obj.data)?;
+            received += 1;
+        }
+        Ok(Ok(received))
     }
 }
 
@@ -720,6 +822,23 @@ mod tests {
         assert!(
             matches!(status_to_error(s, &Status::internal("")), SdkError::Remote(m) if m == "Internal")
         );
+    }
+
+    #[test]
+    fn compression_fallback_detection() {
+        // tonic's and grpc-go's refusals of an unsupported grpc-encoding.
+        assert!(is_compression_unsupported(&Status::unimplemented(
+            "Content is compressed with `gzip` which isn't supported"
+        )));
+        assert!(is_compression_unsupported(&Status::unimplemented(
+            "grpc: Decompressor is not installed for grpc-encoding \"gzip\""
+        )));
+        assert!(!is_compression_unsupported(&Status::unimplemented(
+            "unknown method UploadObjects"
+        )));
+        assert!(!is_compression_unsupported(&Status::internal(
+            "compression failed"
+        )));
     }
 
     #[test]

@@ -175,9 +175,15 @@ func TestStorageQuotaAndAccounting(t *testing.T) {
 	waitUsage(t, f, want)
 
 	// A push that would exceed the quota is denied.
+	// storage (§14.6): incompressible content, so the stored size stays
+	// above the quota with WTZ1 compression on.
 	big := make([]byte, 2000)
+	x := uint32(2463534242)
 	for i := range big {
-		big[i] = byte(i)
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		big[i] = byte(x)
 	}
 	m3 := f.manifest(map[string]string{"big.bin": string(big)})
 	s3 := &domain.Snapshot{ID: "s3", TreeID: f.tree.ID, Parents: []string{"s1"}, ManifestHash: m3}

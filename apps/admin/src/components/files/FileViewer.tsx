@@ -14,6 +14,7 @@ import { detectLanguage, imageMimeType, isMarkdown } from "@/lib/code";
 import { baseName, decodeText, downloadBytes, splitLines } from "@/lib/files";
 import { formatBytes, formatNumber } from "@/lib/format";
 import { useToast } from "@/toast/store";
+import { BlameView } from "./BlameView";
 import { CodeView } from "./CodeView";
 import { FileHistory } from "./FileHistory";
 import { ImagePreview } from "./ImagePreview";
@@ -24,7 +25,7 @@ import { EmptyState, ErrorState, LoadingRows } from "./states";
 /** Larger files are offered as a download instead of being fetched for preview. */
 const PREVIEW_LIMIT = 1024 * 1024;
 
-type TabId = "preview" | "code" | "history";
+type TabId = "preview" | "code" | "blame" | "history";
 
 interface FileViewerProps {
   tenant: string;
@@ -93,6 +94,8 @@ export function FileViewer({ tenant, tree, snapshot, branch, file, resolveLink }
   });
 
   const empty = text !== null && lines.length === 1 && lines[0] === "";
+  // v0.6 (§14.4): blame text files (binary files are an error on the server).
+  const canBlame = hasCode && text !== null && !empty;
 
   let content: ReactNode;
   if (!previewable) {
@@ -146,6 +149,7 @@ export function FileViewer({ tenant, tree, snapshot, branch, file, resolveLink }
             <TabsList>
               {hasPreview && <TabsTrigger value="preview">Preview</TabsTrigger>}
               {hasCode && <TabsTrigger value="code">Code</TabsTrigger>}
+              {canBlame && <TabsTrigger value="blame">Blame</TabsTrigger>}
               <TabsTrigger value="history">History</TabsTrigger>
             </TabsList>
             <dl
@@ -208,6 +212,11 @@ export function FileViewer({ tenant, tree, snapshot, branch, file, resolveLink }
           </div>
           {hasPreview && <TabsContent value="preview">{preview}</TabsContent>}
           {hasCode && <TabsContent value="code">{content}</TabsContent>}
+          {canBlame && (
+            <TabsContent value="blame">
+              {tab === "blame" && <BlameView tenant={tenant} tree={tree} snapshot={snapshot} path={file.path} language={language} />}
+            </TabsContent>
+          )}
           <TabsContent value="history">
             <FileHistory tenant={tenant} tree={tree} path={file.path} branch={branch} current={snapshot} />
           </TabsContent>

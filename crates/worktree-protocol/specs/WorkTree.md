@@ -559,7 +559,9 @@ wt merge abort                       # also: wt merge --abort
 - `wt pull` = fetch, then fast-forward (with checkout) or merge of
   `<remote>/<branch>` into the local branch.
 
-The server never merges content: merge requests are fast-forward only (§14).
+Merge requests merge on the server by fast-forward, a three-way merge snapshot
+or a squash snapshot ([server/Merging.md](./server/Merging.md)); content
+conflicts are resolved locally and pushed.
 
 ---
 

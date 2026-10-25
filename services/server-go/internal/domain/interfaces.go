@@ -192,9 +192,10 @@ type ReviewService interface {
 	Open(ctx context.Context, p *Principal, tree *Tree, title, description, source, target string) (*MergeRequest, error)
 	Approve(ctx context.Context, p *Principal, tree *Tree, number int) (*MergeRequest, error)
 	Close(ctx context.Context, p *Principal, tree *Tree, number int) (*MergeRequest, error)
-	// Merge fast-forwards target to source's tip. Fails with ErrConflict if
-	// target's tip is not an ancestor of source's tip (needs a local merge),
-	// or *PushDenied{Kind:"review_required"} without enough approvals.
+	// Merge merges the request with the default method (fast-forward when
+	// possible, else a server-side merge snapshot; see review.MergeWith for
+	// explicit methods). Fails with ErrConflict when no method can merge, or
+	// *PushDenied{Kind:"review_required"} without enough approvals.
 	Merge(ctx context.Context, p *Principal, tree *Tree, number int) (*MergeRequest, error)
 }
 

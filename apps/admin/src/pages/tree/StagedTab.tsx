@@ -1,9 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, FileStack, GitBranch, TriangleAlert, Users } from "lucide-react";
+import { ChevronDown, FileStack, FolderOpen, GitBranch, TriangleAlert, Users } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { keys, useStaged, useStagedSummary } from "@/api/queries";
-import type { StagedBranchActivity, StagedFileOverlap, StagedSnapshot } from "@/api/types";
+import type { StagedBranchActivity, StagedFileOverlap } from "@/api/types";
+import type { StagedSnapshotV06 } from "@/api/v06";
+import { StagedFilesSheet } from "./v06/StagedFilesSheet";
 import { EmptyState, ErrorState, LoadingRows, RelativeTime } from "@/components/files/states";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -124,7 +126,15 @@ function BranchCard({ activity, overlaps }: { activity: StagedBranchActivity; ov
   );
 }
 
-function StagedItem({ s, overlaps }: { s: StagedSnapshot; overlaps: Map<string, StagedFileOverlap> }) {
+function StagedItem({
+  s,
+  overlaps,
+  onBrowse,
+}: {
+  s: StagedSnapshotV06;
+  overlaps: Map<string, StagedFileOverlap>;
+  onBrowse: (s: StagedSnapshotV06) => void;
+}) {
   const { tenant, tree } = useTreeContext();
   const files = s.files_changed ?? [];
   const [open, setOpen] = useState(false);
@@ -168,6 +178,18 @@ function StagedItem({ s, overlaps }: { s: StagedSnapshot; overlaps: Map<string, 
           >
             {shortId(s.snapshot_id)}
           </Link>
+          {s.manifest_hash && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-1.5 flex h-7 text-xs"
+              aria-label={`Browse files staged by ${s.author} on ${s.branch_name}`}
+              onClick={() => onBrowse(s)}
+            >
+              <FolderOpen aria-hidden="true" />
+              Browse files
+            </Button>
+          )}
         </div>
       </div>
       {files.length > 0 && (
@@ -218,6 +240,7 @@ export function StagedTab() {
   const summary = useStagedSummary(tenant, tree);
   const queryClient = useQueryClient();
   const overlaps = useMemo(() => collectOverlaps(summary.data ?? []), [summary.data]);
+  const [browsing, setBrowsing] = useState<StagedSnapshotV06 | null>(null);
 
   // The tree layout refreshes the staged list on live events; keep the summary in step.
   const seen = useRef({ branch, at: staged.dataUpdatedAt });
@@ -297,12 +320,13 @@ export function StagedTab() {
           ) : (
             <ul aria-label="Staged snapshots" className="divide-y">
               {list.map((s) => (
-                <StagedItem key={`${s.account_id}-${s.branch_name}`} s={s} overlaps={overlaps} />
+                <StagedItem key={`${s.account_id}-${s.branch_name}`} s={s} overlaps={overlaps} onBrowse={setBrowsing} />
               ))}
             </ul>
           )}
         </div>
       </section>
+      <StagedFilesSheet staged={browsing} onClose={() => setBrowsing(null)} />
     </div>
   );
 }
