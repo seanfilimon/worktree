@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use crate::commands::{
-    access, admin, archive, audit, auth, branch, ci, config, daemon, deps, diff, events, git,
-    grant, history, iam, identity, ignore, init, invite, license, merge, mfa, mr, policy, protect,
-    release, remote, role, sa, search, session, snapshot, sso, status, sync, tag, team, tenant,
-    todo, token, tree, trees,
+    access, admin, api, archive, audit, auth, blame, branch, cherry_pick, ci, completions, config,
+    daemon, deps, diff, doctor, events, fsck, gc, git, grant, history, iam, identity, ignore, init,
+    invite, license, merge, mfa, mr, open, policy, protect, rebase, release, remote, role, sa,
+    search, session, snapshot, sso, stash, status, sync, tag, team, tenant, todo, token, tree,
+    trees, webhook,
 };
 
 #[derive(Debug, Parser)]
@@ -171,6 +172,28 @@ pub enum Command {
     Access(access::AccessArgs),
     /// Snapshot signing keys: generate, show, register, list, revoke
     Identity(identity::IdentityArgs),
+    /// Outgoing webhooks of a tenant or tree: list, create, update, delete, deliveries, redeliver, test
+    Webhook(webhook::WebhookArgs),
+    /// Show which snapshot last changed each line of a file
+    Blame(blame::BlameArgs),
+    /// Apply the changes of existing snapshots onto the current branch
+    CherryPick(cherry_pick::CherryPickArgs),
+    /// Replay the current branch's snapshots onto another base
+    Rebase(rebase::RebaseArgs),
+    /// Set working changes aside and restore them later
+    Stash(stash::StashArgs),
+    /// Remove unreachable local objects and compact the local store
+    Gc(gc::GcArgs),
+    /// Verify the integrity of the local store and history
+    Fsck(fsck::FsckArgs),
+    /// Print shell completion scripts (bash, zsh, fish, powershell, elvish)
+    Completions(completions::CompletionsArgs),
+    /// Diagnose the local setup: config, credentials, server, daemon
+    Doctor(doctor::DoctorArgs),
+    /// Open the current tree (or a merge request, snapshot or file) in the admin panel
+    Open(open::OpenArgs),
+    /// Call any REST API endpoint of the server with your credentials
+    Api(api::ApiArgs),
 }
 
 #[cfg(test)]

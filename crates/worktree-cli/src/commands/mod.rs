@@ -2,16 +2,23 @@
 
 pub mod access;
 pub mod admin;
+pub mod api;
 pub mod archive;
 pub mod audit;
 pub mod auth;
+pub mod blame;
 pub mod branch;
+pub mod cherry_pick;
 pub mod ci;
+pub mod completions;
 pub mod config;
 pub mod daemon;
 pub mod deps;
 pub mod diff;
+pub mod doctor;
 pub mod events;
+pub mod fsck;
+pub mod gc;
 pub mod git;
 pub mod grant;
 pub mod history;
@@ -25,8 +32,10 @@ pub mod license;
 pub mod merge;
 pub mod mfa;
 pub mod mr;
+pub mod open;
 pub mod policy;
 pub mod protect;
+pub mod rebase;
 pub mod release;
 pub mod remote;
 pub mod role;
@@ -36,6 +45,7 @@ pub mod server_common;
 pub mod session;
 pub mod snapshot;
 pub mod sso;
+pub mod stash;
 pub mod status;
 pub mod sync;
 pub mod tag;
@@ -45,6 +55,7 @@ pub mod todo;
 pub mod token;
 pub mod tree;
 pub mod trees;
+pub mod webhook;
 
 use crate::cli::Command;
 use crate::context::Context;
@@ -109,5 +120,16 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Ci(args) => ci::run(ctx, args),
         Command::Access(args) => access::run(ctx, args),
         Command::Identity(args) => identity::run(ctx, args),
+        Command::Webhook(args) => webhook::run(ctx, args),
+        Command::Blame(args) => blame::run(ctx, args),
+        Command::CherryPick(args) => cherry_pick::run(ctx, args),
+        Command::Rebase(args) => rebase::run(ctx, args),
+        Command::Stash(args) => stash::run(ctx, args),
+        Command::Gc(args) => gc::run(ctx, args),
+        Command::Fsck(args) => fsck::run(ctx, args),
+        Command::Completions(args) => completions::run(ctx, args),
+        Command::Doctor(args) => doctor::run(ctx, args),
+        Command::Open(args) => open::run(ctx, args),
+        Command::Api(args) => api::run(ctx, args),
     }
 }

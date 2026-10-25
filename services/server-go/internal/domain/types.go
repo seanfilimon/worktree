@@ -197,6 +197,9 @@ type BranchProtection struct {
 	RequireSigned  bool     `json:"require_signed,omitempty"`  // pushed snapshots must carry a verified signature
 	RequireLinear  bool     `json:"require_linear,omitempty"`  // no merge snapshots
 	BlockOnTodos   bool     `json:"block_on_todos,omitempty"`  // open blocking TODOs of the source branch block merging
+
+	// v0.6 (§14): merge methods allowed into matching branches (empty = all).
+	MergeMethods []string `json:"merge_methods,omitempty"`
 }
 
 type Approval struct {
@@ -231,6 +234,10 @@ type MergeRequest struct {
 
 	// v0.5 (§13).
 	LinkedGroup string `json:"linked_group,omitempty"`
+
+	// v0.6 (§14): the method used to merge (MergeFastForward when empty on
+	// merged requests from before v0.6).
+	MergeMethod string `json:"merge_method,omitempty"`
 }
 
 type AuditEvent struct {

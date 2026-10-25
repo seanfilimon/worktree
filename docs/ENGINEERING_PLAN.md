@@ -1023,3 +1023,262 @@ documents from a bus subscriber (`DeleteDocs(coll, meta.DocPrefix(treeID))`).
   (the reference is regenerated after merge). Do not edit
   `docs/ENGINEERING_PLAN.md`.
 - Commit on your branch with a descriptive message; do not merge.
+
+## 14. v0.6 feature expansion
+
+Ten parallel workstreams add server-side merges, webhooks, code search,
+blame, history rewriting, storage compression and integrity, policy
+history, CLI ergonomics, an OpenAPI description and the matching admin UI.
+Same rules as §13.15 (own your files, tests for everything, verification
+commands, commit on your branch, do not edit this plan).
+
+Shared foundation (already on `main`):
+
+- Go: `domain/v06.go` (merge methods, `Webhook`, `WebhookDelivery`,
+  `PolicyVersion`, `CodeSearchHit`, `BlameLine`, events `webhook.failing`,
+  `policy.changed`); `MergeRequest.MergeMethod`;
+  `BranchProtection.MergeMethods`. Stub packages `webhooks` (`Service`),
+  `codesearch` (`Index`), `merge3` (empty) wired in `server.go` and
+  `httpapi.Deps` (`Webhooks`, `CodeSearch`). Stub route files in `httpapi`:
+  `webhooks.go`, `codesearch.go`, `blame.go`, `fsck.go`,
+  `iam_policy_history.go`, already registered.
+- Rust CLI stub command groups: `wt webhook`, `wt blame`, `wt cherry-pick`,
+  `wt rebase`, `wt stash`, `wt gc`, `wt fsck`, `wt completions`,
+  `wt doctor`, `wt open`, `wt api`.
+- Specs: each workstream documents its feature in a **new** spec file named
+  below (with Implementation status / Roadmap / References sections) and
+  may add one line to `crates/worktree-protocol/specs/README.md`'s index
+  (append at the end of the index list). Do not edit other specs; the
+  integrator cross-links them.
+- Doc collections (add to §13.14's registry in your report):
+  `webhooks` (`DocKey(tenantID, id)`), `webhook_deliveries`
+  (`DocKey(webhookID, RFC3339Nano created_at, id)`), `policy_versions`
+  (`DocKey(tenantID, policyID, %08d version)`), `code_index_meta`
+  (key = treeID).
+
+### 14.1 Server-side merges (workstream `server-merge`)
+
+- `internal/merge3`: three-way merge of two `ManifestRecord`s against a
+  base (path-level: unchanged/one-side/both-same/both-changed; text
+  files merged line-wise with diff3 when both changed; binary, chunked,
+  executable-bit and add/add/modify-delete clashes are conflicts). Pure
+  functions over an object reader; exhaustive tests.
+- `POST {tree}/merge-requests/{n}/merge` body `{"method":"fast-forward|merge|squash","message"?}`.
+  Default: fast-forward when possible, else `merge`. `merge` writes a merge
+  snapshot (parents `[target tip, source tip]`), `squash` one snapshot
+  (parent `[target tip]`) with the combined changes; authored by the merger,
+  message default `Merge branch '<src>' into <tgt> (!N)` / the MR title
+  for squash. The new objects (merged blobs, manifest) are stored, the
+  snapshot is stored with `PushedBy` = merger, the target moves by CAS.
+  `BranchProtection.MergeMethods` restricts methods (`409 merge_method_not_allowed`);
+  `RequireLinear` forbids `merge`. Conflicts → `409 merge_conflict`
+  `{"conflicts":[{"path","kind"}]}`. `GET {tree}/merge-requests/{n}/mergeability`
+  → `{"fast_forward":bool,"methods":[...allowed and possible],"conflicts":[...]}`
+  (cached per (source tip, target tip)). Linked-group merges accept
+  `{"method"}` too. `MergeRequest.MergeMethod` is recorded.
+- CLI: `wt mr merge N [TREE] --method fast-forward|merge|squash [-m MSG]`,
+  `wt mr mergeability N`, `wt protect set ... --merge-methods a,b`.
+- Spec: `specs/server/Merging.md`.
+- Owns: `internal/merge3/**`, `internal/review/**`,
+  `httpapi/mergerequests.go`, `httpapi/reviews.go`, `commands/{mr,protect}.rs`.
+
+### 14.2 Webhooks (workstream `webhooks`)
+
+- REST (tenant scope needs `tenant:admin`, tree scope `tree:admin`):
+  `GET|POST /tenants/{t}/webhooks`, `GET|PATCH|DELETE /tenants/{t}/webhooks/{id}`,
+  `GET /tenants/{t}/webhooks/{id}/deliveries?limit=`,
+  `GET .../deliveries/{did}`, `POST .../deliveries/{did}/redeliver`,
+  `POST /tenants/{t}/webhooks/{id}/test` (sends a `ping` event); the same
+  set under `{tree}/webhooks`. Create body `{url, events[], secret?,
+  description?, active?}`; the response includes `secret` once when the
+  server generated it.
+- Delivery: subscribe to the bus; for each matching active hook POST JSON
+  `{"id","event","tenant","tree","actor","at","payload"}` with headers
+  `Content-Type: application/json`, `User-Agent: W0rkTree-Hookshot/<version>`,
+  `X-WT-Event`, `X-WT-Delivery`, `X-WT-Signature: sha256=<hex HMAC-SHA256(secret, body)>`;
+  10 s timeout; 2xx = success; retries after 1 m, 5 m, 30 m, 2 h; after 20
+  consecutive failed deliveries the hook is deactivated and
+  `webhook.failing` is published. Deliveries are kept 30 days / last 200
+  per hook. Hooks only see events of their tenant/tree and only events the
+  creator could read (re-checked with `tree:read` for tree events).
+- SSRF guard: targets resolving to loopback, link-local or private ranges
+  are refused unless `--webhook-allow-private` (`WT_WEBHOOK_ALLOW_PRIVATE`,
+  add to `internal/config` in a commented block); `http://` targets allowed.
+- Audit `webhook.create|update|delete`.
+- CLI: `wt webhook list|create|show|update|delete|deliveries|redeliver|test`
+  with `--tenant T` or `--tree T/TREE`.
+- Spec: `specs/server/Webhooks.md`.
+- Owns: `internal/webhooks/**`, `httpapi/webhooks.go`, `commands/webhook.rs`,
+  `internal/config` (one flag), `server/server.go` (one Start call).
+
+### 14.3 Code search (workstream `code-search`)
+
+- `codesearch.Index`: indexes the default-branch tip of every tree
+  (trigram index over text files ≤ 1 MiB, skipping binary and chunked
+  files), rebuilt incrementally on `branch.pushed` to a default branch and
+  `tree.deleted`; built lazily on first query per tree; in memory (index
+  metadata in `code_index_meta`).
+- `GET /api/v1/search/code?q=&tenant=&tree=&path=&regex=false&case=false&context=2&limit=50`
+  → `{"hits":[CodeSearchHit],"truncated":bool,"searched_trees":n}`;
+  `q` ≥ 3 characters for literal search; regex uses RE2 with a trigram
+  prefilter where possible. Results respect `tree:read`, path-deny policies
+  and license `CheckRead`; anonymous callers search public trees only.
+  Max 1000 hits; 5 s budget per query.
+- CLI: `wt search code QUERY [--tree T/TREE] [--tenant T] [--path GLOB]
+  [--regex] [-i] [-C N] [--limit N]` (grep-like output `tree:path:line:text`).
+- Spec: `specs/server/CodeSearch.md`.
+- Owns: `internal/codesearch/**`, `httpapi/codesearch.go`,
+  `commands/search.rs`, `server/server.go` (one Start call).
+
+### 14.4 Blame (workstream `blame`)
+
+- SDK: `Repository::blame(tree, path, rev: Option<&str>) -> Result<Vec<BlameLine>>`
+  (model type with line, text, snapshot id, author, message, created_at):
+  walks first-parent history, attributing lines with the existing line diff
+  (merge snapshots attribute to the parent that introduced the line when
+  identical in one parent); handles chunked files via `read_entry`;
+  binary files are an error.
+- CLI: `wt blame PATH [--rev R] [-L START,END] [--porcelain|--json]`
+  (default output: short id, author, date, line number, text).
+- Server: `GET {tree}/blame/{rev}/{path...}` → `{"lines":[BlameLine],"snapshot"}`
+  with the same read checks as the blob endpoint (path deny 403, license
+  451); Go implementation over `History` + manifests (`internal/blame`
+  package, new).
+- Spec: `specs/tree/Blame.md`.
+- Owns: SDK `repo/blame.rs` (new) + its `mod` line, `model.rs` (BlameLine
+  type only, commented block), `commands/blame.rs`, `internal/blame/**`,
+  `httpapi/blame.go`.
+
+### 14.5 History rewriting and stash (workstream `rewrite`)
+
+- `wt cherry-pick REV... [--no-snapshot] [--continue|--abort]`: applies each
+  snapshot's change (vs its first parent) with the three-way merge engine;
+  conflicts stop like `wt merge` (same conflict files, `--continue` after
+  resolving).
+- `wt rebase ONTO [--continue|--abort|--skip]`: replays the current
+  branch's first-parent snapshots since the merge base onto ONTO, creating
+  new snapshots (new ids, `reverts`/dependencies preserved, signatures
+  re-applied if configured), then moves the branch; refuses on pushed
+  history unless `--force` (the branch's remote-tracking tip contains the
+  rewritten snapshots); reflog entries `rebase`.
+- `wt stash [push] [-m MSG] [--include-untracked]`, `list`, `show [N]`,
+  `apply [N]`, `pop [N]`, `drop [N]`, `clear`: entries in
+  `.wt/trees/<tree>/stash.jsonl` referencing stored manifests; apply is a
+  three-way merge onto the working tree.
+- `auto_snapshot.on_branch_switch = "stash"`: `wt switch` stashes dirty
+  changes with message `auto-stash on <branch>` and, when switching back
+  to that branch, pops the newest auto-stash for it.
+- SDK modules `repo/rewrite.rs`, `repo/stash.rs` (new), public API on
+  `Repository`; GC roots: the stash keeps its manifests reachable (export
+  `Repository::stash_roots()` for `wt gc`).
+- Spec: `specs/tree/HistoryRewriting.md`.
+- Owns: `repo/{rewrite,stash}.rs`, `commands/{cherry_pick,rebase,stash,branch}.rs`.
+
+### 14.6 Storage compression and integrity (workstream `storage`)
+
+- Object encoding, local and server: stored files may be zstd-compressed
+  with the 4-byte magic `WTZ1` followed by a zstd frame of the content;
+  writers compress when it saves ≥ 10 % and the object is ≥ 512 bytes;
+  readers accept raw and compressed files; hashes are always over the
+  uncompressed content (unchanged object ids, no migration needed).
+  Rust: `zstd` crate in `store.rs`; Go: `github.com/klauspost/compress/zstd`
+  in `objstore/disk.go` (server flag `--compress-objects`, default true,
+  env `WT_COMPRESS_OBJECTS`). `ObjectSize`/`Size` report stored bytes.
+- gRPC message compression: server registers gzip; the SDK client sends
+  and accepts gzip for UploadObjects/DownloadObjects.
+- `wt gc [--dry-run] [--prune DAYS]`: deletes local objects unreachable from
+  branches, tags, remote-tracking refs, reflog entries newer than the prune
+  window (default 30 days), stash roots and merge state; reports counts and
+  bytes. `wt fsck [--full]`: object hashes, manifests decode, snapshot
+  parents and manifests present, refs point at existing snapshots; exit 1
+  on errors with a report.
+- Server: `POST /api/v1/admin/fsck` (server admin) → `{"objects_checked",
+  "corrupt":[hash],"missing":[{snapshot,object}],"duration_ms"}`;
+  `wt admin fsck`.
+- Spec: `specs/storage/Compression.md` (encoding + gc/fsck).
+- Owns: SDK `store.rs`, `remote/client.rs` (compression options only),
+  `objstore/**`, `httpapi/fsck.go`, `commands/{gc,fsck,admin}.rs`
+  (admin: `fsck` subcommand only), `internal/config` (one flag).
+
+### 14.7 Policy history (workstream `policy-history`)
+
+- Every policy create/update/delete through REST and every
+  `accesscfg` apply appends a `PolicyVersion` (collection
+  `policy_versions`); event `policy.changed`.
+- REST (iam:read for reads, iam:admin for rollback):
+  `GET /tenants/{t}/policies/{id}/versions`, `GET .../versions/{v}`,
+  `GET .../diff?from=&to=` → `{"from","to","changes":[{"op":"add|remove|change","sid","statement"?,"before"?,"after"?}]}`,
+  `POST .../rollback {"version","comment"?}` (creates a new version; refused
+  for config-managed policies unless `?force=true` by an owner); deleted
+  policies stay listable at `GET /tenants/{t}/policies/deleted`.
+- CLI: `wt policy history ID`, `wt policy show-version ID V`,
+  `wt policy diff ID [--from V] [--to V]`, `wt policy rollback ID V [-m]`.
+- Spec: `specs/iam/PolicyHistory.md`.
+- Owns: `httpapi/iam_policies.go`, `httpapi/iam_policy_history.go`,
+  `internal/accesscfg` (one hook call), `commands/policy.rs`.
+
+### 14.8 CLI ergonomics (workstream `cli-ux`)
+
+- `wt completions bash|zsh|fish|powershell|elvish` (clap_complete); docs
+  how to install.
+- `wt doctor [--json]`: checks worktree discovery, config parse per layer,
+  user name/email, each remote's server reachability (`Ping`), version
+  skew, credential validity (`/auth/me`), token expiry, daemon running and
+  watching, signing key presence/registration, hook files executable,
+  clock skew vs server `Date` header; prints ✓/!/✗ lines with fixes;
+  exit 1 on errors.
+- Aliases: `[alias]` table in user and worktree config (`st = "status"`,
+  `lg = "log --oneline -n 20"`); `wt <alias> args...` expands before
+  parsing (no recursion beyond 5, built-in commands cannot be shadowed);
+  `wt config set alias.NAME "..."`. Unknown commands keep clap's
+  "did you mean" suggestion.
+- `wt open [mr N|snapshot ID|file PATH] [--print]`: builds the admin-panel
+  URL (`<server>/admin/trees/<tenant>/<tree>/...`) and opens the browser
+  (`--print` only prints).
+- Spec: `specs/cli/CliErgonomics.md`.
+- Owns: `commands/{completions,doctor,open}.rs`, `main.rs`,
+  `crates/worktree-sdk/src/config.rs` (alias section only, commented block).
+
+### 14.9 Admin panel (workstream `admin-v06`)
+
+Same rules as §11.2/§13.12. New API module `api/v06.ts`.
+- Webhooks: tenant settings "Webhooks" tab and tree settings section
+  (list, create with generated secret shown once, edit events, toggle,
+  delete, delivery log with status/duration/response, redeliver, test).
+- Code search page `/search/code` (query, tree/path filters, regex/case
+  toggles, grouped results with context, links to the file view) plus the
+  command palette entry.
+- Blame view in the Files tab (toggle "Blame" on a file: gutter with
+  snapshot short id, author, age; click → snapshot).
+- Merge request detail: merge method picker (allowed methods from
+  `mergeability`), conflict list on `409 merge_conflict`, merge message
+  field; Protections: merge methods.
+- IAM policies: version history drawer, diff view between versions,
+  rollback with comment.
+- Staged WIP tab: browse a staged entry's files (manifest via
+  `manifest_hash`, downloads through the blob endpoint is not available —
+  use the new `GET {tree}/staged/{snapshot}/files` and
+  `.../files/{path...}` endpoints which this workstream implements in
+  `httpapi/staged_routes.go` with read checks).
+- Tree Access tab: tree-level access config document (plan/apply), like
+  the tenant one.
+- Owns: `apps/admin/**`, `httpapi/staged_routes.go` (the two GET routes).
+
+### 14.10 OpenAPI and `wt api` (workstream `openapi`)
+
+- `services/server-go/internal/httpapi/openapi.yaml`: OpenAPI 3.1
+  description of **every** `/api/v1` route (paths, parameters, request and
+  response schemas from the Go JSON types, error envelope, bearer auth,
+  `x-wt-action` extension naming the authorization action); served at
+  `GET /api/v1/openapi.yaml` (`go:embed`, no auth) and linked from
+  `docs/README.md`.
+- A Go test enumerates the router's registered patterns and fails when a
+  route is missing from the spec or the spec has a path the router does
+  not serve. (Other workstreams add routes in parallel: the integrator
+  completes the spec after merging; keep the test strict.)
+- `wt api METHOD PATH [-d JSON|@file] [-H K:V] [--raw]`: authenticated raw
+  REST calls against the resolved server, pretty JSON output, non-2xx exit 1.
+- Spec: `specs/server/RestApi.md` (conventions, auth, errors, pagination,
+  versioning; points at openapi.yaml).
+- Owns: `httpapi/openapi.yaml`, `httpapi/openapi.go`,
+  `httpapi/openapi_test.go`, `commands/api.rs`.

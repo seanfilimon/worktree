@@ -23,6 +23,7 @@ import (
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
 	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
+	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/gc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
@@ -31,6 +32,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
 	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
+	"github.com/seanfilimon/worktree/services/server-go/internal/webhooks"
 )
 
 // Deps are the collaborators of the HTTP API.
@@ -91,6 +93,10 @@ type Deps struct {
 	GC        *gc.Collector
 	Limits    *limits.Limiter
 	AccessCfg *accesscfg.Service
+
+	// v0.6 (docs/ENGINEERING_PLAN.md §14). nil = endpoints answer 501.
+	Webhooks   *webhooks.Service
+	CodeSearch *codesearch.Index
 }
 
 // defaultCORSOrigin is the Vite dev server of apps/admin.
@@ -226,6 +232,13 @@ func (a *api) routes() {
 	a.registerAccessRoutes(tree)
 	a.registerExportRoutes(tree)
 	a.registerStagedRoutes(tree)
+
+	// v0.6 feature expansion (docs/ENGINEERING_PLAN.md §14).
+	a.registerWebhookRoutes(tree)
+	a.registerCodeSearchRoutes()
+	a.registerBlameRoutes(tree)
+	a.registerFsckRoutes()
+	a.registerPolicyHistoryRoutes()
 
 	// Unknown API paths answer with the JSON envelope (404 or 405).
 	a.handle("/api/", a.handleAPINotFound)
