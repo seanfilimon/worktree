@@ -10,9 +10,13 @@ use colored::Colorize;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::Serialize;
+use worktree_git::license::{self, LicensePolicy, LicenseRule, NOTICE_PATH};
+use worktree_sdk::remote::ORIGIN;
+use worktree_sdk::{Repository, TreeInfo};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
+use crate::commands::server_common::{decode, default_tree, Api};
 use crate::context::Context;
 use crate::error::{CliError, Result};
 use crate::output::format::plural;
@@ -30,6 +34,107 @@ pub struct ArchiveArgs {
     /// Archive format (default: from the file extension, else tar.gz)
     #[arg(long, value_enum)]
     pub format: Option<ArchiveFormat>,
+
+    #[command(flatten)]
+    pub license: LicenseFlags,
+}
+
+/// License handling of `wt archive`, `wt git export` and `wt git push`.
+///
+/// The tree's license rules are fetched from the server when the worktree
+/// has an `origin` remote (and cached in `.wt/trees/<tree>/licenses.json`;
+/// the cache is used offline). Paths whose rule forbids redistribution are
+/// skipped with a warning and a `LICENSES/NOTICE` listing the SPDX id of
+/// every exported path is added.
+#[derive(Debug, Clone, Default, Args)]
+pub struct LicenseFlags {
+    /// Ignore license rules: export every path and add no LICENSES/NOTICE
+    #[arg(long)]
+    pub no_license: bool,
+    /// Keep paths whose license forbids redistribution
+    #[arg(long, conflicts_with = "no_license")]
+    pub include_restricted: bool,
+}
+
+/// Where the rules of a license-aware export came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSource {
+    /// `--no-license`.
+    Disabled,
+    /// Fetched from the server just now.
+    Server,
+    /// `.wt/trees/<tree>/licenses.json`.
+    Cache,
+    /// No rules known for the tree.
+    None,
+}
+
+/// Print a warning on stderr.
+pub fn warn(message: impl std::fmt::Display) {
+    eprintln!("{} {message}", "warning:".yellow().bold());
+}
+
+/// The license policy for exporting `tree` (see [`LicenseFlags`]); `None`
+/// when no rule applies.
+pub fn license_policy(
+    ctx: &Context,
+    repo: &Repository,
+    tree: &TreeInfo,
+    flags: &LicenseFlags,
+) -> Result<(Option<LicensePolicy>, RuleSource)> {
+    if flags.no_license {
+        return Ok((None, RuleSource::Disabled));
+    }
+    let wt_dir = repo.wt_dir();
+    let mut source = RuleSource::None;
+    let mut rules = None;
+    if repo.config().remote.contains_key(ORIGIN) {
+        match fetch_rules(ctx, repo, tree) {
+            Ok(fetched) => {
+                if let Err(e) = license::save_cached_rules(&wt_dir, &tree.name, &fetched) {
+                    warn(format_args!("cannot cache the license rules: {e}"));
+                }
+                rules = Some(fetched);
+                source = RuleSource::Server;
+            }
+            Err(e) => warn(format_args!(
+                "cannot fetch the license rules of tree '{}': {e}; using the cached rules",
+                tree.name
+            )),
+        }
+    }
+    if rules.is_none() {
+        if let Some(cached) = license::load_cached_rules(&wt_dir, &tree.name)? {
+            rules = Some(cached);
+            source = RuleSource::Cache;
+        }
+    }
+    let active = license::active_rules(&rules.unwrap_or_default(), Utc::now());
+    if active.is_empty() {
+        return Ok((None, source));
+    }
+    Ok((
+        Some(LicensePolicy::new(active, flags.include_restricted)),
+        source,
+    ))
+}
+
+fn fetch_rules(ctx: &Context, repo: &Repository, tree: &TreeInfo) -> Result<Vec<LicenseRule>> {
+    let tree_ref = default_tree(repo, tree)?;
+    let api = Api::connect(ctx)?;
+    let value = api.get(&format!("{}/licenses", tree_ref.api()))?;
+    let rules: Option<Vec<LicenseRule>> = decode(&value)?;
+    Ok(rules.unwrap_or_default())
+}
+
+/// Warn about each path a license-aware export left out.
+pub fn warn_restricted(restricted: &[String]) {
+    for path in restricted {
+        warn(format_args!(
+            "skipped {path}: its license forbids redistribution (use --include-restricted to keep it)"
+        ));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -69,24 +174,50 @@ struct ArchiveResult<'a> {
     format: ArchiveFormat,
     snapshot: &'a str,
     files: usize,
+    /// Paths left out because their license forbids redistribution.
+    restricted: &'a [String],
+    /// Whether a LICENSES/NOTICE was added.
+    notice: bool,
+    license_rules: RuleSource,
 }
 
 pub fn run(ctx: &Context, args: ArchiveArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let snapshot = repo.resolve(&tree.name, args.rev.as_deref().unwrap_or("HEAD"))?;
-    let manifest = repo.manifest_of(&snapshot)?;
+    let mut manifest = repo.manifest_of(&snapshot)?;
     let format = args
         .format
         .unwrap_or_else(|| ArchiveFormat::from_path(&args.output));
     let output = ctx.absolute(&args.output);
 
+    let (policy, rule_source) = license_policy(ctx, &repo, &tree, &args.license)?;
+    let mut restricted = Vec::new();
+    let mut notice = None;
+    if let Some(policy) = &policy {
+        let header = vec![
+            format!("Tree: {}", tree.name),
+            format!("Snapshot: {}", snapshot.id),
+        ];
+        let licensed = policy.apply(&manifest, &header);
+        manifest = licensed.manifest;
+        restricted = licensed.restricted;
+        notice = licensed.notice;
+        warn_restricted(&restricted);
+    }
+
+    let store = repo.store();
     let entries = manifest
         .entries
         .iter()
         .map(|entry| -> Result<ArchiveEntry> {
+            let data = match &notice {
+                Some(text) if entry.path == NOTICE_PATH => text.clone(),
+                // read_entry reassembles chunked files (§13.2).
+                _ => store.read_entry(entry)?,
+            };
             Ok(ArchiveEntry {
                 path: entry.path.clone(),
-                data: repo.read_file_at(&snapshot, &entry.path)?,
+                data,
                 executable: entry.executable,
             })
         });
@@ -107,6 +238,9 @@ pub fn run(ctx: &Context, args: ArchiveArgs) -> Result<()> {
         format,
         snapshot: &snapshot.id,
         files: count,
+        restricted: &restricted,
+        notice: notice.is_some(),
+        license_rules: rule_source,
     };
     ctx.out.emit(&result, |t| {
         t.line(format_args!(
@@ -115,6 +249,12 @@ pub fn run(ctx: &Context, args: ArchiveArgs) -> Result<()> {
             snapshot.short_id().yellow(),
             output.display()
         ));
+        if result.notice {
+            t.line(format_args!(
+                "Added {NOTICE_PATH} ({} skipped by license)",
+                plural(result.restricted.len(), "path", "paths")
+            ));
+        }
     })
 }
 

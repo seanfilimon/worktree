@@ -728,10 +728,11 @@ mod tests {
         let Command::Git(a) = parse(&["git", "import", "../repo"]).command else {
             panic!()
         };
-        let git::GitCommand::Import { git_path, dest } = a.command else {
+        // git-export (§13.8): the source may be a URL, so it is a String.
+        let git::GitCommand::Import { source, dest, .. } = a.command else {
             panic!()
         };
-        assert_eq!((git_path, dest), (PathBuf::from("../repo"), None));
+        assert_eq!((source.as_str(), dest), ("../repo", None));
         let Command::Git(a) = parse(&["git", "import", "../repo", "here"]).command else {
             panic!()
         };
@@ -742,7 +743,7 @@ mod tests {
         let Command::Git(a) = parse(&["git", "export", "out.git", "--rev", "main"]).command else {
             panic!()
         };
-        let git::GitCommand::Export { git_path, rev } = a.command else {
+        let git::GitCommand::Export { git_path, rev, .. } = a.command else {
             panic!()
         };
         assert_eq!(

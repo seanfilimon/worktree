@@ -5,8 +5,9 @@
 //! produces the same commit SHAs. Snapshots already recorded in
 //! `.wt/git-map.json` whose commit exists in the target are reused.
 
+use std::cell::RefCell;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use git2::build::CheckoutBuilder;
@@ -20,26 +21,48 @@ use crate::bridge::{ExportOptions, ExportReport};
 use crate::error::{GitCompatError, Result};
 use crate::hash_index::store::InMemoryHashIndex;
 use crate::ident;
+use crate::license::LicensePolicy;
 use crate::map::GitMap;
 
-/// Source of blob contents referenced by manifests.
+/// Source of file contents referenced by manifests.
 pub(crate) trait BlobSource {
-    fn read_blob(&self, hash: &ObjectHash) -> Result<Vec<u8>>;
-
-    /// Full content of a manifest entry (v0.5: chunked large files are
-    /// reassembled; ENGINEERING_PLAN §13.2).
-    fn read_entry(&self, entry: &ManifestEntry) -> Result<Vec<u8>> {
-        self.read_blob(&entry.hash)
-    }
+    fn read_blob(&self, entry: &ManifestEntry) -> Result<Vec<u8>>;
 }
 
 impl BlobSource for ObjectStore {
-    fn read_blob(&self, hash: &ObjectHash) -> Result<Vec<u8>> {
-        Ok(self.get(hash)?)
+    fn read_blob(&self, entry: &ManifestEntry) -> Result<Vec<u8>> {
+        // read_entry reassembles chunked files (§13.2).
+        Ok(self.read_entry(entry)?)
+    }
+}
+
+/// The object store plus generated files (the license notice) that exist
+/// only in the export.
+pub(crate) struct ExportSource<'a> {
+    store: &'a ObjectStore,
+    generated: RefCell<HashMap<ObjectHash, Vec<u8>>>,
+}
+
+impl<'a> ExportSource<'a> {
+    pub fn new(store: &'a ObjectStore) -> Self {
+        Self {
+            store,
+            generated: RefCell::new(HashMap::new()),
+        }
     }
 
-    fn read_entry(&self, entry: &ManifestEntry) -> Result<Vec<u8>> {
-        Ok(ObjectStore::read_entry(self, entry)?)
+    /// Make `data` available under its hash (for entries not in the store).
+    pub fn add_generated(&self, hash: ObjectHash, data: Vec<u8>) {
+        self.generated.borrow_mut().insert(hash, data);
+    }
+}
+
+impl BlobSource for ExportSource<'_> {
+    fn read_blob(&self, entry: &ManifestEntry) -> Result<Vec<u8>> {
+        if let Some(data) = self.generated.borrow().get(&entry.hash) {
+            return Ok(data.clone());
+        }
+        self.store.read_blob(entry)
     }
 }
 
@@ -99,7 +122,7 @@ impl<'a, S: BlobSource + ?Sized> TreeWriter<'a, S> {
         if let Some(oid) = self.blobs.oid_for(&entry.hash) {
             return Ok(oid);
         }
-        let data = self.source.read_entry(entry)?;
+        let data = self.source.read_blob(entry)?;
         let oid = self.git.blob(&data)?;
         self.blobs.insert_oid(entry.hash, oid)?;
         Ok(oid)
@@ -253,8 +276,14 @@ struct Exporter<'a> {
     map: GitMap,
     resolved: HashMap<SnapshotId, Oid>,
     trees: HashMap<ObjectHash, Oid>,
-    writer: TreeWriter<'a, ObjectStore>,
+    source: &'a ExportSource<'a>,
+    writer: TreeWriter<'a, ExportSource<'a>>,
     commits: usize,
+    /// License-aware export: commits are built from filtered manifests
+    /// (plus the notice), so `.wt/git-map.json` — which maps snapshots to
+    /// unfiltered commits — is neither consulted nor updated.
+    license: Option<&'a LicensePolicy>,
+    restricted: BTreeSet<String>,
 }
 
 impl<'a> Exporter<'a> {
@@ -262,6 +291,9 @@ impl<'a> Exporter<'a> {
     fn existing(&mut self, id: &str) -> Option<Oid> {
         if let Some(oid) = self.resolved.get(id) {
             return Some(*oid);
+        }
+        if self.license.is_some() {
+            return None;
         }
         let oid = Oid::from_str(self.map.commit_for(id)?).ok()?;
         self.git.find_commit(oid).ok()?;
@@ -299,7 +331,18 @@ impl<'a> Exporter<'a> {
         let tree = match self.trees.get(&snapshot.manifest) {
             Some(tree) => *tree,
             None => {
-                let manifest = self.repo.read_manifest(&snapshot.manifest)?;
+                let mut manifest = self.repo.read_manifest(&snapshot.manifest)?;
+                if let Some(policy) = self.license {
+                    // No snapshot-specific header: the tree cache is keyed by
+                    // manifest hash and exports must stay deterministic.
+                    let licensed = policy.apply(&manifest, &[]);
+                    if let Some(notice) = licensed.notice {
+                        self.source
+                            .add_generated(worktree_sdk::store::hash_bytes(&notice), notice);
+                    }
+                    self.restricted.extend(licensed.restricted);
+                    manifest = licensed.manifest;
+                }
                 let tree = self.writer.write(&manifest)?;
                 self.trees.insert(snapshot.manifest, tree);
                 tree
@@ -310,7 +353,9 @@ impl<'a> Exporter<'a> {
             self.commits += 1;
         }
         self.resolved.insert(snapshot.id.clone(), oid);
-        self.map.insert_if_absent(&snapshot.id, &oid.to_string());
+        if self.license.is_none() {
+            self.map.insert_if_absent(&snapshot.id, &oid.to_string());
+        }
         Ok(())
     }
 
@@ -405,14 +450,18 @@ pub(crate) fn export_repository(
     let was_clean = created || git.is_bare() || work_tree_is_clean(&git)?;
     let old_head = head_commit(&git);
 
+    let source = ExportSource::new(repo.store());
     let mut exporter = Exporter {
         repo,
         git: &git,
         map: GitMap::load(&repo.wt_dir())?,
         resolved: HashMap::new(),
         trees: HashMap::new(),
-        writer: TreeWriter::new(&git, repo.store()),
+        source: &source,
+        writer: TreeWriter::new(&git, &source),
         commits: 0,
+        license: opts.license.as_ref(),
+        restricted: BTreeSet::new(),
     };
     let mut exported = Vec::with_capacity(branches.len());
     for (name, tip) in &branches {
@@ -425,8 +474,14 @@ pub(crate) fn export_repository(
     } else {
         0
     };
-    exporter.map.save(&repo.wt_dir())?;
+    if exporter.license.is_none() {
+        exporter.map.save(&repo.wt_dir())?;
+    }
     let commits = exporter.commits;
+    let restricted: Vec<String> = std::mem::take(&mut exporter.restricted)
+        .into_iter()
+        .collect();
+    drop(exporter);
     refresh_work_tree(&git, old_head, was_clean)?;
 
     info!(commits, tags, branches = exported.len(), "exported to Git");
@@ -435,6 +490,7 @@ pub(crate) fn export_repository(
         branches: exported,
         commits,
         tags,
+        restricted,
     })
 }
 

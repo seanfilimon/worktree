@@ -7,6 +7,7 @@ use git2::{BranchType, FileMode, ObjectType, Oid, Sort};
 use tracing::{info, warn};
 use worktree_sdk::{
     InitOptions, Manifest, ManifestEntry, ObjectHash, ObjectStore, Repository, Snapshot, TagInfo,
+    TreeInfo,
 };
 
 use crate::bridge::{ImportOptions, ImportReport};
@@ -177,12 +178,53 @@ pub(crate) fn snapshot_from_commit(
     }
 }
 
-/// Local branches to import, sorted by name, with their tip commits.
+/// Remote-tracking branches (`refs/remotes/<remote>/<name>`, without the
+/// symbolic `HEAD`) as (name without the remote prefix, tip), `origin`
+/// first, then other remotes by name.
+fn remote_branches(git: &git2::Repository) -> Result<Vec<(String, Oid)>> {
+    let mut found: Vec<(bool, String, String, Oid)> = Vec::new();
+    for item in git.branches(Some(BranchType::Remote))? {
+        let (branch, _) = item?;
+        if branch.get().symbolic_target().is_some() {
+            continue;
+        }
+        let Some(full) = branch.name()?.map(str::to_owned) else {
+            warn!("skipping remote branch with a non-UTF-8 name");
+            continue;
+        };
+        let Some((remote, name)) = full.split_once('/') else {
+            continue;
+        };
+        if name == "HEAD" {
+            continue;
+        }
+        let Ok(commit) = branch.get().peel_to_commit() else {
+            continue;
+        };
+        found.push((
+            remote != "origin",
+            remote.to_owned(),
+            name.to_owned(),
+            commit.id(),
+        ));
+    }
+    found.sort();
+    Ok(found
+        .into_iter()
+        .map(|(_, _, name, oid)| (name, oid))
+        .collect())
+}
+
+/// Branches to import, sorted by name, with their tip commits: the
+/// requested ones (local branches first, else a remote-tracking branch of
+/// that name), else every local branch, plus — with `all` — every
+/// remote-tracking branch without a local branch of the same name.
 pub(crate) fn select_branches(
     git: &git2::Repository,
     requested: &[String],
+    all: bool,
 ) -> Result<Vec<(String, Oid)>> {
-    let mut selected = Vec::new();
+    let mut selected: Vec<(String, Oid)> = Vec::new();
     if requested.is_empty() {
         for item in git.branches(Some(BranchType::Local))? {
             let (branch, _) = item?;
@@ -192,22 +234,32 @@ pub(crate) fn select_branches(
             };
             selected.push((name, branch.get().peel_to_commit()?.id()));
         }
-    } else {
-        for name in requested {
-            let branch = git.find_branch(name, BranchType::Local).map_err(|e| {
-                if e.code() == git2::ErrorCode::NotFound {
-                    GitCompatError::ImportError(format!(
-                        "branch not found in Git repository: {name}"
-                    ))
-                } else {
-                    e.into()
+        if all {
+            for (name, oid) in remote_branches(git)? {
+                if !selected.iter().any(|(n, _)| *n == name) {
+                    selected.push((name, oid));
                 }
-            })?;
-            selected.push((name.clone(), branch.get().peel_to_commit()?.id()));
+            }
+        }
+    } else {
+        let remotes = remote_branches(git)?;
+        for name in requested {
+            match git.find_branch(name, BranchType::Local) {
+                Ok(branch) => selected.push((name.clone(), branch.get().peel_to_commit()?.id())),
+                Err(e) if e.code() == git2::ErrorCode::NotFound => {
+                    let (_, oid) = remotes.iter().find(|(n, _)| n == name).ok_or_else(|| {
+                        GitCompatError::ImportError(format!(
+                            "branch not found in Git repository: {name}"
+                        ))
+                    })?;
+                    selected.push((name.clone(), *oid));
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
     }
     selected.sort();
-    selected.dedup();
+    selected.dedup_by(|a, b| a.0 == b.0);
     Ok(selected)
 }
 
@@ -267,36 +319,31 @@ pub(crate) fn assign_branches(
     Ok(assigned)
 }
 
-pub(crate) fn import_repository(
-    git_path: &Path,
-    dest: &Path,
-    opts: &ImportOptions,
-) -> Result<ImportReport> {
-    let git = git2::Repository::open(git_path)?;
-    let branches = select_branches(&git, &opts.branches)?;
-    let checked_out = head_branch(&git)
-        .filter(|head| branches.iter().any(|(name, _)| name == head))
-        .or_else(|| branches.first().map(|(name, _)| name.clone()));
+/// Result of converting the selected history into snapshots of a tree.
+struct Converted {
+    snapshots: usize,
+    blobs: usize,
+    known: HashSet<Oid>,
+}
 
-    // Validation is done; from here on `dest` is being created.
-    let repo = Repository::init(
-        dest,
-        InitOptions {
-            name: opts.name.clone(),
-            default_branch: checked_out.clone(),
-        },
-    )?;
-    let tree = repo.root_tree()?;
-
-    // Attribute shared commits to the checked-out branch first.
-    let mut priority = branches.clone();
-    priority.sort_by_key(|(name, _)| Some(name) != checked_out.as_ref());
-    let assigned = assign_branches(&git, &priority)?;
-    let order = commits_oldest_first(&git, &branches)?;
+/// Write a snapshot for every commit reachable from `branches` (commits
+/// shared with `preferred` are attributed to it first) and record them in
+/// `.wt/git-map.json`. Branch refs are not touched.
+fn convert_history(
+    git: &git2::Repository,
+    repo: &Repository,
+    tree: &TreeInfo,
+    branches: &[(String, Oid)],
+    preferred: Option<&String>,
+) -> Result<Converted> {
+    let mut priority = branches.to_vec();
+    priority.sort_by_key(|(name, _)| Some(name) != preferred);
+    let assigned = assign_branches(git, &priority)?;
+    let order = commits_oldest_first(git, branches)?;
     let known: HashSet<Oid> = order.iter().copied().collect();
 
     let mut map = GitMap::load(&repo.wt_dir())?;
-    let mut converter = TreeConverter::new(&git, repo.store());
+    let mut converter = TreeConverter::new(git, repo.store());
     let mut manifests: HashMap<Oid, ObjectHash> = HashMap::new();
     for oid in &order {
         let commit = git.find_commit(*oid)?;
@@ -316,23 +363,55 @@ pub(crate) fn import_repository(
         repo.write_snapshot(&snapshot)?;
         map.insert(&snapshot.id, &oid.to_string());
     }
+    map.save(&repo.wt_dir())?;
+    Ok(Converted {
+        snapshots: order.len(),
+        blobs: converter.blob_count(),
+        known,
+    })
+}
+
+fn tip_of(branches: &[(String, Oid)], branch: &str) -> Result<Oid> {
+    branches
+        .iter()
+        .find(|(name, _)| name == branch)
+        .map(|(_, tip)| *tip)
+        .ok_or_else(|| GitCompatError::ImportError(format!("branch {branch} vanished")))
+}
+
+pub(crate) fn import_repository(
+    git_path: &Path,
+    dest: &Path,
+    opts: &ImportOptions,
+) -> Result<ImportReport> {
+    let git = git2::Repository::open(git_path)?;
+    let branches = select_branches(&git, &opts.branches, opts.all_branches)?;
+    let checked_out = head_branch(&git)
+        .filter(|head| branches.iter().any(|(name, _)| name == head))
+        .or_else(|| branches.first().map(|(name, _)| name.clone()));
+
+    // Validation is done; from here on `dest` is being created.
+    let repo = Repository::init(
+        dest,
+        InitOptions {
+            name: opts.name.clone(),
+            default_branch: checked_out.clone(),
+        },
+    )?;
+    let tree = repo.root_tree()?;
+    let converted = convert_history(&git, &repo, &tree, &branches, checked_out.as_ref())?;
 
     for (name, tip) in &branches {
         repo.set_branch_tip(&tree.name, name, Some(&ident::snapshot_id_for_commit(*tip)))?;
     }
     let tags = if opts.include_tags {
-        import_tags(&git, &repo, &tree.name, &known)?
+        import_tags(&git, &repo, &tree.name, &converted.known)?
     } else {
         0
     };
-    map.save(&repo.wt_dir())?;
 
     if let Some(branch) = &checked_out {
-        let tip = branches
-            .iter()
-            .find(|(name, _)| name == branch)
-            .map(|(_, tip)| *tip)
-            .ok_or_else(|| GitCompatError::ImportError(format!("branch {branch} vanished")))?;
+        let tip = tip_of(&branches, branch)?;
         repo.checkout(&tree.name, &ident::snapshot_id_for_commit(tip), true)?;
         let tip_tree = git.find_commit(tip)?.tree()?;
         import_ignore_rules(&git, &repo, &tip_tree)?;
@@ -340,16 +419,134 @@ pub(crate) fn import_repository(
     }
 
     info!(
-        snapshots = order.len(),
-        blobs = converter.blob_count(),
+        snapshots = converted.snapshots,
+        blobs = converted.blobs,
         tags,
         "imported Git repository"
     );
     Ok(ImportReport {
         dest: dest.to_path_buf(),
+        tree: tree.name,
         branches: branches.into_iter().map(|(name, _)| name).collect(),
-        snapshots: order.len(),
-        blobs: converter.blob_count(),
+        snapshots: converted.snapshots,
+        blobs: converted.blobs,
+        tags,
+        checked_out,
+    })
+}
+
+/// Import into the existing tree `tree_name` of `repo`.
+///
+/// Snapshot ids are derived from commit SHAs, so importing the same
+/// repository again only adds the new commits. Existing branches are moved
+/// only when the import fast-forwards them; a diverged branch fails the
+/// import before any ref moves. The tree's files follow its current branch
+/// when that branch is updated (the working directory must be clean).
+pub(crate) fn import_into_tree(
+    repo: &Repository,
+    tree_name: &str,
+    git_path: &Path,
+    opts: &ImportOptions,
+) -> Result<ImportReport> {
+    let git = git2::Repository::open(git_path)?;
+    let tree = repo.tree(tree_name)?;
+    let branches = select_branches(&git, &opts.branches, opts.all_branches)?;
+    let current = repo.current_branch(&tree.name)?;
+    let current_tip = repo.branch_tip(&tree.name, &current).ok().flatten();
+    let current_updated = branches
+        .iter()
+        .find(|(name, _)| *name == current)
+        .is_some_and(|(_, tip)| {
+            current_tip.as_deref() != Some(&ident::snapshot_id_for_commit(*tip))
+        });
+    if current_updated && current_tip.is_some() && !repo.status(&tree.name)?.is_clean() {
+        return Err(GitCompatError::ImportError(format!(
+            "tree {} has uncommitted changes on branch {current}; snapshot or discard them first",
+            tree.name
+        )));
+    }
+
+    let preferred = branches
+        .iter()
+        .any(|(name, _)| *name == current)
+        .then(|| current.clone())
+        .or_else(|| head_branch(&git));
+    let converted = convert_history(&git, repo, &tree, &branches, preferred.as_ref())?;
+
+    // Refuse to rewrite diverged branches before moving anything.
+    let existing: HashMap<String, Option<String>> = repo
+        .branches(&tree.name, true)?
+        .into_iter()
+        .map(|b| (b.name, b.tip))
+        .collect();
+    let mut diverged = Vec::new();
+    for (name, tip) in &branches {
+        let new = ident::snapshot_id_for_commit(*tip);
+        if let Some(Some(old)) = existing.get(name) {
+            if *old != new && !repo.is_ancestor(old, &new)? {
+                diverged.push(name.clone());
+            }
+        }
+    }
+    if !diverged.is_empty() {
+        return Err(GitCompatError::ImportError(format!(
+            "branches of tree {} have diverged from the Git repository: {}",
+            tree.name,
+            diverged.join(", ")
+        )));
+    }
+
+    // Files first (relative to the old tip), then the refs.
+    let mut checked_out = None;
+    if current_updated {
+        let tip = ident::snapshot_id_for_commit(tip_of(&branches, &current)?);
+        repo.checkout(&tree.name, &tip, current_tip.is_none())?;
+        checked_out = Some(current.clone());
+    }
+    for (name, tip) in &branches {
+        repo.set_branch_tip(&tree.name, name, Some(&ident::snapshot_id_for_commit(*tip)))?;
+    }
+    if current_tip.is_none() && checked_out.is_none() {
+        // An empty tree adopts the Git repository's checked-out branch.
+        if let Some(head) = preferred.filter(|h| branches.iter().any(|(n, _)| n == h)) {
+            let switch = worktree_sdk::SwitchOptions {
+                create: false,
+                force: false,
+            };
+            match repo.switch_branch(&tree.name, &head, switch) {
+                Ok(()) => checked_out = Some(head),
+                Err(e) => {
+                    warn!(branch = %head, error = %e, "could not switch the tree to the imported branch")
+                }
+            }
+        }
+    }
+    let tags = if opts.include_tags {
+        import_tags(&git, repo, &tree.name, &converted.known)?
+    } else {
+        0
+    };
+    if let Some(branch) = &checked_out {
+        let tip_tree = git.find_commit(tip_of(&branches, branch)?)?.tree()?;
+        if tree.path.as_os_str().is_empty() {
+            import_ignore_rules(&git, repo, &tip_tree)?;
+        }
+        warn_about_lfs(&git, &tip_tree)?;
+    }
+
+    info!(
+        tree = %tree.name,
+        snapshots = converted.snapshots,
+        blobs = converted.blobs,
+        tags,
+        "imported Git repository into existing tree"
+    );
+    Ok(ImportReport {
+        dest: repo.tree_dir(&tree.name)?,
+        tree: tree.name,
+        branches: branches.into_iter().map(|(name, _)| name).collect(),
+        snapshots: converted.snapshots,
+        blobs: converted.blobs,
         tags,
         checked_out,
     })
@@ -582,7 +779,7 @@ mod tests {
             30,
         );
 
-        let branches = select_branches(&fx.repo, &[]).unwrap();
+        let branches = select_branches(&fx.repo, &[], false).unwrap();
         assert_eq!(
             branches,
             vec![("feature".to_owned(), f1), ("main".to_owned(), m)]
@@ -629,9 +826,10 @@ mod tests {
             "d",
             20,
         );
-        let only = select_branches(&fx.repo, &["main".to_owned(), "main".to_owned()]).unwrap();
+        let only =
+            select_branches(&fx.repo, &["main".to_owned(), "main".to_owned()], false).unwrap();
         assert_eq!(only, vec![("main".to_owned(), c1)]);
-        let err = select_branches(&fx.repo, &["nope".to_owned()]).unwrap_err();
+        let err = select_branches(&fx.repo, &["nope".to_owned()], false).unwrap_err();
         assert!(matches!(err, GitCompatError::ImportError(msg) if msg.contains("nope")));
         assert_eq!(head_branch(&fx.repo).as_deref(), Some("main"));
     }

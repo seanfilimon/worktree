@@ -13,6 +13,10 @@ src/
 │                     import_repository, export_repository (+ end-to-end tests)
 ├── import.rs         Git -> W0rkTree (TreeConverter, branch walk, tags, ignore)
 ├── export.rs         W0rkTree -> Git (TreeWriter, deterministic commits, tags)
+├── license.rs        license rules (glob/SPDX ports of the Go server), cache in
+│                     .wt/trees/<tree>/licenses.json, redistribution filter,
+│                     generated LICENSES/NOTICE
+├── source.rs         import sources: local path, or URL mirrored to a temp dir
 ├── map.rs            GitMap: .wt/git-map.json (snapshot id <-> commit sha)
 ├── ident.rs          UUID v5 snapshot ids, author <-> signature, messages, time
 ├── error.rs          GitCompatError + Result

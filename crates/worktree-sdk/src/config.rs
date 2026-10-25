@@ -43,7 +43,20 @@ pub struct WorktreeConfig {
     /// v0.5 (§13.6): snapshot signing.
     #[serde(default, skip_serializing_if = "SigningSection::is_default")]
     pub signing: SigningSection,
+    // --- git-export (ENGINEERING_PLAN §13.8): `wt git remote add|list|remove`.
+    /// Git remotes for `wt git push`, e.g. `[git_remote.github] url = "..."`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub git_remote: std::collections::BTreeMap<String, GitRemoteSection>,
+    // --- end git-export
 }
+
+// --- git-export (ENGINEERING_PLAN §13.8)
+/// `[git_remote.NAME]`: a Git remote (URL or local path) for `wt git push`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRemoteSection {
+    pub url: String,
+}
+// --- end git-export
 
 /// `[secret_scanning]`: extra patterns and exclusions for the pre-snapshot scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +257,7 @@ impl WorktreeConfig {
             secret_scanning: SecretScanningSection::default(),
             hooks: HooksSection::default(),
             signing: SigningSection::default(),
+            git_remote: std::collections::BTreeMap::new(), // git-export (§13.8)
         }
     }
 
