@@ -76,6 +76,40 @@ fn cmd_captures_output_and_exit_code() {
         .is_err());
 }
 
+/// Child half of `running_process_is_interactive` (a no-op unless spawned
+/// by it): prints a prompt, reads one line, echoes it.
+#[test]
+fn interactive_child() {
+    if std::env::var("WT_E2E_SELFTEST_CHILD").as_deref() != Ok("1") {
+        return;
+    }
+    println!("READY otpauth://totp/W0rkTree:x?secret=GEZDGNBV&issuer=W0rkTree");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
+    println!("got: {}", line.trim());
+}
+
+#[test]
+fn running_process_is_interactive() {
+    let dir = tempfile::tempdir().unwrap();
+    let exe = std::env::current_exe().unwrap();
+    let mut child = Cmd::new(&exe, dir.path())
+        .args([
+            "--exact",
+            "selftest::interactive_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("WT_E2E_SELFTEST_CHILD", "1")
+        .spawn();
+    let secret = child.wait_for(Duration::from_secs(30), crate::totp::secret_from_otpauth);
+    assert_eq!(secret, "GEZDGNBV");
+    child.write_stdin("hello\n");
+    let out = child.wait();
+    assert!(out.success(), "{out}");
+    assert!(out.stdout.contains("got: hello"), "{out}");
+}
+
 /// Minimal HTTP server: answers each connection with the next canned response.
 fn fake_http(responses: Vec<String>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -26,16 +26,18 @@ pub mod fsutil;
 pub mod git;
 pub mod json;
 pub mod server;
+pub mod totp;
 pub mod wait;
 
 #[cfg(test)]
 mod selftest;
 
 pub use api::{Api, Resp, SseEvent, SseStream};
-pub use cmd::{Cmd, CmdOutput};
+pub use cmd::{Cmd, CmdOutput, Running};
 pub use env::{DaemonGuard, Repo, TestEnv, User};
 pub use git::Git;
 pub use server::Server;
+pub use totp::Totp;
 pub use wait::poll_until;
 
 /// Whether the end-to-end suite is enabled (`WT_E2E=1`).

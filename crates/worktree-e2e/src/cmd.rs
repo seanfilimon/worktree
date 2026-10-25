@@ -269,6 +269,202 @@ impl Cmd {
         out.assert_code(code);
         out
     }
+
+    /// Run a destructive command that may require `--yes` when stdin is not
+    /// a terminal (§12.4): run as given; if it fails asking for
+    /// confirmation, run again with `--yes` appended. Requires success.
+    #[track_caller]
+    pub fn confirmed(self) -> CmdOutput {
+        let out = self.run_confirmed();
+        out.assert_success();
+        out
+    }
+
+    /// Like [`Cmd::confirmed`] but without asserting the outcome (for
+    /// destructive commands that are expected to be refused).
+    #[track_caller]
+    pub fn run_confirmed(self) -> CmdOutput {
+        let retry = self.clone();
+        let out = self.run();
+        if !out.success() && (out.mentions("--yes") || out.mentions("confirm")) {
+            return retry.arg("--yes").run();
+        }
+        out
+    }
+
+    /// [`Cmd::confirmed`] with `--json`, parsing stdout (an empty stdout,
+    /// e.g. for a 204 response, yields `null`).
+    #[track_caller]
+    pub fn confirmed_json(self) -> Value {
+        let out = self.prefix_args(["--json"]).confirmed();
+        if out.stdout.trim().is_empty() {
+            Value::Null
+        } else {
+            out.json()
+        }
+    }
+
+    /// Start the process without waiting, with stdin piped so input can be
+    /// written once output has been observed (interactive prompts).
+    #[track_caller]
+    pub fn spawn(self) -> Running {
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let _ = std::fs::create_dir_all(&self.log_dir);
+        let base = format!("{seq:05}-{}", sanitize(&self.display_name));
+        let out_path = self.log_dir.join(format!("{base}.stdout"));
+        let err_path = self.log_dir.join(format!("{base}.stderr"));
+        let cmdline = self.cmdline();
+        let out_file = File::create(&out_path)
+            .unwrap_or_else(|e| panic!("create {}: {e}", out_path.display()));
+        let err_file = File::create(&err_path)
+            .unwrap_or_else(|e| panic!("create {}: {e}", err_path.display()));
+        let _ = std::fs::write(
+            self.log_dir.join(format!("{base}.cmd")),
+            format!("{cmdline} (interactive)"),
+        );
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        if let Some(dir) = &self.cwd {
+            command.current_dir(dir);
+        }
+        for (k, v) in &self.envs {
+            match v {
+                Some(v) => command.env(k, v),
+                None => command.env_remove(k),
+            };
+        }
+        command
+            .stdout(Stdio::from(out_file))
+            .stderr(Stdio::from(err_file))
+            .stdin(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .unwrap_or_else(|e| panic!("`{cmdline}`: failed to spawn: {e}"));
+        let stdin = child.stdin.take();
+        Running {
+            child: Some(child),
+            stdin,
+            cmdline,
+            cwd: self.cwd,
+            actor: self.actor,
+            out_path,
+            err_path,
+            started: Instant::now(),
+            timeout: self.timeout,
+        }
+    }
+}
+
+/// A process started with [`Cmd::spawn`]; killed on drop if still running.
+pub struct Running {
+    child: Option<std::process::Child>,
+    stdin: Option<std::process::ChildStdin>,
+    cmdline: String,
+    cwd: Option<PathBuf>,
+    actor: Option<String>,
+    out_path: PathBuf,
+    err_path: PathBuf,
+    started: Instant,
+    timeout: Duration,
+}
+
+impl Running {
+    /// Output so far (stdout + stderr), exit code None.
+    pub fn snapshot(&self) -> CmdOutput {
+        CmdOutput::from_files(
+            self.cmdline.clone(),
+            self.cwd.clone(),
+            self.actor.clone(),
+            None,
+            &self.out_path,
+            &self.err_path,
+            self.started.elapsed(),
+        )
+    }
+
+    /// Wait until `pred(stdout + stderr)` returns Some. Panics (with the
+    /// output so far) if the process exits first or on timeout.
+    #[track_caller]
+    pub fn wait_for<T>(&mut self, timeout: Duration, pred: impl Fn(&str) -> Option<T>) -> T {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let snap = self.snapshot();
+            if let Some(v) = pred(&snap.combined()) {
+                return v;
+            }
+            let exited = self
+                .child
+                .as_mut()
+                .and_then(|c| c.try_wait().ok().flatten());
+            if let Some(status) = exited {
+                // Re-read once: output may have landed just before exit.
+                let snap = self.snapshot();
+                if let Some(v) = pred(&snap.combined()) {
+                    return v;
+                }
+                panic!("process exited ({status}) before the expected output appeared\n{snap}");
+            }
+            if Instant::now() >= deadline {
+                panic!("expected output did not appear within {timeout:?}\n{snap}");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Write to the process's stdin (errors such as a broken pipe ignored).
+    pub fn write_stdin(&mut self, data: impl AsRef<[u8]>) {
+        if let Some(stdin) = self.stdin.as_mut() {
+            let _ = stdin.write_all(data.as_ref());
+            let _ = stdin.flush();
+        }
+    }
+
+    /// Close stdin (EOF for the child).
+    pub fn close_stdin(&mut self) {
+        self.stdin = None;
+    }
+
+    /// Close stdin and wait for exit (killing it after the command timeout).
+    #[track_caller]
+    pub fn wait(mut self) -> CmdOutput {
+        self.stdin = None;
+        let mut child = self.child.take().expect("process already waited for");
+        let code = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.code(),
+                Ok(None) => {
+                    if self.started.elapsed() > self.timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        panic!("TIMEOUT after {:?}\n{}", self.timeout, self.snapshot());
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("`{}`: wait failed: {e}", self.cmdline),
+            }
+        };
+        CmdOutput::from_files(
+            self.cmdline.clone(),
+            self.cwd.clone(),
+            self.actor.clone(),
+            code,
+            &self.out_path,
+            &self.err_path,
+            self.started.elapsed(),
+        )
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.stdin = None;
+        if let Some(mut child) = self.child.take() {
+            if !matches!(child.try_wait(), Ok(Some(_))) {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+    }
 }
 
 fn sanitize(s: &str) -> String {
