@@ -23,7 +23,7 @@ fn snapshots_are_signed_per_config_and_flag() {
     let plain = fx.snap("plain");
     assert!(plain.signature.is_none());
     assert_eq!(
-        signing::verify_local(&plain).unwrap(),
+        signing::verify_with_local_keys(&plain).unwrap(),
         Verification::Unsigned
     );
 
@@ -58,7 +58,7 @@ fn snapshots_are_signed_per_config_and_flag() {
     // The stored snapshot verifies.
     let stored = fx.repo.resolve(&fx.tree, "HEAD").unwrap();
     assert_eq!(stored, signed);
-    assert!(signing::verify_local(&stored).unwrap().is_valid());
+    assert!(signing::verify_with_local_keys(&stored).unwrap().is_valid());
 
     // [signing] key + auto signs every snapshot, including reverts.
     keys.generate("work", false).unwrap();
@@ -73,18 +73,18 @@ fn snapshots_are_signed_per_config_and_flag() {
     let auto = repo.snapshot(&fx.tree, opts("auto")).unwrap();
     let work = keys.info("work").unwrap();
     assert_eq!(auto.signature.as_ref().unwrap().key_id, work.fingerprint);
-    match signing::verify_local(&auto).unwrap() {
+    match signing::verify_with_local_keys(&auto).unwrap() {
         Verification::Valid { key, .. } => assert_eq!(key, "work"),
         other => panic!("{other:?}"),
     }
     let revert = repo.revert(&fx.tree, &auto.id).unwrap();
-    assert!(signing::verify_local(&revert).unwrap().is_valid());
+    assert!(signing::verify_with_local_keys(&revert).unwrap().is_valid());
 
     // Tampering with the stored record is detected.
     let mut tampered = revert.clone();
     tampered.message = "rewritten".into();
     assert!(matches!(
-        signing::verify_local(&tampered).unwrap(),
+        signing::verify_with_local_keys(&tampered).unwrap(),
         Verification::Invalid { .. }
     ));
     std::env::remove_var("WT_HOME");

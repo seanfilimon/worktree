@@ -43,11 +43,7 @@ pub const SIGNATURE_LEN: usize = 64;
 // ---------------------------------------------------------------------------
 // Payload, signing and verification
 
-// ---- BEGIN merge-diff workstream block (ENGINEERING_PLAN §13.10) ----
-// Stub used by `wt log --show-signature` until the `signing` workstream
-// implements local verification; keep the signature exactly as below.
-
-/// Result of verifying a snapshot's signature locally.
+/// Compact verification result used by `wt log --show-signature` / `wt show`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureStatus {
     /// The snapshot carries no signature.
@@ -60,15 +56,18 @@ pub enum SignatureStatus {
     UnknownKey(String),
 }
 
-/// Verify `snapshot`'s signature against the locally known keys.
-/// Stub: signed snapshots are reported as `UnknownKey` (unverified).
+/// Verify `snapshot`'s signature against the keys in `<wt home>/keys/`
+/// (see [`verify_with_local_keys`] for the detailed result).
 pub fn verify_local(_repo: &Repository, snapshot: &Snapshot) -> Result<SignatureStatus> {
-    Ok(match &snapshot.signature {
-        None => SignatureStatus::Unsigned,
-        Some(sig) => SignatureStatus::UnknownKey(sig.key_id.clone()),
+    Ok(match verify_with_local_keys(snapshot)? {
+        Verification::Unsigned => SignatureStatus::Unsigned,
+        Verification::Valid { key_id, .. } => SignatureStatus::Verified { key_id },
+        Verification::Invalid { key_id, key } => SignatureStatus::Invalid(format!(
+            "signature does not verify with key {key} ({key_id})"
+        )),
+        Verification::UnknownKey { key_id } => SignatureStatus::UnknownKey(key_id),
     })
 }
-// ---- END merge-diff workstream block ----
 
 /// The canonical bytes a snapshot signature covers.
 pub fn signed_payload(snapshot: &Snapshot) -> Vec<u8> {
@@ -235,7 +234,7 @@ pub fn verify_with_keys(snapshot: &Snapshot, keys: &[TrustedKey]) -> Verificatio
 }
 
 /// Verify `snapshot` against the keys in `<wt home>/keys/`.
-pub fn verify_local(snapshot: &Snapshot) -> Result<Verification> {
+pub fn verify_with_local_keys(snapshot: &Snapshot) -> Result<Verification> {
     KeyStore::default_location().verify(snapshot)
 }
 
