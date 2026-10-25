@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -261,9 +262,23 @@ func mrKey(treeID string, number int) []byte {
 	return append([]byte(prefix(treeID)), be64(uint64(number))...)
 }
 
+// Range of instants representable as Unix nanoseconds (years 1677..2262).
+var (
+	minAuditTime = time.Unix(0, math.MinInt64)
+	maxAuditTime = time.Unix(0, math.MaxInt64)
+)
+
 // auditKey orders events by time, then by insertion sequence. The sign
-// bit is flipped so pre-1970 instants sort before post-1970 ones.
+// bit is flipped so pre-1970 instants sort before post-1970 ones. Instants
+// outside the UnixNano range are clamped to it (UnixNano is undefined
+// there), so a far-future Since bound selects nothing instead of wrapping.
 func auditKey(at time.Time, seq uint64) []byte {
+	switch {
+	case at.Before(minAuditTime):
+		at = minAuditTime
+	case at.After(maxAuditTime):
+		at = maxAuditTime
+	}
 	k := make([]byte, 16)
 	binary.BigEndian.PutUint64(k[:8], uint64(at.UnixNano())^(1<<63))
 	binary.BigEndian.PutUint64(k[8:], seq)
