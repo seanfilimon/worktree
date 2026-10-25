@@ -47,6 +47,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
+	"github.com/seanfilimon/worktree/services/server-go/internal/policyhist"
 )
 
 // Collection is the DocStore collection of applied documents (§13.14),
@@ -257,7 +258,10 @@ func (s *Service) Apply(ctx context.Context, p *domain.Principal, tenant *domain
 		return res, nil
 	}
 
-	if err := s.execute(ctx, p, sc, pl); err != nil {
+	// v0.6 policy history (§14.7, workstream policy-history): record a
+	// PolicyVersion for every policy the apply creates, updates or deletes.
+	if err := policyhist.New(s.d.Store, s.d.Bus, s.d.Logger).Track(ctx, actor(p), tenant.ID, "applied from the access document of "+sc.label(),
+		func() error { return s.execute(ctx, p, sc, pl) }); err != nil {
 		return nil, err
 	}
 	stored := &domain.AccessConfigDoc{
