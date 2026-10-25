@@ -22,6 +22,9 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	// storage (§14.6): registers the gzip compressor, so the gRPC server
+	// accepts gzip-compressed messages and answers in kind.
+	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
@@ -89,7 +92,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	}()
 	// DiskStore lays objects out as <root>/objects/<2-hex>/<62-hex>, so the
 	// data directory itself is the root.
-	objects := objstore.New(cfg.DataDir)
+	// storage (§14.6): --compress-objects selects the WTZ1 encoding for
+	// new objects; reads accept raw and compressed files.
+	objects := objstore.NewWithOptions(cfg.DataDir, objstore.Options{Compress: cfg.CompressObjects})
 	history := meta.NewHistory(store)
 
 	// ---- services ----

@@ -76,6 +76,12 @@ pub enum AdminCommand {
     },
     /// Show the garbage-collection configuration and recent runs
     GcStatus,
+    // --- storage (§14.6) ---
+    /// Verify the server's object store: re-hash every object and check
+    /// that every snapshot reachable from a branch or tag has its manifest,
+    /// blobs and chunks (exits 1 on problems)
+    Fsck,
+    // --- end storage ---
     /// Show or change a tenant's quotas (unset limits use the server
     /// defaults; 0 unsets a limit)
     Limits {
@@ -477,6 +483,23 @@ pub fn run(ctx: &Context, args: AdminArgs) -> Result<()> {
             let value = api.get(GC)?;
             render(out, &value, |t, status: GcStatus| gc_status(t, &status))
         }
+        // --- storage (§14.6) ---
+        AdminCommand::Fsck => {
+            let value = api.post(FSCK, &json!({}))?;
+            let report: FsckReport = decode(&value)?;
+            render(out, &value, |t, r: FsckReport| fsck_report(t, &r))?;
+            if report.is_ok() {
+                Ok(())
+            } else {
+                Err(CliError::failure(format!(
+                    "server fsck found {} corrupt and {} missing objects, {} missing snapshots",
+                    report.corrupt.len(),
+                    report.missing.len(),
+                    report.missing_snapshots.len()
+                )))
+            }
+        }
+        // --- end storage ---
         AdminCommand::Limits {
             tenant,
             max_trees,
@@ -518,6 +541,71 @@ pub fn run(ctx: &Context, args: AdminArgs) -> Result<()> {
 }
 
 const GC: &str = "/api/v1/admin/gc";
+
+// --- storage (§14.6): `wt admin fsck` ---
+
+const FSCK: &str = "/api/v1/admin/fsck";
+
+/// `POST /api/v1/admin/fsck`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FsckReport {
+    objects_checked: u64,
+    snapshots_checked: u64,
+    corrupt: Vec<String>,
+    missing: Vec<FsckMissing>,
+    missing_snapshots: Vec<String>,
+    duration_ms: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FsckMissing {
+    snapshot: String,
+    object: String,
+}
+
+impl FsckReport {
+    fn is_ok(&self) -> bool {
+        self.corrupt.is_empty() && self.missing.is_empty() && self.missing_snapshots.is_empty()
+    }
+}
+
+fn fsck_report(t: &mut Text, r: &FsckReport) {
+    for h in &r.corrupt {
+        t.line(format_args!("{} {h}", "corrupt object:".red().bold()));
+    }
+    for m in &r.missing {
+        t.line(format_args!(
+            "{} {} (snapshot {})",
+            "missing object:".red().bold(),
+            m.object,
+            m.snapshot
+        ));
+    }
+    for s in &r.missing_snapshots {
+        t.line(format_args!("{} {s}", "missing snapshot:".red().bold()));
+    }
+    if !r.is_ok() {
+        t.blank();
+    }
+    fields(
+        t,
+        &[
+            ("objects checked", r.objects_checked.to_string()),
+            ("snapshots", r.snapshots_checked.to_string()),
+            (
+                "duration",
+                format!("{}.{}s", r.duration_ms / 1000, r.duration_ms % 1000 / 100),
+            ),
+        ],
+    );
+    if r.is_ok() {
+        t.line("No problems found".green());
+    }
+}
+
+// --- end storage ---
 
 /// `/api/v1/admin/tenants/{slug}/limits`.
 fn limits_path(tenant: &str) -> String {
@@ -860,6 +948,8 @@ mod tests {
             AdminCommand::Gc { dry_run: true }
         ));
         assert!(matches!(admin(&["gc-status"]), AdminCommand::GcStatus));
+        // storage (§14.6)
+        assert!(matches!(admin(&["fsck"]), AdminCommand::Fsck));
         let AdminCommand::Limits {
             tenant,
             max_trees,
@@ -1058,6 +1148,32 @@ mod tests {
             t.as_str(),
             "  trees              2 / 3\n  branches           5\n  max branches/tree  unlimited\n  members            4 / 10\n  storage            1.5 KiB / unlimited\n  requests/minute    1200\n  (tenant-specific limits override the server defaults)\n"
         );
+    }
+
+    // storage (§14.6)
+    #[test]
+    fn renders_fsck_reports() {
+        colored::control::set_override(false);
+        let bad: FsckReport = serde_json::from_value(json!({
+            "objects_checked": 12, "snapshots_checked": 3, "duration_ms": 1530,
+            "corrupt": ["aa"], "missing": [{"snapshot": "s1", "object": "bb"}],
+            "missing_snapshots": ["s9"]
+        }))
+        .expect("report");
+        assert!(!bad.is_ok());
+        let mut t = Text::default();
+        fsck_report(&mut t, &bad);
+        assert_eq!(
+            t.as_str(),
+            "corrupt object: aa\nmissing object: bb (snapshot s1)\nmissing snapshot: s9\n\n  objects checked  12\n  snapshots        3\n  duration         1.5s\n"
+        );
+        let good: FsckReport =
+            serde_json::from_value(json!({"objects_checked": 1, "corrupt": [], "missing": []}))
+                .expect("report");
+        assert!(good.is_ok());
+        let mut t = Text::default();
+        fsck_report(&mut t, &good);
+        assert!(t.as_str().ends_with("No problems found\n"));
     }
 
     #[test]

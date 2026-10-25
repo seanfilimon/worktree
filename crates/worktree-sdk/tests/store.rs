@@ -53,5 +53,44 @@ fn large_objects_roundtrip() {
     let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
     let h = store.put(&data).unwrap();
     assert_eq!(store.get(&h).unwrap(), data);
-    assert_eq!(store.stats().unwrap(), (1, data.len() as u64));
+    // Stats report stored bytes: this highly repetitive object is stored
+    // WTZ1-compressed (ENGINEERING_PLAN §14.6).
+    let (count, bytes) = store.stats().unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(bytes, store.size(&h).unwrap());
+    assert!(bytes < data.len() as u64 / 10, "{bytes} stored bytes");
+
+    let raw = ObjectStore::open(dir.path().join("raw")).with_compression(false);
+    let h2 = raw.put(&data).unwrap();
+    assert_eq!(h2, h);
+    assert_eq!(raw.stats().unwrap(), (1, data.len() as u64));
+}
+
+#[test]
+fn concurrent_compressed_writers_and_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ObjectStore::open(dir.path());
+    let content = "compressible line of text\n".repeat(200).into_bytes();
+    let threads = 8;
+    let barrier = Arc::new(Barrier::new(threads));
+    let handles: Vec<_> = (0..threads)
+        .map(|_| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let content = content.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..20 {
+                    let h = store.put(&content).unwrap();
+                    assert_eq!(store.get(&h).unwrap(), content);
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let h = hash_bytes(&content);
+    assert!(store.is_compressed(&h).unwrap());
+    assert_eq!(store.stats().unwrap().0, 1);
 }
