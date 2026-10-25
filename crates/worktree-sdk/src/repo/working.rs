@@ -150,9 +150,14 @@ impl Repository {
         let scan = scanner.is_some();
         let old_index = self.load_index(&rec.name);
         let nested = self.nested_tree_paths(rec)?;
+        // sparse (§15.4): files outside the sparse set are not scanned.
+        let sparse = self.sparse_matcher(&rec.name)?;
         let mut found = Vec::new();
         self.walk_files(&rec.path, &nested, true, &mut |rel, abs, meta| {
             let path = tree_relative(&rec.path, rel).to_string();
+            if sparse.as_ref().is_some_and(|s| !s.includes(&path)) {
+                return Ok(());
+            }
             found.push(FoundFile {
                 path,
                 abs: abs.to_path_buf(),
@@ -255,6 +260,16 @@ impl Repository {
                 chunked,
             });
         }
+        // sparse (§15.4): head files outside the sparse set keep their head
+        // entries — never reported as deleted, kept by the next snapshot.
+        if let Some(sparse) = &sparse {
+            entries.extend(
+                head.entries
+                    .iter()
+                    .filter(|e| !sparse.includes(&e.path))
+                    .cloned(),
+            );
+        }
         // Restricted ("stubbed") files are never written to the working
         // directory (ENGINEERING_PLAN §13.2); while absent and unreadable
         // they keep their head entry, so they neither show as deleted nor
@@ -292,12 +307,19 @@ impl Repository {
         let tree_dir = self.tree_dir_of(rec);
         let nested = self.nested_tree_rel_paths(rec)?;
         let stubbed = self.stubbed_paths(&rec.name)?;
+        // sparse (§15.4): paths outside the sparse set are never touched.
+        let sparse = self.sparse_matcher(&rec.name)?;
+        let outside = |path: &str| sparse.as_ref().is_some_and(|s| !s.includes(path));
         for entry in &current.entries {
-            if target.get(&entry.path).is_none() && tracked.contains(&entry.path) {
+            if target.get(&entry.path).is_none()
+                && tracked.contains(&entry.path)
+                && !outside(&entry.path)
+            {
                 self.remove_working_file(&tree_dir, &entry.path)?;
                 index.remove(&entry.path);
             }
         }
+        let mut to_write = Vec::new();
         for entry in &target.entries {
             if nested
                 .iter()
@@ -305,7 +327,7 @@ impl Repository {
             {
                 continue;
             }
-            if current.get(&entry.path) == Some(entry) {
+            if outside(&entry.path) || current.get(&entry.path) == Some(entry) {
                 continue;
             }
             // Restricted files whose content the server withheld are not
@@ -315,6 +337,11 @@ impl Repository {
                 index.remove(&entry.path);
                 continue;
             }
+            to_write.push(entry);
+        }
+        // sparse (§15.4): one batched download for a partial clone.
+        self.store.prefetch_entries(to_write.iter().copied())?;
+        for entry in to_write {
             let cached = self.materialize(&tree_dir, entry)?;
             index.insert(entry.path.clone(), cached);
         }

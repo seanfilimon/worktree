@@ -4,6 +4,7 @@ use clap::Args;
 use colored::Colorize;
 use serde::Serialize;
 use worktree_sdk::remote::{self, StagedInfo};
+use worktree_sdk::repo::SparseStatus;
 use worktree_sdk::{ChangeKind, MergeState, Repository, StatusReport};
 
 use crate::commands::{merge, remote::remote_name};
@@ -35,6 +36,9 @@ struct LocalStatus<'a> {
     restricted: &'a [String],
     /// The local history is shallow.
     shallow: bool,
+    /// sparse (§15.4): sparse checkout state (absent when off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sparse: Option<SparseStatus>,
 }
 
 pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
@@ -50,6 +54,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
         status: &report,
         restricted: &restricted,
         shallow: repo.is_shallow(&tree.name)?,
+        sparse: repo.sparse_status(&tree.name)?,
     };
 
     // daemon workstream (§13.11): hint when auto-snapshot is on but the
@@ -110,6 +115,13 @@ fn render(t: &mut Text, local: &LocalStatus<'_>, head_line: &str) {
     t.line(head_line);
     if local.shallow {
         t.line("History is shallow; use `wt fetch --deepen N` for more.");
+    }
+    if let Some(sparse) = &local.sparse {
+        t.line(format_args!(
+            "Sparse checkout ({}): {}",
+            sparse.patterns.join(" "),
+            crate::commands::sparse::summary(sparse)
+        ));
     }
     if let Some(state) = &report.merge {
         t.blank();

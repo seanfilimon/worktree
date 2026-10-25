@@ -258,12 +258,41 @@ pub fn file_hash(data: &[u8]) -> (ObjectHash, bool) {
     (prepared.hash, prepared.chunked)
 }
 
+// --- sparse (ENGINEERING_PLAN §15.4): lazy remote fetcher hook ---
+
+/// Downloads objects that a partial (sparse) clone does not store locally.
+///
+/// Installed on an [`ObjectStore`] with [`ObjectStore::with_fetcher`];
+/// [`ObjectStore::get`] and [`ObjectStore::read_entry`] call it for missing
+/// objects, so diff, merge, blame and checkout work transparently on
+/// content that was never downloaded. Implementations write what they
+/// receive into the given store (which has no fetcher, so there is no
+/// recursion) and return the number of objects stored; objects the remote
+/// does not have are simply not stored. An error means the remote could
+/// not be asked (offline, not logged in, ...).
+pub trait ObjectFetcher: Send + Sync + std::fmt::Debug {
+    fn fetch(&self, store: &ObjectStore, hashes: &[ObjectHash]) -> Result<usize>;
+}
+
+/// The error for objects a fetcher could not download.
+fn lazy_fetch_error(count: usize, err: &SdkError) -> SdkError {
+    SdkError::Remote(format!(
+        "{count} object(s) needed here are not stored locally (this is a partial clone: \
+         content outside the sparse checkout is downloaded on demand) and could not be \
+         downloaded: {err}; check the connection to the server and retry"
+    ))
+}
+
+// --- end sparse ---
+
 /// A directory of immutable, content-addressed objects.
 #[derive(Debug, Clone)]
 pub struct ObjectStore {
     root: PathBuf,
     /// Compress new objects (WTZ1); readers always accept both encodings.
     compress: bool,
+    /// sparse (§15.4): downloads missing objects on demand (partial clones).
+    fetcher: Option<std::sync::Arc<dyn ObjectFetcher>>,
 }
 
 impl ObjectStore {
@@ -273,8 +302,94 @@ impl ObjectStore {
         Self {
             root: root.into(),
             compress: true,
+            fetcher: None,
         }
     }
+
+    // --- sparse (ENGINEERING_PLAN §15.4): lazy fetching ---
+
+    /// The same store downloading missing objects through `fetcher`.
+    pub fn with_fetcher(mut self, fetcher: std::sync::Arc<dyn ObjectFetcher>) -> Self {
+        self.fetcher = Some(fetcher);
+        self
+    }
+
+    /// The same store without a fetcher: reads never touch the network.
+    pub fn local_only(&self) -> Self {
+        Self {
+            fetcher: None,
+            ..self.clone()
+        }
+    }
+
+    /// Whether missing objects are downloaded on demand.
+    pub fn has_fetcher(&self) -> bool {
+        self.fetcher.is_some()
+    }
+
+    /// Download the objects among `hashes` that are not stored locally
+    /// (no-op without a fetcher). Returns the number downloaded; objects the
+    /// remote does not have stay missing.
+    pub fn prefetch(&self, hashes: &[ObjectHash]) -> Result<usize> {
+        let Some(fetcher) = &self.fetcher else {
+            return Ok(0);
+        };
+        let mut seen = std::collections::HashSet::new();
+        let missing: Vec<ObjectHash> = hashes
+            .iter()
+            .filter(|h| seen.insert(**h) && !self.has(h))
+            .copied()
+            .collect();
+        if missing.is_empty() {
+            return Ok(0);
+        }
+        fetcher
+            .fetch(&self.local_only(), &missing)
+            .map_err(|e| lazy_fetch_error(missing.len(), &e))
+    }
+
+    /// Download whatever is missing to read `entries`: blobs and chunk
+    /// lists first, then the chunks those lists name. No-op without a
+    /// fetcher.
+    pub fn prefetch_entries<'a>(
+        &self,
+        entries: impl IntoIterator<Item = &'a crate::model::ManifestEntry>,
+    ) -> Result<usize> {
+        if self.fetcher.is_none() {
+            return Ok(0);
+        }
+        let entries: Vec<&crate::model::ManifestEntry> = entries.into_iter().collect();
+        let first: Vec<ObjectHash> = entries.iter().map(|e| e.hash).collect();
+        let mut fetched = self.prefetch(&first)?;
+        let mut chunks = Vec::new();
+        for entry in entries.iter().filter(|e| e.chunked) {
+            if let Ok(list) = self.read_chunk_list_local(&entry.hash) {
+                chunks.extend(list.chunks.iter().map(|c| c.hash));
+            }
+        }
+        fetched += self.prefetch(&chunks)?;
+        Ok(fetched)
+    }
+
+    /// Read an object from the local store only (never fetches).
+    pub fn get_local(&self, hash: &ObjectHash) -> Result<Vec<u8>> {
+        let stored = match fs::read(self.path_of(hash)) {
+            Ok(d) => d,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(SdkError::ObjectNotFound(hash.to_hex()))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        decode_verified(hash, stored)
+    }
+
+    /// [`ObjectStore::read_chunk_list`] from the local store only.
+    pub fn read_chunk_list_local(&self, hash: &ObjectHash) -> Result<ChunkList> {
+        let data = self.get_local(hash)?;
+        ChunkList::from_bytes(&data).map_err(|e| SdkError::CorruptObject(hash.to_hex(), e))
+    }
+
+    // --- end sparse ---
 
     /// The same store with compression of new objects switched on or off.
     /// Existing objects are read either way.
@@ -315,15 +430,16 @@ impl ObjectStore {
 
     /// Read an object; `ObjectNotFound` if absent, `CorruptObject` if the
     /// stored bytes no longer match their hash.
+    /// With a fetcher (partial clones, §15.4) a missing object is
+    /// downloaded first.
     pub fn get(&self, hash: &ObjectHash) -> Result<Vec<u8>> {
-        let stored = match fs::read(self.path_of(hash)) {
-            Ok(d) => d,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(SdkError::ObjectNotFound(hash.to_hex()))
+        match self.get_local(hash) {
+            Err(SdkError::ObjectNotFound(_)) if self.fetcher.is_some() => {
+                self.prefetch(std::slice::from_ref(hash))?;
+                self.get_local(hash)
             }
-            Err(e) => return Err(e.into()),
-        };
-        decode_verified(hash, stored)
+            other => other,
+        }
     }
 
     /// The full content of a manifest entry. Chunked entries
@@ -334,6 +450,11 @@ impl ObjectStore {
             return self.get(&entry.hash);
         }
         let list = self.read_chunk_list(&entry.hash)?;
+        // sparse (§15.4): download every missing chunk in one batch.
+        if self.fetcher.is_some() {
+            let chunks: Vec<ObjectHash> = list.chunks.iter().map(|c| c.hash).collect();
+            self.prefetch(&chunks)?;
+        }
         let size = usize::try_from(list.size).map_err(|_| {
             SdkError::Other(format!(
                 "{}: {} bytes do not fit in memory",
@@ -396,7 +517,7 @@ impl ObjectStore {
         if !entry.chunked || !self.has(&entry.hash) {
             return Ok(vec![entry.hash]);
         }
-        let list = self.read_chunk_list(&entry.hash)?;
+        let list = self.read_chunk_list_local(&entry.hash)?;
         let mut out = Vec::with_capacity(list.chunks.len() + 1);
         out.push(entry.hash);
         out.extend(list.chunks.iter().map(|c| c.hash));
@@ -408,7 +529,7 @@ impl ObjectStore {
         if !entry.chunked {
             return self.has(&entry.hash);
         }
-        match self.read_chunk_list(&entry.hash) {
+        match self.read_chunk_list_local(&entry.hash) {
             Ok(list) => list.chunks.iter().all(|c| self.has(&c.hash)),
             Err(_) => false,
         }
@@ -1064,6 +1185,122 @@ mod tests {
     }
 
     // --- end storage ---
+
+    // --- sparse (ENGINEERING_PLAN §15.4): lazy fetcher hook ---
+
+    /// Serves objects from another store; counts calls; can be "offline".
+    #[derive(Debug)]
+    struct StoreFetcher {
+        source: ObjectStore,
+        calls: std::sync::Mutex<Vec<usize>>,
+        offline: bool,
+    }
+
+    impl ObjectFetcher for StoreFetcher {
+        fn fetch(&self, store: &ObjectStore, hashes: &[ObjectHash]) -> Result<usize> {
+            assert!(
+                !store.has_fetcher(),
+                "fetchers write into a local-only store"
+            );
+            self.calls.lock().unwrap().push(hashes.len());
+            if self.offline {
+                return Err(SdkError::Remote("cannot connect to http://offline".into()));
+            }
+            let mut n = 0;
+            for h in hashes {
+                if let Ok(data) = self.source.get(h) {
+                    store.put_with_hash(h, &data)?;
+                    n += 1;
+                }
+            }
+            Ok(n)
+        }
+    }
+
+    fn lazy_pair(offline: bool) -> (tempfile::TempDir, ObjectStore, std::sync::Arc<StoreFetcher>) {
+        let dir = tempfile::tempdir().unwrap();
+        let fetcher = std::sync::Arc::new(StoreFetcher {
+            source: ObjectStore::open(dir.path().join("remote")),
+            calls: std::sync::Mutex::new(Vec::new()),
+            offline,
+        });
+        let store = ObjectStore::open(dir.path().join("local")).with_fetcher(fetcher.clone());
+        (dir, store, fetcher)
+    }
+
+    #[test]
+    fn missing_objects_are_fetched_on_demand() {
+        let (_dir, store, fetcher) = lazy_pair(false);
+        assert!(store.has_fetcher() && !store.local_only().has_fetcher());
+        let h = fetcher.source.put(b"remote only").unwrap();
+        assert!(!store.has(&h));
+        assert!(matches!(
+            store.get_local(&h),
+            Err(SdkError::ObjectNotFound(_))
+        ));
+        assert_eq!(store.get(&h).unwrap(), b"remote only");
+        assert!(store.has(&h), "downloaded objects are stored");
+        assert_eq!(store.get(&h).unwrap(), b"remote only");
+        assert_eq!(*fetcher.calls.lock().unwrap(), vec![1], "fetched once");
+
+        // Unknown everywhere: still ObjectNotFound.
+        let absent = hash_bytes(b"nowhere");
+        assert!(matches!(
+            store.get(&absent),
+            Err(SdkError::ObjectNotFound(_))
+        ));
+        // Prefetch skips what is stored and dedups.
+        let h2 = fetcher.source.put(b"second").unwrap();
+        assert_eq!(store.prefetch(&[h, h2, h2]).unwrap(), 1);
+        assert_eq!(fetcher.calls.lock().unwrap().last(), Some(&1));
+        assert_eq!(store.prefetch(&[h, h2]).unwrap(), 0);
+    }
+
+    #[test]
+    fn chunked_entries_are_fetched_in_batches() {
+        let (_dir, store, fetcher) = lazy_pair(false);
+        let data = repeated_content();
+        let (h, chunked) = fetcher.source.put_file(&data).unwrap();
+        assert!(chunked);
+        let e = entry("big.bin", h, data.len() as u64, true);
+        assert!(!store.has_entry(&e), "has_entry never fetches");
+        assert_eq!(store.entry_objects(&e).unwrap(), vec![h], "local only");
+        assert!(fetcher.calls.lock().unwrap().is_empty());
+        assert_eq!(store.read_entry(&e).unwrap(), data);
+        let calls = fetcher.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls.len(),
+            2,
+            "the chunk list, then every chunk at once: {calls:?}"
+        );
+        assert!(store.has_entry(&e));
+
+        // prefetch_entries does the same up front.
+        let (_dir2, other, f2) = lazy_pair(false);
+        let (h, _) = f2.source.put_file(&data).unwrap();
+        let e = entry("big.bin", h, data.len() as u64, true);
+        assert!(other.prefetch_entries([&e]).unwrap() > 1);
+        assert!(other.has_entry(&e));
+    }
+
+    #[test]
+    fn offline_fetch_is_a_clear_error() {
+        let (_dir, store, _fetcher) = lazy_pair(true);
+        let err = store.get(&hash_bytes(b"x")).unwrap_err();
+        let msg = err.to_string();
+        assert!(matches!(err, SdkError::Remote(_)), "{err:?}");
+        assert!(msg.contains("partial clone"), "{msg}");
+        assert!(msg.contains("cannot connect"), "{msg}");
+        // Without a fetcher nothing changes.
+        let plain = store.local_only();
+        assert!(matches!(
+            plain.get(&hash_bytes(b"x")),
+            Err(SdkError::ObjectNotFound(_))
+        ));
+        assert_eq!(plain.prefetch(&[hash_bytes(b"x")]).unwrap(), 0);
+    }
+
+    // --- end sparse ---
 
     #[test]
     fn stats_of_missing_root_is_zero() {
