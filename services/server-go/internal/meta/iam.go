@@ -268,6 +268,8 @@ func checkSubjectType(st string) error {
 	switch st {
 	case domain.SubjectUser, domain.SubjectTeam, domain.SubjectServiceAccount:
 		return nil
+	case domain.SubjectTenant: // v0.5 access workstream (§13.7): tenant grants
+		return nil
 	}
 	return invalid("unknown grant subject type %q", st)
 }

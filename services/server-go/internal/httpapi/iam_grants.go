@@ -27,8 +27,10 @@ func normalizeSubjectType(s string) (string, error) {
 		return domain.SubjectTeam, nil
 	case domain.SubjectServiceAccount, "sa":
 		return domain.SubjectServiceAccount, nil
+	case domain.SubjectTenant:
+		return domain.SubjectTenant, nil
 	}
-	return "", badRequestf("subject_type must be %q, %q or %q", domain.SubjectUser, domain.SubjectTeam, domain.SubjectServiceAccount)
+	return "", badRequestf("subject_type must be %q, %q, %q or %q", domain.SubjectUser, domain.SubjectTeam, domain.SubjectServiceAccount, domain.SubjectTenant)
 }
 
 // resolveSubject maps a grant subject name (username, team slug or
@@ -50,6 +52,14 @@ func (a *api) resolveSubject(ctx context.Context, tenantID, subjectType, subject
 			return "", "", err
 		}
 		return team.ID, team.Slug, nil
+	case domain.SubjectTenant:
+		// Cross-tenant tree access: every member and service account of
+		// the named tenant gets the role on the tree (§13.7).
+		t, err := a.tenantByRef(ctx, subject)
+		if err != nil {
+			return "", "", err
+		}
+		return t.ID, t.Slug, nil
 	default:
 		sa, err := a.d.Store.GetServiceAccountByName(ctx, tenantID, subject)
 		if errors.Is(err, domain.ErrNotFound) {

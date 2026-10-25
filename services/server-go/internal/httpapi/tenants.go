@@ -281,7 +281,76 @@ func (a *api) checkLastOwner(r *http.Request, tenantID string) error {
 		}
 	}
 	if owners <= 1 {
-		return conflictf("a tenant must keep at least one owner")
+		return &apiError{status: http.StatusConflict, code: codeLastOwner, msg: "a tenant must keep at least one owner"}
 	}
+	return nil
+}
+
+// codeLastOwner answers removing or demoting the last owner (§13.7).
+const codeLastOwner = "last_owner"
+
+// ---- tenant status (v0.5, §13.7) ----
+
+type patchTenantStatusRequest struct {
+	Status       *string `json:"status"`
+	StatusReason *string `json:"status_reason"`
+}
+
+// handleAdminPatchTenant answers PATCH /api/v1/admin/tenants/{tenant}
+// {status?, status_reason?} (server admins). Suspended tenants are
+// read-only and deactivated ones refuse all access (enforced by authz);
+// nothing is revoked, so resuming restores everything.
+func (a *api) handleAdminPatchTenant(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	if err := a.d.Authz.Authorize(ctx, principal(r), domain.ActServerAdmin, "", nil); err != nil {
+		return err
+	}
+	var req patchTenantStatusRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		return err
+	}
+	if req.Status == nil && req.StatusReason == nil {
+		return badRequestf("at least one of status, status_reason is required")
+	}
+	t, err := a.tenantByRef(ctx, r.PathValue("tenant"))
+	if err != nil {
+		return err
+	}
+	prev, prevReason := t.Status, t.StatusReason
+	if prev == "" {
+		prev = domain.TenantActive
+	}
+	if req.Status != nil {
+		switch s := strings.TrimSpace(*req.Status); s {
+		case domain.TenantActive, domain.TenantSuspended, domain.TenantDeactivated:
+			t.Status = s
+		default:
+			return badRequestf("status must be %q, %q or %q", domain.TenantActive, domain.TenantSuspended, domain.TenantDeactivated)
+		}
+		if t.Status == domain.TenantActive && req.StatusReason == nil {
+			t.StatusReason = ""
+		}
+	}
+	if req.StatusReason != nil {
+		reason := strings.TrimSpace(*req.StatusReason)
+		if err := validateText("status_reason", reason, 500, false); err != nil {
+			return err
+		}
+		t.StatusReason = reason
+	}
+	if t.Status == domain.TenantActive {
+		t.Status = "" // "" means active
+	}
+	if err := a.d.Store.UpdateTenant(ctx, t); err != nil {
+		return err
+	}
+	cur := t.Status
+	if cur == "" {
+		cur = domain.TenantActive
+	}
+	a.audit(r, "tenant.status", t.ID, "tenant", t.ID, map[string]string{
+		"slug": t.Slug, "status": cur, "previous_status": prev,
+		"status_reason": t.StatusReason, "previous_status_reason": prevReason})
+	writeJSON(w, http.StatusOK, t)
 	return nil
 }

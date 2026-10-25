@@ -125,6 +125,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	collector := gc.New(gc.Deps(v5))
 	limiter := limits.New(limits.Deps(v5))
 	accessCfg := accesscfg.New(accesscfg.Deps(v5))
+	go accessCfg.Run(ctx) // access workstream: drops access docs of deleted trees (§13.14)
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	_ = todos // started below by its owning workstream
 

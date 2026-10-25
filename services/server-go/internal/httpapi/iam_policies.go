@@ -40,6 +40,40 @@ type policyRequest struct {
 	CreatedBy string     `json:"created_by"`
 	CreatedAt *time.Time `json:"created_at"`
 	UpdatedAt *time.Time `json:"updated_at"`
+	ManagedBy string     `json:"managed_by"` // v0.5; changed only by access documents
+	TreeID    string     `json:"tree_id"`    // v0.5; changed only by access documents
+}
+
+// codeManagedByConfig answers REST changes to config-managed policies and
+// roles (§13.7).
+const codeManagedByConfig = "managed_by_config"
+
+// checkManaged refuses changing a policy or role owned by a declarative
+// access document, unless a tenant owner (or server admin) passes
+// ?force=true. The next `wt access apply` reconciles forced edits.
+func (a *api) checkManaged(r *http.Request, tenantID, managedBy, what string) error {
+	if managedBy != domain.ManagedByConfig {
+		return nil
+	}
+	if r.URL.Query().Get("force") != "true" {
+		return &apiError{status: http.StatusConflict, code: codeManagedByConfig,
+			msg: what + " is managed by a declarative access document; change the document and run `wt access apply`, or pass ?force=true as a tenant owner"}
+	}
+	p := principal(r)
+	if p != nil && p.IsAdmin {
+		return nil
+	}
+	role := ""
+	if p != nil && p.AccountID != "" {
+		var err error
+		if role, err = a.d.Authz.RoleOf(r.Context(), p.AccountID, tenantID); err != nil {
+			return err
+		}
+	}
+	if role != domain.RoleOwner {
+		return forbiddenf("only tenant owners can force changes to %s", what)
+	}
+	return nil
 }
 
 type validatePolicyRequest struct {
@@ -217,6 +251,9 @@ func (a *api) handlePutPolicy(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if err := a.checkManaged(r, t.ID, pol.ManagedBy, "policy "+pol.Name); err != nil {
+		return err
+	}
 	if req.Version != 0 && req.Version != pol.Version {
 		return conflictf("policy was modified (version %d, request is based on %d)", pol.Version, req.Version)
 	}
@@ -247,6 +284,9 @@ func (a *api) handleDeletePolicy(w http.ResponseWriter, r *http.Request) error {
 	}
 	pol, err := a.policyByPath(r, t)
 	if err != nil {
+		return err
+	}
+	if err := a.checkManaged(r, t.ID, pol.ManagedBy, "policy "+pol.Name); err != nil {
 		return err
 	}
 	if err := a.d.Store.DeletePolicy(r.Context(), t.ID, pol.ID); err != nil {

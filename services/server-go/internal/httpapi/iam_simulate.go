@@ -7,11 +7,16 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 )
+
+// maxPolicyCandidates bounds POST /iam/simulate candidate_policies.
+const maxPolicyCandidates = 200
 
 type simulatePrincipal struct {
 	Type   string `json:"type"` // "user" | "service_account" ("sa" accepted)
@@ -32,6 +37,10 @@ type simulateRequest struct {
 	Branch    string             `json:"branch"`
 	Path      string             `json:"path"`
 	Context   simulateContext    `json:"context"`
+	// CandidatePolicies, when present, replace the tenant's stored policies
+	// for this evaluation: a dry run of a policy change (§13.7). Only
+	// enabled candidates take part; [] simulates having no policies.
+	CandidatePolicies *[]domain.Policy `json:"candidate_policies"`
 }
 
 type teamRoleView struct {
@@ -274,6 +283,23 @@ func (a *api) handleIAMSimulate(w http.ResponseWriter, r *http.Request) error {
 	} else if req.Branch != "" || path != "" {
 		return badRequestf("branch and path need a tree")
 	}
+	if req.CandidatePolicies != nil {
+		cands := *req.CandidatePolicies
+		if len(cands) > maxPolicyCandidates {
+			return badRequestf("at most %d candidate policies are allowed", maxPolicyCandidates)
+		}
+		for i := range cands {
+			c := &cands[i]
+			c.TenantID = t.ID
+			if c.Name == "" {
+				c.Name = "candidate-" + strconv.Itoa(i+1)
+			}
+			if err := statementsError(a.validateStatements(c.Statements)); err != nil {
+				return badRequestf("candidate_policies[%d] (%s): %v", i, c.Name, err)
+			}
+		}
+		ctx = authz.WithCandidatePolicies(ctx, t.ID, cands)
+	}
 	sim := *pr.p
 	sim.MFA = req.Context.MFA
 	dec, err := ev.Evaluate(ctx, &sim, domain.Action(req.Action), res, env)
@@ -342,7 +368,15 @@ func (a *api) handleIAMEffective(w http.ResponseWriter, r *http.Request) error {
 			out.Role = pr.sa.Role
 		}
 		subjects[[2]string{domain.SubjectServiceAccount, pr.sa.ID}] = true
+		subjects[[2]string{domain.SubjectTenant, pr.sa.TenantID}] = true
 	} else {
+		mems, err := a.d.Store.ListAccountMemberships(ctx, pr.p.AccountID)
+		if err != nil {
+			return err
+		}
+		for _, m := range mems {
+			subjects[[2]string{domain.SubjectTenant, m.TenantID}] = true
+		}
 		if m, err := a.d.Store.GetMembership(ctx, t.ID, pr.p.AccountID); err == nil {
 			out.Role = m.Role
 		} else if !errors.Is(err, domain.ErrNotFound) {

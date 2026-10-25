@@ -87,6 +87,22 @@
 // with effect "allow", "deny" or "info", so the simulator output explains
 // itself.
 //
+// # v0.5 additions (§13.7)
+//
+//   - Tenant status: after the server-admin bypass, a suspended tenant
+//     refuses every action except tenant:read, tree:read and iam:read
+//     (source "tenant_suspended"); a deactivated tenant refuses everything
+//     (source "tenant_deactivated"). Nothing is revoked, so resuming the
+//     tenant restores all access.
+//   - Tenant grants: Grant{SubjectType:"tenant"} gives its role on the tree
+//     to every member and service account of that tenant (cross-tenant
+//     tree access). Policy principals "tenant:<slug>" match the same set.
+//   - Lockout guard: deny statements never apply to tenant owners (by
+//     membership) for iam:* and tenant:admin; the skipped statement is
+//     recorded with source "owner_protected".
+//   - [WithCandidatePolicies] evaluates with a candidate set of policies in
+//     place of the tenant's stored ones (the simulator's dry run).
+//
 // # Caching
 //
 // Store lookups are memoized per request, never across requests: each

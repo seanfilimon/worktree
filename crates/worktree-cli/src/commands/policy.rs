@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use worktree_sdk::remote::rest::seg;
 
 use crate::commands::iam_common::{
-    call, confirm, fields, read_input, show, tenant_path, when, yes, Table, YesArgs,
+    call, confirm, fields, read_input, show, tenant_path, when, yes, PrincipalRef, Table, YesArgs,
 };
 use crate::context::Context;
 use crate::error::{CliError, Result};
@@ -88,6 +88,123 @@ pub enum PolicyCommand {
         /// Policy id
         id: String,
     },
+    /// Dry-run a policy change: evaluate a request with and without the
+    /// policies of a file (nothing is saved)
+    ///
+    /// By default the file's policies replace the tenant's policies of the
+    /// same name and are added otherwise; with --only they are the only
+    /// policies evaluated.
+    Simulate {
+        /// Tenant slug
+        tenant: String,
+        /// One policy, an array of policies, or {"policies": [...]} (`-` = stdin)
+        #[arg(long, short = 'f', value_name = "FILE")]
+        file: PathBuf,
+        /// Evaluate only the file's policies
+        #[arg(long)]
+        only: bool,
+        /// `user:<name>` or `sa:<tenant>/<name>`
+        #[arg(long)]
+        principal: PrincipalRef,
+        /// Action, e.g. `tree:write` or `branch:push`
+        #[arg(long)]
+        action: String,
+        /// Tree name (or TENANT/TREE) of the resource
+        // Shares the global `--tree` id, exactly like `wt iam simulate`.
+        #[arg(long)]
+        tree: Option<String>,
+        /// Branch of the resource
+        #[arg(long, requires = "tree")]
+        branch: Option<String>,
+        /// Path within the tree
+        #[arg(long, requires = "tree")]
+        path: Option<String>,
+        /// Request IP address, for ip_ranges conditions
+        #[arg(long)]
+        ip: Option<String>,
+        /// Treat the session as MFA-verified, for require_mfa conditions
+        #[arg(long)]
+        mfa: bool,
+    },
+}
+
+/// Policies of a simulation file: one policy, an array of policies, or
+/// `{"policies": [...]}` (the canonical access document shape).
+fn candidate_policies(text: &str, source: &Path) -> Result<Vec<Value>> {
+    let value: Value = serde_json::from_str(text).map_err(|e| {
+        CliError::failure(format!("invalid policy file '{}': {e}", source.display()))
+    })?;
+    let items = match value {
+        Value::Array(items) => items,
+        Value::Object(ref map)
+            if map.contains_key("policies") && !map.contains_key("statements") =>
+        {
+            map["policies"].as_array().cloned().unwrap_or_default()
+        }
+        other => vec![other],
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        // Validate the shape; send the document as written.
+        let doc: PolicyDocument = serde_json::from_value(item.clone()).map_err(|e| {
+            CliError::failure(format!("invalid policy in '{}': {e}", source.display()))
+        })?;
+        out.push(serde_json::to_value(doc).unwrap_or(item));
+    }
+    Ok(out)
+}
+
+/// The tenant's current policies with `candidates` replacing same-named
+/// ones (case-insensitive) and the rest appended.
+fn merge_candidates(current: Vec<Value>, candidates: Vec<Value>) -> Vec<Value> {
+    let name = |v: &Value| v["name"].as_str().unwrap_or_default().to_lowercase();
+    let mut out: Vec<Value> = current
+        .into_iter()
+        .filter(|p| !candidates.iter().any(|c| name(c) == name(p)))
+        .collect();
+    out.extend(candidates);
+    out
+}
+
+#[derive(Debug, Deserialize)]
+struct SimReason {
+    source: String,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    effect: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SimDecision {
+    allowed: bool,
+    #[serde(default)]
+    effect: String,
+    #[serde(default)]
+    reasons: Vec<SimReason>,
+}
+
+fn simulation_text(t: &mut Text, request: &str, current: &SimDecision, candidate: &SimDecision) {
+    let verdict = |d: &SimDecision| {
+        let word = if d.allowed { "ALLOWED" } else { "DENIED" };
+        if d.effect.is_empty() {
+            word.to_string()
+        } else {
+            format!("{word} ({})", d.effect)
+        }
+    };
+    t.line(format_args!("{request}"));
+    t.line(format_args!("  now:                {}", verdict(current)));
+    t.line(format_args!("  with the change:    {}", verdict(candidate)));
+    if current.allowed != candidate.allowed {
+        t.line("  The change flips this decision.");
+    }
+    t.blank();
+    let mut table = Table::new(&["source", "effect", "detail"]);
+    for r in &candidate.reasons {
+        table.row([r.source.clone(), r.effect.clone(), r.detail.clone()]);
+    }
+    table.render(t, "No reasons given.");
 }
 
 /// A policy document as sent to the server. Statements are passed through
@@ -222,8 +339,89 @@ pub fn run(ctx: &Context, args: PolicyArgs) -> Result<()> {
                     t.line(format_args!("Deleted policy {id}"))
                 })
         }
+        PolicyCommand::Simulate {
+            tenant,
+            file,
+            only,
+            principal,
+            action,
+            tree,
+            branch,
+            path,
+            ip,
+            mfa,
+        } => {
+            let client = ctx.rest()?;
+            let candidates = candidate_policies(&read_input(&file)?, &file)?;
+            let candidates = if only {
+                candidates
+            } else {
+                let current: Vec<Value> = call(client.get(&tenant_path(&tenant, "/policies")))?;
+                merge_candidates(current, candidates)
+            };
+            let tree = match tree.as_deref().map(|t| t.split_once('/')) {
+                Some(Some((t, name))) if t == tenant => Some(name.to_string()),
+                Some(Some(_)) => {
+                    return Err(CliError::usage(format!(
+                        "--tree is not a tree of tenant '{tenant}'"
+                    )))
+                }
+                Some(None) => tree,
+                None => None,
+            };
+            let (kind, name, sa_tenant) = match &principal {
+                PrincipalRef::User(name) => ("user", name.as_str(), None),
+                PrincipalRef::ServiceAccount { tenant, name } => {
+                    ("service_account", name.as_str(), Some(tenant.as_str()))
+                }
+            };
+            let mut body = json!({
+                "principal": {"type": kind, "name": name, "tenant": sa_tenant},
+                "action": action,
+                "tenant": tenant,
+                "tree": tree,
+                "branch": branch,
+                "path": path,
+                "context": {"ip": ip, "mfa": mfa},
+            });
+            strip_nulls(&mut body);
+            let current: Value = call(client.post("/api/v1/iam/simulate", &body))?;
+            body["candidate_policies"] = Value::Array(candidates);
+            let candidate: Value = call(client.post("/api/v1/iam/simulate", &body))?;
+            let output = json!({"current": current, "candidate": candidate});
+            let parse = |v: &Value| -> Result<SimDecision> {
+                serde_json::from_value(v.clone()).map_err(|e| {
+                    CliError::failure(format!("unexpected response from the server: {e}"))
+                })
+            };
+            let (cur, cand) = (parse(&current)?, parse(&candidate)?);
+            let mut resource = match &tree {
+                Some(tree) => format!("{tenant}/{tree}"),
+                None => format!("tenant {tenant}"),
+            };
+            if let Some(b) = &branch {
+                resource.push_str(&format!(" branch {b}"));
+            }
+            if let Some(p) = &path {
+                resource.push_str(&format!(" path {p}"));
+            }
+            let request = format!("{principal} {action} on {resource}");
+            ctx.out
+                .emit(&output, |t| simulation_text(t, &request, &cur, &cand))
+        }
         PolicyCommand::Enable { tenant, id } => set_enabled(ctx, &tenant, &id, true),
         PolicyCommand::Disable { tenant, id } => set_enabled(ctx, &tenant, &id, false),
+    }
+}
+
+/// Remove `null` members of JSON objects (recursively) so optional request
+/// fields are simply absent.
+fn strip_nulls(v: &mut Value) {
+    if let Value::Object(map) = v {
+        map.retain(|_, x| !x.is_null());
+        for x in map.values_mut() {
+            strip_nulls(x);
+        }
     }
 }
 
@@ -427,6 +625,117 @@ mod tests {
         );
         assert!(out.contains("Statement 2: ALLOW\n"), "{out}");
         assert_eq!(out.matches("conditions").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn parses_simulate() {
+        let cmd = policy(&[
+            "simulate",
+            "acme",
+            "--file",
+            "p.json",
+            "--principal",
+            "user:ada",
+            "--action",
+            "branch:push",
+            "--tree",
+            "web",
+            "--branch",
+            "main",
+            "--mfa",
+        ]);
+        assert!(matches!(
+            cmd,
+            PolicyCommand::Simulate { only: false, mfa: true, principal: PrincipalRef::User(u),
+                                      tree: Some(t), branch: Some(b), .. }
+                if u == "ada" && t == "web" && b == "main"
+        ));
+        assert!(matches!(
+            policy(&[
+                "simulate",
+                "acme",
+                "-f",
+                "-",
+                "--only",
+                "--principal",
+                "sa:acme/ci",
+                "--action",
+                "tree:read"
+            ]),
+            PolicyCommand::Simulate { only: true, .. }
+        ));
+        assert_eq!(
+            parse_err(&[
+                "policy",
+                "simulate",
+                "acme",
+                "--principal",
+                "user:a",
+                "--action",
+                "x"
+            ]),
+            ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn candidate_files_and_merging() {
+        let one = candidate_policies(DOC, Path::new("p.json")).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0]["name"], "no-friday-deploys");
+        assert_eq!(one[0]["enabled"], true);
+        let many = candidate_policies(
+            r#"[{"name": "a", "statements": []}, {"name": "b", "statements": []}]"#,
+            Path::new("x"),
+        )
+        .unwrap();
+        assert_eq!(many.len(), 2);
+        let doc = candidate_policies(
+            r#"{"roles": [], "policies": [{"name": "c", "statements": []}]}"#,
+            Path::new("x"),
+        )
+        .unwrap();
+        assert_eq!(doc[0]["name"], "c");
+        assert!(candidate_policies("{\"statements\": []}", Path::new("bad.json")).is_err());
+        assert!(candidate_policies("nope", Path::new("bad.json")).is_err());
+
+        let current = vec![
+            json!({"id": "1", "name": "Keep", "statements": []}),
+            json!({"id": "2", "name": "a", "statements": [{"effect": "deny"}]}),
+        ];
+        let merged = merge_candidates(current, many);
+        let names: Vec<&str> = merged.iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["Keep", "a", "b"]);
+        assert_eq!(merged[1]["statements"], json!([]), "candidate replaced 'a'");
+    }
+
+    #[test]
+    fn renders_simulations_and_strips_nulls() {
+        let allow = SimDecision {
+            allowed: true,
+            effect: "allow".into(),
+            reasons: vec![],
+        };
+        let deny = SimDecision {
+            allowed: false,
+            effect: "deny".into(),
+            reasons: vec![SimReason {
+                source: "policy".into(),
+                detail: "policy \"x\" denies".into(),
+                effect: "deny".into(),
+            }],
+        };
+        let mut t = Text::default();
+        simulation_text(&mut t, "user:ada tree:write on acme/web", &allow, &deny);
+        let out = t.as_str();
+        assert!(out.contains("now:                ALLOWED (allow)"), "{out}");
+        assert!(out.contains("with the change:    DENIED (deny)"), "{out}");
+        assert!(out.contains("flips this decision"), "{out}");
+        assert!(out.contains("policy  deny"), "{out}");
+
+        let mut v = json!({"a": null, "b": {"c": null, "d": 1}, "e": [null]});
+        strip_nulls(&mut v);
+        assert_eq!(v, json!({"b": {"d": 1}, "e": [null]}));
     }
 
     #[test]

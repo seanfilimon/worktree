@@ -34,6 +34,11 @@ const (
 	SourceTokenScope     = "token_scope"
 	SourcePolicy         = "policy"
 	SourceDefault        = "default"
+
+	// v0.5 (§13.7).
+	SourceOwnerProtected    = "owner_protected"    // a deny statement skipped for a tenant owner
+	SourceTenantSuspended   = "tenant_suspended"   // writes refused: the tenant is suspended
+	SourceTenantDeactivated = "tenant_deactivated" // everything refused: the tenant is deactivated
 )
 
 // Options configures an Authorizer.
@@ -327,6 +332,13 @@ func (a *Authorizer) evaluate(ctx context.Context, p *domain.Principal, act doma
 		}
 	}
 
+	// Tenant status (v0.5): suspended tenants are read-only, deactivated
+	// ones refuse everything. Server admins were allowed above.
+	if tenant != nil && checkTenantStatus(tenant, target, e) {
+		d, msg := e.decision()
+		return d, msg, nil
+	}
+
 	// 4. Roles.
 	held, err := a.heldRoles(ctx, c, s, res, tenant, e)
 	if err != nil {
@@ -551,9 +563,106 @@ func (a *Authorizer) heldRoles(ctx context.Context, c *requestCache, s *subject,
 				}
 				held = append(held, heldRole{source: SourceTeamRole, role: strings.ToLower(g.Role), via: fmt.Sprintf("team %s grant on tree %q", team, res.Tree.Name), tree: true})
 			}
+		case domain.SubjectTenant:
+			in, err := a.inTenant(ctx, c, s, g.SubjectID)
+			if err != nil {
+				return nil, err
+			}
+			if in {
+				name := g.Subject
+				if name == "" {
+					name = g.SubjectID
+				}
+				held = append(held, heldRole{source: SourceTreeGrant, role: strings.ToLower(g.Role), via: fmt.Sprintf("tenant %s grant on tree %q", name, res.Tree.Name), tree: true})
+			}
 		}
 	}
 	return held, nil
+}
+
+// inTenant reports whether the subject belongs to tenantID: a user with a
+// membership there, or a service account owned by it (tenant grants and
+// "tenant:<slug>" policy principals).
+func (a *Authorizer) inTenant(ctx context.Context, c *requestCache, s *subject, tenantID string) (bool, error) {
+	switch {
+	case s.sa != nil:
+		return s.sa.TenantID == tenantID, nil
+	case s.acct != nil:
+		_, err := cached(c, "mem:"+tenantID+"/"+s.acct.ID, func() (*domain.Membership, error) {
+			return a.store.GetMembership(ctx, tenantID, s.acct.ID)
+		})
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			return false, nil
+		case err != nil:
+			return false, fmt.Errorf("authz: looking up membership: %w", err)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// memberTenantSlugs lists the slugs of every tenant the subject belongs to
+// (for "tenant:<slug>" principals).
+func (a *Authorizer) memberTenantSlugs(ctx context.Context, c *requestCache, s *subject) ([]string, error) {
+	switch {
+	case s.sa != nil:
+		slug, err := a.tenantSlug(ctx, c, s.sa.TenantID)
+		if err != nil || slug == "" {
+			return nil, err
+		}
+		return []string{slug}, nil
+	case s.acct != nil:
+		ms, err := cached(c, "acctmems:"+s.acct.ID, func() ([]domain.Membership, error) {
+			return a.store.ListAccountMemberships(ctx, s.acct.ID)
+		})
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("authz: listing memberships: %w", err)
+		}
+		var out []string
+		for _, m := range ms {
+			slug, err := a.tenantSlug(ctx, c, m.TenantID)
+			if err != nil {
+				return nil, err
+			}
+			if slug != "" {
+				out = append(out, slug)
+			}
+		}
+		return out, nil
+	}
+	return nil, nil
+}
+
+// readOnlyActions are the actions a suspended tenant still allows.
+var readOnlyActions = map[domain.Action]bool{
+	domain.ActTenantRead: true,
+	domain.ActTreeRead:   true,
+	domain.ActIAMRead:    true,
+}
+
+// checkTenantStatus records the effect of the tenant's status on act and
+// reports whether the request is refused because of it.
+func checkTenantStatus(t *domain.Tenant, act domain.Action, e *evaluation) bool {
+	why := ""
+	if t.StatusReason != "" {
+		why = " (" + t.StatusReason + ")"
+	}
+	switch t.Status {
+	case domain.TenantDeactivated:
+		e.deny(SourceTenantDeactivated, "tenant is deactivated", "tenant %s is deactivated%s: all access is refused", t.Slug, why)
+		return true
+	case domain.TenantSuspended:
+		if !readOnlyActions[act] {
+			e.deny(SourceTenantSuspended, "tenant is suspended", "tenant %s is suspended%s: %s is a write and is refused", t.Slug, why, act)
+			return true
+		}
+		e.info(SourceTenantSuspended, "tenant %s is suspended%s: reads are still allowed", t.Slug, why)
+	}
+	return false
 }
 
 // applyRole records whether one held role grants act.
@@ -596,6 +705,9 @@ func (a *Authorizer) applyRole(ctx context.Context, c *requestCache, tenantID st
 
 // policies returns the tenant's enabled policies, compiled.
 func (a *Authorizer) policies(ctx context.Context, c *requestCache, tenantID string) ([]compiledPolicy, error) {
+	if cand, ok := candidatesFor(ctx, tenantID); ok {
+		return compilePolicies(cand), nil
+	}
 	pols, err := cached(c, "policies:"+tenantID, func() ([]compiledPolicy, error) {
 		ps, err := a.store.ListPolicies(ctx, tenantID)
 		if err != nil {
@@ -686,8 +798,22 @@ func (a *Authorizer) applyPolicies(ctx context.Context, c *requestCache, s *subj
 	}
 
 	facts := &principalFacts{anonymous: s.anonymous}
+	owner := false
 	for _, h := range held {
 		facts.roles = append(facts.roles, h.role)
+		owner = owner || (h.source == SourceTenantRole && h.role == domain.RoleOwner)
+	}
+	// Lockout guard: tenant owners can always manage IAM and the tenant,
+	// whatever the policies say.
+	protected := owner && (areaOf(string(target)) == AreaIAM || target == domain.ActTenantAdmin)
+	needTenants := false
+	for _, p := range pols {
+		needTenants = needTenants || p.usesTenants
+	}
+	if needTenants && !s.anonymous {
+		if facts.tenants, err = a.memberTenantSlugs(ctx, c, s); err != nil {
+			return err
+		}
 	}
 	switch {
 	case s.acct != nil:
@@ -745,6 +871,10 @@ func (a *Authorizer) applyPolicies(ctx context.Context, c *requestCache, s *subj
 			suffix := ""
 			if cr.detail != "" {
 				suffix = " (" + cr.detail + ")"
+			}
+			if st.effect == domain.EffectDeny && protected {
+				e.info(SourceOwnerProtected, "%s would deny %s, but policies never deny tenant owners iam:* or tenant:admin", label, act)
+				continue
 			}
 			if st.effect == domain.EffectDeny {
 				e.deny(SourcePolicy, fmt.Sprintf("denied by policy %q", pol.name), "%s denies %s%s", label, act, suffix)

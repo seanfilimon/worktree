@@ -8,6 +8,7 @@
 //! - [`credentials`] — the credential file ([`CredentialStore`])
 //! - [`client`] — typed gRPC client ([`SyncClient`]) with batched,
 //!   streaming object transfer
+//! - [`access`] — declarative access documents: plan, apply, pull (§13.7)
 //! - `auth` — REST login (including the MFA second step) and register
 //! - `push`, `fetch` (fetch + pull), `clone`, `stage` — the sync flows of
 //!   ENGINEERING_PLAN §2, built on the `Repository` public API
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::repo::Repository;
 
+pub mod access;
 mod auth;
 pub mod client;
 mod clone;
