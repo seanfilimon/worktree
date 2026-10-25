@@ -91,6 +91,10 @@ pub enum Grant {
     ReadOnly,
     Modify,
     Redistribute,
+    /// No explicit grant: permissive licenses allow everything,
+    /// proprietary ones (LicenseRef-*) nothing (sent as "").
+    #[serde(rename = "")]
+    LicenseDefault,
 }
 
 /// `domain.LicenseRule` (also the PUT body; the server fills tree_id).
@@ -272,6 +276,10 @@ mod tests {
         assert_eq!(grant, Grant::ReadOnly);
         let (tree, glob, spdx) = split_set_args(args).expect("split");
         assert!(tree.is_none());
+        assert_eq!(
+            set_body("**", "MIT", Grant::LicenseDefault, None, None)["grant"],
+            json!("")
+        );
         assert_eq!((glob.as_str(), spdx.as_str()), ("**", "Apache-2.0"));
 
         let LicenseCommand::Set { args, .. } = license(&["set", "web", "**", "MIT"]) else {

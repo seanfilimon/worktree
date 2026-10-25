@@ -208,7 +208,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		AccessCfg: accessCfg,
 	})
 
-	srv := newHTTPServer(mux(grpcServer, api), log)
+	proxies, _ := config.ParseProxies(cfg.TrustedProxies) // validated by Load
+	srv := newHTTPServer(forwardedFor(mux(grpcServer, api), proxies), log)
 	tlsCfg, err := tlsConfig(cfg)
 	if err != nil {
 		return err

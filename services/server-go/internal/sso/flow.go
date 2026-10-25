@@ -162,6 +162,25 @@ type identity struct {
 	emailVerified bool
 	name          string
 	usernames     []string // username candidates in preference order
+	// mfa: the ID token's "amr" claim reports a second factor (RFC 8176).
+	mfa bool
+}
+
+// mfaMethods are "amr" values (RFC 8176) that indicate a second factor.
+var mfaMethods = map[string]bool{"mfa": true, "otp": true, "hwk": true, "sms": true, "tel": true, "swk": true, "sc": true}
+
+// amrHasMFA reports whether the amr claim names a second-factor method.
+func amrHasMFA(c claims) bool {
+	list, ok := c["amr"].([]any)
+	if !ok {
+		return false
+	}
+	for _, v := range list {
+		if m, ok := v.(string); ok && mfaMethods[strings.ToLower(m)] {
+			return true
+		}
+	}
+	return false
 }
 
 // Callback completes a login: it redeems the code, verifies the ID token,
@@ -219,7 +238,9 @@ func (s *Service) Callback(ctx context.Context, code, state string, meta domain.
 	if err != nil {
 		return "", nil, "", err
 	}
-	token, err := s.security.IssueSession(ctx, acct.ID, false, meta)
+	// A provider-asserted second factor counts as MFA for require_mfa
+	// policy conditions.
+	token, err := s.security.IssueSession(ctx, acct.ID, id.mfa, meta)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("sso: issuing session: %w", err)
 	}
@@ -240,6 +261,7 @@ func identityFromClaims(cfg *domain.SSOConfig, c claims) identity {
 		email:         strings.TrimSpace(c.str("email")),
 		emailVerified: c.boolish("email_verified"),
 		name:          c.str("name"),
+		mfa:           amrHasMFA(c),
 	}
 	if id.email == "" {
 		id.emailVerified = false

@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -59,6 +60,11 @@ type Config struct {
 	// CORSOrigins are extra browser origins allowed to call the REST API.
 	// Flag --cors-origins, env WT_CORS_ORIGINS (comma-separated).
 	CORSOrigins []string
+	// TrustedProxies are reverse-proxy addresses (IPs or CIDRs) whose
+	// X-Forwarded-For header names the real client (IP policy conditions,
+	// rate limits, audit). Flag --trusted-proxies, env WT_TRUSTED_PROXIES
+	// (comma-separated). Empty = the socket peer is the client.
+	TrustedProxies []string
 	// ShutdownTimeout bounds graceful shutdown. Flag --shutdown-timeout, env
 	// WT_SHUTDOWN_TIMEOUT.
 	ShutdownTimeout time.Duration
@@ -192,6 +198,9 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		}
 		cfg.ShutdownTimeout = d
 	}
+	if v, ok := lookup("WT_TRUSTED_PROXIES"); ok {
+		cfg.TrustedProxies = splitList(v)
+	}
 	if v, ok := lookup("WT_CORS_ORIGINS"); ok {
 		cfg.CORSOrigins = splitList(v)
 	}
@@ -245,6 +254,10 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 	fs.BoolVar(&cfg.AllowRegistration, "allow-registration", cfg.AllowRegistration, "allow self-service account registration (env WT_ALLOW_REGISTRATION)")
 	fs.TextVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "minimum log `level`: debug, info, warn, error (env WT_LOG_LEVEL)")
 	fs.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "log `format`: text or json (env WT_LOG_FORMAT)")
+	fs.Func("trusted-proxies", "comma-separated reverse-proxy `addresses` (IPs or CIDRs) whose X-Forwarded-For is trusted (env WT_TRUSTED_PROXIES)", func(v string) error {
+		cfg.TrustedProxies = splitList(v)
+		return nil
+	})
 	fs.Func("cors-origins", "comma-separated extra CORS `origins`; * allows any (env WT_CORS_ORIGINS)", func(v string) error {
 		cfg.CORSOrigins = splitList(v)
 		return nil
@@ -308,6 +321,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("shutdown-timeout must be positive, got %s", c.ShutdownTimeout))
+	}
+	if _, err := ParseProxies(c.TrustedProxies); err != nil {
+		errs = append(errs, err)
 	}
 	for _, o := range c.CORSOrigins {
 		if o == "*" {
@@ -376,4 +392,21 @@ func (c *Config) CleartextExposed() bool {
 	}
 	ip := net.ParseIP(host)
 	return ip == nil || !ip.IsLoopback()
+}
+
+// ParseProxies parses trusted proxy addresses (IPs or CIDRs).
+func ParseProxies(list []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(list))
+	for _, s := range list {
+		if p, err := netip.ParsePrefix(s); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return nil, fmt.Errorf("trusted-proxies %q: want an IP address or CIDR", s)
+		}
+		out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
+	}
+	return out, nil
 }
