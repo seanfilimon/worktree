@@ -110,7 +110,9 @@ impl Repository {
     /// Resolve a revision in `tree`: "HEAD", "HEAD~N", "<branch>",
     /// "<branch>~N", "origin/<branch>", "<tag>", or an id prefix. `~N`
     /// follows first parents, `^N` selects the N-th parent (`^` = `^1`);
-    /// suffixes may be chained (`main~2^2`).
+    /// suffixes may be chained (`main~2^2`). Reflog revisions: `@{N}` is
+    /// the N-th newest reflog entry of the current branch, `BRANCH@{N}` of
+    /// that branch and `HEAD@{N}` of the whole tree (`main@{1}~2` works).
     pub fn resolve(&self, tree: &str, rev: &str) -> Result<Snapshot> {
         self.load_tree(tree)?;
         let rev = rev.trim();
@@ -150,7 +152,7 @@ impl Repository {
                 snapshot.short_id()
             ))
         })?;
-        self.store.get(&entry.hash)
+        self.store.read_entry(entry)
     }
 
     // ----------------------------------------------------------------
@@ -279,6 +281,12 @@ impl Repository {
         let empty_branch = |branch: &str| {
             SdkError::InvalidRevision(format!("{rev}: branch {branch} has no snapshots yet"))
         };
+        if let Some(parsed) = super::reflog::parse_reflog_rev(base) {
+            let (name, n) = parsed.map_err(|()| {
+                SdkError::InvalidRevision(format!("{rev}: expected NAME@{{N}} with a number N"))
+            })?;
+            return self.resolve_reflog_rev(tree, name, n, rev);
+        }
         if base == "HEAD" || base == "@" {
             let (branch, tip) = self.head_tip(tree)?;
             let id = tip.ok_or_else(|| empty_branch(&branch))?;

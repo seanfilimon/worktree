@@ -148,7 +148,7 @@ fn no_ff_merge_records_merge_snapshot() {
     let opts = MergeOptions {
         no_fast_forward: true,
         message: Some("merge it".into()),
-        author: None,
+        ..MergeOptions::default()
     };
     let MergeOutcome::Merged { snapshot } = fx.repo.merge(&fx.tree, "feature", opts).unwrap()
     else {

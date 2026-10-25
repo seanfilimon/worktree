@@ -105,6 +105,8 @@ fn overlapping_changes_conflict_with_diff3_markers() {
         conflicts,
         vec![ConflictRegion {
             start_line: 2,
+            ours_start: 2,
+            theirs_start: 2,
             ours: strings(&["ours"]),
             base: strings(&["b"]),
             theirs: strings(&["theirs"]),
@@ -138,6 +140,146 @@ fn multiple_conflicts_report_their_output_lines() {
     assert_eq!(conflicts[1].start_line, 16);
     assert_eq!(conflicts[1].ours, strings(&["o10a", "o10b"]));
     assert!(merged.contains("t6\n"));
+    // Positions within each side's own file.
+    assert_eq!(
+        conflicts[0].hunk(),
+        ConflictHunk {
+            ours_start: 3,
+            ours_len: 1,
+            theirs_start: 3,
+            theirs_len: 1
+        }
+    );
+    assert_eq!(
+        conflicts[1].hunk(),
+        ConflictHunk {
+            ours_start: 10,
+            ours_len: 2,
+            theirs_start: 10,
+            theirs_len: 1
+        }
+    );
+}
+
+#[test]
+fn conflict_hunks_account_for_earlier_insertions() {
+    // Ours inserts two lines before the conflict; theirs deletes one.
+    let base = "a\nb\nc\nd\n";
+    let ours = "a\nx\ny\nb\nc\nOURS\n";
+    let theirs = "b\nc\nTHEIRS\n";
+    let (_, conflicts) = conflicted(merge(base, ours, theirs));
+    assert_eq!(conflicts.len(), 2, "{conflicts:?}");
+    let last = conflicts.last().unwrap().hunk();
+    assert_eq!((last.ours_start, last.ours_len), (6, 1));
+    assert_eq!((last.theirs_start, last.theirs_len), (3, 1));
+}
+
+#[test]
+fn deletion_conflict_hunk_starts_before_the_empty_side() {
+    // Ours deletes line 2, theirs edits it.
+    let (_, conflicts) = conflicted(merge("a\nb\nc\n", "a\nc\n", "a\nB\nc\n"));
+    assert_eq!(
+        conflicts[0].hunk(),
+        ConflictHunk {
+            ours_start: 1,
+            ours_len: 0,
+            theirs_start: 2,
+            theirs_len: 1
+        }
+    );
+}
+
+#[test]
+fn strategies_resolve_conflicts_and_keep_clean_changes() {
+    let base = edited(10, &[]);
+    let ours = edited(10, &[(2, "ours two\n"), (5, "ours five\n")]);
+    let theirs = edited(10, &[(5, "theirs five\n"), (8, "theirs eight\n")]);
+    let labels = MergeLabels::default();
+    let favour_ours = clean(merge_text_with(
+        &base,
+        &ours,
+        &theirs,
+        &labels,
+        MergeStrategy::Ours,
+    ));
+    assert_eq!(
+        favour_ours,
+        edited(
+            10,
+            &[(2, "ours two\n"), (5, "ours five\n"), (8, "theirs eight\n")]
+        )
+    );
+    let favour_theirs = clean(merge_text_with(
+        &base,
+        &ours,
+        &theirs,
+        &labels,
+        MergeStrategy::Theirs,
+    ));
+    assert_eq!(
+        favour_theirs,
+        edited(
+            10,
+            &[
+                (2, "ours two\n"),
+                (5, "theirs five\n"),
+                (8, "theirs eight\n")
+            ]
+        )
+    );
+    // Manual is the default and still writes markers.
+    let (_, conflicts) = conflicted(merge_text_with(
+        &base,
+        &ours,
+        &theirs,
+        &labels,
+        MergeStrategy::Manual,
+    ));
+    assert_eq!(conflicts.len(), 1);
+}
+
+#[test]
+fn strategies_on_add_add_and_trailing_newline() {
+    let labels = MergeLabels::default();
+    assert_eq!(
+        clean(merge_text_with(
+            "",
+            "x\ny",
+            "z\n",
+            &labels,
+            MergeStrategy::Ours
+        )),
+        "x\ny"
+    );
+    assert_eq!(
+        clean(merge_text_with(
+            "",
+            "x\ny",
+            "z\n",
+            &labels,
+            MergeStrategy::Theirs
+        )),
+        "z\n"
+    );
+}
+
+#[test]
+fn merge_strategy_parses() {
+    assert_eq!(
+        "ours".parse::<MergeStrategy>().unwrap(),
+        MergeStrategy::Ours
+    );
+    assert_eq!(
+        " Theirs ".parse::<MergeStrategy>().unwrap(),
+        MergeStrategy::Theirs
+    );
+    assert_eq!(
+        "manual".parse::<MergeStrategy>().unwrap(),
+        MergeStrategy::Manual
+    );
+    assert!("recursive".parse::<MergeStrategy>().is_err());
+    assert_eq!(MergeStrategy::default(), MergeStrategy::Manual);
+    assert_eq!(MergeStrategy::Theirs.as_str(), "theirs");
 }
 
 #[test]

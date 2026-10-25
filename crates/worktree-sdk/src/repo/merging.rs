@@ -1,4 +1,5 @@
-//! Merge, merge-state bookkeeping, revert and restore.
+//! Merge, merge-state bookkeeping (status, per-path resolution), revert and
+//! restore.
 //!
 //! The pure algorithms live in [`crate::merge`]; this module applies them
 //! to the repository: loading manifests and blobs, writing results into the
@@ -14,7 +15,10 @@ use super::trees::TreeRecord;
 use super::{fsutil, names, Repository};
 use crate::diff::is_binary;
 use crate::error::{Result, SdkError};
-use crate::merge::{merge_manifests, merge_text, MergeLabels, PathResolution, TextMergeResult};
+use crate::merge::{
+    merge_executable, merge_manifests, merge_text_with, MergeLabels, PathResolution,
+    TextMergeResult,
+};
 use crate::model::*;
 
 /// Conflict-marker prefixes that must be gone before a merge can complete.
@@ -31,6 +35,9 @@ struct ConflictReport {
     target_tip: Option<SnapshotId>,
     base: Option<SnapshotId>,
     conflicts: Vec<ConflictInfo>,
+    /// Paths resolved with `wt merge resolve`.
+    #[serde(default)]
+    resolved: Vec<String>,
 }
 
 /// Outcome of a three-way manifest merge, before touching the disk.
@@ -43,6 +50,14 @@ struct ThreeWay {
     marker_files: Vec<(String, Vec<u8>)>,
 }
 
+/// The three manifests of an in-progress merge.
+struct MergeSides {
+    base: Manifest,
+    ours: Manifest,
+    theirs: Manifest,
+    labels: MergeLabels,
+}
+
 impl Repository {
     // ----------------------------------------------------------------
     // Merge
@@ -50,9 +65,12 @@ impl Repository {
 
     /// Merge `source` (branch or revision) into the current branch.
     /// Uses `crate::merge` for manifest/text merging. Requires a clean
-    /// working tree. On conflicts writes markers into files, saves
-    /// MERGE_STATE.json + `.wt/conflicts/<tree>.json`, and returns
-    /// `MergeOutcome::Conflicts`.
+    /// working tree. With `MergeStrategy::Manual` (the default) conflicts
+    /// write markers into files, save MERGE_STATE.json +
+    /// `.wt/conflicts/<tree>.json` and return `MergeOutcome::Conflicts`;
+    /// `Ours` / `Theirs` resolve every conflict in favour of that side.
+    /// Conflict markers are labelled with short ids:
+    /// `<<<<<<< ours (main 1a2b3c4d)` / `>>>>>>> theirs (feature 5e6f7a8b)`.
     pub fn merge(&self, tree: &str, source: &str, opts: MergeOptions) -> Result<MergeOutcome> {
         let _lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
@@ -106,12 +124,14 @@ impl Repository {
         let base = self.merge_base(&ours, &theirs.id)?;
         let base_manifest = self.manifest_of_tip(base.as_deref())?;
         let theirs_manifest = self.manifest_of(&theirs)?;
-        let labels = MergeLabels {
-            ours: branch.clone(),
-            base: base.as_deref().map(short).unwrap_or("base").to_string(),
-            theirs: source.to_string(),
-        };
-        let result = self.three_way(&base_manifest, &ours_manifest, &theirs_manifest, &labels)?;
+        let labels = merge_labels(&branch, &ours, source, &theirs.id, base.as_deref());
+        let result = self.three_way(
+            &base_manifest,
+            &ours_manifest,
+            &theirs_manifest,
+            &labels,
+            opts.strategy,
+        )?;
         let merged = Manifest::from_entries(result.entries);
         let message = opts
             .message
@@ -145,6 +165,10 @@ impl Repository {
             self.write_snapshot(&snapshot)?;
             self.write_tip(tree, &branch, Some(&snapshot.id))?;
             self.save_index(tree, &working.index)?;
+            let strategy = match opts.strategy {
+                MergeStrategy::Manual => String::new(),
+                other => format!(" (strategy {})", other.as_str()),
+            };
             self.append_reflog(&ReflogEntry {
                 at: snapshot.created_at,
                 tree: tree.to_string(),
@@ -152,12 +176,10 @@ impl Repository {
                 action: "merge".into(),
                 old: Some(ours),
                 new: Some(snapshot.id.clone()),
-                message: snapshot
-                    .message
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .to_string(),
+                message: format!(
+                    "{}{strategy}",
+                    snapshot.message.lines().next().unwrap_or_default()
+                ),
             })?;
             return Ok(MergeOutcome::Merged { snapshot });
         }
@@ -176,6 +198,7 @@ impl Repository {
             base: base.clone(),
             conflicts: result.conflicts.clone(),
             message,
+            resolved: Vec::new(),
         };
         fsutil::write_json(&self.merge_state_path(tree), &state)?;
         fsutil::write_json(
@@ -188,6 +211,7 @@ impl Repository {
                 target_tip: Some(ours),
                 base,
                 conflicts: result.conflicts.clone(),
+                resolved: Vec::new(),
             },
         )?;
         Ok(MergeOutcome::Conflicts {
@@ -199,6 +223,115 @@ impl Repository {
     pub fn merge_state(&self, tree: &str) -> Result<Option<MergeState>> {
         self.load_tree(tree)?;
         fsutil::read_json_opt(&self.merge_state_path(tree))
+    }
+
+    /// The pending conflicted merge of `tree` with the resolution status of
+    /// every conflict (`wt merge status`); `None` when no merge is in
+    /// progress. Text conflicts count as resolved once their markers are
+    /// gone; file-level conflicts (modify/delete, binary) once resolved with
+    /// [`Repository::resolve_conflict`].
+    pub fn merge_status(&self, tree: &str) -> Result<Option<MergeStatus>> {
+        let rec = self.load_tree(tree)?;
+        let Some(state) = self.merge_state(tree)? else {
+            return Ok(None);
+        };
+        let with_markers: HashSet<String> = self
+            .unresolved_conflicts(&rec, &state)?
+            .into_iter()
+            .collect();
+        let conflicts = state
+            .conflicts
+            .iter()
+            .map(|c| ConflictStatus {
+                path: c.path.clone(),
+                kind: c.kind,
+                hunks: c.hunks.clone(),
+                resolved: state.resolved.contains(&c.path)
+                    || (is_text_conflict(c.kind) && !with_markers.contains(&c.path)),
+            })
+            .collect();
+        Ok(Some(MergeStatus {
+            tree: tree.to_string(),
+            branch: self.head_branch(tree)?,
+            source_branch: state.source_branch,
+            source_tip: state.source_tip,
+            target_tip: state.target_tip,
+            base: state.base,
+            message: state.message,
+            conflicts,
+        }))
+    }
+
+    /// Resolve one conflicted path of the in-progress merge (`wt merge
+    /// resolve PATH --ours|--theirs|--file F`). `Ours` / `Theirs` re-merge a
+    /// text conflict resolving only the conflicting hunks in favour of that
+    /// side (clean changes from the other side are kept) and take that
+    /// side's version for file-level conflicts (deleting the file when that
+    /// side deleted it); `Content` writes the given bytes. The path is then
+    /// recorded as resolved. `InvalidArgument` if `path` has no conflict.
+    pub fn resolve_conflict(
+        &self,
+        tree: &str,
+        path: &str,
+        resolution: &ConflictResolution,
+    ) -> Result<()> {
+        let _lock = self.lock_tree(tree)?;
+        let rec = self.load_tree(tree)?;
+        let mut state = self.merge_state(tree)?.ok_or(SdkError::NoMergeInProgress)?;
+        let path = names::normalize_rel_path(path);
+        let conflict = state
+            .conflicts
+            .iter()
+            .find(|c| c.path == path)
+            .cloned()
+            .ok_or_else(|| SdkError::InvalidArgument(format!("{path} has no merge conflict")))?;
+        let sides = self.merge_sides(tree, &state)?;
+        let mut index = self.load_index(tree);
+        self.apply_resolution(&rec, &sides, &conflict, resolution, &mut index)?;
+        self.save_index(tree, &index)?;
+        if !state.resolved.contains(&path) {
+            state.resolved.push(path);
+        }
+        self.save_merge_state(tree, &state)
+    }
+
+    /// Resolve every still-unresolved conflict (see
+    /// [`Repository::merge_status`]) with `Ours` or `Theirs` (`wt merge
+    /// resolve --all`). Returns the paths resolved, in conflict order.
+    pub fn resolve_all_conflicts(
+        &self,
+        tree: &str,
+        resolution: &ConflictResolution,
+    ) -> Result<Vec<String>> {
+        if matches!(resolution, ConflictResolution::Content(_)) {
+            return Err(SdkError::InvalidArgument(
+                "resolving every conflict needs --ours or --theirs".into(),
+            ));
+        }
+        let status = self
+            .merge_status(tree)?
+            .ok_or(SdkError::NoMergeInProgress)?;
+        let _lock = self.lock_tree(tree)?;
+        let rec = self.load_tree(tree)?;
+        let mut state = self.merge_state(tree)?.ok_or(SdkError::NoMergeInProgress)?;
+        let sides = self.merge_sides(tree, &state)?;
+        let mut index = self.load_index(tree);
+        let mut done = Vec::new();
+        for pending in status.unresolved() {
+            let Some(conflict) = state.conflicts.iter().find(|c| c.path == pending.path) else {
+                continue;
+            };
+            self.apply_resolution(&rec, &sides, conflict, resolution, &mut index)?;
+            done.push(pending.path.clone());
+        }
+        self.save_index(tree, &index)?;
+        for path in &done {
+            if !state.resolved.contains(path) {
+                state.resolved.push(path.clone());
+            }
+        }
+        self.save_merge_state(tree, &state)?;
+        Ok(done)
     }
 
     /// Restore the pre-merge head into the working tree and clear merge state.
@@ -250,7 +383,17 @@ impl Repository {
     /// relative to its first parent (append-only; history is not rewritten).
     /// Requires a clean working tree; `MergeConflict` if later snapshots
     /// changed the same lines, `NoChanges` if nothing is left to undo.
+    /// Merge snapshots need [`Repository::revert_with`] and a parent.
     pub fn revert(&self, tree: &str, rev: &str) -> Result<Snapshot> {
+        self.revert_with(tree, rev, &RevertOptions::default())
+    }
+
+    /// [`Repository::revert`] with options (`wt revert REV [--message M]
+    /// [--parent N]`). A merge snapshot is reverted relative to its
+    /// `parent`-th parent (1-based), which is required for merges and
+    /// rejected for ordinary snapshots. The new snapshot's `reverts` is set
+    /// to the reverted snapshot.
+    pub fn revert_with(&self, tree: &str, rev: &str, opts: &RevertOptions) -> Result<Snapshot> {
         let _lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         if self.merge_state(tree)?.is_some() {
@@ -261,8 +404,9 @@ impl Repository {
             SdkError::InvalidRevision(format!("{branch} has no snapshots to revert"))
         })?;
         let target = self.resolve(tree, rev)?;
+        let parent = revert_parent(&target, opts.parent)?;
         let target_manifest = self.manifest_of(&target)?;
-        let parent_manifest = self.manifest_of_tip(target.parents.first().map(String::as_str))?;
+        let parent_manifest = self.manifest_of_tip(parent.map(|(_, id)| id))?;
         let head_manifest = self.manifest_of_tip(Some(&head))?;
         let mut working = self.build_working(&rec, &head_manifest, false, false)?;
         let changes = compute_changes(&head_manifest, &working.manifest);
@@ -276,12 +420,17 @@ impl Repository {
                 // Later snapshots touched the same files: undo via a
                 // three-way merge with base = rev, theirs = rev's parent.
                 let labels = MergeLabels {
-                    ours: branch.clone(),
-                    base: target.short_id().to_string(),
-                    theirs: format!("parent of {}", target.short_id()),
+                    ours: format!("ours ({branch} {})", short(&head)),
+                    base: format!("base ({})", target.short_id()),
+                    theirs: format!("theirs (parent of {})", target.short_id()),
                 };
-                let merged =
-                    self.three_way(&target_manifest, &head_manifest, &parent_manifest, &labels)?;
+                let merged = self.three_way(
+                    &target_manifest,
+                    &head_manifest,
+                    &parent_manifest,
+                    &labels,
+                    MergeStrategy::Manual,
+                )?;
                 if !merged.conflicts.is_empty() {
                     let paths: Vec<_> = merged.conflicts.iter().map(|c| c.path.as_str()).collect();
                     return Err(SdkError::MergeConflict(format!(
@@ -310,6 +459,23 @@ impl Repository {
             &mut working.index,
         )?;
         let summary = target.message.lines().next().unwrap_or_default();
+        let message = match &opts.message {
+            Some(message) if !message.trim().is_empty() => message.clone(),
+            _ => {
+                let mut message = format!(
+                    "Revert \"{summary}\"\n\nThis reverts snapshot {}",
+                    target.id
+                );
+                match parent {
+                    Some((n, id)) if target.is_merge() => message.push_str(&format!(
+                        ", reversing the changes made to parent {n} ({}).",
+                        short(id)
+                    )),
+                    _ => message.push('.'),
+                }
+                message
+            }
+        };
         let mut snapshot = Snapshot {
             id: uuid::Uuid::new_v4().to_string(),
             tree_id: rec.id.clone(),
@@ -317,10 +483,7 @@ impl Repository {
             parents: vec![head.clone()],
             manifest: self.write_manifest(&result)?,
             author: self.author(),
-            message: format!(
-                "Revert \"{summary}\"\n\nThis reverts snapshot {}.",
-                target.id
-            ),
+            message,
             created_at: Utc::now(),
             auto_generated: false,
             dependencies: Vec::new(),
@@ -419,7 +582,20 @@ impl Repository {
         fsutil::remove_file_if_exists(&self.conflicts_path(tree))
     }
 
-    /// Conflicted text files that still contain conflict markers.
+    /// Persist `state` and mirror its resolved paths into the conflict
+    /// report.
+    fn save_merge_state(&self, tree: &str, state: &MergeState) -> Result<()> {
+        fsutil::write_json(&self.merge_state_path(tree), state)?;
+        let path = self.conflicts_path(tree);
+        if let Some(mut report) = fsutil::read_json_opt::<ConflictReport>(&path)? {
+            report.resolved = state.resolved.clone();
+            fsutil::write_json(&path, &report)?;
+        }
+        Ok(())
+    }
+
+    /// Conflicted text files that still contain conflict markers (paths
+    /// resolved with `resolve_conflict` are never reported).
     pub(crate) fn unresolved_conflicts(
         &self,
         rec: &TreeRecord,
@@ -428,7 +604,7 @@ impl Repository {
         let tree_dir = self.tree_dir_of(rec);
         let mut out = Vec::new();
         for conflict in &state.conflicts {
-            if !matches!(conflict.kind, ConflictKind::Content | ConflictKind::AddAdd) {
+            if !is_text_conflict(conflict.kind) || state.resolved.contains(&conflict.path) {
                 continue;
             }
             let Some(text) = fsutil::read_string_opt(&tree_dir.join(&conflict.path))
@@ -444,14 +620,101 @@ impl Repository {
         Ok(out)
     }
 
+    /// Manifests and labels of an in-progress merge.
+    fn merge_sides(&self, tree: &str, state: &MergeState) -> Result<MergeSides> {
+        let branch = self.head_branch(tree)?;
+        let ours_id = state.target_tip.clone().unwrap_or_default();
+        Ok(MergeSides {
+            base: self.manifest_of_tip(state.base.as_deref())?,
+            ours: self.manifest_of_tip(state.target_tip.as_deref())?,
+            theirs: self.manifest_of_tip(Some(&state.source_tip))?,
+            labels: merge_labels(
+                &branch,
+                &ours_id,
+                &state.source_branch,
+                &state.source_tip,
+                state.base.as_deref(),
+            ),
+        })
+    }
+
+    /// Write the resolution of one conflict into the working tree.
+    fn apply_resolution(
+        &self,
+        rec: &TreeRecord,
+        sides: &MergeSides,
+        conflict: &ConflictInfo,
+        resolution: &ConflictResolution,
+        index: &mut super::working::Index,
+    ) -> Result<()> {
+        let tree_dir = self.tree_dir_of(rec);
+        let path = conflict.path.as_str();
+        let strategy = match resolution {
+            ConflictResolution::Content(data) => {
+                validate_manifest_path(path)?;
+                fsutil::write_atomic(&tree_dir.join(path), data)?;
+                index.remove(path);
+                return Ok(());
+            }
+            ConflictResolution::Ours => MergeStrategy::Ours,
+            ConflictResolution::Theirs => MergeStrategy::Theirs,
+        };
+        let (ours, theirs) = (sides.ours.get(path), sides.theirs.get(path));
+        if let (true, Some(o), Some(t)) = (is_text_conflict(conflict.kind), ours, theirs) {
+            let base = sides.base.get(path);
+            let texts = (
+                base.map(|b| self.store.read_entry(b)).transpose()?,
+                self.store.read_entry(o)?,
+                self.store.read_entry(t)?,
+            );
+            if let (Ok(base_text), Ok(ours_text), Ok(theirs_text)) = (
+                String::from_utf8(texts.0.unwrap_or_default()),
+                String::from_utf8(texts.1),
+                String::from_utf8(texts.2),
+            ) {
+                let merged = match merge_text_with(
+                    &base_text,
+                    &ours_text,
+                    &theirs_text,
+                    &sides.labels,
+                    strategy,
+                ) {
+                    TextMergeResult::Clean(text)
+                    | TextMergeResult::Conflicted { merged: text, .. } => text,
+                };
+                let abs = tree_dir.join(path);
+                fsutil::write_atomic(&abs, merged.as_bytes())?;
+                fsutil::set_executable(&abs, merge_executable(base, o, t))?;
+                index.remove(path);
+                return Ok(());
+            }
+        }
+        let chosen = match strategy {
+            MergeStrategy::Theirs => theirs,
+            _ => ours,
+        };
+        match chosen {
+            Some(entry) => {
+                let cached = self.materialize(&tree_dir, entry)?;
+                index.insert(entry.path.clone(), cached);
+            }
+            None => {
+                self.remove_working_file(&tree_dir, path)?;
+                index.remove(path);
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve every path of a three-way merge, merging text content and
-    /// storing cleanly merged blobs.
+    /// storing cleanly merged blobs. `strategy` decides conflicts.
     fn three_way(
         &self,
         base: &Manifest,
         ours: &Manifest,
         theirs: &Manifest,
         labels: &MergeLabels,
+        strategy: MergeStrategy,
     ) -> Result<ThreeWay> {
         let mut out = ThreeWay {
             entries: Vec::new(),
@@ -464,48 +727,54 @@ impl Repository {
                 PathResolution::Delete => {}
                 PathResolution::Conflict {
                     kind, ours, theirs, ..
-                } => {
-                    if let Some(e) = ours.or(theirs) {
-                        out.entries.push(e);
+                } => match strategy {
+                    MergeStrategy::Ours => out.entries.extend(ours),
+                    MergeStrategy::Theirs => out.entries.extend(theirs),
+                    MergeStrategy::Manual => {
+                        if let Some(e) = ours.or(theirs) {
+                            out.entries.push(e);
+                        }
+                        out.conflicts.push(ConflictInfo {
+                            path,
+                            kind,
+                            hunks: Vec::new(),
+                        });
                     }
-                    out.conflicts.push(ConflictInfo { path, kind });
-                }
+                },
                 PathResolution::MergeContent { base, ours, theirs } => {
-                    let ours_data = self.store.get(&ours.hash)?;
-                    let theirs_data = self.store.get(&theirs.hash)?;
+                    let ours_data = self.store.read_entry(&ours)?;
+                    let theirs_data = self.store.read_entry(&theirs)?;
                     let base_data = match &base {
-                        Some(b) => self.store.get(&b.hash)?,
+                        Some(b) => self.store.read_entry(b)?,
                         None => Vec::new(),
                     };
+                    let binary = [&base_data, &ours_data, &theirs_data]
+                        .iter()
+                        .any(|d| is_binary(d));
                     let texts = (
                         String::from_utf8(base_data),
                         String::from_utf8(ours_data),
                         String::from_utf8(theirs_data),
                     );
-                    let (Ok(base_text), Ok(ours_text), Ok(theirs_text)) = texts else {
-                        out.entries.push(ours);
-                        out.conflicts.push(ConflictInfo {
-                            path,
-                            kind: ConflictKind::Binary,
-                        });
+                    let (false, Ok(base_text), Ok(ours_text), Ok(theirs_text)) =
+                        (binary, texts.0, texts.1, texts.2)
+                    else {
+                        match strategy {
+                            MergeStrategy::Theirs => out.entries.push(theirs),
+                            MergeStrategy::Ours => out.entries.push(ours),
+                            MergeStrategy::Manual => {
+                                out.entries.push(ours);
+                                out.conflicts.push(ConflictInfo {
+                                    path,
+                                    kind: ConflictKind::Binary,
+                                    hunks: Vec::new(),
+                                });
+                            }
+                        }
                         continue;
                     };
-                    if [&base_text, &ours_text, &theirs_text]
-                        .iter()
-                        .any(|t| is_binary(t.as_bytes()))
-                    {
-                        out.entries.push(ours);
-                        out.conflicts.push(ConflictInfo {
-                            path,
-                            kind: ConflictKind::Binary,
-                        });
-                        continue;
-                    }
-                    let executable = match &base {
-                        Some(b) if b.executable == ours.executable => theirs.executable,
-                        _ => ours.executable,
-                    };
-                    match merge_text(&base_text, &ours_text, &theirs_text, labels) {
+                    let executable = merge_executable(base.as_ref(), &ours, &theirs);
+                    match merge_text_with(&base_text, &ours_text, &theirs_text, labels, strategy) {
                         TextMergeResult::Clean(text) => {
                             let hash = self.store.put(text.as_bytes())?;
                             out.entries.push(ManifestEntry {
@@ -516,7 +785,7 @@ impl Repository {
                                 chunked: false,
                             });
                         }
-                        TextMergeResult::Conflicted { merged, .. } => {
+                        TextMergeResult::Conflicted { merged, conflicts } => {
                             let kind = if base.is_some() {
                                 ConflictKind::Content
                             } else {
@@ -526,6 +795,7 @@ impl Repository {
                             out.conflicts.push(ConflictInfo {
                                 path: path.clone(),
                                 kind,
+                                hunks: conflicts.iter().map(|c| c.hunk()).collect(),
                             });
                             out.marker_files.push((path, merged.into_bytes()));
                         }
@@ -534,6 +804,55 @@ impl Repository {
             }
         }
         Ok(out)
+    }
+}
+
+/// Conflict-marker labels with short ids: `ours (main 1a2b3c4d)`,
+/// `base (0f0f0f0f)`, `theirs (feature 5e6f7a8b)`.
+fn merge_labels(
+    branch: &str,
+    ours: &str,
+    source: &str,
+    theirs: &str,
+    base: Option<&str>,
+) -> MergeLabels {
+    let side = |name: &str, label: &str, id: &str| {
+        if id.is_empty() {
+            format!("{name} ({label})")
+        } else if !label.is_empty() && id.starts_with(label) {
+            // The source was given as an id prefix: show it once.
+            format!("{name} ({})", short(id))
+        } else {
+            format!("{name} ({label} {})", short(id))
+        }
+    };
+    MergeLabels {
+        ours: side("ours", branch, ours),
+        base: base.map_or_else(|| "base".to_string(), |b| format!("base ({})", short(b))),
+        theirs: side("theirs", source, theirs),
+    }
+}
+
+/// The parent a revert undoes changes against: `(1-based index, id)`, or
+/// `None` for a root snapshot.
+fn revert_parent(target: &Snapshot, parent: Option<usize>) -> Result<Option<(usize, &str)>> {
+    let count = target.parents.len();
+    match parent {
+        None if count > 1 => Err(SdkError::InvalidArgument(format!(
+            "snapshot {} is a merge with {count} parents; pass --parent N (1..={count}) to choose \
+             the parent whose line of history is kept",
+            target.short_id()
+        ))),
+        None => Ok(target.parents.first().map(|p| (1, p.as_str()))),
+        Some(_) if count <= 1 => Err(SdkError::InvalidArgument(format!(
+            "--parent was given but snapshot {} is not a merge",
+            target.short_id()
+        ))),
+        Some(n) if n == 0 || n > count => Err(SdkError::InvalidArgument(format!(
+            "snapshot {} has no parent {n} (it has {count})",
+            target.short_id()
+        ))),
+        Some(n) => Ok(Some((n, target.parents[n - 1].as_str()))),
     }
 }
 
@@ -564,6 +883,11 @@ fn simple_revert(
         }
     }
     Some(result.into_values().collect())
+}
+
+/// Conflicts whose working copy carries diff3 markers.
+fn is_text_conflict(kind: ConflictKind) -> bool {
+    matches!(kind, ConflictKind::Content | ConflictKind::AddAdd)
 }
 
 fn has_conflict_markers(text: &str) -> bool {
@@ -623,5 +947,52 @@ mod tests {
         ));
         assert!(!has_conflict_markers("Title\n=======\nbody\n"));
         assert!(!has_conflict_markers("plain"));
+    }
+
+    #[test]
+    fn labels_use_short_ids() {
+        let labels = merge_labels(
+            "main",
+            "1a2b3c4d-0000",
+            "feature",
+            "5e6f7a8b-1111",
+            Some("0f0f0f0f-2222"),
+        );
+        assert_eq!(labels.ours, "ours (main 1a2b3c4d)");
+        assert_eq!(labels.theirs, "theirs (feature 5e6f7a8b)");
+        assert_eq!(labels.base, "base (0f0f0f0f)");
+        let by_id = merge_labels("main", "1a2b3c4d-0000", "5e6f", "5e6f7a8b-1111", None);
+        assert_eq!(by_id.theirs, "theirs (5e6f7a8b)");
+        assert_eq!(by_id.base, "base");
+    }
+
+    fn snap(parents: &[&str]) -> Snapshot {
+        Snapshot {
+            id: "abcdef0123".into(),
+            tree_id: String::new(),
+            branch: "main".into(),
+            parents: parents.iter().map(|p| (*p).to_string()).collect(),
+            manifest: hash_bytes(b""),
+            author: String::new(),
+            message: String::new(),
+            created_at: Utc::now(),
+            auto_generated: false,
+            dependencies: Vec::new(),
+            reverts: None,
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn revert_parent_rules() {
+        assert_eq!(revert_parent(&snap(&["p"]), None).unwrap(), Some((1, "p")));
+        assert_eq!(revert_parent(&snap(&[]), None).unwrap(), None);
+        assert!(revert_parent(&snap(&["p"]), Some(1)).is_err());
+        let merge = snap(&["p1", "p2"]);
+        let err = revert_parent(&merge, None).unwrap_err().to_string();
+        assert!(err.contains("--parent"), "{err}");
+        assert_eq!(revert_parent(&merge, Some(2)).unwrap(), Some((2, "p2")));
+        assert!(revert_parent(&merge, Some(0)).is_err());
+        assert!(revert_parent(&merge, Some(3)).is_err());
     }
 }

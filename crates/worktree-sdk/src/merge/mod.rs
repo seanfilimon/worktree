@@ -12,7 +12,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use crate::diff::{match_lines, split_lines, strip_newline};
-use crate::model::{ConflictKind, Manifest, ManifestEntry, SnapshotId};
+use crate::model::{
+    ConflictHunk, ConflictKind, Manifest, ManifestEntry, MergeStrategy, SnapshotId,
+};
 
 /// Labels used in conflict markers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,9 +41,26 @@ impl Default for MergeLabels {
 pub struct ConflictRegion {
     /// 1-based line in the merged output where `<<<<<<<` appears.
     pub start_line: usize,
+    /// 1-based first line of `ours` in the ours file (the line before the
+    /// region when `ours` is empty, as in unified diffs).
+    pub ours_start: usize,
+    /// As `ours_start`, in the theirs file.
+    pub theirs_start: usize,
     pub ours: Vec<String>,
     pub base: Vec<String>,
     pub theirs: Vec<String>,
+}
+
+impl ConflictRegion {
+    /// The region's position in each side's file.
+    pub fn hunk(&self) -> ConflictHunk {
+        ConflictHunk {
+            ours_start: self.ours_start,
+            ours_len: self.ours.len(),
+            theirs_start: self.theirs_start,
+            theirs_len: self.theirs.len(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +92,20 @@ pub enum TextMergeResult {
 /// section whose last line lacks a newline gets one so markers always start
 /// a line. For a two-way merge (add/add) pass `""` as `base`.
 pub fn merge_text(base: &str, ours: &str, theirs: &str, labels: &MergeLabels) -> TextMergeResult {
+    merge_text_with(base, ours, theirs, labels, MergeStrategy::Manual)
+}
+
+/// [`merge_text`] with a conflict strategy: `Manual` writes markers;
+/// `Ours` / `Theirs` resolve every conflicting region with that side's
+/// lines (non-conflicting changes from both sides are still combined), so
+/// the result is always [`TextMergeResult::Clean`].
+pub fn merge_text_with(
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    labels: &MergeLabels,
+    strategy: MergeStrategy,
+) -> TextMergeResult {
     let base_lines = split_lines(base);
     let our_lines = split_lines(ours);
     let their_lines = split_lines(theirs);
@@ -94,6 +127,7 @@ pub fn merge_text(base: &str, ours: &str, theirs: &str, labels: &MergeLabels) ->
         lines: 0,
         eol,
         labels,
+        strategy,
         conflicts: Vec::new(),
     };
 
@@ -106,7 +140,11 @@ pub fn merge_text(base: &str, ours: &str, theirs: &str, labels: &MergeLabels) ->
             ours_of[j].zip(theirs_of[j])
         };
         let Some((oj, tj)) = stable else { continue };
-        out.chunk(&base_lines[b..j], &our_lines[o..oj], &their_lines[t..tj]);
+        out.chunk(
+            &base_lines[b..j],
+            (o, &our_lines[o..oj]),
+            (t, &their_lines[t..tj]),
+        );
         if j < base_lines.len() {
             out.push_line(base_lines[j]);
         }
@@ -139,8 +177,13 @@ struct MergeOutput<'a> {
     lines: usize,
     eol: &'static str,
     labels: &'a MergeLabels,
+    strategy: MergeStrategy,
     conflicts: Vec<ConflictRegion>,
 }
+
+/// One side of an unstable stretch: the 0-based index of its first line in
+/// that side's file, and the lines.
+type Side<'s, 'l> = (usize, &'s [&'l str]);
 
 impl MergeOutput<'_> {
     fn push_line(&mut self, line: &str) {
@@ -167,7 +210,8 @@ impl MergeOutput<'_> {
     }
 
     /// Resolves one unstable stretch between stable lines.
-    fn chunk(&mut self, base: &[&str], ours: &[&str], theirs: &[&str]) {
+    fn chunk(&mut self, base: &[&str], ours: Side, theirs: Side) {
+        let ((o_off, ours), (t_off, theirs)) = (ours, theirs);
         if ours == base || ours == theirs {
             theirs.iter().for_each(|line| self.push_line(line));
         } else if theirs == base {
@@ -185,8 +229,8 @@ impl MergeOutput<'_> {
             ours[..prefix].iter().for_each(|line| self.push_line(line));
             self.conflict(
                 base,
-                &ours[prefix..ours.len() - suffix],
-                &theirs[prefix..theirs.len() - suffix],
+                (o_off + prefix, &ours[prefix..ours.len() - suffix]),
+                (t_off + prefix, &theirs[prefix..theirs.len() - suffix]),
             );
             ours[ours.len() - suffix..]
                 .iter()
@@ -197,7 +241,20 @@ impl MergeOutput<'_> {
     /// Writes a marked-up conflict. `text` always ends with a newline here:
     /// only a file's last line can be unterminated, and such a line is
     /// either part of this conflict or of the common suffix after it.
-    fn conflict(&mut self, base: &[&str], ours: &[&str], theirs: &[&str]) {
+    ///
+    /// With the `Ours` / `Theirs` strategy the chosen side's lines are
+    /// written instead and no conflict is recorded.
+    fn conflict(&mut self, base: &[&str], ours: Side, theirs: Side) {
+        let ((o_off, ours), (t_off, theirs)) = (ours, theirs);
+        let chosen = match self.strategy {
+            MergeStrategy::Manual => None,
+            MergeStrategy::Ours => Some(ours),
+            MergeStrategy::Theirs => Some(theirs),
+        };
+        if let Some(lines) = chosen {
+            lines.iter().for_each(|line| self.push_line(line));
+            return;
+        }
         let labels = self.labels;
         let start_line = self.lines + 1;
         self.push_marker("<<<<<<<", &labels.ours);
@@ -211,8 +268,11 @@ impl MergeOutput<'_> {
         let owned = |lines: &[&str]| -> Vec<String> {
             lines.iter().map(|l| strip_newline(l).to_owned()).collect()
         };
+        let one_based = |start: usize, len: usize| if len == 0 { start } else { start + 1 };
         self.conflicts.push(ConflictRegion {
             start_line,
+            ours_start: one_based(o_off, ours.len()),
+            theirs_start: one_based(t_off, theirs.len()),
             ours: owned(ours),
             base: owned(base),
             theirs: owned(theirs),

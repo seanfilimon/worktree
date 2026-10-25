@@ -164,6 +164,156 @@ pub fn diff_stat(old: &str, new: &str) -> DiffStat {
     }
 }
 
+/// Line similarity of two texts in percent: twice the number of common
+/// lines over the total number of lines (100 for equal texts, including two
+/// empty ones; 0 when nothing is shared).
+pub fn similarity(old: &str, new: &str) -> u8 {
+    if old == new {
+        return 100;
+    }
+    let old_lines = split_lines(old);
+    let new_lines = split_lines(new);
+    let total = old_lines.len() + new_lines.len();
+    if total == 0 {
+        return 100;
+    }
+    let common = match_lines(&old_lines, &new_lines).len();
+    // Rounded down, so only identical texts score 100.
+    u8::try_from((common * 2 * 100 / total).min(99)).unwrap_or(99)
+}
+
+/// Unified diff with changed words marked inline, like
+/// `git diff --word-diff=plain`: headers and `@@` lines as in
+/// [`unified_diff`], unchanged lines printed without a prefix, and within
+/// changed lines removed text as `[-text-]` and added text as `{+text+}`.
+/// Words are runs of alphanumerics/underscores, runs of other whitespace,
+/// or single punctuation characters. Empty string if the texts are equal.
+pub fn word_diff(old_path: &str, new_path: &str, old: &str, new: &str, context: usize) -> String {
+    if old == new {
+        return String::new();
+    }
+    let old_lines = split_lines(old);
+    let new_lines = split_lines(new);
+    let matches = match_lines(&old_lines, &new_lines);
+    let hunks = build_hunks(
+        &old_lines,
+        &new_lines,
+        &changes(&matches, old_lines.len(), new_lines.len()),
+        context,
+    );
+
+    let mut out = String::with_capacity(old.len() + new.len() + 64);
+    out.push_str("--- ");
+    out.push_str(&header_path("a/", old_path, old.is_empty()));
+    out.push_str("\n+++ ");
+    out.push_str(&header_path("b/", new_path, new.is_empty()));
+    out.push('\n');
+    for hunk in &hunks {
+        out.push_str("@@ -");
+        push_range(&mut out, hunk.old_start, hunk.old_len);
+        out.push_str(" +");
+        push_range(&mut out, hunk.new_start, hunk.new_len);
+        out.push_str(" @@\n");
+        let mut removed = String::new();
+        let mut added = String::new();
+        for line in &hunk.lines {
+            match line {
+                DiffLine::Context(text) => {
+                    flush_word_change(&mut out, &removed, &added);
+                    removed.clear();
+                    added.clear();
+                    out.push_str(text);
+                    out.push('\n');
+                }
+                DiffLine::Removed(text) => {
+                    removed.push_str(text);
+                    removed.push('\n');
+                }
+                DiffLine::Added(text) => {
+                    added.push_str(text);
+                    added.push('\n');
+                }
+            }
+        }
+        flush_word_change(&mut out, &removed, &added);
+    }
+    out
+}
+
+/// Writes one replaced block (whole lines, each ending in `\n`) as a word
+/// diff.
+fn flush_word_change(out: &mut String, removed: &str, added: &str) {
+    if removed.is_empty() && added.is_empty() {
+        return;
+    }
+    let old_words = split_words(removed);
+    let new_words = split_words(added);
+    let matches = match_lines(&old_words, &new_words);
+    let (mut i, mut j) = (0, 0);
+    for &(mi, mj) in matches
+        .iter()
+        .chain(std::iter::once(&(old_words.len(), new_words.len())))
+    {
+        push_marked(out, &old_words[i..mi].concat(), "[-", "-]");
+        push_marked(out, &new_words[j..mj].concat(), "{+", "+}");
+        if mi < old_words.len() {
+            out.push_str(old_words[mi]);
+        }
+        (i, j) = (mi + 1, mj + 1);
+    }
+}
+
+/// Wraps `text` in markers line by line, so markers never span a newline.
+fn push_marked(out: &mut String, text: &str, open: &str, close: &str) {
+    for piece in text.split_inclusive('\n') {
+        let body = strip_newline(piece);
+        if !body.is_empty() {
+            out.push_str(open);
+            out.push_str(body);
+            out.push_str(close);
+        }
+        if piece.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+}
+
+/// Splits text into word-diff tokens: runs of word characters, runs of
+/// non-newline whitespace, newlines, and single other characters.
+pub(crate) fn split_words(text: &str) -> Vec<&str> {
+    #[derive(PartialEq, Clone, Copy)]
+    enum Class {
+        Word,
+        Space,
+        Other,
+    }
+    let class = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            Class::Word
+        } else if c.is_whitespace() && c != '\n' {
+            Class::Space
+        } else {
+            Class::Other
+        }
+    };
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    let mut current: Option<Class> = None;
+    for (i, c) in text.char_indices() {
+        let cls = class(c);
+        let joins = current == Some(cls) && cls != Class::Other;
+        if !joins && i > start {
+            tokens.push(&text[start..i]);
+            start = i;
+        }
+        current = Some(cls);
+    }
+    if start < text.len() {
+        tokens.push(&text[start..]);
+    }
+    tokens
+}
+
 /// Heuristic: NUL byte in the first 8 KiB, or invalid UTF-8.
 pub fn is_binary(data: &[u8]) -> bool {
     data[..data.len().min(BINARY_SNIFF_LEN)].contains(&0) || std::str::from_utf8(data).is_err()

@@ -18,6 +18,33 @@ pub fn sign_snapshot(_repo: &Repository, _snapshot: &mut Snapshot) -> Result<()>
     Ok(())
 }
 
+// ---- BEGIN merge-diff workstream block (ENGINEERING_PLAN §13.10) ----
+// Stub used by `wt log --show-signature` until the `signing` workstream
+// implements local verification; keep the signature exactly as below.
+
+/// Result of verifying a snapshot's signature locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignatureStatus {
+    /// The snapshot carries no signature.
+    Unsigned,
+    /// The signature verifies against a known key.
+    Verified { key_id: String },
+    /// The signature does not verify (reason).
+    Invalid(String),
+    /// Signed with a key that is not known locally (key id).
+    UnknownKey(String),
+}
+
+/// Verify `snapshot`'s signature against the locally known keys.
+/// Stub: signed snapshots are reported as `UnknownKey` (unverified).
+pub fn verify_local(_repo: &Repository, snapshot: &Snapshot) -> Result<SignatureStatus> {
+    Ok(match &snapshot.signature {
+        None => SignatureStatus::Unsigned,
+        Some(sig) => SignatureStatus::UnknownKey(sig.key_id.clone()),
+    })
+}
+// ---- END merge-diff workstream block ----
+
 /// The canonical bytes a snapshot signature covers.
 pub fn signed_payload(snapshot: &Snapshot) -> Vec<u8> {
     use prost::Message;

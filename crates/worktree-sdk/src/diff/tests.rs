@@ -745,3 +745,61 @@ fn pathological_input_hits_cost_limit_but_stays_valid() {
     assert!(start.elapsed().as_secs() < 20);
     assert_eq!(apply_patch(&old, &patch), Ok(new));
 }
+
+// ---------------------------------------------------------------- word diff
+
+#[test]
+fn split_words_classes() {
+    assert_eq!(
+        split_words("let x_1 = foo(a,  b);\n"),
+        ["let", " ", "x_1", " ", "=", " ", "foo", "(", "a", ",", "  ", "b", ")", ";", "\n"]
+    );
+    assert!(split_words("").is_empty());
+}
+
+#[test]
+fn word_diff_marks_changed_words_inline() {
+    let old = "intro\nthe quick brown fox\noutro\n";
+    let new = "intro\nthe slow brown cat\noutro\n";
+    let out = word_diff("a.txt", "a.txt", old, new, 3);
+    assert_eq!(
+        out,
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\nintro\nthe [-quick-]{+slow+} brown [-fox-]{+cat+}\noutro\n"
+    );
+    assert_eq!(word_diff("a", "a", "same\n", "same\n", 3), "");
+}
+
+#[test]
+fn word_diff_whole_line_additions_and_removals() {
+    let out = word_diff("f", "f", "a\nb\n", "a\nnew line\nb\n", 0);
+    assert!(out.ends_with("@@ -1,0 +2 @@\n{+new line+}\n"), "{out}");
+    let out = word_diff("f", "f", "a\ngone here\nb\n", "a\nb\n", 0);
+    assert!(out.ends_with("@@ -2 +1,0 @@\n[-gone here-]\n"), "{out}");
+    // Added files use /dev/null headers.
+    let out = word_diff("/dev/null", "n", "", "x\n", 3);
+    assert!(out.starts_with("--- /dev/null\n+++ b/n\n"), "{out}");
+}
+
+#[test]
+fn word_diff_multi_line_change_keeps_markers_on_one_line() {
+    let out = word_diff("f", "f", "one two\nthree\n", "one 2\nthree four\n", 3);
+    for line in out.lines().skip(3) {
+        let opens = line.matches("[-").count() + line.matches("{+").count();
+        let closes = line.matches("-]").count() + line.matches("+}").count();
+        assert_eq!(opens, closes, "{line:?} in {out}");
+    }
+    assert!(out.contains("one [-two-]{+2+}\n"), "{out}");
+    assert!(out.contains("three{+ four+}\n"), "{out}");
+}
+
+#[test]
+fn similarity_scores() {
+    assert_eq!(similarity("a\nb\n", "a\nb\n"), 100);
+    assert_eq!(similarity("", ""), 100);
+    assert_eq!(similarity("a\nb\nc\nd\n", "a\nb\nc\nX\n"), 75);
+    assert_eq!(similarity("a\n", "b\n"), 0);
+    // Not identical never scores 100.
+    let big_old: String = (0..1000).map(|i| format!("{i}\n")).collect();
+    let big_new = format!("{big_old}extra\n");
+    assert_eq!(similarity(&big_old, &big_new), 99);
+}
