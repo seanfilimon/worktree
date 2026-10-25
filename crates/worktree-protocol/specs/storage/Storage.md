@@ -54,8 +54,9 @@ The following are **not** objects:
 - Identical content produces the same hash and is stored once, across files,
   versions, branches, trees and tenants. This is automatic deduplication.
 - Objects are immutable. Writing an existing hash is a no-op.
-- Objects are stored **raw and uncompressed**. There is no header, trailer or
-  per-object compression.
+- Objects are stored raw, or zstd-compressed behind the 4-byte magic `WTZ1`
+  when that saves at least 10 % (objects of 512 bytes or more). Hashes are
+  always over the uncompressed content. See [Compression.md](./Compression.md).
 
 ## Large files
 
@@ -317,8 +318,8 @@ Described in earlier versions of this spec but not built:
 
 - **Pack files and delta compression**: pack format, delta chains, base
   selection. Objects are stored and transferred whole.
-- **Object compression** (zstd, type-specific or dictionary-trained). Objects
-  are stored raw.
+- **Type-specific or dictionary-trained compression** (plain zstd per object
+  is built; see Compression.md).
 - **Per-directory tree objects** and symlink entries. Manifests are flat file
   lists.
 - **Physical tenant isolation**: per-tenant volumes or buckets, dedicated
@@ -332,7 +333,8 @@ Described in earlier versions of this spec but not built:
   hydration of stubs.
 - **Sparse or partial checkout** (`[sync.sparse]` include and exclude patterns).
 - **Reflog sync to the server** for disaster recovery.
-- **Automatic re-fetch of corrupt local objects**, and a store-wide `fsck`.
+- **Automatic re-fetch of corrupt local objects** (`wt fsck` and the server
+  `POST /admin/fsck` detect them; see Compression.md).
 - **A configurable large-file threshold and chunk sizes.** Today they are
   constants: 8 MiB threshold and 256 KiB / 1 MiB / 4 MiB chunks.
 - **Plan-based default quotas** (fixed tiers per plan).
