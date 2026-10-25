@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
+  Copy,
   FolderTree,
   GitBranch,
   GitPullRequest,
@@ -16,6 +17,7 @@ import {
   Settings,
   ShieldCheck,
   Tag,
+  UserCheck,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect } from "react";
@@ -59,6 +61,8 @@ const TABS: TabDef[] = [
   { to: "protections", label: "Protections", icon: ShieldCheck },
   { to: "licenses", label: "Licenses", icon: Scale },
   { to: "access", label: "Access", icon: KeyRound },
+  { to: "owners", label: "Owners", icon: UserCheck },
+  { to: "mirrors", label: "Mirrors", icon: Copy },
   { to: "settings", label: "Settings", icon: Settings },
 ];
 

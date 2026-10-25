@@ -663,6 +663,10 @@ message TagRecord {
   optional string message = 3;
   string tagger = 4;
   google.protobuf.Timestamp created_at = 5;
+  // v0.7 (§15.8): Ed25519 signature over the TagRecord with signature and
+  // signing_key_id cleared, and the signing key id. Empty = unsigned.
+  bytes signature = 6;
+  string signing_key_id = 7;
 
   reserved 100 to 199;
 }

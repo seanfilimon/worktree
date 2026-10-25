@@ -13,6 +13,10 @@ import { AccessSimulatorPage } from "@/pages/iam/AccessSimulatorPage";
 import { TreeAccessTab } from "@/pages/iam/TreeAccessTab";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { OperationsPage } from "@/pages/OperationsPage";
+import { BackupsPage } from "@/pages/BackupsPage";
+import { NotificationsPage } from "@/pages/notifications/NotificationsPage";
+import { MirrorsTab } from "@/pages/tree/MirrorsTab";
+import { OwnersTab } from "@/pages/tree/OwnersTab";
 import { CodeSearchPage } from "@/pages/search/CodeSearchPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SystemPage } from "@/pages/SystemPage";
@@ -72,6 +76,8 @@ export const routes: RouteObject[] = [
               { path: "protections", element: <ProtectionsTab /> },
               { path: "licenses", element: <LicensesTab /> },
               { path: "access", element: <TreeAccessTab /> },
+              { path: "owners", element: <OwnersTab /> },
+              { path: "mirrors", element: <MirrorsTab /> },
               { path: "settings", element: <TreeSettingsTab /> },
             ],
           },
@@ -81,6 +87,8 @@ export const routes: RouteObject[] = [
           { path: "accounts", element: <AccountsPage /> },
           { path: "system", element: <SystemPage /> },
           { path: "operations", element: <OperationsPage /> },
+          { path: "backups", element: <BackupsPage /> },
+          { path: "notifications", element: <NotificationsPage /> },
           { path: "sso", element: <SsoSettingsPage /> },
           { path: "settings", element: <SettingsPage /> },
           { path: "*", element: <NotFoundPage /> },

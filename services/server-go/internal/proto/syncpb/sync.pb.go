@@ -3248,12 +3248,16 @@ func (x *ListStagedResponse) GetStaged() []*StagedInfo {
 }
 
 type TagRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Target        *SnapshotId            `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
-	Message       *string                `protobuf:"bytes,3,opt,name=message,proto3,oneof" json:"message,omitempty"`
-	Tagger        string                 `protobuf:"bytes,4,opt,name=tagger,proto3" json:"tagger,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Target    *SnapshotId            `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	Message   *string                `protobuf:"bytes,3,opt,name=message,proto3,oneof" json:"message,omitempty"`
+	Tagger    string                 `protobuf:"bytes,4,opt,name=tagger,proto3" json:"tagger,omitempty"`
+	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// v0.7 (§15.8): Ed25519 signature over the TagRecord with signature and
+	// signing_key_id cleared, and the signing key id. Empty = unsigned.
+	Signature     []byte `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
+	SigningKeyId  string `protobuf:"bytes,7,opt,name=signing_key_id,json=signingKeyId,proto3" json:"signing_key_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3321,6 +3325,20 @@ func (x *TagRecord) GetCreatedAt() *timestamppb.Timestamp {
 		return x.CreatedAt
 	}
 	return nil
+}
+
+func (x *TagRecord) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+func (x *TagRecord) GetSigningKeyId() string {
+	if x != nil {
+		return x.SigningKeyId
+	}
+	return ""
 }
 
 type PushTagRequest struct {
@@ -4253,14 +4271,16 @@ const file_sync_proto_rawDesc = "" +
 	"\b_messageB\x10\n" +
 	"\x0e_manifest_hashJ\x05\bd\x10\xc8\x01\"Q\n" +
 	"\x12ListStagedResponse\x124\n" +
-	"\x06staged\x18\x01 \x03(\v2\x1c.worktree.sync.v1.StagedInfoR\x06stagedJ\x05\bd\x10\xc8\x01\"\xda\x01\n" +
+	"\x06staged\x18\x01 \x03(\v2\x1c.worktree.sync.v1.StagedInfoR\x06stagedJ\x05\bd\x10\xc8\x01\"\x9e\x02\n" +
 	"\tTagRecord\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x124\n" +
 	"\x06target\x18\x02 \x01(\v2\x1c.worktree.sync.v1.SnapshotIdR\x06target\x12\x1d\n" +
 	"\amessage\x18\x03 \x01(\tH\x00R\amessage\x88\x01\x01\x12\x16\n" +
 	"\x06tagger\x18\x04 \x01(\tR\x06tagger\x129\n" +
 	"\n" +
-	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\n" +
+	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1c\n" +
+	"\tsignature\x18\x06 \x01(\fR\tsignature\x12$\n" +
+	"\x0esigning_key_id\x18\a \x01(\tR\fsigningKeyIdB\n" +
 	"\n" +
 	"\b_messageJ\x05\bd\x10\xc8\x01\"y\n" +
 	"\x0ePushTagRequest\x121\n" +

@@ -26,11 +26,13 @@ pub mod iam;
 pub mod iam_common;
 pub mod identity;
 pub mod ignore;
+pub mod inbox;
 pub mod init;
 pub mod invite;
 pub mod license;
 pub mod merge;
 pub mod mfa;
+pub mod mirror;
 pub mod mr;
 pub mod open;
 pub mod policy;
@@ -44,10 +46,12 @@ pub mod search;
 pub mod server_common;
 pub mod session;
 pub mod snapshot;
+pub mod sparse;
 pub mod sso;
 pub mod stash;
 pub mod status;
 pub mod sync;
+pub mod synchronize;
 pub mod tag;
 pub mod team;
 pub mod tenant;
@@ -131,5 +135,9 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Doctor(args) => doctor::run(ctx, args),
         Command::Open(args) => open::run(ctx, args),
         Command::Api(args) => api::run(ctx, args),
+        Command::Sparse(args) => sparse::run(ctx, args),
+        Command::Sync(args) => synchronize::run(ctx, args),
+        Command::Inbox(args) => inbox::run(ctx, args),
+        Command::Mirror(args) => mirror::run(ctx, args),
     }
 }

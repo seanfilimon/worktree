@@ -78,6 +78,7 @@ pub(crate) fn tag_to_record(tag: &TagInfo) -> wire::TagRecord {
         message: tag.message.clone(),
         tagger: tag.tagger.clone(),
         created_at: Some(timestamp(tag.created_at)),
+        ..Default::default()
     }
 }
 

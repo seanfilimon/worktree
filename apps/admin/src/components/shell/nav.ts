@@ -8,6 +8,8 @@ import {
   Server,
   Settings,
   Wrench,
+  Archive,
+  Bell,
   ShieldQuestionMark,
   Users,
   type LucideIcon,
@@ -34,7 +36,8 @@ export interface NavGroup {
 const NAV_GROUPS: NavGroup[] = [
   {
     label: "Overview",
-    items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, keywords: ["home", "stats", "activity"] }],
+    items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, keywords: ["home", "stats", "activity"] },
+      { to: "/notifications", label: "Notifications", icon: Bell, keywords: ["inbox", "mentions", "reviews", "watch"] }],
   },
   {
     label: "Workspace",
@@ -64,6 +67,7 @@ const NAV_GROUPS: NavGroup[] = [
         adminOnly: true,
         keywords: ["gc", "garbage collection", "storage", "quotas", "retention", "limits"],
       },
+      { to: "/backups", label: "Backups", icon: Archive, adminOnly: true, keywords: ["backup", "restore", "disaster recovery"] },
       {
         to: "/sso",
         label: "Single sign-on",

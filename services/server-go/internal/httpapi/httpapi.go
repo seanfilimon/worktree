@@ -22,12 +22,15 @@ import (
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
+	"github.com/seanfilimon/worktree/services/server-go/internal/backup"
 	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
 	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/gc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
+	"github.com/seanfilimon/worktree/services/server-go/internal/mirror"
+	"github.com/seanfilimon/worktree/services/server-go/internal/notify"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
@@ -97,6 +100,11 @@ type Deps struct {
 	// v0.6 (docs/ENGINEERING_PLAN.md §14). nil = endpoints answer 501.
 	Webhooks   *webhooks.Service
 	CodeSearch *codesearch.Index
+
+	// v0.7 (docs/ENGINEERING_PLAN.md §15). nil = endpoints answer 501.
+	Notify  *notify.Service
+	Mirrors *mirror.Service
+	Backup  *backup.Service
 }
 
 // defaultCORSOrigin is the Vite dev server of apps/admin.
@@ -245,6 +253,12 @@ func (a *api) routes() {
 	a.registerBlameRoutes(tree)
 	a.registerFsckRoutes()
 	a.registerPolicyHistoryRoutes()
+
+	// v0.7 build-out (docs/ENGINEERING_PLAN.md §15).
+	a.registerNotificationRoutes(tree)
+	a.registerMirrorRoutes(tree)
+	a.registerBackupRoutes()
+	a.registerOwnerRoutes(tree)
 	a.registerOpenAPIRoutes() // openapi (§14.10): GET /api/v1/openapi.yaml
 
 	// Unknown API paths answer with the JSON envelope (404 or 405).

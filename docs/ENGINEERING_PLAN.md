@@ -1282,3 +1282,302 @@ Same rules as §11.2/§13.12. New API module `api/v06.ts`.
   versioning; points at openapi.yaml).
 - Owns: `httpapi/openapi.yaml`, `httpapi/openapi.go`,
   `httpapi/openapi_test.go`, `commands/api.rs`.
+
+## 15. v0.7 build-out
+
+Goal: make W0rkTree deployable and pleasant for a team: packaging, pluggable
+storage and backups, notifications, sparse checkout, one-step sync, Git
+mirrors, deeper review, signed tags and verified releases, a persistent
+code-search index with symbols, and a hardening/performance pass. Same
+rules as §13.15 and §14 (own your files; tests for everything; each
+workstream adds its UI in its own admin page files, its own e2e scenario
+file(s) in `crates/worktree-e2e/tests/e2e/` registered in that directory's
+`main.rs`, its OpenAPI operations in `httpapi/openapi.yaml` (the coverage
+test must pass on your branch) and one new spec file; commit on your
+branch; do not edit this plan).
+
+Shared foundation (already on `main`):
+
+- `sync.proto`: `TagRecord.signature` / `signing_key_id`.
+- Go: `domain/v07.go` (`Notification`, `WatchSetting` + levels,
+  `PathOwnerRule`/`PathOwners`, `Mirror`, `BackupInfo`, events
+  `mr.review_requested`, `mr.ready`, `mr.suggestion_applied`,
+  `mirror.synced`, `mirror.failed`, `notification.created`). Stub packages
+  `notify`, `mirror`, `backup` wired in `server.go` and `httpapi.Deps`
+  (`Notify`, `Mirrors`, `Backup`). Stub route files `notifications.go`,
+  `mirrors.go`, `backups.go`, `owners.go`, already registered.
+- CLI stub command groups: `wt sparse`, `wt sync` (module `synchronize`),
+  `wt inbox`, `wt mirror`.
+- Admin stub pages routed and in navigation: `/notifications`
+  (`pages/notifications/NotificationsPage.tsx`), `/backups`
+  (`pages/BackupsPage.tsx`), tree tabs `owners` (`pages/tree/OwnersTab.tsx`)
+  and `mirrors` (`pages/tree/MirrorsTab.tsx`).
+
+Doc collections added in v0.7 (report the exact keys you use):
+`notifications` (`DocKey(accountID, RFC3339Nano fixed-width, id)`),
+`watch_settings` (`DocKey(accountID, tenantID, treeID)`), `path_owners`
+(key treeID), `mirrors` (`DocKey(treeID, id)`), `mirror_maps`
+(`DocKey(mirrorID)` → snapshot→commit map), `backups` (key id),
+`code_index_v2` (agent-defined).
+
+### 15.1 Packaging and release (workstream `packaging`)
+
+- `deploy/docker/Dockerfile` (multi-stage: build admin with Node, server
+  with Go `CGO_ENABLED=0`; distroless/alpine runtime with `git` for mirrors;
+  non-root user; `/data` volume; healthcheck on `/healthz`; admin served
+  from `/app/admin`), `deploy/docker/Dockerfile.cli` (static `wt` +
+  `worktree-bg`), `deploy/docker-compose.yml` (server + optional MinIO
+  profile `s3` + optional Mailpit profile `smtp`), `.dockerignore`.
+- `deploy/helm/worktree/` chart (Deployment/StatefulSet with PVC, Service,
+  Ingress, Secret for admin password, ConfigMap for flags, probes,
+  resources, values for TLS, S3, SMTP), linted with `helm lint` if
+  available (else a Go/Node YAML schema check script).
+- `deploy/systemd/worktree-server.service` and `worktree-bg@.service` (user
+  unit), `deploy/launchd/` plist for macOS.
+- `scripts/install.sh` and `scripts/install.ps1` (download a release
+  archive for the OS/arch from a configurable base URL, verify SHA-256,
+  install `wt` and `worktree-bg` to a bin dir, print PATH advice);
+  `scripts/release.sh` (cross builds: windows/linux/darwin × amd64/arm64
+  for the Rust binaries via `cargo build --release --target` when
+  toolchains exist, Go server via GOOS/GOARCH, admin dist; archives +
+  `SHA256SUMS`; version from `Cargo.toml`).
+- `.github/workflows/ci.yml` (Rust fmt/clippy/test, Go vet/test incl.
+  `WT_INTEGRATION`, admin lint/tsc/vitest/build, web lint/build, e2e on
+  Linux) and `release.yml` (on tag `v*`: build archives, images, GitHub
+  release with checksums).
+- `docs/deploy.md` (Docker, compose, Helm, systemd, reverse proxy with
+  `--trusted-proxies`, TLS, backups pointer, upgrades) and
+  `crates/worktree-protocol/specs/server/Deployment.md`.
+- Owns: `deploy/**`, `.github/**`, `.dockerignore`,
+  `scripts/{install.sh,install.ps1,release.sh}`, `docs/deploy.md`.
+
+### 15.2 Storage backends and backups (workstream `storage-backends`)
+
+- `objstore.S3Store` implementing `Store`, `StatStore`, `ListStore`,
+  `SizeStore` with the WTZ1 encoding, using `github.com/minio/minio-go/v7`
+  (exact version): config `--object-store disk|s3` (`WT_OBJECT_STORE`),
+  `--s3-endpoint`, `--s3-bucket`, `--s3-prefix`, `--s3-region`,
+  `--s3-access-key`/`--s3-secret-key` (env `WT_S3_*`, prefer env for
+  secrets), `--s3-insecure` (http). Tests against an in-process fake S3
+  (`net/http/httptest` implementing the needed subset) plus an optional
+  MinIO integration test gated by `WT_S3_TEST_ENDPOINT`.
+- `backup.Service`: `POST /api/v1/admin/backups` `{note?}` → `BackupInfo`
+  (consistent bbolt snapshot via `tx.WriteTo` + every object, streamed into
+  `<data>/backups/<id>.wtbak` — a tar.zst with `meta.db`, `objects/…`,
+  `manifest.json`); `GET /admin/backups`, `GET /admin/backups/{id}/download`,
+  `DELETE /admin/backups/{id}`; `--backup-interval` (`WT_BACKUP_INTERVAL`,
+  default 0 = off) and `--backup-keep` (default 7). Restore is offline:
+  `worktree-server restore --data DIR FILE` (main.go subcommand; refuses a
+  non-empty data dir unless `--force`; verifies object hashes).
+- CLI: `wt admin backup create [--note] | list | download ID [-o FILE] | delete ID`.
+- Admin: `BackupsPage` (list, create, download, delete; S3/disk store info).
+- Spec: `specs/storage/Backends.md`.
+- Owns: `objstore/s3*.go`, `internal/backup/**`, `httpapi/backups.go`,
+  `main.go` (restore subcommand), `internal/config` (commented blocks),
+  `commands/admin.rs` (backup subcommand), `pages/BackupsPage.tsx`.
+
+### 15.3 Notifications (workstream `notifications`)
+
+- `notify.Service` subscribes to the bus and creates `Notification`s:
+  review requested (`mr.review_requested`, payload names reviewers),
+  mentions (`@username` in MR descriptions and comments), CI failure on an
+  MR source tip you authored, TODO assigned to you, your MR merged or
+  commented, releases and every MR/CI event for trees you watch. Never
+  notifies the actor; respects `tree:read` at creation time; dedups within
+  a minute; keeps 90 days / 1000 per account.
+- REST: `GET /api/v1/notifications?unread=true&limit=` →
+  `{"notifications","unread_count"}`, `POST /notifications/{id}/read`,
+  `POST /notifications/read-all`, `DELETE /notifications/{id}`,
+  `GET|PUT /api/v1/notifications/settings` (defaults: email on/off),
+  `GET|PUT {tree}/watch` and `GET|PUT /tenants/{t}/watch`
+  (`WatchSetting`). SSE: `notification.created` events are delivered only to
+  their account (extend the SSE filter in `httpapi/events.go` in a
+  commented block).
+- Email: `--smtp-url smtp://user:pass@host:587` (`WT_SMTP_URL`),
+  `--smtp-from`; plain-text + HTML templates; sent asynchronously with
+  retries; skipped when not configured.
+- CLI: `wt inbox [--all] [--json]`, `wt inbox read ID|--all`, `wt inbox
+  watch TREE --level participating|watching|ignoring [--email]`.
+- Admin: bell with unread count in the top bar (`components/shell` — add a
+  small `NotificationBell` component and one line in the header), the
+  `NotificationsPage` (list, filters, mark read, watch settings) and a
+  "Watch" control on the tree header.
+- Spec: `specs/server/Notifications.md`.
+- Owns: `internal/notify/**`, `httpapi/notifications.go`,
+  `httpapi/events.go` (filter block), `internal/config` (block),
+  `commands/inbox.rs`, `pages/notifications/**`, the bell component.
+
+### 15.4 Sparse and partial checkout (workstream `sparse`)
+
+- `wt sparse set PATTERN...`, `add`, `remove`, `list`, `disable`, `reapply`
+  (gitignore-style patterns, directories by default; stored in
+  `.wt/trees/<tree>/sparse`). Files outside the sparse set are not written,
+  are not reported as deleted by `status`, and snapshots keep their head
+  entries (like restricted paths, §13.2). `wt clone --sparse PATTERN...`
+  and `wt fetch`/`pull` download only blobs (and chunks) of sparse paths
+  ("partial clone"); missing blobs are fetched on demand when needed
+  (diff, merge, blame, checkout after `sparse add`) through a lazy fetch
+  hook in the SDK object store (`ObjectStore` gains an optional remote
+  fetcher). `wt status` reports the sparse state.
+- Spec: `specs/tree/SparseCheckout.md`.
+- Owns: SDK `repo/sparse.rs` (new) + minimal hooks in `repo/working.rs`,
+  `repo/partial.rs`, `store.rs` (fetcher hook), `remote/{fetch,clone}.rs`;
+  `commands/sparse.rs`, `commands/status.rs` (sparse line),
+  `commands/sync.rs` (`--sparse` on clone only).
+
+### 15.5 One-step sync and offline queue (workstream `sync`)
+
+- `wt sync [--rebase|--merge] [--no-push] [--all-trees]`: fetch, integrate
+  the remote branch (default from config `sync.strategy = "merge"|"rebase"`,
+  new key), push; conflicts stop with exit 3 and the usual resolve flow;
+  prints a summary.
+- Offline queue: when a push fails because the server is unreachable, `wt
+  push --queue` (and `wt sync`) record the push in
+  `.wt/trees/<tree>/outbox.jsonl`; `wt sync --status`/`wt sync queue`
+  lists, `wt sync flush` retries, `wt sync drop N` removes. The daemon
+  flushes the queue with backoff when the server becomes reachable
+  (`sync.auto_flush = true`), and optionally runs a full `wt sync` every
+  `sync.auto_sync_secs` (0 = off) when the working tree is clean.
+- Spec: `specs/sync/OneStepSync.md`.
+- Owns: SDK `remote/sync_all.rs` and `repo/outbox.rs` (new), `config.rs`
+  (new `sync` keys, commented block), `commands/synchronize.rs`,
+  `commands/sync.rs` (`push --queue` only), `crates/worktree-bg/src/sync.rs`
+  (queue flushing / auto-sync).
+
+### 15.6 Git mirrors (workstream `mirrors`)
+
+- `mirror.Service`: per-tree push mirrors to Git remotes. On
+  `branch.pushed`/`tag.pushed`/`branch.deleted` (debounced 5 s) and on
+  demand, export new snapshots into a bare Git repo under
+  `<data>/mirrors/<id>.git` with `git fast-import` (deterministic commits:
+  author/committer from the snapshot, message, tree from the manifest,
+  chunked files reassembled, mode 100755 for executables, merge parents),
+  persist the snapshot→commit map (`mirror_maps`), then `git push
+  --force-with-lease` (mirrored branches only) using the credential via an
+  `http.extraHeader`/askpass (never on the command line). Requires `git`
+  on the server's PATH (`--git-binary`); mirrors are disabled with a clear
+  status when it is missing. Respect license rules: paths that may not be
+  redistributed are excluded (same rule as §13.8 archives) and a NOTICE is
+  added.
+- REST (tree:admin): `GET|POST {tree}/mirrors`, `GET|PATCH|DELETE
+  {tree}/mirrors/{id}`, `POST {tree}/mirrors/{id}/sync`; status fields on
+  the `Mirror`; events `mirror.synced` / `mirror.failed`; audit.
+- CLI: `wt mirror list|add URL [--branch GLOB]... [--no-tags] [--token-env VAR]|update|remove|sync`.
+- Admin: `MirrorsTab` (list, add, status, last error, sync now).
+- Spec: `specs/server/Mirrors.md`.
+- Owns: `internal/mirror/**`, `httpapi/mirrors.go`, `commands/mirror.rs`,
+  `pages/tree/MirrorsTab.tsx`, `internal/config` (one flag block).
+
+### 15.7 Deeper review (workstream `review-v07`)
+
+- Path owners: `GET|PUT {tree}/owners` (`PathOwners`, tree:admin to write);
+  also read from an `OWNERS` file at the tree root on the default branch
+  when no server config exists (format: `pattern  @user @team` lines);
+  `GET {tree}/merge-requests/{n}/owners` → owners per changed path and
+  whether each path's owners approved. Opening an MR (and pushing to its
+  source) requests the owners as reviewers (`MergeRequest.Reviewers`,
+  publish `mr.review_requested`). `BranchProtection.RequireOwnerApproval`
+  (new field): every changed path needs an approval from one of its owners.
+- Review requests: `POST|DELETE {tree}/merge-requests/{n}/reviewers`
+  `{"reviewers":["user:x","team:y"]}`.
+- Draft MRs: `MergeRequest.Draft`; create with `"draft":true`; `POST
+  .../ready` (event `mr.ready`); drafts cannot be merged (`409 draft`).
+- Suggested changes: comments may carry `suggestion` `{path, start_line,
+  end_line, replacement, snapshot_id}`; `POST .../comments/{id}/apply`
+  creates a snapshot on the source branch (server-side, authored by the
+  applier, parent = source tip; refused when the source tip changed the
+  lines → `409 suggestion_outdated`); event `mr.suggestion_applied`.
+- Merges respect tenant storage quotas (limits check on the new objects).
+- Linked-group merges: method picker in the admin UI.
+- CLI: `wt mr create --draft`, `wt mr ready N`, `wt mr reviewers N
+  add|remove WHO...`, `wt mr owners N`, `wt mr suggest N --path P --lines
+  A-B --file F|-m TEXT`, `wt mr apply-suggestion N COMMENT_ID`, `wt owners
+  show|set FILE`, `wt protect set --require-owner-approval`.
+- Admin: MR detail: inline diff comment threads on lines (click a line in
+  the Changes view), suggestion rendering with "Apply", draft badge and
+  "Ready for review", reviewers panel with requests, owners panel; tree
+  `OwnersTab` (edit rules); protections checkbox; linked-group method
+  picker.
+- Spec: `specs/server/ReviewWorkflow.md`.
+- Owns: `internal/review/**`, `httpapi/{mergerequests.go,reviews.go,owners.go}`,
+  `domain` field additions in a commented `v0.7 review` block in
+  `types.go`, `commands/{mr,protect}.rs` + new `commands/owners.rs`
+  (register it in `cli.rs`/`mod.rs`), admin `pages/tree/{MergeRequestDetail.tsx,
+  MergeRequestsTab.tsx,ProtectionsTab.tsx,OwnersTab.tsx,v05/**}`.
+
+### 15.8 Signed tags and verified releases (workstream `trust`)
+
+- Tags: `wt tag NAME --sign` (and `[signing] auto`) signs the TagRecord
+  (Ed25519 over the record with signature fields cleared, deterministic
+  protobuf, same keys as §13.6); `PushTag` and REST tag create verify it,
+  store `Tag.Signature`/`SigningKeyID`/`Verified`; `TagProtection`
+  gains `RequireSigned`. `wt tag verify NAME`.
+- Releases: assets get `sha256` (computed on upload, stored on
+  `ReleaseAsset`), `GET {tree}/releases/{tag}/checksums` (SHA256SUMS text);
+  a release is "verified" when its tag is verified; optional SBOM:
+  `wt release create --sbom` / `POST .../releases/{tag}/sbom` generates an
+  SPDX 2.3 JSON document of the tag's snapshot (files with hashes and
+  license rule SPDX ids) attached as asset `sbom.spdx.json`.
+  `wt release verify TAG [-d DIR]` checks downloaded assets against the
+  checksums and the tag signature.
+- Admin: verified badges on tags, releases and assets; checksum display;
+  SBOM download.
+- Spec: `specs/security/ReleaseIntegrity.md`.
+- Owns: `internal/signing/**` (tag verification), `internal/release/**`,
+  `httpapi/{releases.go,manage.go (tag create only)}`, `syncsvc/trees.go`
+  (PushTag verification block), domain field additions (commented `v0.7
+  trust` block in `types.go`/`v05.go`), SDK `signing.rs`, tag push
+  conversion, `commands/{tag,release,identity}.rs`, admin
+  `pages/tree/{TagsTab.tsx,ReleasesTab.tsx}`.
+
+### 15.9 Code search v2 (workstream `search-v2`)
+
+- Persistent index under `<data>/codeindex/` (per tree: versioned binary
+  segment files of postings + a doc table; atomic swap on rebuild),
+  loaded lazily, memory-capped LRU (`--code-index-memory`, default 256 MiB)
+  with eviction to disk, rebuilt on format mismatch.
+- Symbols: a regex-based extractor for Go, Rust, TypeScript/JavaScript,
+  Python, Java, C/C++ (functions, methods, types/classes/structs/interfaces/
+  traits/enums, consts) stored with path/line/kind; `GET
+  /api/v1/search/symbols?q=&kind=&tenant=&tree=&limit=` and `kind=symbol`
+  mode in the code search UI; ranking: exact > prefix > substring.
+- All branches: `branches=all` indexes every branch tip (deduplicated by
+  manifest; capped by `--code-index-branches`, default 10 per tree).
+- `GET /api/v1/admin/code-index` → per-tree status (files, bytes, built_at,
+  branch count); `POST /api/v1/admin/code-index/rebuild?tree=`.
+- CLI: `wt search code --symbol`, `--branch B|--all-branches`; `wt admin
+  code-index [rebuild TREE]`.
+- Admin: code search page symbol toggle + kind filter + branch selector.
+- Spec: `specs/server/CodeSearch.md` (update; you own it now).
+- Owns: `internal/codesearch/**`, `httpapi/codesearch.go`,
+  `commands/search.rs`, `commands/admin.rs` (code-index subcommand only),
+  `pages/search/**` (the code search page), `internal/config` (block).
+
+### 15.10 Hardening and performance (workstream `hardening`)
+
+- `.wt-tree/` sharing: a tree's own `.wt-tree/{config.toml,ignore,hooks/**,access/**}`
+  files are now tracked (snapshotted, pushed, cloned) — the `name`/`id`
+  marker lines stay local; manifest path validation (Rust + Go) allows
+  `.wt-tree/` at the tree root only; parents still exclude nested trees.
+  Migration: existing worktrees start tracking on the next snapshot.
+- Policy versions are recorded when a tree deletion removes its
+  config-managed policies.
+- Blame gutter layout on narrow screens (admin `FileViewer`/blame
+  component: truncate metadata, keep code readable, horizontal scroll).
+- E2E gaps: webhook retries and deactivation (add a hidden server flag
+  `--webhook-retry-schedule` for tests), gRPC gzip negotiation, policy
+  versions recorded by `wt access apply`.
+- Performance: `crates/worktree-bench` (or `scripts/loadtest`) driving N
+  concurrent pushes/clones/searches against a real server with a report
+  (p50/p95, throughput); Go benchmarks for push validation, manifest
+  diffing, code search and authz evaluation; optional `--pprof` admin-only
+  endpoints (`/debug/pprof/*` behind server admin auth); fix the top
+  hotspots you measure (document before/after numbers in
+  `docs/performance.md`).
+- Spec: `specs/server/Performance.md` (measurements, limits, tuning flags).
+- Owns: `crates/worktree-bench/**`, `scripts/loadtest*`, Go `*_bench_test.go`
+  files, `httpapi/pprof.go`, manifest path validation in
+  `crates/worktree-sdk/src/model.rs` and `services/server-go/internal/syncsvc/convert.go`/`push.go`
+  (validation only), SDK `repo/working.rs` + `repo/trees.rs` (.wt-tree
+  tracking), `internal/policyhist` (tree deletion), admin blame component,
+  e2e gap scenarios, `docs/performance.md`.

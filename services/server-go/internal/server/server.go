@@ -32,6 +32,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
 	"github.com/seanfilimon/worktree/services/server-go/internal/audit"
 	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
+	"github.com/seanfilimon/worktree/services/server-go/internal/backup"
 	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
 	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/config"
@@ -43,6 +44,8 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/license"
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
 	"github.com/seanfilimon/worktree/services/server-go/internal/meta"
+	"github.com/seanfilimon/worktree/services/server-go/internal/mirror"
+	"github.com/seanfilimon/worktree/services/server-go/internal/notify"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
 	"github.com/seanfilimon/worktree/services/server-go/internal/opsmetrics"
 	"github.com/seanfilimon/worktree/services/server-go/internal/pathacl"
@@ -146,6 +149,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	// v0.6 components (docs/ENGINEERING_PLAN.md §14).
 	hooks := webhooks.New(webhooks.Deps(v5))
 	codeIndex := codesearch.New(codesearch.Deps(v5))
+	// v0.7 components (docs/ENGINEERING_PLAN.md §15).
+	notifier := notify.New(notify.Deps(v5))
+	mirrors := mirror.New(mirror.Deps(v5))
+	backups := backup.New(backup.Deps(v5))
 	go accessCfg.Run(ctx) // access workstream: drops access docs of deleted trees (§13.14)
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
@@ -227,6 +234,11 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		// v0.6 (§14).
 		Webhooks:   hooks,
 		CodeSearch: codeIndex,
+
+		// v0.7 (§15).
+		Notify:  notifier,
+		Mirrors: mirrors,
+		Backup:  backups,
 	})
 
 	proxies, _ := config.ParseProxies(cfg.TrustedProxies) // validated by Load

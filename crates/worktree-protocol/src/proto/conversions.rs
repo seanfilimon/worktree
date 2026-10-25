@@ -1305,6 +1305,7 @@ impl wire::TagRecord {
             message: tag.message.clone(),
             tagger: tagger.into(),
             created_at: Some(datetime_to_prost(tag.created_at)),
+            ..Default::default()
         }
     }
 

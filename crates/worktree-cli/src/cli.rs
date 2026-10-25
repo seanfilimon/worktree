@@ -7,10 +7,10 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::commands::{
     access, admin, api, archive, audit, auth, blame, branch, cherry_pick, ci, completions, config,
-    daemon, deps, diff, doctor, events, fsck, gc, git, grant, history, iam, identity, ignore, init,
-    invite, license, merge, mfa, mr, open, policy, protect, rebase, release, remote, role, sa,
-    search, session, snapshot, sso, stash, status, sync, tag, team, tenant, todo, token, tree,
-    trees, webhook,
+    daemon, deps, diff, doctor, events, fsck, gc, git, grant, history, iam, identity, ignore,
+    inbox, init, invite, license, merge, mfa, mirror, mr, open, policy, protect, rebase, release,
+    remote, role, sa, search, session, snapshot, sparse, sso, stash, status, sync, synchronize,
+    tag, team, tenant, todo, token, tree, trees, webhook,
 };
 
 #[derive(Debug, Parser)]
@@ -194,6 +194,14 @@ pub enum Command {
     Open(open::OpenArgs),
     /// Call any REST API endpoint of the server with your credentials
     Api(api::ApiArgs),
+    /// Sparse checkout: check out and fetch only the paths you need
+    Sparse(sparse::SparseArgs),
+    /// Fetch, integrate (merge or rebase) and push in one step; manage the offline queue
+    Sync(synchronize::SyncArgs),
+    /// Your notifications: list, read, mark done, watch settings
+    Inbox(inbox::InboxArgs),
+    /// Live Git mirrors of a server tree: list, add, update, remove, sync now
+    Mirror(mirror::MirrorArgs),
 }
 
 #[cfg(test)]
