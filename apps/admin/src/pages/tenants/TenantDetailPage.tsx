@@ -1,4 +1,4 @@
-import { FolderTree, Plus, Settings, Users } from "lucide-react";
+import { Bot, FileText, FolderTree, Mail, Plus, Puzzle, Settings, Users, UsersRound } from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useTenant } from "@/api/queries";
@@ -12,11 +12,16 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { absoluteTime, relativeTime } from "@/lib/format";
+import { InvitationsTab } from "@/pages/iam/InvitationsTab";
+import { PoliciesTab } from "@/pages/iam/PoliciesTab";
+import { RolesTab } from "@/pages/iam/RolesTab";
+import { ServiceAccountsTab } from "@/pages/iam/ServiceAccountsTab";
+import { TeamsTab } from "@/pages/iam/TeamsTab";
 import { TenantMembersTab } from "./TenantMembersTab";
 import { TenantSettingsTab } from "./TenantSettingsTab";
 import { TenantTreesTab } from "./TenantTreesTab";
 
-const TABS = ["trees", "members", "settings"] as const;
+const TABS = ["trees", "members", "teams", "roles", "policies", "service-accounts", "invitations", "settings"] as const;
 type Tab = (typeof TABS)[number];
 
 function isTab(v: string | null): v is Tab {
@@ -89,25 +94,62 @@ export function TenantDetailPage() {
         <QueryError error={t.error} onRetry={() => void t.refetch()} title="Could not load tenant" />
       ) : (
         <Tabs value={tab} onValueChange={setTab} className="gap-4">
-          <TabsList>
-            <TabsTrigger value="trees">
-              <FolderTree aria-hidden="true" />
-              Trees
-            </TabsTrigger>
-            <TabsTrigger value="members">
-              <Users aria-hidden="true" />
-              Members
-            </TabsTrigger>
-            <TabsTrigger value="settings">
-              <Settings aria-hidden="true" />
-              Settings
-            </TabsTrigger>
-          </TabsList>
+          <div className="-mx-1 overflow-x-auto px-1 [scrollbar-width:none]">
+            <TabsList>
+              <TabsTrigger value="trees">
+                <FolderTree aria-hidden="true" />
+                Trees
+              </TabsTrigger>
+              <TabsTrigger value="members">
+                <Users aria-hidden="true" />
+                Members
+              </TabsTrigger>
+              <TabsTrigger value="teams">
+                <UsersRound aria-hidden="true" />
+                Teams
+              </TabsTrigger>
+              <TabsTrigger value="roles">
+                <Puzzle aria-hidden="true" />
+                Roles
+              </TabsTrigger>
+              <TabsTrigger value="policies">
+                <FileText aria-hidden="true" />
+                Policies
+              </TabsTrigger>
+              <TabsTrigger value="service-accounts">
+                <Bot aria-hidden="true" />
+                Service accounts
+              </TabsTrigger>
+              <TabsTrigger value="invitations">
+                <Mail aria-hidden="true" />
+                Invitations
+              </TabsTrigger>
+              <TabsTrigger value="settings">
+                <Settings aria-hidden="true" />
+                Settings
+              </TabsTrigger>
+            </TabsList>
+          </div>
           <TabsContent value="trees">
             <TenantTreesTab slug={slug} canCreate={createTrees} onCreate={() => setCreatingTree(true)} />
           </TabsContent>
           <TabsContent value="members">
             <TenantMembersTab slug={slug} editable={manage} canGrantOwner={isAdmin || role === "owner"} />
+          </TabsContent>
+          <TabsContent value="teams">
+            <TeamsTab slug={slug} editable={manage} />
+          </TabsContent>
+          <TabsContent value="roles">
+            <RolesTab slug={slug} editable={manage} />
+          </TabsContent>
+          <TabsContent value="policies">
+            <PoliciesTab slug={slug} editable={manage} />
+          </TabsContent>
+          <TabsContent value="service-accounts">
+            <ServiceAccountsTab slug={slug} editable={manage} />
+          </TabsContent>
+          <TabsContent value="invitations">
+            <InvitationsTab slug={slug} editable={manage} />
           </TabsContent>
           <TabsContent value="settings">{tenant && <TenantSettingsTab tenant={tenant} editable={manage} />}</TabsContent>
         </Tabs>

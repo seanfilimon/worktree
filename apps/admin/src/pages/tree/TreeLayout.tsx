@@ -6,6 +6,7 @@ import {
   GitPullRequest,
   Globe,
   History,
+  KeyRound,
   LayoutDashboard,
   Layers,
   Lock,
@@ -52,6 +53,7 @@ const TABS: TabDef[] = [
   { to: "merge-requests", label: "Merge requests", icon: GitPullRequest, count: "open_mr_count" },
   { to: "protections", label: "Protections", icon: ShieldCheck },
   { to: "licenses", label: "Licenses", icon: Scale },
+  { to: "access", label: "Access", icon: KeyRound },
   { to: "settings", label: "Settings", icon: Settings },
 ];
 
