@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ellipsis, KeyRound, Plus, UserRound, UsersRound } from "lucide-react";
+import { Ellipsis, KeyRound, Plus, TicketCheck, UserRound, UsersRound } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "@/api/context";
 import { keys, useAccounts } from "@/api/queries";
@@ -14,6 +14,7 @@ import { SearchInput } from "@/components/people/SearchInput";
 import { EmptyState, QueryError, TableSkeleton } from "@/components/people/states";
 import { UserAvatar } from "@/components/people/UserAvatar";
 import { PageHeader } from "@/components/PageHeader";
+import { IssueResetCodeDialog } from "@/pages/security/IssueResetCodeDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -49,6 +50,7 @@ function AccountsTable() {
   const [creating, setCreating] = useState(false);
   const [confirming, setConfirming] = useState<PendingChange | null>(null);
   const [resetting, setResetting] = useState<Account | null>(null);
+  const [issuingCode, setIssuingCode] = useState<Account | null>(null);
   const [viewingId, setViewingId] = useState<string | null>(null);
 
   const update = useMutation({
@@ -168,6 +170,10 @@ function AccountsTable() {
                             <KeyRound aria-hidden="true" />
                             Reset password
                           </DropdownMenuItem>
+                          <DropdownMenuItem disabled={self || a.disabled} onSelect={() => setIssuingCode(a)}>
+                            <TicketCheck aria-hidden="true" />
+                            Issue reset code
+                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -183,6 +189,7 @@ function AccountsTable() {
       </Card>
       <CreateAccountDialog open={creating} onOpenChange={setCreating} />
       <ResetPasswordDialog account={resetting} onClose={() => setResetting(null)} />
+      <IssueResetCodeDialog account={issuingCode} onClose={() => setIssuingCode(null)} />
       <AccountSheet account={viewing} onClose={() => setViewingId(null)} />
       <ConfirmDialog
         open={confirming !== null}

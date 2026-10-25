@@ -1,6 +1,7 @@
 import {
   Building2,
   FolderTree,
+  KeyRound,
   LayoutDashboard,
   ScrollText,
   Server,
@@ -45,12 +46,19 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/accounts", label: "Accounts", icon: Users, adminOnly: true, keywords: ["users"] },
       { to: "/audit", label: "Audit log", icon: ScrollText, keywords: ["events", "security"] },
       { to: "/system", label: "System", icon: Server, adminOnly: true, keywords: ["server", "health", "runtime"] },
+      {
+        to: "/sso",
+        label: "Single sign-on",
+        icon: KeyRound,
+        adminOnly: true,
+        keywords: ["sso", "oidc", "openid", "identity provider", "okta"],
+      },
     ],
   },
   {
     label: "Settings",
     items: [
-      { to: "/settings", label: "Settings", icon: Settings, keywords: ["tokens", "password", "theme", "profile"] },
+      { to: "/settings", label: "Settings", icon: Settings, keywords: ["tokens", "password", "theme", "profile", "mfa", "2fa", "sessions", "security"] },
     ],
   },
 ];

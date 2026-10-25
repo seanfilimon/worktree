@@ -2,21 +2,34 @@ import { PageHeader } from "@/components/PageHeader";
 import { AppearanceCard } from "@/components/people/settings/AppearanceCard";
 import { ChangePasswordCard } from "@/components/people/settings/ChangePasswordCard";
 import { ProfileCard } from "@/components/people/settings/ProfileCard";
-import { SessionsCard } from "@/components/people/settings/SessionsCard";
-import { TokensCard } from "@/components/people/settings/TokensCard";
+import { MfaCard } from "@/pages/security/MfaCard";
+import { SessionsCard } from "@/pages/security/SessionsCard";
+import { TokensCard } from "@/pages/security/TokensCard";
 
 export function SettingsPage() {
   return (
     <>
-      <PageHeader title="Settings" breadcrumbs={[{ label: "Settings" }]} description="Your profile, password, tokens and preferences." />
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ProfileCard />
-        <ChangePasswordCard />
-        <div className="lg:col-span-2">
-          <TokensCard />
+      <PageHeader
+        title="Settings"
+        breadcrumbs={[{ label: "Settings" }]}
+        description="Your profile, password, security, tokens and preferences."
+      />
+      <div className="flex flex-col gap-8">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ProfileCard />
+          <ChangePasswordCard />
         </div>
-        <AppearanceCard />
-        <SessionsCard />
+        <section aria-labelledby="settings-security" className="flex flex-col gap-4">
+          <h2 id="settings-security" className="text-lg font-semibold tracking-tight">
+            Security
+          </h2>
+          <MfaCard />
+          <SessionsCard />
+          <TokensCard />
+        </section>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <AppearanceCard />
+        </div>
       </div>
     </>
   );

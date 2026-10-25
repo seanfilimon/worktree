@@ -3,8 +3,11 @@ import { RequireAuth } from "@/auth/RequireAuth";
 import { AppLayout } from "@/components/AppLayout";
 import { AccountsPage } from "@/pages/AccountsPage";
 import { AuditPage } from "@/pages/AuditPage";
+import { SsoSettingsPage } from "@/pages/admin/SsoSettingsPage";
+import { InvitePage } from "@/pages/auth/InvitePage";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { RegisterPage } from "@/pages/auth/RegisterPage";
+import { ResetPasswordPage } from "@/pages/auth/ResetPasswordPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { SettingsPage } from "@/pages/SettingsPage";
@@ -30,6 +33,9 @@ import { TreesPage } from "@/pages/trees/TreesPage";
 export const routes: RouteObject[] = [
   { path: "/login", element: <LoginPage /> },
   { path: "/register", element: <RegisterPage /> },
+  // Public: reachable signed in or out (§12.5).
+  { path: "/invite/:code", element: <InvitePage /> },
+  { path: "/reset-password", element: <ResetPasswordPage /> },
   {
     element: <RequireAuth />,
     children: [
@@ -63,6 +69,7 @@ export const routes: RouteObject[] = [
           { path: "audit", element: <AuditPage /> },
           { path: "accounts", element: <AccountsPage /> },
           { path: "system", element: <SystemPage /> },
+          { path: "sso", element: <SsoSettingsPage /> },
           { path: "settings", element: <SettingsPage /> },
           { path: "*", element: <NotFoundPage /> },
         ],
