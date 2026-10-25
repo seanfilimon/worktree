@@ -316,6 +316,12 @@ func (a *api) probeObjects(ctx context.Context) error {
 			return errors.New("object store root is not a directory")
 		}
 	}
+	// storage-backends (§15.2): remote stores (S3) check their bucket.
+	if p, ok := a.d.Objects.(interface{ Ping(context.Context) error }); ok {
+		if err := p.Ping(ctx); err != nil {
+			return err
+		}
+	}
 	_, err := a.d.Objects.Has(ctx, hash.Hash{})
 	return err
 }

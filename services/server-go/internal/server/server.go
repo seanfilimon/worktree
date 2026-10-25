@@ -97,7 +97,11 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	// data directory itself is the root.
 	// storage (§14.6): --compress-objects selects the WTZ1 encoding for
 	// new objects; reads accept raw and compressed files.
-	objects := objstore.NewWithOptions(cfg.DataDir, objstore.Options{Compress: cfg.CompressObjects})
+	// storage-backends (§15.2): --object-store disk|s3 (objects.go).
+	objects, err := OpenObjectStore(ctx, cfg.ObjectStore, cfg.DataDir, cfg.S3, cfg.CompressObjects)
+	if err != nil {
+		return fmt.Errorf("open object store: %w", err)
+	}
 	history := meta.NewHistory(store)
 
 	// ---- services ----
@@ -153,6 +157,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	notifier := notify.New(notify.Deps(v5))
 	mirrors := mirror.New(mirror.Deps(v5))
 	backups := backup.New(backup.Deps(v5))
+	// storage-backends (§15.2): backups in <data>/backups, optional schedule.
+	backups.Configure(backup.Options{
+		Dir: filepath.Join(cfg.DataDir, "backups"), Interval: cfg.BackupInterval, Keep: cfg.BackupKeep, Version: cfg.Version,
+	})
 	go accessCfg.Run(ctx) // access workstream: drops access docs of deleted trees (§13.14)
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
@@ -269,7 +277,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	stopGC := collector.Start(ctx)
 	stopUsage := limiter.Start(ctx)
 	stopMerges := opsmetrics.CountMerges(bus)
-	defer func() { stopMerges(); stopUsage(); stopGC() }()
+	stopBackups := backups.Start(ctx) // storage-backends (§15.2): --backup-interval
+	defer func() { stopBackups(); stopMerges(); stopUsage(); stopGC() }()
 
 	scheme := "http"
 	if tlsCfg != nil {
