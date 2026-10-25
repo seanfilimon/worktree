@@ -87,6 +87,21 @@ pub struct FakeState {
     pub watch_unavailable: bool,
     /// When set, every authenticated-or-anonymous RPC fails with Unavailable.
     pub offline: bool,
+    /// storage workstream (§14.6): every gRPC exchange's compression, in order.
+    pub grpc_encodings: Vec<GrpcEncoding>,
+}
+
+/// storage workstream (§14.6): message compression seen on one gRPC call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrpcEncoding {
+    /// Method name, e.g. `UploadObjects`.
+    pub method: String,
+    /// `grpc-encoding` of the request (None = uncompressed).
+    pub request: Option<String>,
+    /// `grpc-accept-encoding` the client advertised.
+    pub accept: Option<String>,
+    /// `grpc-encoding` of the response (None = uncompressed).
+    pub response: Option<String>,
 }
 
 /// Messages to open WatchBranches streams.
@@ -214,6 +229,36 @@ impl FakeState {
 
 type Shared = Arc<Mutex<FakeState>>;
 
+/// storage workstream (§14.6): record the compression headers of each gRPC
+/// exchange in [`FakeState::grpc_encodings`].
+async fn record_grpc_encoding(
+    State(state): State<Shared>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let header = |h: &axum::http::HeaderMap, k: &str| {
+        h.get(k).and_then(|v| v.to_str().ok()).map(str::to_string)
+    };
+    let method = req
+        .uri()
+        .path()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let request = header(req.headers(), "grpc-encoding");
+    let accept = header(req.headers(), "grpc-accept-encoding");
+    let resp = next.run(req).await;
+    let response = header(resp.headers(), "grpc-encoding");
+    lock(&state).grpc_encodings.push(GrpcEncoding {
+        method,
+        request,
+        accept,
+        response,
+    });
+    resp
+}
+
 fn lock(state: &Shared) -> MutexGuard<'_, FakeState> {
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -228,20 +273,41 @@ pub struct FakeServer {
 
 impl FakeServer {
     pub async fn start() -> Self {
+        Self::start_with(true).await
+    }
+
+    /// storage workstream (§14.6): a server whose gRPC service cannot
+    /// decode or send gzip-compressed messages (an older server).
+    pub async fn start_without_gzip() -> Self {
+        Self::start_with(false).await
+    }
+
+    async fn start_with(gzip: bool) -> Self {
         let state: Shared = Arc::default();
         let (watch, _) = broadcast::channel(256);
-        let grpc = SyncServiceServer::new(Svc {
+        let mut grpc = SyncServiceServer::new(Svc {
             state: state.clone(),
             watch: watch.clone(),
         })
         .max_decoding_message_size(MAX_MESSAGE)
         .max_encoding_message_size(MAX_MESSAGE);
+        // storage workstream (§14.6): like the Go server, accept gzip and
+        // answer gzip-accepting clients compressed.
+        if gzip {
+            grpc = grpc
+                .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                .send_compressed(tonic::codec::CompressionEncoding::Gzip);
+        }
         let rest = Router::new()
             .route("/api/v1/auth/login", post(rest_login))
             .route("/api/v1/auth/register", post(rest_register))
             .with_state(state.clone());
         let app = tonic::service::Routes::new(grpc)
             .into_axum_router()
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                record_grpc_encoding,
+            ))
             .merge(rest);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -115,6 +115,13 @@ type Config struct {
 	// --webhook-allow-private, env WT_WEBHOOK_ALLOW_PRIVATE.
 	WebhookAllowPrivate bool
 
+	// ---- storage (§14.6) ----
+
+	// CompressObjects stores new objects zstd-compressed (WTZ1) when that
+	// saves at least 10 %; existing objects are read either way. Flag
+	// --compress-objects, env WT_COMPRESS_OBJECTS (default true).
+	CompressObjects bool
+
 	// The fields below are set programmatically, not from flags.
 
 	// Version is the server version reported by /healthz, Ping and logs.
@@ -254,6 +261,18 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		}
 		cfg.WebhookAllowPrivate = b
 	}
+
+	// ---- storage (§14.6) ----
+	cfg.CompressObjects = true
+	if v, ok := lookup("WT_COMPRESS_OBJECTS"); ok && v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("WT_COMPRESS_OBJECTS: invalid boolean %q", v))
+		} else {
+			cfg.CompressObjects = b
+		}
+	}
+	// ---- end storage ----
 	return cfg, errors.Join(errs...)
 }
 
@@ -296,6 +315,9 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 
 	// webhooks (§14.2).
 	fs.BoolVar(&cfg.WebhookAllowPrivate, "webhook-allow-private", cfg.WebhookAllowPrivate, "allow webhook targets on loopback, link-local and private addresses (env WT_WEBHOOK_ALLOW_PRIVATE)")
+
+	// Storage (§14.6).
+	fs.BoolVar(&cfg.CompressObjects, "compress-objects", cfg.CompressObjects, "store new objects zstd-compressed when that saves at least 10% (env WT_COMPRESS_OBJECTS)")
 	return fs
 }
 

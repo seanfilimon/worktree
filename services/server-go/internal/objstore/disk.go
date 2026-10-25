@@ -36,15 +36,36 @@ const (
 // fails with "Access is denied".
 type DiskStore struct {
 	root string
+	// compress enables the WTZ1 encoding for new objects (§14.6); reads
+	// accept raw and compressed files either way.
+	compress bool
 }
 
-// New constructs a DiskStore rooted at root.
+// Options configure a DiskStore.
+type Options struct {
+	// Compress stores new objects zstd-compressed ("WTZ1") when that
+	// saves at least 10 % (server flag --compress-objects).
+	Compress bool
+}
+
+// New constructs a DiskStore rooted at root with the default options
+// (compression on).
 //
 // root may be relative; it is used as supplied for path joining.
 // Callers that want absolute-path safety should resolve before
 // passing it in.
 func New(root string) *DiskStore {
-	return &DiskStore{root: root}
+	return NewWithOptions(root, Options{Compress: true})
+}
+
+// NewWithOptions constructs a DiskStore rooted at root.
+func NewWithOptions(root string, o Options) *DiskStore {
+	return &DiskStore{root: root, compress: o.Compress}
+}
+
+// Compresses reports whether new objects are stored compressed.
+func (s *DiskStore) Compresses() bool {
+	return s.compress
 }
 
 // Root returns the configured root directory.
@@ -85,6 +106,12 @@ func (s *DiskStore) Put(ctx context.Context, h hash.Hash, data []byte) error {
 		return nil
 	}
 
+	// The hash covers the content; the file holds its stored encoding.
+	stored, err := EncodeObject(data, s.compress)
+	if err != nil {
+		return err
+	}
+
 	fanout := s.fanoutDir(h)
 	if err := os.MkdirAll(fanout, 0o755); err != nil {
 		return fmt.Errorf("objstore: mkdir fanout dir: %w", err)
@@ -104,7 +131,7 @@ func (s *DiskStore) Put(ctx context.Context, h hash.Hash, data []byte) error {
 		}
 	}()
 
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := tmp.Write(stored); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("objstore: write temp file: %w", err)
 	}
@@ -151,15 +178,23 @@ func (s *DiskStore) install(ctx context.Context, tmpPath, final string, data []b
 	}
 }
 
-// hasContent reports whether the file at path exists and holds exactly
-// want. Any error (including a transient sharing violation) yields false.
+// hasContent reports whether the file at path exists and holds an encoding
+// (raw or WTZ1) of exactly want. Any error (including a transient sharing
+// violation) yields false.
 func hasContent(path string, want []byte) bool {
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() != int64(len(want)) {
+	if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
 	got, err := os.ReadFile(path)
-	return err == nil && bytes.Equal(got, want)
+	if err != nil {
+		return false
+	}
+	if bytes.Equal(got, want) {
+		return true
+	}
+	content, err := DecodeObject(got)
+	return err == nil && bytes.Equal(content, want)
 }
 
 // retryTransient runs op, retrying with backoff while it fails with a
@@ -212,7 +247,24 @@ func (s *DiskStore) Get(ctx context.Context, h hash.Hash) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("objstore: read object: %w", err)
 	}
-	return data, nil
+	return decodeStored(h, data)
+}
+
+// decodeStored returns the content of the stored file data of object h.
+// A file starting with the magic that does not decode is accepted as a
+// legacy raw object when its bytes hash to h (written before §14.6).
+func decodeStored(h hash.Hash, data []byte) ([]byte, error) {
+	if !hasMagic(data) {
+		return data, nil
+	}
+	content, err := DecodeObject(data)
+	if err == nil {
+		return content, nil
+	}
+	if hash.Sum(data) == h {
+		return data, nil
+	}
+	return nil, fmt.Errorf("%w: %s: %v", ErrCorrupt, h, err)
 }
 
 // Has implements Store.Has.
@@ -236,7 +288,8 @@ func (s *DiskStore) Has(ctx context.Context, h hash.Hash) (bool, error) {
 	return false, fmt.Errorf("objstore: stat object: %w", err)
 }
 
-// Size implements SizeStore.Size.
+// Size implements SizeStore.Size. It reports the stored (on-disk) size,
+// which is smaller than the content for compressed objects.
 func (s *DiskStore) Size(ctx context.Context, h hash.Hash) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

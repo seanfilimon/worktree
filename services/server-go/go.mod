@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/google/uuid v1.6.0
+	github.com/klauspost/compress v1.18.0
 	github.com/zeebo/blake3 v0.2.4
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/crypto v0.48.0

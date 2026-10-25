@@ -58,6 +58,8 @@ mod partial; // v0.5 chunks workstream: shallow boundary + stubbed paths
 mod reflog;
 mod refs;
 mod snapshotting;
+// storage (§14.6): local gc and fsck (`GcOptions`, `GcReport`, `FsckReport`).
+pub mod storage;
 mod trees;
 mod working;
 // rewrite (§14.5): cherry-pick, rebase and stash.
