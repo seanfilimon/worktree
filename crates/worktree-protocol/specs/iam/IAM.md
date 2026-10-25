@@ -334,11 +334,15 @@ Some conditions cannot be decided. The client IP may be unknown, or a stored
 condition may be corrupt. In those cases an **allow** statement does not apply
 and a **deny** statement does: evaluation fails closed.
 
-The client IP is the socket peer address. `X-Forwarded-For` is not
-consulted.
+The client IP is the socket peer address, unless the peer is a trusted proxy
+(`--trusted-proxies` / `WT_TRUSTED_PROXIES`, IPs or CIDRs). Then the
+rightmost `X-Forwarded-For` entry that is not itself a trusted proxy is the
+client. The same address feeds rate limits and audit records.
 
-SSO sessions are issued with `MFA = false`. A `require_mfa` statement
-therefore treats them like password sessions without a second factor.
+SSO sessions count as MFA when the ID token's `amr` claim (RFC 8176) names a
+second factor (`mfa`, `otp`, `hwk`, `swk`, `sms`, `tel`, `sc`). Otherwise
+a `require_mfa` statement treats them like password sessions without a
+second factor.
 
 ## 9. Evaluation algorithm
 
@@ -451,9 +455,12 @@ All tokens are `wt_…` bearer strings, shown once and stored as SHA-256 hashes.
 
 **Scopes** are action patterns such as `tree:read`, `tree:*` or `*`. A scoped
 token can do at most what its scopes cover, and only when the identity is
-allowed the action in the first place. Note that `branch:push` is checked as
-`tree:write` at the scope step, so a push token needs a scope that covers
-`tree:write` (for example `tree:write` or `tree:*`).
+allowed the action in the first place. A scope matches either the requested
+action or its target (`branch:push` is evaluated as `tree:write` plus
+per-branch denies), so a token scoped to `branch:push` (or `branch:*`) can
+push but cannot stage or tag; `tree:write` covers all three. Every catalog
+action, including `release:*` and `ci:report`, may be named in a scope, so a
+CI key can be limited to `ci:report`.
 
 **Two-factor authentication** (TOTP, RFC 6238) works as follows:
 
@@ -665,10 +672,7 @@ built, and are not part of the v0.5 contract:
   and policies.
 - **Policy history.** Earlier policy versions, diffs and rollback. Only the
   `version` counter is kept. `wt access plan` shows pending changes.
-- **Trusted proxy headers** (`X-Forwarded-For`) for IP conditions and rate
-  limits.
-- **MFA-asserted SSO sessions.** Reading `amr` / `acr` claims so that IdP MFA
-  satisfies `require_mfa`.
+- **`acr`-based SSO assurance levels** (only `amr` is read today).
 - **Access files versioned with snapshots**, protected on push, and
   re-applied automatically by the background process. See
   [Declarative Access](./DeclarativeAccess.md#roadmap).

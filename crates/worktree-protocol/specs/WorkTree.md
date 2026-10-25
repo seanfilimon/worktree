@@ -795,7 +795,8 @@ are applied: a generated `LICENSES/NOTICE` lists SPDX ids per path, and paths
 whose rule forbids redistribution are skipped with a warning unless
 `--include-restricted`. The server offers the same as
 `GET /api/v1/trees/{tenant}/{tree}/archive/{snapshot}?format=tar.gz|zip`
-(omits paths the caller may not read; audited as `tree.export`).
+(omits paths the caller may not redistribute — license `CheckExport` — or
+read, and is audited as `tree.export`).
 
 ---
 

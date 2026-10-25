@@ -176,7 +176,8 @@ configured by server admins with `PUT /admin/sso` or `wt sso set`.
 
   When `allowed_domains` is set, a verified email in one of those domains is
   required. A disabled account cannot sign in.
-- **Result.** The callback issues a session (`mfa = false`) and redirects to
+- **Result.** The callback issues a session (MFA when the ID token's `amr`
+  names a second factor) and redirects to
   `<redirect>#sso_token=<token>`. Errors redirect to
   `/admin/login#sso_error=<message>`. The redirect target must be a
   same-origin path. Callback responses send `Cache-Control: no-store` and
@@ -429,14 +430,12 @@ built:
 - **Plan-based rate limits** (requests, sync operations, concurrent syncs per
   plan) and per-tenant aggregate limits. Limits are per principal, with tenant
   overrides.
-- **Trusted proxy headers** (`X-Forwarded-For`) for client-IP based limits,
-  conditions and audit records.
 - **Federation** (server ↔ server mTLS).
 - **Incident tooling**: automated alerting, a tenant-wide lockdown switch
   beyond `suspended` / `deactivated`, and extended audit retention during
   incidents.
 - **Email verification** and email-based account recovery.
-- **MFA from the IdP** (`amr` / `acr`) counting as MFA for SSO sessions.
+- **`acr` assurance levels** from the IdP (`amr` is honoured).
 - **Same-user verification of IPC peers** (named pipes or Unix sockets with
   ACLs). The daemon uses loopback TCP plus a token.
 

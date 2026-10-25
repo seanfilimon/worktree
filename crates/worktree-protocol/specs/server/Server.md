@@ -151,6 +151,7 @@ variable > default.
 | `--log-level` | `WT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `--log-format` | `WT_LOG_FORMAT` | `text` | `text` or `json` (slog to stderr). |
 | `--cors-origins` | `WT_CORS_ORIGINS` | — | Comma-separated extra origins. |
+| `--trusted-proxies` | `WT_TRUSTED_PROXIES` | — | Comma-separated proxy IPs/CIDRs whose `X-Forwarded-For` names the client (IP conditions, rate limits, audit). |
 | `--shutdown-timeout` | `WT_SHUTDOWN_TIMEOUT` | `15s` | Graceful shutdown bound. |
 | `--public-url` | `WT_PUBLIC_URL` | — | External base URL (default SSO redirect URL). |
 | `--tls-cert`, `--tls-key` | `WT_TLS_CERT`, `WT_TLS_KEY` | — | Serve TLS. |

@@ -217,10 +217,12 @@ service applies the same 7-day window when reading.
   not filtered by license rules or `wt:path` read denies. A reader of the tree
   can see "alice changed `billing/pricing.rs`" even when they would receive
   that file only as a stub on pull.
-- **No staged content.** The blobs uploaded with a staged snapshot are not
-  served through any API. Content becomes readable only after a push, and then
-  under the normal read checks: `tree:read`, path policies and license
-  `CheckRead`.
+- **Staged content.** `StageUploadRequest.manifest_hash` names the uploaded
+  working manifest; the server checks it is stored, keeps it on the staged
+  entry (`StagedInfo.manifest_hash`), treats it as a GC root and lets anyone
+  who may list the tree's staged work download its objects with
+  `DownloadObjects` (tree-scoped, license `CheckRead` per path). The SDK
+  always sends it; older clients that omit it stage paths only.
 
 ## 12. Implementation status
 
@@ -242,7 +244,8 @@ built:
 - **Multiple staged snapshots per user and branch**, with a status lifecycle
   (`Staged`, `Pushed`, `Cleared`, `Expired`) and per-user history. One entry
   per (tree, account, branch) is kept, and removed entries are gone.
-- **Reading staged file contents**, with license checks on that content.
+- **Browsing staged file contents** in the admin panel and `wt` (the objects
+  are downloadable, but no command checks a staged state out yet).
 - **A push-time advisory prompt** ("alice has staged changes to the same
   file, proceed?"). Overlaps are available from the summary endpoint and the
   admin panel.
