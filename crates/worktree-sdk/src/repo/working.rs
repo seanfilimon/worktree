@@ -141,6 +141,13 @@ impl Repository {
         store: bool,
         scan: bool,
     ) -> Result<WorkingState> {
+        // local-config (§13.9): the effective `[secret_scanning]` of the tree.
+        let scanner = if scan {
+            Some(self.secret_scanner(&rec.name)?).filter(|s| s.enabled())
+        } else {
+            None
+        };
+        let scan = scanner.is_some();
         let old_index = self.load_index(&rec.name);
         let nested = self.nested_tree_paths(rec)?;
         let mut found = Vec::new();
@@ -204,10 +211,21 @@ impl Repository {
                     };
                     let changed = head_entry.is_none_or(|e| e.hash != hash);
                     let mut clean = true;
-                    if scan && changed {
-                        let hits = crate::scan::scan_secrets(&file.path, &data);
-                        clean = hits.is_empty();
-                        findings.extend(hits);
+                    if let Some(scanner) = scanner.as_ref().filter(|_| changed) {
+                        let root_rel = if rec.path.is_empty() {
+                            file.path.clone()
+                        } else {
+                            format!("{}/{}", rec.path, file.path)
+                        };
+                        if !scanner.is_excluded(&[&file.path, &root_rel]) {
+                            let hits = scanner.scan(&file.path, &data);
+                            if scanner.blocks() {
+                                clean = hits.is_empty();
+                                findings.extend(hits);
+                            } else {
+                                crate::scan::warn_findings(&hits);
+                            }
+                        }
                     }
                     if store && clean {
                         if legacy {

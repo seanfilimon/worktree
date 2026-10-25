@@ -46,12 +46,11 @@ impl Context {
         Ok(Repository::open(&self.cwd)?)
     }
 
-    // --- git-export (§13.8): `wt git import --tree NAME` may name a new tree.
-    /// The raw value of the global `--tree` flag.
+    /// The raw value of the global `--tree` flag, if given (git-export §13.8:
+    /// `wt git import --tree NAME`; local-config §13.9: `wt config set --tree`).
     pub fn tree_flag(&self) -> Option<&str> {
         self.tree.as_deref()
     }
-    // --- end git-export
 
     /// The tree selected by `--tree`, else the tree containing the cwd.
     pub fn select_tree(&self, repo: &Repository) -> Result<TreeInfo> {

@@ -99,7 +99,10 @@ impl Repository {
     ) -> Result<Snapshot> {
         let tree = rec.name.as_str();
         let (branch, head) = self.head_tip(tree)?;
-        crate::hooks::run(self, rec, crate::hooks::Phase::PreSnapshot, &branch, None)?;
+        // local-config (§13.9): `skip_hooks` = `wt snapshot --no-verify`.
+        if !opts.skip_hooks {
+            crate::hooks::run(self, rec, crate::hooks::Phase::PreSnapshot, &branch, None)?;
+        }
         let head_manifest = self.manifest_of_tip(head.as_deref())?;
         let working = self.build_working(rec, &head_manifest, true, !opts.skip_secret_scan)?;
         if !working.findings.is_empty() {
@@ -175,13 +178,15 @@ impl Repository {
                 .unwrap_or_default()
                 .to_string(),
         })?;
-        crate::hooks::run(
-            self,
-            rec,
-            crate::hooks::Phase::PostSnapshot,
-            &snapshot.branch,
-            Some(&snapshot),
-        )?;
+        if !opts.skip_hooks {
+            crate::hooks::run(
+                self,
+                rec,
+                crate::hooks::Phase::PostSnapshot,
+                &snapshot.branch,
+                Some(&snapshot),
+            )?;
+        }
         Ok(snapshot)
     }
 }

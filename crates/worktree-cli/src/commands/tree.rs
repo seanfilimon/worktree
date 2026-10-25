@@ -6,8 +6,10 @@ use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde::Serialize;
 
+use worktree_sdk::config::{Severity, TreeProblem};
+
 use crate::context::Context;
-use crate::error::Result;
+use crate::error::{CliError, Result};
 
 #[derive(Debug, Args)]
 pub struct TreeArgs {
@@ -27,6 +29,24 @@ pub enum TreeCommand {
     },
     /// Unregister a nested tree (its files are kept)
     Remove { name: String },
+    /// Check tree layout: .wt-tree/ marker, config and ignore files parse,
+    /// no nested .wt/ (all trees when NAME is omitted; exit 1 on errors)
+    Validate { name: Option<String> },
+    /// Scaffold .wt-tree/{config.toml,ignore,hooks/,access/} for a nested
+    /// tree (default: the selected tree); existing files are kept
+    InitConfig { name: Option<String> },
+}
+
+#[derive(Serialize)]
+struct Validated {
+    tree: String,
+    problems: Vec<TreeProblem>,
+}
+
+#[derive(Serialize)]
+struct Scaffolded {
+    tree: String,
+    created: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -83,6 +103,75 @@ pub fn run(ctx: &Context, args: TreeArgs) -> Result<()> {
                     ));
                 },
             )
+        }
+        TreeCommand::Validate { name } => {
+            let names = match name {
+                Some(name) => vec![repo.tree(&name)?.name],
+                None => repo.trees()?.into_iter().map(|t| t.name).collect(),
+            };
+            let mut report = Vec::new();
+            for tree in names {
+                let problems = repo.validate_tree(&tree)?;
+                report.push(Validated { tree, problems });
+            }
+            let errors = report
+                .iter()
+                .flat_map(|r| &r.problems)
+                .filter(|p| p.severity == Severity::Error)
+                .count();
+            ctx.out.emit(&report, |t| {
+                for r in &report {
+                    if r.problems.is_empty() {
+                        t.line(format_args!("{} {}", r.tree.bold(), "ok".green()));
+                        continue;
+                    }
+                    t.line(r.tree.bold());
+                    for p in &r.problems {
+                        let label = match p.severity {
+                            Severity::Error => "error".red(),
+                            Severity::Warning => "warning".yellow(),
+                        };
+                        t.line(format_args!("  {label}: {}: {}", p.path, p.message));
+                    }
+                }
+            })?;
+            if errors > 0 {
+                return Err(CliError::failure(format!(
+                    "tree validation found {errors} error(s)"
+                )));
+            }
+            Ok(())
+        }
+        TreeCommand::InitConfig { name } => {
+            let tree = match name {
+                Some(name) => repo.tree(&name)?,
+                None => ctx.select_tree(&repo)?,
+            };
+            let created: Vec<String> = repo
+                .init_tree_config(&tree.name)?
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(repo.root())
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+                .collect();
+            let out = Scaffolded {
+                tree: tree.name.clone(),
+                created,
+            };
+            ctx.out.emit(&out, |t| {
+                if out.created.is_empty() {
+                    t.line(format_args!(
+                        "{} already has a complete .wt-tree/",
+                        out.tree.bold()
+                    ));
+                }
+                for path in &out.created {
+                    t.line(format_args!("created {path}"));
+                }
+            })
         }
     }
 }

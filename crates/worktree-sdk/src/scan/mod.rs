@@ -19,7 +19,12 @@ mod cdc;
 mod license;
 mod secrets;
 
+use std::path::Path;
+
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::{Deserialize, Serialize};
+
+use crate::config::SecretScanningSection;
 
 pub use cdc::{chunk_boundaries_with, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 pub use secrets::{rules, Rule, ALLOW_MARKER, MAX_SCAN_LINE_LEN};
@@ -43,6 +48,116 @@ pub struct SecretFinding {
 /// on that line redacted, so excerpts are safe to print and log.
 pub fn scan_secrets(path: &str, data: &[u8]) -> Vec<SecretFinding> {
     secrets::scan(path, data)
+}
+
+/// Check that `regex` is usable as a custom secret rule
+/// (`[secret_scanning] patterns`).
+pub fn validate_secret_regex(regex: &str) -> Result<(), String> {
+    secrets::compile_custom("check", regex).map(|_| ())
+}
+
+/// Report findings that do not block the snapshot
+/// (`block_on_match = false`) on stderr and in the log. Excerpts are
+/// already redacted.
+pub fn warn_findings(findings: &[SecretFinding]) {
+    for f in findings {
+        tracing::warn!(path = %f.path, line = f.line, rule = %f.rule, "possible secret (not blocking)");
+        eprintln!(
+            "warning: possible secret {}:{} [{}] {}",
+            f.path, f.line, f.rule, f.excerpt
+        );
+    }
+}
+
+/// Secret scanning as configured by a `[secret_scanning]` section: the
+/// built-in rules plus custom `patterns`, skipping `exclude`d paths.
+#[derive(Debug, Clone)]
+pub struct SecretScanner {
+    enabled: bool,
+    block_on_match: bool,
+    custom: Vec<secrets::CustomRule>,
+    exclude: Option<Gitignore>,
+}
+
+impl Default for SecretScanner {
+    /// Built-in rules only, enabled and blocking.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            block_on_match: true,
+            custom: Vec::new(),
+            exclude: None,
+        }
+    }
+}
+
+impl SecretScanner {
+    /// Compile a configuration; the error names the offending pattern.
+    pub fn new(config: &SecretScanningSection) -> Result<Self, String> {
+        let custom = config
+            .patterns
+            .iter()
+            .map(|p| {
+                secrets::compile_custom(&p.name, &p.regex)
+                    .map_err(|e| format!("secret_scanning.patterns.{}: {e}", p.name))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let exclude = if config.exclude.is_empty() {
+            None
+        } else {
+            let mut builder = GitignoreBuilder::new("");
+            for glob in &config.exclude {
+                builder
+                    .add_line(None, glob)
+                    .map_err(|e| format!("secret_scanning.exclude: {glob:?}: {e}"))?;
+            }
+            Some(
+                builder
+                    .build()
+                    .map_err(|e| format!("secret_scanning.exclude: {e}"))?,
+            )
+        };
+        Ok(Self {
+            enabled: config.enabled,
+            block_on_match: config.block_on_match,
+            custom,
+            exclude,
+        })
+    }
+
+    /// Whether scanning runs at all (`enabled`).
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Whether findings refuse the snapshot (`block_on_match`); otherwise
+    /// they are only reported as warnings.
+    pub fn blocks(&self) -> bool {
+        self.block_on_match
+    }
+
+    /// Whether any of the given spellings of a path ('/'-separated, e.g.
+    /// tree-relative and worktree-relative) matches an `exclude` glob.
+    pub fn is_excluded(&self, paths: &[&str]) -> bool {
+        let Some(exclude) = &self.exclude else {
+            return false;
+        };
+        paths.iter().any(|p| {
+            !p.is_empty()
+                && exclude
+                    .matched_path_or_any_parents(Path::new(p), false)
+                    .is_ignore()
+        })
+    }
+
+    /// Scan one file; empty when disabled. `path` is used for reporting and
+    /// for the exclusion check.
+    pub fn scan(&self, path: &str, data: &[u8]) -> Vec<SecretFinding> {
+        if !self.enabled || self.is_excluded(&[path]) {
+            return Vec::new();
+        }
+        secrets::scan_with(path, data, &self.custom)
+    }
 }
 
 /// Detect an SPDX license id from a LICENSE file body or an
@@ -83,6 +198,57 @@ mod tests {
         let mut late = vec![b'a'; BINARY_SNIFF_LEN];
         late.push(0);
         assert!(!is_binary(&late), "NUL beyond the sniff window is ignored");
+    }
+
+    fn aws_line() -> String {
+        // Assembled at runtime so this file holds no literal key.
+        format!("KEY={}{}\n", "AKIA", "Z4Q7RJ2KXW3MPLQ9")
+    }
+
+    #[test]
+    fn scanner_honours_enabled_exclude_and_patterns() {
+        let data = aws_line();
+        let default = SecretScanner::default();
+        assert!(default.enabled() && default.blocks());
+        assert_eq!(default.scan("a.env", data.as_bytes()).len(), 1);
+
+        let off = SecretScanner::new(&SecretScanningSection {
+            enabled: false,
+            ..SecretScanningSection::default()
+        })
+        .unwrap();
+        assert!(off.scan("a.env", data.as_bytes()).is_empty());
+
+        let cfg = SecretScanningSection {
+            block_on_match: false,
+            exclude: vec!["fixtures/".into(), "*.sample".into()],
+            patterns: vec![crate::config::SecretPattern {
+                name: "acme".into(),
+                regex: r"ACME-[0-9]{6}".into(),
+            }],
+            ..SecretScanningSection::default()
+        };
+        let s = SecretScanner::new(&cfg).unwrap();
+        assert!(!s.blocks());
+        assert!(s.scan("fixtures/keys/a.env", data.as_bytes()).is_empty());
+        assert!(s.scan("x/conf.sample", data.as_bytes()).is_empty());
+        assert!(s.is_excluded(&["lib/a.rs", "svc/fixtures/a.rs"]));
+        assert!(!s.is_excluded(&["lib/a.rs", ""]));
+        let found = s.scan("src/a.rs", b"id = ACME-123456\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].rule, "acme");
+
+        let bad = SecretScanningSection {
+            patterns: vec![crate::config::SecretPattern {
+                name: "broken".into(),
+                regex: "(".into(),
+            }],
+            ..SecretScanningSection::default()
+        };
+        let err = SecretScanner::new(&bad).unwrap_err();
+        assert!(err.contains("secret_scanning.patterns.broken"), "{err}");
+        assert!(validate_secret_regex("a+").is_ok());
+        assert!(validate_secret_regex("[").is_err());
     }
 
     #[test]

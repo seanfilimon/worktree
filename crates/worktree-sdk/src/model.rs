@@ -425,6 +425,9 @@ pub struct SnapshotOptions {
     /// off (`wt snapshot --sign`).
     #[serde(default)]
     pub sign: bool,
+    /// local-config (§13.9): skip pre/post-snapshot hooks (`--no-verify`).
+    #[serde(default)]
+    pub skip_hooks: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -32,6 +32,11 @@ pub struct SnapshotArgs {
     // deps-releases (ENGINEERING_PLAN §13.5): --depend/--todo/... groups.
     #[command(flatten)]
     pub deps: deps::DependencyArgs,
+    // --- local-config (ENGINEERING_PLAN §13.9): hooks ---------------------
+    /// Skip the pre-snapshot and post-snapshot hooks
+    #[arg(long)]
+    pub no_verify: bool,
+    // --- end local-config --------------------------------------------------
 }
 
 pub fn run(ctx: &Context, args: SnapshotArgs) -> Result<()> {
@@ -45,6 +50,8 @@ pub fn run(ctx: &Context, args: SnapshotArgs) -> Result<()> {
             skip_secret_scan: args.no_scan,
             sign: args.sign, // signing (§13.6)
             dependencies,
+            // local-config (§13.9): `--no-verify` skips hooks.
+            skip_hooks: args.no_verify,
             ..SnapshotOptions::default()
         },
     )?;

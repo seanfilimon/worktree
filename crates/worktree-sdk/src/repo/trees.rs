@@ -299,11 +299,21 @@ impl Repository {
 }
 
 fn write_marker(dir: &Path, marker: &MarkerConfig) -> Result<()> {
-    let text = toml::to_string_pretty(marker)?;
-    fsutil::write_atomic(
-        &dir.join(TREE_MARKER_DIR).join("config.toml"),
-        text.as_bytes(),
-    )
+    let path = dir.join(TREE_MARKER_DIR).join("config.toml");
+    // local-config (§13.9): the marker file also holds tree-level config
+    // sections; keep everything except the identity keys rewritten here.
+    let existing = fsutil::read_string_opt(&path)?
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .filter(|t| !t.is_empty());
+    let text = match existing {
+        Some(mut table) => {
+            table.insert("name".into(), toml::Value::String(marker.name.clone()));
+            table.insert("id".into(), toml::Value::String(marker.id.clone()));
+            toml::to_string_pretty(&table)?
+        }
+        None => toml::to_string_pretty(marker)?,
+    };
+    fsutil::write_atomic(&path, text.as_bytes())
 }
 
 /// '/'-joined string form of a relative path.

@@ -228,6 +228,42 @@ static COMPILED: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         .collect()
 });
 
+/// A user-defined rule (`[secret_scanning] patterns`). It has no post-filters:
+/// every match of its regex (its first capture group, if any) is a finding.
+#[derive(Debug, Clone)]
+pub(super) struct CustomRule {
+    pub(super) id: String,
+    regex: Regex,
+}
+
+/// Compile a custom rule with the same regex flags as the built-in rules.
+pub(super) fn compile_custom(id: &str, pattern: &str) -> Result<CustomRule, String> {
+    let regex = RegexBuilder::new(pattern)
+        .unicode(false)
+        .multi_line(true)
+        .build()
+        .map_err(|e| format!("invalid regex {pattern:?}: {e}"))?;
+    Ok(CustomRule {
+        id: id.to_string(),
+        regex,
+    })
+}
+
+/// Rule id of candidate index `idx` (built-ins first, then custom rules).
+fn rule_id(idx: usize, custom: &[CustomRule]) -> &str {
+    match RULES.get(idx) {
+        Some(rule) => rule.id,
+        None => custom
+            .get(idx - RULES.len())
+            .map_or("custom", |c| c.id.as_str()),
+    }
+}
+
+/// Whether the rule at `idx` masks the rest of the line (private-key headers).
+fn masks_rest_of_line(idx: usize) -> bool {
+    RULES.get(idx).is_some_and(|r| r.mask_rest_of_line)
+}
+
 /// A candidate secret: byte span of the value plus the rule that found it.
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
@@ -236,13 +272,32 @@ struct Candidate {
     end: usize,
 }
 
-/// Scan one buffer; see [`super::scan_secrets`].
+/// Scan one buffer with the built-in rules; see [`super::scan_secrets`].
 pub(super) fn scan(path: &str, data: &[u8]) -> Vec<SecretFinding> {
+    scan_with(path, data, &[])
+}
+
+/// Scan one buffer with the built-in rules plus `custom` rules.
+pub(super) fn scan_with(path: &str, data: &[u8], custom: &[CustomRule]) -> Vec<SecretFinding> {
     if data.is_empty() || is_binary(data) {
         return Vec::new();
     }
 
     let mut candidates = Vec::new();
+    for (j, rule) in custom.iter().enumerate() {
+        for caps in rule.regex.captures_iter(data) {
+            let Some(whole) = caps.get(0) else { continue };
+            let secret = caps.iter().skip(1).flatten().next().unwrap_or(whole);
+            if secret.start() == secret.end() {
+                continue;
+            }
+            candidates.push(Candidate {
+                rule: RULES.len() + j,
+                start: secret.start(),
+                end: secret.end(),
+            });
+        }
+    }
     for (idx, (rule, re)) in RULES.iter().zip(COMPILED.iter()).enumerate() {
         for caps in re.captures_iter(data) {
             let Some(whole) = caps.get(0) else { continue };
@@ -300,7 +355,7 @@ pub(super) fn scan(path: &str, data: &[u8]) -> Vec<SecretFinding> {
                     end: c.end - line_start,
                 })
                 .collect();
-            emit_line(path, line_no, line, local, &mut findings);
+            emit_line(path, line_no, line, local, custom, &mut findings);
         }
         i = group_end;
     }
@@ -314,6 +369,7 @@ fn emit_line(
     line_no: usize,
     line: &[u8],
     mut local: Vec<Candidate>,
+    custom: &[CustomRule],
     out: &mut Vec<SecretFinding>,
 ) {
     if local.is_empty() {
@@ -335,7 +391,7 @@ fn emit_line(
     let (redacted, positions) = redact_line(line, &accepted);
     for (c, pos) in accepted.iter().zip(positions) {
         out.push(SecretFinding {
-            rule: RULES[c.rule].id.to_string(),
+            rule: rule_id(c.rule, custom).to_string(),
             path: path.to_string(),
             line: line_no,
             excerpt: excerpt(&redacted, pos),
@@ -360,8 +416,7 @@ fn redact_line(line: &[u8], spans: &[Candidate]) -> (String, Vec<Option<usize>>)
         out.push_str(&String::from_utf8_lossy(&line[cursor..span.start]));
         positions.push(Some(out.len()));
         let value = &line[span.start..end];
-        let rule = &RULES[span.rule];
-        if rule.mask_rest_of_line {
+        if masks_rest_of_line(span.rule) {
             out.push_str(&String::from_utf8_lossy(value));
             if line[end..].iter().any(|b| !b.is_ascii_whitespace()) {
                 out.push_str(MASK);
@@ -1090,6 +1145,32 @@ mod tests {
         assert!(scan_secrets("empty", b"").is_empty());
         assert_clean("fn main() {\n    println!(\"hello, world\");\n}\n");
         assert_clean("let password = read_password_from_stdin()?;\n");
+    }
+
+    #[test]
+    fn custom_rules_report_their_name_and_redact() {
+        let rule = compile_custom("acme-token", r"\bacme_([0-9a-f]{16})\b").unwrap();
+        let text = "a = 1\nid: acme_0123456789abcdef\nb = acme_short\n";
+        let found = scan_with("x.cfg", text.as_bytes(), std::slice::from_ref(&rule));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].rule, "acme-token");
+        assert_eq!(found[0].line, 2);
+        assert!(!found[0].excerpt.contains("0123456789abcdef"));
+        // The allow marker applies to custom rules too.
+        let allowed = "id: acme_0123456789abcdef // wt:allow-secret\n";
+        assert!(scan_with("x", allowed.as_bytes(), &[rule]).is_empty());
+        assert!(compile_custom("bad", "(").is_err());
+    }
+
+    #[test]
+    fn builtin_rules_win_overlaps_with_custom_rules() {
+        let token = ["gh", "p_", &alnum(124, 36)].concat();
+        let rule = compile_custom("any-gh", r"gh[a-z]_[A-Za-z0-9]+").unwrap();
+        let found = scan_with("x", format!("t = {token}\n").as_bytes(), &[rule]);
+        assert_eq!(
+            found.iter().map(|f| f.rule.as_str()).collect::<Vec<_>>(),
+            vec!["github-token"]
+        );
     }
 
     #[test]
