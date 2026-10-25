@@ -109,6 +109,11 @@ type api struct {
 	mux     *http.ServeMux
 	metrics *metrics
 	stats   *statsCache
+
+	// openapi (§14.10): every pattern registered through handle, in
+	// registration order; the OpenAPI coverage test compares it with
+	// openapi.yaml.
+	patterns []string
 }
 
 // New returns the HTTP handler for /healthz, /metrics, /api/v1 and /admin.
@@ -149,6 +154,7 @@ type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 // handle registers fn under pattern. The pattern doubles as the metrics
 // "route" label, which keeps label cardinality bounded.
 func (a *api) handle(pattern string, fn handlerFunc) {
+	a.patterns = append(a.patterns, pattern) // openapi (§14.10)
 	a.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		setRoute(r.Context(), pattern)
 		if err := fn(w, r); err != nil {
@@ -239,6 +245,7 @@ func (a *api) routes() {
 	a.registerBlameRoutes(tree)
 	a.registerFsckRoutes()
 	a.registerPolicyHistoryRoutes()
+	a.registerOpenAPIRoutes() // openapi (§14.10): GET /api/v1/openapi.yaml
 
 	// Unknown API paths answer with the JSON envelope (404 or 405).
 	a.handle("/api/", a.handleAPINotFound)

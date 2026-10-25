@@ -53,6 +53,7 @@ is authoritative; the spec is a bug.
 | **Code search** | [`server/CodeSearch.md`](./server/CodeSearch.md) | Trigram index of default branches, literal/regex search, permission filtering, `GET /search/code`, `wt search code` |
 | **CLI ergonomics** | [`cli/CliErgonomics.md`](./cli/CliErgonomics.md) | Shell completions, `[alias]` expansion rules, `wt doctor` checks, `wt open` admin-panel URLs, grouped help |
 | **History rewriting** | [`tree/HistoryRewriting.md`](./tree/HistoryRewriting.md) | `wt cherry-pick`, `wt rebase` (pushed-history guard, conflicts via `wt merge resolve`), `wt stash`, auto-stash on branch switch |
+| **REST API** | [`server/RestApi.md`](./server/RestApi.md) | `/api/v1` conventions: auth, errors, pagination, versioning, the OpenAPI document (`openapi.yaml`) and `wt api` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →
