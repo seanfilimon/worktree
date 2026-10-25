@@ -227,6 +227,9 @@ func stagedToPB(s *domain.StagedSnapshot) *syncpb.StagedInfo {
 	if s.Message != "" {
 		info.Message = proto.String(s.Message)
 	}
+	if h, err := hash.FromHex(s.ManifestHash); err == nil {
+		info.ManifestHash = hashToPB(h)
+	}
 	return info
 }
 

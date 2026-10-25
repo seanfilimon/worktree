@@ -1233,6 +1233,9 @@ type StageUploadRequest struct {
 	FilesDeleted  uint32                 `protobuf:"varint,9,opt,name=files_deleted,json=filesDeleted,proto3" json:"files_deleted,omitempty"`
 	Message       *string                `protobuf:"bytes,10,opt,name=message,proto3,oneof" json:"message,omitempty"`
 	AccountId     *AccountId             `protobuf:"bytes,11,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	// v0.5: manifest of the staged working state (already uploaded). The
+	// server keeps its objects alive (GC root) and lets readers fetch them.
+	ManifestHash  *ContentHash `protobuf:"bytes,12,opt,name=manifest_hash,json=manifestHash,proto3,oneof" json:"manifest_hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1340,6 +1343,13 @@ func (x *StageUploadRequest) GetMessage() string {
 func (x *StageUploadRequest) GetAccountId() *AccountId {
 	if x != nil {
 		return x.AccountId
+	}
+	return nil
+}
+
+func (x *StageUploadRequest) GetManifestHash() *ContentHash {
+	if x != nil {
+		return x.ManifestHash
 	}
 	return nil
 }
@@ -3087,6 +3097,8 @@ type StagedInfo struct {
 	FilesDeleted  uint32                 `protobuf:"varint,7,opt,name=files_deleted,json=filesDeleted,proto3" json:"files_deleted,omitempty"`
 	Message       *string                `protobuf:"bytes,8,opt,name=message,proto3,oneof" json:"message,omitempty"`
 	StagedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=staged_at,json=stagedAt,proto3" json:"staged_at,omitempty"`
+	// v0.5: manifest of the staged state when the client sent one.
+	ManifestHash  *ContentHash `protobuf:"bytes,10,opt,name=manifest_hash,json=manifestHash,proto3,oneof" json:"manifest_hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3180,6 +3192,13 @@ func (x *StagedInfo) GetMessage() string {
 func (x *StagedInfo) GetStagedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.StagedAt
+	}
+	return nil
+}
+
+func (x *StagedInfo) GetManifestHash() *ContentHash {
+	if x != nil {
+		return x.ManifestHash
 	}
 	return nil
 }
@@ -4028,7 +4047,7 @@ const file_sync_proto_rawDesc = "" +
 	"\tsnapshots\x18\x05 \x03(\v2 .worktree.sync.v1.SnapshotRecordR\tsnapshots\x12#\n" +
 	"\rstubbed_paths\x18\x06 \x03(\tR\fstubbedPathsB\n" +
 	"\n" +
-	"\b_new_tipJ\x05\bd\x10\xc8\x01\"\x99\x04\n" +
+	"\b_new_tipJ\x05\bd\x10\xc8\x01\"\xf4\x04\n" +
 	"\x12StageUploadRequest\x127\n" +
 	"\ttenant_id\x18\x01 \x01(\v2\x1a.worktree.sync.v1.TenantIdR\btenantId\x121\n" +
 	"\atree_id\x18\x02 \x01(\v2\x18.worktree.sync.v1.TreeIdR\x06treeId\x127\n" +
@@ -4045,9 +4064,11 @@ const file_sync_proto_rawDesc = "" +
 	"\amessage\x18\n" +
 	" \x01(\tH\x00R\amessage\x88\x01\x01\x12:\n" +
 	"\n" +
-	"account_id\x18\v \x01(\v2\x1b.worktree.sync.v1.AccountIdR\taccountIdB\n" +
+	"account_id\x18\v \x01(\v2\x1b.worktree.sync.v1.AccountIdR\taccountId\x12G\n" +
+	"\rmanifest_hash\x18\f \x01(\v2\x1d.worktree.sync.v1.ContentHashH\x01R\fmanifestHash\x88\x01\x01B\n" +
 	"\n" +
-	"\b_messageJ\x05\bd\x10\xc8\x01\"]\n" +
+	"\b_messageB\x10\n" +
+	"\x0e_manifest_hashJ\x05\bd\x10\xc8\x01\"]\n" +
 	"\x13StageUploadResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x19\n" +
 	"\x05error\x18\x02 \x01(\tH\x00R\x05error\x88\x01\x01B\b\n" +
@@ -4211,7 +4232,7 @@ const file_sync_proto_rawDesc = "" +
 	"\atree_id\x18\x01 \x01(\v2\x18.worktree.sync.v1.TreeIdR\x06treeId\x12$\n" +
 	"\vbranch_name\x18\x02 \x01(\tH\x00R\n" +
 	"branchName\x88\x01\x01B\x0e\n" +
-	"\f_branch_nameJ\x05\bd\x10\xc8\x01\"\x81\x03\n" +
+	"\f_branch_nameJ\x05\bd\x10\xc8\x01\"\xdc\x03\n" +
 	"\n" +
 	"StagedInfo\x12=\n" +
 	"\vsnapshot_id\x18\x01 \x01(\v2\x1c.worktree.sync.v1.SnapshotIdR\n" +
@@ -4225,9 +4246,12 @@ const file_sync_proto_rawDesc = "" +
 	"\x0efiles_modified\x18\x06 \x01(\rR\rfilesModified\x12#\n" +
 	"\rfiles_deleted\x18\a \x01(\rR\ffilesDeleted\x12\x1d\n" +
 	"\amessage\x18\b \x01(\tH\x00R\amessage\x88\x01\x01\x127\n" +
-	"\tstaged_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\bstagedAtB\n" +
+	"\tstaged_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\bstagedAt\x12G\n" +
+	"\rmanifest_hash\x18\n" +
+	" \x01(\v2\x1d.worktree.sync.v1.ContentHashH\x01R\fmanifestHash\x88\x01\x01B\n" +
 	"\n" +
-	"\b_messageJ\x05\bd\x10\xc8\x01\"Q\n" +
+	"\b_messageB\x10\n" +
+	"\x0e_manifest_hashJ\x05\bd\x10\xc8\x01\"Q\n" +
 	"\x12ListStagedResponse\x124\n" +
 	"\x06staged\x18\x01 \x03(\v2\x1c.worktree.sync.v1.StagedInfoR\x06stagedJ\x05\bd\x10\xc8\x01\"\xda\x01\n" +
 	"\tTagRecord\x12\x12\n" +
@@ -4426,97 +4450,99 @@ var file_sync_proto_depIdxs = []int32{
 	5,   // 33: worktree.sync.v1.StageUploadRequest.branch_id:type_name -> worktree.sync.v1.BranchId
 	4,   // 34: worktree.sync.v1.StageUploadRequest.snapshot_id:type_name -> worktree.sync.v1.SnapshotId
 	7,   // 35: worktree.sync.v1.StageUploadRequest.account_id:type_name -> worktree.sync.v1.AccountId
-	6,   // 36: worktree.sync.v1.AccessConfigSyncRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
-	1,   // 37: worktree.sync.v1.AccessConfigSyncRequest.config_type:type_name -> worktree.sync.v1.AccessConfigType
-	8,   // 38: worktree.sync.v1.AccessConfigSyncRequest.config_hash:type_name -> worktree.sync.v1.ContentHash
-	7,   // 39: worktree.sync.v1.AccessConfigSyncRequest.account_id:type_name -> worktree.sync.v1.AccountId
-	3,   // 40: worktree.sync.v1.AccessConfigSyncRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	61,  // 41: worktree.sync.v1.SyncState.last_sync:type_name -> google.protobuf.Timestamp
-	4,   // 42: worktree.sync.v1.SyncState.local_tip:type_name -> worktree.sync.v1.SnapshotId
-	4,   // 43: worktree.sync.v1.SyncState.remote_tip:type_name -> worktree.sync.v1.SnapshotId
-	0,   // 44: worktree.sync.v1.SyncEnvelope.message_type:type_name -> worktree.sync.v1.SyncMessageType
-	61,  // 45: worktree.sync.v1.SyncEnvelope.timestamp:type_name -> google.protobuf.Timestamp
-	25,  // 46: worktree.sync.v1.ChunkList.chunks:type_name -> worktree.sync.v1.Chunk
-	8,   // 47: worktree.sync.v1.Chunk.hash:type_name -> worktree.sync.v1.ContentHash
-	8,   // 48: worktree.sync.v1.ObjectData.hash:type_name -> worktree.sync.v1.ContentHash
-	2,   // 49: worktree.sync.v1.ObjectData.kind:type_name -> worktree.sync.v1.ObjectKind
-	8,   // 50: worktree.sync.v1.UploadObjectsResponse.rejected:type_name -> worktree.sync.v1.ContentHash
-	8,   // 51: worktree.sync.v1.ManifestEntry.blob_hash:type_name -> worktree.sync.v1.ContentHash
-	28,  // 52: worktree.sync.v1.ManifestRecord.entries:type_name -> worktree.sync.v1.ManifestEntry
-	4,   // 53: worktree.sync.v1.SnapshotRecord.id:type_name -> worktree.sync.v1.SnapshotId
-	3,   // 54: worktree.sync.v1.SnapshotRecord.tree_id:type_name -> worktree.sync.v1.TreeId
-	4,   // 55: worktree.sync.v1.SnapshotRecord.parents:type_name -> worktree.sync.v1.SnapshotId
-	8,   // 56: worktree.sync.v1.SnapshotRecord.manifest_hash:type_name -> worktree.sync.v1.ContentHash
-	61,  // 57: worktree.sync.v1.SnapshotRecord.created_at:type_name -> google.protobuf.Timestamp
-	31,  // 58: worktree.sync.v1.SnapshotRecord.dependencies:type_name -> worktree.sync.v1.Dependency
-	4,   // 59: worktree.sync.v1.SnapshotRecord.reverts:type_name -> worktree.sync.v1.SnapshotId
-	30,  // 60: worktree.sync.v1.SignedSnapshotPayload.record:type_name -> worktree.sync.v1.SnapshotRecord
-	3,   // 61: worktree.sync.v1.WatchBranchesRequest.tree_ids:type_name -> worktree.sync.v1.TreeId
-	3,   // 62: worktree.sync.v1.BranchEvent.tree_id:type_name -> worktree.sync.v1.TreeId
-	4,   // 63: worktree.sync.v1.BranchEvent.old_tip:type_name -> worktree.sync.v1.SnapshotId
-	4,   // 64: worktree.sync.v1.BranchEvent.new_tip:type_name -> worktree.sync.v1.SnapshotId
-	61,  // 65: worktree.sync.v1.BranchEvent.at:type_name -> google.protobuf.Timestamp
-	3,   // 66: worktree.sync.v1.UnstageRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	6,   // 67: worktree.sync.v1.GetAccessConfigRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
-	3,   // 68: worktree.sync.v1.GetAccessConfigRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	1,   // 69: worktree.sync.v1.GetAccessConfigRequest.config_type:type_name -> worktree.sync.v1.AccessConfigType
-	8,   // 70: worktree.sync.v1.GetAccessConfigResponse.config_hash:type_name -> worktree.sync.v1.ContentHash
-	61,  // 71: worktree.sync.v1.GetAccessConfigResponse.updated_at:type_name -> google.protobuf.Timestamp
-	3,   // 72: worktree.sync.v1.TreeInfo.tree_id:type_name -> worktree.sync.v1.TreeId
-	6,   // 73: worktree.sync.v1.TreeInfo.tenant_id:type_name -> worktree.sync.v1.TenantId
-	3,   // 74: worktree.sync.v1.ListBranchesRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	4,   // 75: worktree.sync.v1.BranchInfo.tip:type_name -> worktree.sync.v1.SnapshotId
-	61,  // 76: worktree.sync.v1.BranchInfo.updated_at:type_name -> google.protobuf.Timestamp
-	42,  // 77: worktree.sync.v1.ListBranchesResponse.branches:type_name -> worktree.sync.v1.BranchInfo
-	3,   // 78: worktree.sync.v1.ListStagedRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	4,   // 79: worktree.sync.v1.StagedInfo.snapshot_id:type_name -> worktree.sync.v1.SnapshotId
-	61,  // 80: worktree.sync.v1.StagedInfo.staged_at:type_name -> google.protobuf.Timestamp
-	45,  // 81: worktree.sync.v1.ListStagedResponse.staged:type_name -> worktree.sync.v1.StagedInfo
-	4,   // 82: worktree.sync.v1.TagRecord.target:type_name -> worktree.sync.v1.SnapshotId
-	61,  // 83: worktree.sync.v1.TagRecord.created_at:type_name -> google.protobuf.Timestamp
-	3,   // 84: worktree.sync.v1.PushTagRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	47,  // 85: worktree.sync.v1.PushTagRequest.tag:type_name -> worktree.sync.v1.TagRecord
-	3,   // 86: worktree.sync.v1.ListTagsRequest.tree_id:type_name -> worktree.sync.v1.TreeId
-	47,  // 87: worktree.sync.v1.ListTagsResponse.tags:type_name -> worktree.sync.v1.TagRecord
-	7,   // 88: worktree.sync.v1.PingResponse.account_id:type_name -> worktree.sync.v1.AccountId
-	4,   // 89: worktree.sync.v1.PushRejection.ConflictDetected.server_tip:type_name -> worktree.sync.v1.SnapshotId
-	18,  // 90: worktree.sync.v1.SyncService.Stage:input_type -> worktree.sync.v1.StageUploadRequest
-	13,  // 91: worktree.sync.v1.SyncService.Push:input_type -> worktree.sync.v1.PushRequest
-	16,  // 92: worktree.sync.v1.SyncService.Pull:input_type -> worktree.sync.v1.PullRequest
-	12,  // 93: worktree.sync.v1.SyncService.Negotiate:input_type -> worktree.sync.v1.NegotiateRequest
-	20,  // 94: worktree.sync.v1.SyncService.SyncAccessConfig:input_type -> worktree.sync.v1.AccessConfigSyncRequest
-	26,  // 95: worktree.sync.v1.SyncService.UploadObjects:input_type -> worktree.sync.v1.ObjectData
-	10,  // 96: worktree.sync.v1.SyncService.DownloadObjects:input_type -> worktree.sync.v1.WantMessage
-	39,  // 97: worktree.sync.v1.SyncService.ResolveTree:input_type -> worktree.sync.v1.ResolveTreeRequest
-	41,  // 98: worktree.sync.v1.SyncService.ListBranches:input_type -> worktree.sync.v1.ListBranchesRequest
-	44,  // 99: worktree.sync.v1.SyncService.ListStaged:input_type -> worktree.sync.v1.ListStagedRequest
-	48,  // 100: worktree.sync.v1.SyncService.PushTag:input_type -> worktree.sync.v1.PushTagRequest
-	50,  // 101: worktree.sync.v1.SyncService.ListTags:input_type -> worktree.sync.v1.ListTagsRequest
-	52,  // 102: worktree.sync.v1.SyncService.Ping:input_type -> worktree.sync.v1.PingRequest
-	33,  // 103: worktree.sync.v1.SyncService.WatchBranches:input_type -> worktree.sync.v1.WatchBranchesRequest
-	35,  // 104: worktree.sync.v1.SyncService.Unstage:input_type -> worktree.sync.v1.UnstageRequest
-	37,  // 105: worktree.sync.v1.SyncService.GetAccessConfig:input_type -> worktree.sync.v1.GetAccessConfigRequest
-	19,  // 106: worktree.sync.v1.SyncService.Stage:output_type -> worktree.sync.v1.StageUploadResponse
-	14,  // 107: worktree.sync.v1.SyncService.Push:output_type -> worktree.sync.v1.PushResponse
-	17,  // 108: worktree.sync.v1.SyncService.Pull:output_type -> worktree.sync.v1.PullResponse
-	11,  // 109: worktree.sync.v1.SyncService.Negotiate:output_type -> worktree.sync.v1.ObjectTransferPlan
-	21,  // 110: worktree.sync.v1.SyncService.SyncAccessConfig:output_type -> worktree.sync.v1.AccessConfigSyncResponse
-	27,  // 111: worktree.sync.v1.SyncService.UploadObjects:output_type -> worktree.sync.v1.UploadObjectsResponse
-	26,  // 112: worktree.sync.v1.SyncService.DownloadObjects:output_type -> worktree.sync.v1.ObjectData
-	40,  // 113: worktree.sync.v1.SyncService.ResolveTree:output_type -> worktree.sync.v1.TreeInfo
-	43,  // 114: worktree.sync.v1.SyncService.ListBranches:output_type -> worktree.sync.v1.ListBranchesResponse
-	46,  // 115: worktree.sync.v1.SyncService.ListStaged:output_type -> worktree.sync.v1.ListStagedResponse
-	49,  // 116: worktree.sync.v1.SyncService.PushTag:output_type -> worktree.sync.v1.PushTagResponse
-	51,  // 117: worktree.sync.v1.SyncService.ListTags:output_type -> worktree.sync.v1.ListTagsResponse
-	53,  // 118: worktree.sync.v1.SyncService.Ping:output_type -> worktree.sync.v1.PingResponse
-	34,  // 119: worktree.sync.v1.SyncService.WatchBranches:output_type -> worktree.sync.v1.BranchEvent
-	36,  // 120: worktree.sync.v1.SyncService.Unstage:output_type -> worktree.sync.v1.UnstageResponse
-	38,  // 121: worktree.sync.v1.SyncService.GetAccessConfig:output_type -> worktree.sync.v1.GetAccessConfigResponse
-	106, // [106:122] is the sub-list for method output_type
-	90,  // [90:106] is the sub-list for method input_type
-	90,  // [90:90] is the sub-list for extension type_name
-	90,  // [90:90] is the sub-list for extension extendee
-	0,   // [0:90] is the sub-list for field type_name
+	8,   // 36: worktree.sync.v1.StageUploadRequest.manifest_hash:type_name -> worktree.sync.v1.ContentHash
+	6,   // 37: worktree.sync.v1.AccessConfigSyncRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
+	1,   // 38: worktree.sync.v1.AccessConfigSyncRequest.config_type:type_name -> worktree.sync.v1.AccessConfigType
+	8,   // 39: worktree.sync.v1.AccessConfigSyncRequest.config_hash:type_name -> worktree.sync.v1.ContentHash
+	7,   // 40: worktree.sync.v1.AccessConfigSyncRequest.account_id:type_name -> worktree.sync.v1.AccountId
+	3,   // 41: worktree.sync.v1.AccessConfigSyncRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	61,  // 42: worktree.sync.v1.SyncState.last_sync:type_name -> google.protobuf.Timestamp
+	4,   // 43: worktree.sync.v1.SyncState.local_tip:type_name -> worktree.sync.v1.SnapshotId
+	4,   // 44: worktree.sync.v1.SyncState.remote_tip:type_name -> worktree.sync.v1.SnapshotId
+	0,   // 45: worktree.sync.v1.SyncEnvelope.message_type:type_name -> worktree.sync.v1.SyncMessageType
+	61,  // 46: worktree.sync.v1.SyncEnvelope.timestamp:type_name -> google.protobuf.Timestamp
+	25,  // 47: worktree.sync.v1.ChunkList.chunks:type_name -> worktree.sync.v1.Chunk
+	8,   // 48: worktree.sync.v1.Chunk.hash:type_name -> worktree.sync.v1.ContentHash
+	8,   // 49: worktree.sync.v1.ObjectData.hash:type_name -> worktree.sync.v1.ContentHash
+	2,   // 50: worktree.sync.v1.ObjectData.kind:type_name -> worktree.sync.v1.ObjectKind
+	8,   // 51: worktree.sync.v1.UploadObjectsResponse.rejected:type_name -> worktree.sync.v1.ContentHash
+	8,   // 52: worktree.sync.v1.ManifestEntry.blob_hash:type_name -> worktree.sync.v1.ContentHash
+	28,  // 53: worktree.sync.v1.ManifestRecord.entries:type_name -> worktree.sync.v1.ManifestEntry
+	4,   // 54: worktree.sync.v1.SnapshotRecord.id:type_name -> worktree.sync.v1.SnapshotId
+	3,   // 55: worktree.sync.v1.SnapshotRecord.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 56: worktree.sync.v1.SnapshotRecord.parents:type_name -> worktree.sync.v1.SnapshotId
+	8,   // 57: worktree.sync.v1.SnapshotRecord.manifest_hash:type_name -> worktree.sync.v1.ContentHash
+	61,  // 58: worktree.sync.v1.SnapshotRecord.created_at:type_name -> google.protobuf.Timestamp
+	31,  // 59: worktree.sync.v1.SnapshotRecord.dependencies:type_name -> worktree.sync.v1.Dependency
+	4,   // 60: worktree.sync.v1.SnapshotRecord.reverts:type_name -> worktree.sync.v1.SnapshotId
+	30,  // 61: worktree.sync.v1.SignedSnapshotPayload.record:type_name -> worktree.sync.v1.SnapshotRecord
+	3,   // 62: worktree.sync.v1.WatchBranchesRequest.tree_ids:type_name -> worktree.sync.v1.TreeId
+	3,   // 63: worktree.sync.v1.BranchEvent.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 64: worktree.sync.v1.BranchEvent.old_tip:type_name -> worktree.sync.v1.SnapshotId
+	4,   // 65: worktree.sync.v1.BranchEvent.new_tip:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 66: worktree.sync.v1.BranchEvent.at:type_name -> google.protobuf.Timestamp
+	3,   // 67: worktree.sync.v1.UnstageRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	6,   // 68: worktree.sync.v1.GetAccessConfigRequest.tenant_id:type_name -> worktree.sync.v1.TenantId
+	3,   // 69: worktree.sync.v1.GetAccessConfigRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	1,   // 70: worktree.sync.v1.GetAccessConfigRequest.config_type:type_name -> worktree.sync.v1.AccessConfigType
+	8,   // 71: worktree.sync.v1.GetAccessConfigResponse.config_hash:type_name -> worktree.sync.v1.ContentHash
+	61,  // 72: worktree.sync.v1.GetAccessConfigResponse.updated_at:type_name -> google.protobuf.Timestamp
+	3,   // 73: worktree.sync.v1.TreeInfo.tree_id:type_name -> worktree.sync.v1.TreeId
+	6,   // 74: worktree.sync.v1.TreeInfo.tenant_id:type_name -> worktree.sync.v1.TenantId
+	3,   // 75: worktree.sync.v1.ListBranchesRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 76: worktree.sync.v1.BranchInfo.tip:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 77: worktree.sync.v1.BranchInfo.updated_at:type_name -> google.protobuf.Timestamp
+	42,  // 78: worktree.sync.v1.ListBranchesResponse.branches:type_name -> worktree.sync.v1.BranchInfo
+	3,   // 79: worktree.sync.v1.ListStagedRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	4,   // 80: worktree.sync.v1.StagedInfo.snapshot_id:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 81: worktree.sync.v1.StagedInfo.staged_at:type_name -> google.protobuf.Timestamp
+	8,   // 82: worktree.sync.v1.StagedInfo.manifest_hash:type_name -> worktree.sync.v1.ContentHash
+	45,  // 83: worktree.sync.v1.ListStagedResponse.staged:type_name -> worktree.sync.v1.StagedInfo
+	4,   // 84: worktree.sync.v1.TagRecord.target:type_name -> worktree.sync.v1.SnapshotId
+	61,  // 85: worktree.sync.v1.TagRecord.created_at:type_name -> google.protobuf.Timestamp
+	3,   // 86: worktree.sync.v1.PushTagRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	47,  // 87: worktree.sync.v1.PushTagRequest.tag:type_name -> worktree.sync.v1.TagRecord
+	3,   // 88: worktree.sync.v1.ListTagsRequest.tree_id:type_name -> worktree.sync.v1.TreeId
+	47,  // 89: worktree.sync.v1.ListTagsResponse.tags:type_name -> worktree.sync.v1.TagRecord
+	7,   // 90: worktree.sync.v1.PingResponse.account_id:type_name -> worktree.sync.v1.AccountId
+	4,   // 91: worktree.sync.v1.PushRejection.ConflictDetected.server_tip:type_name -> worktree.sync.v1.SnapshotId
+	18,  // 92: worktree.sync.v1.SyncService.Stage:input_type -> worktree.sync.v1.StageUploadRequest
+	13,  // 93: worktree.sync.v1.SyncService.Push:input_type -> worktree.sync.v1.PushRequest
+	16,  // 94: worktree.sync.v1.SyncService.Pull:input_type -> worktree.sync.v1.PullRequest
+	12,  // 95: worktree.sync.v1.SyncService.Negotiate:input_type -> worktree.sync.v1.NegotiateRequest
+	20,  // 96: worktree.sync.v1.SyncService.SyncAccessConfig:input_type -> worktree.sync.v1.AccessConfigSyncRequest
+	26,  // 97: worktree.sync.v1.SyncService.UploadObjects:input_type -> worktree.sync.v1.ObjectData
+	10,  // 98: worktree.sync.v1.SyncService.DownloadObjects:input_type -> worktree.sync.v1.WantMessage
+	39,  // 99: worktree.sync.v1.SyncService.ResolveTree:input_type -> worktree.sync.v1.ResolveTreeRequest
+	41,  // 100: worktree.sync.v1.SyncService.ListBranches:input_type -> worktree.sync.v1.ListBranchesRequest
+	44,  // 101: worktree.sync.v1.SyncService.ListStaged:input_type -> worktree.sync.v1.ListStagedRequest
+	48,  // 102: worktree.sync.v1.SyncService.PushTag:input_type -> worktree.sync.v1.PushTagRequest
+	50,  // 103: worktree.sync.v1.SyncService.ListTags:input_type -> worktree.sync.v1.ListTagsRequest
+	52,  // 104: worktree.sync.v1.SyncService.Ping:input_type -> worktree.sync.v1.PingRequest
+	33,  // 105: worktree.sync.v1.SyncService.WatchBranches:input_type -> worktree.sync.v1.WatchBranchesRequest
+	35,  // 106: worktree.sync.v1.SyncService.Unstage:input_type -> worktree.sync.v1.UnstageRequest
+	37,  // 107: worktree.sync.v1.SyncService.GetAccessConfig:input_type -> worktree.sync.v1.GetAccessConfigRequest
+	19,  // 108: worktree.sync.v1.SyncService.Stage:output_type -> worktree.sync.v1.StageUploadResponse
+	14,  // 109: worktree.sync.v1.SyncService.Push:output_type -> worktree.sync.v1.PushResponse
+	17,  // 110: worktree.sync.v1.SyncService.Pull:output_type -> worktree.sync.v1.PullResponse
+	11,  // 111: worktree.sync.v1.SyncService.Negotiate:output_type -> worktree.sync.v1.ObjectTransferPlan
+	21,  // 112: worktree.sync.v1.SyncService.SyncAccessConfig:output_type -> worktree.sync.v1.AccessConfigSyncResponse
+	27,  // 113: worktree.sync.v1.SyncService.UploadObjects:output_type -> worktree.sync.v1.UploadObjectsResponse
+	26,  // 114: worktree.sync.v1.SyncService.DownloadObjects:output_type -> worktree.sync.v1.ObjectData
+	40,  // 115: worktree.sync.v1.SyncService.ResolveTree:output_type -> worktree.sync.v1.TreeInfo
+	43,  // 116: worktree.sync.v1.SyncService.ListBranches:output_type -> worktree.sync.v1.ListBranchesResponse
+	46,  // 117: worktree.sync.v1.SyncService.ListStaged:output_type -> worktree.sync.v1.ListStagedResponse
+	49,  // 118: worktree.sync.v1.SyncService.PushTag:output_type -> worktree.sync.v1.PushTagResponse
+	51,  // 119: worktree.sync.v1.SyncService.ListTags:output_type -> worktree.sync.v1.ListTagsResponse
+	53,  // 120: worktree.sync.v1.SyncService.Ping:output_type -> worktree.sync.v1.PingResponse
+	34,  // 121: worktree.sync.v1.SyncService.WatchBranches:output_type -> worktree.sync.v1.BranchEvent
+	36,  // 122: worktree.sync.v1.SyncService.Unstage:output_type -> worktree.sync.v1.UnstageResponse
+	38,  // 123: worktree.sync.v1.SyncService.GetAccessConfig:output_type -> worktree.sync.v1.GetAccessConfigResponse
+	108, // [108:124] is the sub-list for method output_type
+	92,  // [92:108] is the sub-list for method input_type
+	92,  // [92:92] is the sub-list for extension type_name
+	92,  // [92:92] is the sub-list for extension extendee
+	0,   // [0:92] is the sub-list for field type_name
 }
 
 func init() { file_sync_proto_init() }

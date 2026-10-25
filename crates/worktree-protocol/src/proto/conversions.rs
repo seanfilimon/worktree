@@ -487,6 +487,7 @@ impl From<dom::StageUploadRequest> for wire::StageUploadRequest {
             files_deleted: d.files_deleted,
             message: d.message,
             account_id: Some(d.account_id.into()),
+            manifest_hash: None,
         }
     }
 }
@@ -1251,6 +1252,7 @@ impl wire::StagedInfo {
             files_deleted: s.files_deleted,
             message: s.message.clone(),
             staged_at: Some(datetime_to_prost(s.timestamp)),
+            manifest_hash: None,
         }
     }
 

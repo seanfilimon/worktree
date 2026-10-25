@@ -315,6 +315,20 @@ func (s *Service) Stage(ctx context.Context, req *syncpb.StageUploadRequest) (*s
 		Message:       req.GetMessage(),
 		StagedAt:      s.now(),
 	}
+	if mh := req.GetManifestHash(); mh != nil {
+		h, err := hashFromPB(mh)
+		if err != nil {
+			return nil, invalidf("manifest_hash: %v", err)
+		}
+		ok, err := s.d.Objects.Has(ctx, h)
+		if err != nil {
+			return nil, s.toStatus(ctx, err, "object store")
+		}
+		if !ok {
+			return nil, status.Errorf(codes.FailedPrecondition, "staged manifest %s is missing; upload it first", h.Hex())
+		}
+		st.ManifestHash = h.Hex()
+	}
 	if err := s.d.Staged.Stage(ctx, p, t, st); err != nil {
 		if errors.Is(err, domain.ErrInvalid) {
 			return &syncpb.StageUploadResponse{Accepted: false, Error: proto.String(err.Error())}, nil

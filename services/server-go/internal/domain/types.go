@@ -175,6 +175,10 @@ type StagedSnapshot struct {
 	FilesDeleted  uint32    `json:"files_deleted"`
 	Message       string    `json:"message"`
 	StagedAt      time.Time `json:"staged_at"`
+
+	// v0.5: hex BLAKE3 of the staged working manifest ("" when the client
+	// sent none). It keeps the staged content alive and downloadable.
+	ManifestHash string `json:"manifest_hash,omitempty"`
 }
 
 // BranchProtection applies to every branch whose name matches Pattern

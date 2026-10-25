@@ -180,6 +180,7 @@ mod tests {
                 seconds: 10,
                 nanos: 0,
             }),
+            manifest_hash: None,
         };
         let info = staged_from_wire(&rec);
         assert_eq!(info.snapshot_id, "s1");

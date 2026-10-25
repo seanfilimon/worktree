@@ -361,6 +361,51 @@ func (s *Service) reachable(ctx context.Context, t *domain.Tree, p *domain.Princ
 
 	seenSnap := make(map[string]struct{})
 	seenManifest := make(map[hash.Hash]struct{})
+	// visit notes a manifest and the objects of its entries.
+	visit := func(mh hash.Hash) error {
+		if _, done := seenManifest[mh]; done {
+			return nil
+		}
+		seenManifest[mh] = struct{}{}
+		note(mh, syncpb.ObjectKind_OBJECT_KIND_MANIFEST, true)
+		m, err := s.loadManifest(ctx, mh)
+		if err != nil {
+			if errors.Is(err, objstore.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		for _, e := range m.GetEntries() {
+			bh := hash.Hash(e.GetBlobHash().GetValue())
+			kind := syncpb.ObjectKind_OBJECT_KIND_BLOB
+			if e.GetChunked() {
+				kind = syncpb.ObjectKind_OBJECT_KIND_CHUNK_LIST
+			}
+			var chunks []hash.Hash
+			if e.GetChunked() {
+				if chunks, err = chunksOf(bh); err != nil {
+					return err
+				}
+			}
+			_, wantEntry := pending[bh]
+			wantChunk := false
+			for _, c := range chunks {
+				if _, ok := pending[c]; ok {
+					wantChunk = true
+					break
+				}
+			}
+			if !wantEntry && !wantChunk {
+				continue
+			}
+			ok := canRead(e.GetPath())
+			note(bh, kind, ok)
+			for _, c := range chunks {
+				note(c, syncpb.ObjectKind_OBJECT_KIND_BLOB, ok)
+			}
+		}
+		return nil
+	}
 	for _, tip := range tips {
 		if _, done := seenSnap[tip]; done {
 			continue
@@ -381,51 +426,31 @@ func (s *Service) reachable(ctx context.Context, t *domain.Tree, p *domain.Princ
 			if snap.TreeID != t.ID {
 				continue
 			}
-			mh := snap.ManifestHash
-			if _, done := seenManifest[mh]; done {
-				continue
-			}
-			seenManifest[mh] = struct{}{}
-			note(mh, syncpb.ObjectKind_OBJECT_KIND_MANIFEST, true)
-			m, err := s.loadManifest(ctx, mh)
-			if err != nil {
-				if errors.Is(err, objstore.ErrNotFound) {
-					continue
-				}
+			if err := visit(snap.ManifestHash); err != nil {
 				return nil, err
-			}
-			for _, e := range m.GetEntries() {
-				bh := hash.Hash(e.GetBlobHash().GetValue())
-				kind := syncpb.ObjectKind_OBJECT_KIND_BLOB
-				if e.GetChunked() {
-					kind = syncpb.ObjectKind_OBJECT_KIND_CHUNK_LIST
-				}
-				var chunks []hash.Hash
-				if e.GetChunked() {
-					if chunks, err = chunksOf(bh); err != nil {
-						return nil, err
-					}
-				}
-				_, wantEntry := pending[bh]
-				wantChunk := false
-				for _, c := range chunks {
-					if _, ok := pending[c]; ok {
-						wantChunk = true
-						break
-					}
-				}
-				if !wantEntry && !wantChunk {
-					continue
-				}
-				ok := canRead(e.GetPath())
-				note(bh, kind, ok)
-				for _, c := range chunks {
-					note(c, syncpb.ObjectKind_OBJECT_KIND_BLOB, ok)
-				}
 			}
 			if len(pending) == 0 {
 				return r, nil
 			}
+		}
+	}
+	// Staged working states are readable by everyone who may list them.
+	var staged []domain.StagedSnapshot
+	if s.d.Staged != nil {
+		if staged, err = s.d.Staged.List(ctx, p, t, ""); err != nil && !errors.Is(err, domain.ErrForbidden) {
+			return nil, err
+		}
+	}
+	for _, st := range staged {
+		mh, err := hash.FromHex(st.ManifestHash)
+		if err != nil {
+			continue
+		}
+		if err := visit(mh); err != nil {
+			return nil, err
+		}
+		if len(pending) == 0 {
+			return r, nil
 		}
 	}
 	r.denied = len(denied)

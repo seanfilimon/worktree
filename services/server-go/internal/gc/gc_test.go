@@ -398,3 +398,21 @@ func TestTickerRunsAndStops(t *testing.T) {
 	stop = New(Deps{Logger: quiet, Store: f.store}).Start(f.ctx)
 	stop()
 }
+
+// TestStagedManifestIsARoot: the objects of a staged working manifest are
+// reachable although no snapshot record references them.
+func TestStagedManifestIsARoot(t *testing.T) {
+	f := newFixture(t)
+	wip := f.blob("work in progress")
+	m := f.manifest(entry{path: "wip.txt", h: wip})
+	orphan := f.blob("orphan")
+	must(t, f.store.PutStaged(f.ctx, &domain.StagedSnapshot{SnapshotID: "wip-1", TreeID: f.tree.ID, TenantID: f.tree.TenantID,
+		AccountID: "a", BranchName: "main", StagedAt: t0, ManifestHash: m.Hex()}))
+	rep := f.run(false)
+	if rep.Marked != 1 || f.marks() != 1 {
+		t.Fatalf("marked = %d (docs %d), want only the orphan", rep.Marked, f.marks())
+	}
+	if !f.has(wip) || !f.has(m) || !f.has(orphan) {
+		t.Fatal("objects deleted before the grace period")
+	}
+}

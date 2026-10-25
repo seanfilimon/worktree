@@ -369,6 +369,21 @@ func (c *Collector) mark(ctx context.Context, trees []domain.Tree, expired map[s
 		for _, h := range assets {
 			set[h] = struct{}{}
 		}
+		// Staged working manifests (not snapshot records on the server).
+		staged, err := c.d.Store.ListStaged(ctx, t.ID, "")
+		if err != nil {
+			return nil, fmt.Errorf("list staged of %s: %w", t.ID, err)
+		}
+		for _, s := range staged {
+			mh, err := hash.FromHex(s.ManifestHash)
+			if err != nil || expired[stagedKey(s)] || st.manifests[mh] {
+				continue
+			}
+			st.manifests[mh] = true
+			if err := limits.SnapshotObjects(ctx, c.d.Objects, mh, set); err != nil {
+				return nil, fmt.Errorf("staged manifest of %s: %w", t.ID, err)
+			}
+		}
 		stack := roots
 		for len(stack) > 0 {
 			id := stack[len(stack)-1]

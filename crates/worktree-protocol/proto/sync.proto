@@ -279,6 +279,9 @@ message StageUploadRequest {
   uint32 files_deleted = 9;
   optional string message = 10;
   AccountId account_id = 11;
+  // v0.5: manifest of the staged working state (already uploaded). The
+  // server keeps its objects alive (GC root) and lets readers fetch them.
+  optional ContentHash manifest_hash = 12;
 
   reserved 100 to 199;
 }
@@ -642,6 +645,8 @@ message StagedInfo {
   uint32 files_deleted = 7;
   optional string message = 8;
   google.protobuf.Timestamp staged_at = 9;
+  // v0.5: manifest of the staged state when the client sent one.
+  optional ContentHash manifest_hash = 10;
 
   reserved 100 to 199;
 }

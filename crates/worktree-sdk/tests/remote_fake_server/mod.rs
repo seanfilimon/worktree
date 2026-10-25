@@ -573,6 +573,7 @@ impl SyncService for Svc {
                     seconds: now.timestamp(),
                     nanos: 0,
                 }),
+                manifest_hash: r.manifest_hash,
             },
         });
         Ok(Response::new(wire::StageUploadResponse {

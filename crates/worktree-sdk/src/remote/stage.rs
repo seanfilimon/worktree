@@ -6,7 +6,7 @@ use chrono::Utc;
 use worktree_protocol::proto::sync as wire;
 
 use super::client::{entry_upload_objects, ObjectKind};
-use super::convert::{branch_id, snapshot_id, tenant_id, tree_id};
+use super::convert::{branch_id, snapshot_id, tenant_id, tree_id, wire_hash};
 use super::session::{self, Access};
 use super::StagedInfo;
 use crate::error::Result;
@@ -134,6 +134,7 @@ pub(crate) async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result
         files_deleted: summary.deleted,
         message: message.clone(),
         account_id: None,
+        manifest_hash: Some(wire_hash(&manifest_hash)),
     };
     session.client.stage(req).await?;
 
