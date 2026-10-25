@@ -22,6 +22,9 @@ use crate::repo::Repository;
 /// Default request timeout (the event stream has none).
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Timeout of raw uploads ([`RestClient::put_bytes`]).
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Percent-encode one path segment (tenant slugs, names, branch names...).
 pub fn seg(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes())
@@ -167,6 +170,53 @@ impl RestClient {
         let text = self.request(Method::GET, path, &[], None::<&()>).await?;
         Ok(text)
     }
+
+    // --- deps-releases (ENGINEERING_PLAN §13.5): raw uploads (release assets) ---
+
+    /// PUT `body` verbatim with `content_type` (e.g. a release asset) and
+    /// decode the JSON response. Uploads may take up to ten minutes.
+    pub async fn put_bytes<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<T> {
+        let mut req = self
+            .http
+            .put(self.url(path))
+            .timeout(UPLOAD_TIMEOUT)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body);
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await.map_err(|e| self.unreachable(&e))?;
+        let status = resp.status();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| SdkError::Remote(format!("reading response from {}: {e}", self.server)))?;
+        if !status.is_success() {
+            return Err(map_api_error(
+                &self.server,
+                status.as_u16(),
+                &String::from_utf8_lossy(&bytes),
+            ));
+        }
+        let bytes = if bytes.is_empty() {
+            b"null".to_vec()
+        } else {
+            bytes.to_vec()
+        };
+        serde_json::from_slice(&bytes).map_err(|e| {
+            SdkError::Remote(format!(
+                "unexpected response from {}{path}: {e}",
+                self.server
+            ))
+        })
+    }
+
+    // --- end deps-releases ---
 
     /// Subscribe to `GET /api/v1/events` and call `on_event(type, data)` for
     /// every event until it returns false or the stream ends.

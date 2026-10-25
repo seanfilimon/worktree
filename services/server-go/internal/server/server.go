@@ -126,11 +126,14 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	limiter := limits.New(limits.Deps(v5))
 	accessCfg := accesscfg.New(accesscfg.Deps(v5))
 	pathACL := pathacl.New(pathacl.Deps(v5))
-	_ = todos // started below by its owning workstream
 	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
 	rev.SetLogger(log)
 	rev.Start(ctx)
 	ciSvc.Start(ctx)
+	// deps-releases (§13.5): bus subscribers creating TODOs from pushed
+	// dependencies and cleaning up TODOs/releases of deleted trees.
+	todos.Start(ctx)
+	releases.Start(ctx)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
