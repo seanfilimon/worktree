@@ -399,9 +399,11 @@ func TestDownloadObjectsAccess(t *testing.T) {
 		return metadata.AppendToOutgoingContext(h.as(user), TreeIDMetadataKey, tree)
 	}
 
-	// Unscoped: authenticated callers get every stored object, unknown skipped.
-	if got := h.download(t, ctx, all); len(got) != 2 || got[0].GetKind() != syncpb.ObjectKind_OBJECT_KIND_UNSPECIFIED {
-		t.Fatalf("unscoped download = %d objects", len(got))
+	// Unscoped (v0.5, §13.2): only server admins, who get every stored
+	// object (unknown skipped); everyone else must name the tree.
+	wantCode(t, h.downloadErr(ctx, all), codes.FailedPrecondition)
+	if got := h.download(t, h.as("root"), all); len(got) != 2 || got[0].GetKind() != syncpb.ObjectKind_OBJECT_KIND_UNSPECIFIED {
+		t.Fatalf("unscoped admin download = %d objects", len(got))
 	}
 	wantCode(t, h.downloadErr(h.as(""), all), codes.Unauthenticated)
 

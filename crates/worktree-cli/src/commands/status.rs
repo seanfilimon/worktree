@@ -26,6 +26,17 @@ struct TeamStatus<'a> {
     staged: &'a [StagedInfo],
 }
 
+/// `StatusReport` plus the partial-copy state (ENGINEERING_PLAN §13.2).
+#[derive(Serialize)]
+struct LocalStatus<'a> {
+    #[serde(flatten)]
+    status: &'a StatusReport,
+    /// Files whose content the server withheld (not checked out).
+    restricted: &'a [String],
+    /// The local history is shallow.
+    shallow: bool,
+}
+
 pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let report = repo.status(&tree.name)?;
@@ -34,9 +45,15 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
     } else {
         head_summary(&repo, &report)?
     };
+    let restricted = repo.restricted_paths(&tree.name)?;
+    let local = LocalStatus {
+        status: &report,
+        restricted: &restricted,
+        shallow: repo.is_shallow(&tree.name)?,
+    };
 
     if !args.team {
-        return ctx.out.emit(&report, |t| render(t, &report, &head_line));
+        return ctx.out.emit(&local, |t| render(t, &local, &head_line));
     }
 
     let remote = remote_name(&repo, None);
@@ -47,7 +64,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
         staged: &staged,
     };
     ctx.out.emit(&result, |t| {
-        render(t, &report, &head_line);
+        render(t, &local, &head_line);
         t.blank();
         render_team(t, &remote, &staged);
     })
@@ -68,16 +85,30 @@ fn head_summary(repo: &Repository, report: &StatusReport) -> Result<String> {
     })
 }
 
-fn render(t: &mut Text, report: &StatusReport, head_line: &str) {
+fn render(t: &mut Text, local: &LocalStatus<'_>, head_line: &str) {
+    let report = local.status;
     t.line(format_args!(
         "On tree {}, branch {}",
         report.tree.bold(),
         report.branch.green().bold()
     ));
     t.line(head_line);
+    if local.shallow {
+        t.line("History is shallow; use `wt fetch --deepen N` for more.");
+    }
     if let Some(state) = &report.merge {
         t.blank();
         render_merge(t, state);
+    }
+    if !local.restricted.is_empty() {
+        t.blank();
+        t.line(format_args!(
+            "Restricted ({}; not checked out, the server withholds their content):",
+            plural(local.restricted.len(), "file", "files")
+        ));
+        for path in local.restricted {
+            t.line(format_args!("  {:<10}{}", "restricted:", path.dimmed()));
+        }
     }
     t.blank();
     if report.is_clean() {

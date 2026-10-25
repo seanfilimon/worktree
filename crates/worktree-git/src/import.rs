@@ -18,11 +18,21 @@ use crate::map::GitMap;
 /// Destination for blob contents read from Git.
 pub(crate) trait BlobSink {
     fn put_blob(&self, data: &[u8]) -> Result<ObjectHash>;
+
+    /// Store file content as a manifest entry references it: `(hash,
+    /// chunked)` (v0.5: large files become chunk lists; §13.2).
+    fn put_file(&self, data: &[u8]) -> Result<(ObjectHash, bool)> {
+        Ok((self.put_blob(data)?, false))
+    }
 }
 
 impl BlobSink for ObjectStore {
     fn put_blob(&self, data: &[u8]) -> Result<ObjectHash> {
         Ok(self.put(data)?)
+    }
+
+    fn put_file(&self, data: &[u8]) -> Result<(ObjectHash, bool)> {
+        Ok(ObjectStore::put_file(self, data)?)
     }
 }
 
@@ -30,7 +40,7 @@ impl BlobSink for ObjectStore {
 pub(crate) struct TreeConverter<'a, S: BlobSink + ?Sized> {
     git: &'a git2::Repository,
     sink: &'a S,
-    blobs: HashMap<Oid, (ObjectHash, u64)>,
+    blobs: HashMap<Oid, (ObjectHash, u64, bool)>,
     warned: HashSet<String>,
 }
 
@@ -97,11 +107,12 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
     }
 
     fn file(&mut self, path: String, oid: Oid, executable: bool) -> Result<ManifestEntry> {
-        let (hash, size) = match self.blobs.get(&oid) {
+        let (hash, size, chunked) = match self.blobs.get(&oid) {
             Some(known) => *known,
             None => {
                 let blob = self.git.find_blob(oid)?;
-                let stored = (self.sink.put_blob(blob.content())?, blob.size() as u64);
+                let (hash, chunked) = self.sink.put_file(blob.content())?;
+                let stored = (hash, blob.size() as u64, chunked);
                 self.blobs.insert(oid, stored);
                 stored
             }
@@ -111,7 +122,7 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
             hash,
             size,
             executable,
-            chunked: false,
+            chunked,
         })
     }
 

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
+	"github.com/seanfilimon/worktree/services/server-go/internal/content"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
@@ -39,7 +40,8 @@ const maxMissingReported = 5
 //     in this request), and is an ancestor of new_tip; snapshot_chain ids
 //     without a record must already be stored;
 //  5. every manifest and blob referenced by the new snapshots is present in
-//     the object store (FailedPrecondition otherwise);
+//     the object store — for chunked entries the chunk list (which must
+//     decode) and every chunk (FailedPrecondition otherwise);
 //  6. new_tip descends from the current server tip — else
 //     ConflictDetected{server_tip};
 //  7. License.CheckPush on the paths that differ between the server tip's
@@ -226,6 +228,8 @@ type pushPlan struct {
 	frontier []string
 	// manifests caches decoded manifests by hash.
 	manifests map[hash.Hash]*syncpb.ManifestRecord
+	// chunkObjects are the chunks of chunked entries found by checkObjects.
+	chunkObjects []hash.Hash
 }
 
 // planPush validates the snapshot records of req (step 4 of Push).
@@ -425,6 +429,33 @@ func (s *Service) checkObjects(ctx context.Context, pl *pushPlan) error {
 			}
 			if !ok {
 				note(bh)
+				continue
+			}
+			if !e.GetChunked() {
+				continue
+			}
+			// Chunked large file (ENGINEERING_PLAN §13.2): the chunk list
+			// must decode and every chunk must be stored.
+			objs, err := content.EntryObjects(ctx, s.d.Objects, e)
+			if err != nil {
+				if errors.Is(err, content.ErrInvalidChunkList) {
+					return status.Errorf(codes.FailedPrecondition, "chunk list %s of %s (snapshot %s) is not a valid ChunkList", bh.Hex(), e.GetPath(), snap.ID)
+				}
+				return s.toStatus(ctx, err, "read chunk list")
+			}
+			for _, ch := range objs[1:] {
+				pl.chunkObjects = append(pl.chunkObjects, ch)
+				if _, seen := checked[ch]; seen {
+					continue
+				}
+				checked[ch] = struct{}{}
+				ok, err := s.d.Objects.Has(ctx, ch)
+				if err != nil {
+					return s.toStatus(ctx, err, "object store")
+				}
+				if !ok {
+					note(ch)
+				}
 			}
 		}
 	}
@@ -452,6 +483,9 @@ func (s *Service) pushPlanFor(pl *pushPlan, branch, serverTip string, changed []
 				add(hash.Hash(e.GetBlobHash().GetValue()))
 			}
 		}
+	}
+	for _, ch := range pl.chunkObjects {
+		add(ch)
 	}
 	return &domain.PushPlan{
 		Branch:       branch,

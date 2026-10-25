@@ -247,7 +247,21 @@ impl Repository {
                 parents.entry(snap.id).or_insert(snap.parents);
             }
         }
-        Ok(crate::merge::merge_base(&a_id, &b_id, &parents))
+        let base = crate::merge::merge_base(&a_id, &b_id, &parents);
+        // v0.5 chunks workstream (§13.2): a search that ran into missing
+        // history cannot conclude there is no common ancestor.
+        if base.is_none() {
+            let truncated = parents.values().flatten().any(|p| !parents.contains_key(p));
+            if truncated {
+                return Err(SdkError::InvalidArgument(format!(
+                    "cannot find a common ancestor of {} and {}: the local history is shallow; \
+                     run `wt fetch --deepen N` (or `wt fetch --depth N` with a larger N) and try again",
+                    &a_id[..a_id.len().min(8)],
+                    &b_id[..b_id.len().min(8)]
+                )));
+            }
+        }
+        Ok(base)
     }
 
     // ----------------------------------------------------------------

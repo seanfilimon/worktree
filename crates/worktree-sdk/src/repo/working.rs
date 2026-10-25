@@ -14,9 +14,10 @@ use super::{fsutil, names, Repository, TREE_MARKER_DIR};
 use crate::error::{Result, SdkError};
 use crate::model::{validate_manifest_path, Manifest, ManifestEntry};
 use crate::scan::SecretFinding;
-use crate::store::{hash_bytes, ObjectHash};
+use crate::store::{hash_bytes, prepare_file, ObjectHash};
 
-const INDEX_VERSION: u32 = 1;
+/// Version 2 added `chunked` (large files hash to a chunk list).
+const INDEX_VERSION: u32 = 2;
 
 /// Entries whose mtime falls within this window before the index was saved
 /// are re-hashed: a write in the same timestamp tick (2 s on FAT) as our
@@ -38,6 +39,9 @@ pub(crate) struct IndexEntry {
     mtime_ns: u64,
     hash: ObjectHash,
     executable: bool,
+    /// `hash` names a chunk list (ENGINEERING_PLAN §13.2).
+    #[serde(default)]
+    chunked: bool,
 }
 
 impl Index {
@@ -170,14 +174,14 @@ impl Repository {
             let executable = file.exec_bit.unwrap_or(fallback_exec);
             let cached = old_index
                 .fresh(&file.path, file.size, file.mtime_ns)
-                .map(|e| e.hash)
-                .filter(|h| !store || self.store.has(h));
+                .map(|e| (e.hash, e.chunked))
+                .filter(|(h, _)| !store || self.store.has(h));
             let needs_read = match cached {
                 None => true,
-                Some(h) => scan && head_entry.is_none_or(|e| e.hash != h),
+                Some((h, _)) => scan && head_entry.is_none_or(|e| e.hash != h),
             };
-            let (hash, size) = match (cached, needs_read) {
-                (Some(h), false) => (h, file.size),
+            let (hash, size, chunked) = match (cached, needs_read) {
+                (Some((h, chunked)), false) => (h, file.size, chunked),
                 _ => {
                     let data = match fs::read(&file.abs) {
                         Ok(d) => d,
@@ -185,7 +189,19 @@ impl Repository {
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(e.into()),
                     };
-                    let hash = hash_bytes(&data);
+                    // Large files hash to a chunk list (ENGINEERING_PLAN
+                    // §13.2). A large file recorded as a single blob (before
+                    // chunking existed, or by an importer) keeps that form
+                    // while its content is unchanged.
+                    let prepared = prepare_file(&data);
+                    let legacy = prepared.chunked
+                        && head_entry.is_some_and(|e| {
+                            !e.chunked && e.size == data.len() as u64 && e.hash == hash_bytes(&data)
+                        });
+                    let (hash, chunked) = match head_entry {
+                        Some(e) if legacy => (e.hash, false),
+                        _ => (prepared.hash, prepared.chunked),
+                    };
                     let changed = head_entry.is_none_or(|e| e.hash != hash);
                     let mut clean = true;
                     if scan && changed {
@@ -194,9 +210,13 @@ impl Repository {
                         findings.extend(hits);
                     }
                     if store && clean {
-                        self.store.put_hashed(&hash, &data)?;
+                        if legacy {
+                            self.store.put_hashed(&hash, &data)?;
+                        } else {
+                            self.store.put_prepared(&prepared, &data)?;
+                        }
                     }
-                    (hash, data.len() as u64)
+                    (hash, data.len() as u64, chunked)
                 }
             };
             index.entries.insert(
@@ -206,6 +226,7 @@ impl Repository {
                     mtime_ns: file.mtime_ns,
                     hash,
                     executable,
+                    chunked,
                 },
             );
             entries.push(ManifestEntry {
@@ -213,8 +234,23 @@ impl Repository {
                 hash,
                 size,
                 executable,
-                chunked: false,
+                chunked,
             });
+        }
+        // Restricted ("stubbed") files are never written to the working
+        // directory (ENGINEERING_PLAN §13.2); while absent and unreadable
+        // they keep their head entry, so they neither show as deleted nor
+        // disappear from the next snapshot.
+        let stubbed = self.stubbed_paths(&rec.name)?;
+        if !stubbed.is_empty() {
+            let present: HashSet<String> = entries.iter().map(|e| e.path.clone()).collect();
+            for path in &stubbed {
+                if let Some(e) = head.get(path) {
+                    if !present.contains(path) && !self.store.has_entry(e) {
+                        entries.push(e.clone());
+                    }
+                }
+            }
         }
         Ok(WorkingState {
             manifest: Manifest::from_entries(entries),
@@ -237,6 +273,7 @@ impl Repository {
     ) -> Result<()> {
         let tree_dir = self.tree_dir_of(rec);
         let nested = self.nested_tree_rel_paths(rec)?;
+        let stubbed = self.stubbed_paths(&rec.name)?;
         for entry in &current.entries {
             if target.get(&entry.path).is_none() && tracked.contains(&entry.path) {
                 self.remove_working_file(&tree_dir, &entry.path)?;
@@ -251,6 +288,13 @@ impl Repository {
                 continue;
             }
             if current.get(&entry.path) == Some(entry) {
+                continue;
+            }
+            // Restricted files whose content the server withheld are not
+            // written (ENGINEERING_PLAN §13.2).
+            if stubbed.contains(&entry.path) && !self.store.has_entry(entry) {
+                self.remove_working_file(&tree_dir, &entry.path)?;
+                index.remove(&entry.path);
                 continue;
             }
             let cached = self.materialize(&tree_dir, entry)?;
@@ -271,7 +315,7 @@ impl Repository {
     /// Write one manifest entry's blob into the working directory.
     pub(crate) fn materialize(&self, tree_dir: &Path, entry: &ManifestEntry) -> Result<IndexEntry> {
         validate_manifest_path(&entry.path)?;
-        let data = self.store.get(&entry.hash)?;
+        let data = self.store.read_entry(entry)?;
         let abs = tree_dir.join(&entry.path);
         if abs.is_dir() {
             return Err(SdkError::InvalidArgument(format!(
@@ -287,6 +331,7 @@ impl Repository {
             mtime_ns: fsutil::mtime_ns(&meta),
             hash: entry.hash,
             executable: entry.executable,
+            chunked: entry.chunked,
         })
     }
 
@@ -464,6 +509,7 @@ mod tests {
                 mtime_ns: RACY_WINDOW_NS,
                 hash: h,
                 executable: false,
+                chunked: false,
             },
         );
         index.entries.insert(
@@ -473,6 +519,7 @@ mod tests {
                 mtime_ns: 9 * RACY_WINDOW_NS + 1,
                 hash: h,
                 executable: false,
+                chunked: false,
             },
         );
         assert!(index.fresh("old", 1, RACY_WINDOW_NS).is_some());

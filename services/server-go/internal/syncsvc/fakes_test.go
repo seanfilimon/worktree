@@ -407,6 +407,25 @@ type fakeLicense struct {
 	mu    sync.Mutex
 	fn    func(paths []string) error
 	calls [][]string
+	// readFn decides CheckRead (nil = everything readable); v0.5 chunks
+	// workstream (download scoping).
+	readFn func(paths []string) error
+}
+
+func (l *fakeLicense) setRead(fn func(paths []string) error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.readFn = fn
+}
+
+func (l *fakeLicense) CheckRead(_ context.Context, _ *domain.Principal, _ *domain.Tree, paths []string) error {
+	l.mu.Lock()
+	fn := l.readFn
+	l.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(paths)
 }
 
 func (l *fakeLicense) set(fn func(paths []string) error) {
@@ -433,13 +452,6 @@ func (l *fakeLicense) CheckPush(_ context.Context, _ *domain.Principal, _ *domai
 		return nil
 	}
 	return fn(paths)
-}
-
-// CheckRead allows every read. (v0.5 sec-paths, §13.1: Pull consults the
-// license checker for stubbed paths; pull_paths_test.go covers denials with
-// the real checker.)
-func (l *fakeLicense) CheckRead(context.Context, *domain.Principal, *domain.Tree, []string) error {
-	return nil
 }
 
 // ------------------------------------------------------------------ Staged

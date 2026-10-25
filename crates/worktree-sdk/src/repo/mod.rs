@@ -6,7 +6,7 @@
 //! .wt/
 //!   config.toml                 WorktreeConfig
 //!   ignore                      extra ignore patterns (one per line)
-//!   objects/<hh>/<62 hex>       blobs + manifests (ObjectStore)
+//!   objects/<hh>/<62 hex>       blobs, manifests, chunk lists (ObjectStore)
 //!   snapshots/<id>.json         Snapshot records
 //!   trees/<tree>/tree.toml      TreeInfo (name, id, path, default branch, remote name)
 //!   trees/<tree>/HEAD           current branch name
@@ -16,6 +16,8 @@
 //!   trees/<tree>/refs/tags/<tag>.json          TagInfo
 //!   trees/<tree>/index.json     stat cache: path -> (size, mtime_ns, hash)
 //!   trees/<tree>/reflog.jsonl   ReflogEntry per line (append-only)
+//!   trees/<tree>/shallow        boundary snapshot ids of a shallow history (one per line)
+//!   trees/<tree>/stubbed        paths whose content the server withheld (one per line)
 //!   trees/<tree>/MERGE_STATE.json
 //!   trees/<tree>/LOCK           advisory lock held by mutating operations
 //!   conflicts/<tree>.json       machine-readable conflict list during a merge
@@ -48,6 +50,7 @@ mod ignore_rules;
 mod lock;
 mod merging;
 pub(crate) mod names;
+mod partial; // v0.5 chunks workstream: shallow boundary + stubbed paths
 mod reflog;
 mod refs;
 mod snapshotting;

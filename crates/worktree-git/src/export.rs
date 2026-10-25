@@ -25,11 +25,21 @@ use crate::map::GitMap;
 /// Source of blob contents referenced by manifests.
 pub(crate) trait BlobSource {
     fn read_blob(&self, hash: &ObjectHash) -> Result<Vec<u8>>;
+
+    /// Full content of a manifest entry (v0.5: chunked large files are
+    /// reassembled; ENGINEERING_PLAN §13.2).
+    fn read_entry(&self, entry: &ManifestEntry) -> Result<Vec<u8>> {
+        self.read_blob(&entry.hash)
+    }
 }
 
 impl BlobSource for ObjectStore {
     fn read_blob(&self, hash: &ObjectHash) -> Result<Vec<u8>> {
         Ok(self.get(hash)?)
+    }
+
+    fn read_entry(&self, entry: &ManifestEntry) -> Result<Vec<u8>> {
+        Ok(ObjectStore::read_entry(self, entry)?)
     }
 }
 
@@ -89,7 +99,7 @@ impl<'a, S: BlobSource + ?Sized> TreeWriter<'a, S> {
         if let Some(oid) = self.blobs.oid_for(&entry.hash) {
             return Ok(oid);
         }
-        let data = self.source.read_blob(&entry.hash)?;
+        let data = self.source.read_entry(entry)?;
         let oid = self.git.blob(&data)?;
         self.blobs.insert_oid(entry.hash, oid)?;
         Ok(oid)

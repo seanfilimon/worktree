@@ -776,13 +776,13 @@ impl Repository {
                     let executable = merge_executable(base.as_ref(), &ours, &theirs);
                     match merge_text_with(&base_text, &ours_text, &theirs_text, labels, strategy) {
                         TextMergeResult::Clean(text) => {
-                            let hash = self.store.put(text.as_bytes())?;
+                            let (hash, chunked) = self.store.put_file(text.as_bytes())?;
                             out.entries.push(ManifestEntry {
                                 path,
                                 hash,
                                 size: text.len() as u64,
                                 executable,
-                                chunked: false,
+                                chunked,
                             });
                         }
                         TextMergeResult::Conflicted { merged, conflicts } => {

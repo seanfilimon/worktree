@@ -6,7 +6,7 @@ use chrono::Utc;
 use worktree_protocol::proto::sync as wire;
 use worktree_protocol::proto::sync::push_rejection::Reason;
 
-use super::client::{ObjectKind, RemoteBranch};
+use super::client::{entry_upload_objects, ObjectKind, RemoteBranch};
 use super::convert::{branch_id, snapshot_id, tenant_id, tree_id};
 use super::session::{self, Access, RemoteSession};
 use super::PushReport;
@@ -130,15 +130,21 @@ fn server_known_snapshots(repo: &Repository, branches: &[RemoteBranch]) -> Resul
     Ok(known)
 }
 
-/// Blobs then manifests referenced by `chain`, each once.
+/// Blobs (including the chunks of large files), chunk lists, then
+/// manifests referenced by `chain`, each once.
 fn objects_for(repo: &Repository, chain: &[Snapshot]) -> Result<Vec<(ObjectHash, ObjectKind)>> {
     let manifests: BTreeSet<ObjectHash> = chain.iter().map(|s| s.manifest).collect();
     let mut seen = HashSet::new();
     let mut objects = Vec::new();
     for hash in &manifests {
         for entry in repo.read_manifest(hash)?.entries {
-            if seen.insert(entry.hash) {
-                objects.push((entry.hash, ObjectKind::Blob));
+            if seen.contains(&entry.hash) {
+                continue;
+            }
+            for (h, kind) in entry_upload_objects(repo.store(), &entry)? {
+                if seen.insert(h) {
+                    objects.push((h, kind));
+                }
             }
         }
     }

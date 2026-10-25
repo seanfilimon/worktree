@@ -108,6 +108,8 @@ pub struct RemoteBranch {
 pub enum ObjectKind {
     Blob,
     Manifest,
+    /// Chunk list of a large file (ENGINEERING_PLAN §13.2).
+    ChunkList,
 }
 
 impl From<ObjectKind> for wire::ObjectKind {
@@ -115,8 +117,32 @@ impl From<ObjectKind> for wire::ObjectKind {
         match kind {
             ObjectKind::Blob => wire::ObjectKind::Blob,
             ObjectKind::Manifest => wire::ObjectKind::Manifest,
+            ObjectKind::ChunkList => wire::ObjectKind::ChunkList,
         }
     }
+}
+
+/// gRPC metadata key scoping `DownloadObjects` to one tree.
+pub const TREE_ID_METADATA_KEY: &str = "x-wt-tree-id";
+
+/// The objects to upload for one manifest entry: its chunks (blobs) and
+/// chunk list, or its blob. A chunked entry whose chunk list is not stored
+/// locally (restricted content) contributes only the list hash.
+pub(crate) fn entry_upload_objects(
+    store: &ObjectStore,
+    entry: &crate::model::ManifestEntry,
+) -> Result<Vec<(ObjectHash, ObjectKind)>> {
+    let objects = store.entry_objects(entry)?;
+    if !entry.chunked {
+        return Ok(objects.into_iter().map(|h| (h, ObjectKind::Blob)).collect());
+    }
+    // Chunks first, then the list that references them.
+    let mut out: Vec<_> = objects[1..]
+        .iter()
+        .map(|h| (*h, ObjectKind::Blob))
+        .collect();
+    out.push((objects[0], ObjectKind::ChunkList));
+    Ok(out)
 }
 
 type Inner = SyncServiceClient<InterceptedService<Channel, BearerAuth>>;
@@ -477,20 +503,28 @@ impl SyncClient {
     }
 
     /// Download `wanted` into `store` (verifying every hash), in bounded
-    /// batches. Objects the server does not have are skipped; callers check
-    /// completeness. Returns the number of objects stored.
+    /// batches. The request is scoped to the server tree `tree` (metadata
+    /// `x-wt-tree-id`, required by the server for non-admins). Objects the
+    /// server does not have, or does not let the caller read, are skipped;
+    /// callers check completeness. Returns the number of objects stored.
     pub async fn download_objects(
         &mut self,
         store: &ObjectStore,
+        tree: &str,
         wanted: &[ObjectHash],
     ) -> Result<usize> {
+        let tree_header: MetadataValue<Ascii> = tree.parse().map_err(|_| {
+            SdkError::InvalidArgument(format!("tree id {tree:?} cannot be sent as metadata"))
+        })?;
         let unique = dedup(wanted);
         let mut received = 0;
         for chunk in unique.chunks(HASH_BATCH) {
             let mut pending: HashSet<ObjectHash> = chunk.iter().copied().collect();
-            let req = wire::WantMessage {
+            let mut req = tonic::Request::new(wire::WantMessage {
                 hashes: chunk.iter().map(wire_hash).collect(),
-            };
+            });
+            req.metadata_mut()
+                .insert(TREE_ID_METADATA_KEY, tree_header.clone());
             let mut stream = self
                 .inner
                 .download_objects(req)
@@ -681,6 +715,41 @@ mod tests {
             wire::ObjectKind::from(ObjectKind::Manifest),
             wire::ObjectKind::Manifest
         );
+        assert_eq!(
+            wire::ObjectKind::from(ObjectKind::ChunkList),
+            wire::ObjectKind::ChunkList
+        );
+    }
+
+    #[test]
+    fn chunked_entries_upload_chunks_before_their_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path());
+        let small = b"small".to_vec();
+        let (h, chunked) = store.put_file(&small).unwrap();
+        let entry = |hash, size, chunked| crate::model::ManifestEntry {
+            path: "f".into(),
+            hash,
+            size,
+            executable: false,
+            chunked,
+        };
+        assert_eq!(
+            entry_upload_objects(&store, &entry(h, 5, chunked)).unwrap(),
+            vec![(h, ObjectKind::Blob)]
+        );
+
+        let big: Vec<u8> = (0..9 * 1024 * 1024u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let (h, chunked) = store.put_file(&big).unwrap();
+        assert!(chunked);
+        let objects = entry_upload_objects(&store, &entry(h, big.len() as u64, true)).unwrap();
+        assert_eq!(objects.last(), Some(&(h, ObjectKind::ChunkList)));
+        assert!(objects.len() >= 3);
+        assert!(objects[..objects.len() - 1]
+            .iter()
+            .all(|(_, k)| *k == ObjectKind::Blob));
     }
 
     #[tokio::test]
