@@ -21,6 +21,7 @@ type fakeStore struct {
 	memberships map[string]domain.Membership
 	tokens      map[string]domain.APIToken // id -> token
 	touches     int
+	x           *fakeIAM // IAMStore part (fake_iam_test.go), lazily created
 }
 
 func newFakeStore() *fakeStore {

@@ -19,8 +19,22 @@ import (
 type (
 	ctxKey          struct{}
 	remoteAddrKey   struct{}
+	userAgentKey    struct{}
 	tokenHashCtxKey struct{}
 )
+
+// WithUserAgent records the client's user agent in ctx. Middleware sets it
+// from the User-Agent header and the gRPC interceptors from the
+// "user-agent" metadata; sessions and token use record it.
+func WithUserAgent(ctx context.Context, ua string) context.Context {
+	return context.WithValue(ctx, userAgentKey{}, ua)
+}
+
+// UserAgentFrom returns the user agent recorded by WithUserAgent, or "".
+func UserAgentFrom(ctx context.Context) string {
+	ua, _ := ctx.Value(userAgentKey{}).(string)
+	return ua
+}
 
 // PrincipalFrom returns the principal attached to ctx, or nil.
 func PrincipalFrom(ctx context.Context) *domain.Principal {
@@ -83,10 +97,14 @@ func parseBearer(v string) (string, error) {
 	return tok, nil
 }
 
-// grpcAuthenticate resolves the bearer token in incoming metadata. It
-// returns ctx unchanged when no credential is present.
+// grpcAuthenticate records the client's user agent and resolves the bearer
+// token in incoming metadata. Without a credential no principal is
+// attached.
 func grpcAuthenticate(ctx context.Context, auth domain.Authenticator) (context.Context, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
+	if ua := md.Get("user-agent"); len(ua) > 0 {
+		ctx = WithUserAgent(ctx, strings.Join(ua, " "))
+	}
 	vals := md.Get("authorization")
 	if len(vals) == 0 || (len(vals) == 1 && strings.TrimSpace(vals[0]) == "") {
 		return ctx, nil
@@ -154,6 +172,9 @@ func Middleware(auth domain.Authenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := WithRemoteAddr(r.Context(), r.RemoteAddr)
+			if ua := r.UserAgent(); ua != "" {
+				ctx = WithUserAgent(ctx, ua)
+			}
 
 			var raw string
 			present := false

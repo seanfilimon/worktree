@@ -42,6 +42,15 @@ type Options struct {
 	// LoginFailureWindow is the rate limiting window (default 5 minutes).
 	LoginFailureWindow time.Duration
 
+	// MaxMFAFailures is the number of failed second-factor attempts
+	// (login codes, TOTP confirmation, recovery-code regeneration and
+	// password re-entry for disabling MFA) tolerated per account within
+	// MFAFailureWindow (default 10). Unlike login rate limiting it cannot
+	// be disabled.
+	MaxMFAFailures int
+	// MFAFailureWindow is the MFA rate limiting window (default 15 minutes).
+	MFAFailureWindow time.Duration
+
 	// Password sets the argon2id cost for new hashes; zero fields use
 	// DefaultPasswordParams. Tests may lower it to run faster.
 	Password PasswordParams
@@ -50,15 +59,26 @@ type Options struct {
 	Clock func() time.Time
 }
 
-// Service implements domain.Authenticator and domain.Authorizer on top of
-// a domain.MetaStore. It is safe for concurrent use.
+// Service implements domain.Authenticator, domain.Authorizer and
+// domain.AccountSecurity on top of a domain.MetaStore. It is safe for
+// concurrent use.
 type Service struct {
-	store   domain.MetaStore
-	opts    Options
-	params  PasswordParams
-	now     func() time.Time
-	limiter *loginLimiter // nil when rate limiting is disabled
-	hashSem chan struct{} // bounds concurrent argon2 work (memory)
+	store      domain.MetaStore
+	opts       Options
+	params     PasswordParams
+	now        func() time.Time
+	limiter    *loginLimiter // nil when rate limiting is disabled
+	mfaLimiter *loginLimiter // per-account second-factor failures; always set
+	pending    *mfaPending   // first-step MFA login tokens
+	hashSem    chan struct{} // bounds concurrent argon2 work (memory)
+
+	// mfaMu serializes read-verify-write cycles on MFA state so a TOTP step
+	// or recovery code cannot be used twice by concurrent requests.
+	mfaMu sync.Mutex
+	// invMu serializes invitation acceptance (single use).
+	invMu sync.Mutex
+	// resetMu serializes password-reset redemption (single use).
+	resetMu sync.Mutex
 
 	// regMu serializes account creation so the existence checks and the
 	// multi-record creation in register are atomic within this process.
@@ -73,8 +93,9 @@ type Service struct {
 }
 
 var (
-	_ domain.Authenticator = (*Service)(nil)
-	_ domain.Authorizer    = (*Service)(nil)
+	_ domain.Authenticator   = (*Service)(nil)
+	_ domain.Authorizer      = (*Service)(nil)
+	_ domain.AccountSecurity = (*Service)(nil)
 )
 
 var (
@@ -93,12 +114,20 @@ func New(store domain.MetaStore, opts Options) *Service {
 	if opts.LoginFailureWindow <= 0 {
 		opts.LoginFailureWindow = DefaultLoginFailureWindow
 	}
+	if opts.MaxMFAFailures <= 0 {
+		opts.MaxMFAFailures = DefaultMaxMFAFailures
+	}
+	if opts.MFAFailureWindow <= 0 {
+		opts.MFAFailureWindow = DefaultMFAFailureWindow
+	}
 	s := &Service{
-		store:   store,
-		opts:    opts,
-		params:  opts.Password.withDefaults(),
-		now:     opts.Clock,
-		touched: make(map[string]time.Time),
+		store:      store,
+		opts:       opts,
+		params:     opts.Password.withDefaults(),
+		now:        opts.Clock,
+		mfaLimiter: newLoginLimiter(opts.MaxMFAFailures, opts.MFAFailureWindow),
+		pending:    newMFAPending(),
+		touched:    make(map[string]time.Time),
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -256,13 +285,40 @@ func (s *Service) checkAvailable(ctx context.Context, username, email string) er
 // usernames and wrong passwords yield the same error (wrapping
 // ErrUnauthenticated) after the same amount of work. Repeated failures for
 // the same username and client address yield ErrForbidden until the rate
-// limit window passes. Disabled accounts yield ErrForbidden.
+// limit window passes. Disabled accounts yield ErrForbidden. Accounts with
+// a second factor enabled cannot use this single-step login: after a
+// correct password it fails with ErrForbidden ("mfa required"); use
+// LoginWithMeta and CompleteMFALogin instead.
 func (s *Service) Login(ctx context.Context, username, password string) (string, *domain.Account, error) {
+	meta := s.requestMeta(ctx, domain.SessionMeta{})
+	acct, err := s.passwordLogin(ctx, username, password, meta.RemoteIP)
+	if err != nil {
+		return "", nil, err
+	}
+	enabled, err := s.mfaEnabled(ctx, acct.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	if enabled {
+		return "", nil, fmt.Errorf("iam: mfa required: complete the login with a second factor: %w", domain.ErrForbidden)
+	}
+	raw, _, err := s.issueSession(ctx, acct.ID, false, meta)
+	if err != nil {
+		return "", nil, err
+	}
+	return raw, acct, nil
+}
+
+// passwordLogin is the shared first login step: it rate limits per
+// (username, ip), verifies the password with constant work, rejects
+// disabled accounts, upgrades outdated hashes and prunes expired tokens. It
+// returns a copy of the account.
+func (s *Service) passwordLogin(ctx context.Context, username, password, ip string) (*domain.Account, error) {
 	username = NormalizeUsername(username)
-	key := username + "\x00" + clientIP(ctx)
+	key := username + "\x00" + ip
 	now := s.now()
 	if s.limiter.blocked(key, now) {
-		return "", nil, fmt.Errorf("iam: too many attempts, try again later: %w", domain.ErrForbidden)
+		return nil, fmt.Errorf("iam: too many attempts, try again later: %w", domain.ErrForbidden)
 	}
 
 	var acct *domain.Account
@@ -272,7 +328,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 		case err == nil:
 			acct = a
 		case !errors.Is(err, domain.ErrNotFound):
-			return "", nil, fmt.Errorf("iam: looking up account: %w", err)
+			return nil, fmt.Errorf("iam: looking up account: %w", err)
 		}
 	}
 	candidate := password
@@ -290,20 +346,20 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 	} else {
 		d, err := s.dummy()
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
 		encoded = d
 	}
 	ok, err := s.verifyPassword(ctx, candidate, encoded)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return "", nil, ctxErr
+		return nil, ctxErr
 	}
 	if !usable || !ok || err != nil {
 		s.limiter.fail(key, now)
-		return "", nil, fmt.Errorf("iam: %w", errBadCredentials)
+		return nil, fmt.Errorf("iam: %w", errBadCredentials)
 	}
 	if acct.Disabled {
-		return "", nil, fmt.Errorf("iam: account is disabled: %w", domain.ErrForbidden)
+		return nil, fmt.Errorf("iam: account is disabled: %w", domain.ErrForbidden)
 	}
 	s.limiter.reset(key)
 
@@ -311,13 +367,8 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 		s.upgradeHash(ctx, acct.ID, password)
 	}
 	s.pruneExpiredTokens(ctx, acct.ID, now)
-
-	raw, _, err := s.issueToken(ctx, acct.ID, sessionTokenName, s.opts.SessionTTL)
-	if err != nil {
-		return "", nil, err
-	}
 	out := *acct
-	return raw, &out, nil
+	return &out, nil
 }
 
 // upgradeHash re-hashes password with the current parameters. Best effort:
@@ -349,8 +400,11 @@ func (s *Service) pruneExpiredTokens(ctx context.Context, accountID string, now 
 }
 
 // Authenticate resolves a raw bearer token. It returns an error wrapping
-// ErrUnauthenticated for unknown, malformed or expired tokens and for
-// tokens of disabled or deleted accounts.
+// ErrUnauthenticated for unknown, malformed or expired tokens, for tokens
+// of disabled or deleted accounts and for keys of disabled or deleted
+// service accounts. The principal carries the principal kind, the token's
+// scopes, its MFA flag (sessions only) and its id. Service-account keys
+// resolve to a service-account principal (see serviceAccountPrincipal).
 func (s *Service) Authenticate(ctx context.Context, token string) (*domain.Principal, error) {
 	if !wellFormedToken(token) {
 		return nil, fmt.Errorf("iam: %w", errInvalidToken)
@@ -366,6 +420,29 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*domain.Princ
 	if tok.ExpiresAt != nil && !now.Before(*tok.ExpiresAt) {
 		return nil, fmt.Errorf("iam: %w", errInvalidToken)
 	}
+	var p *domain.Principal
+	if tok.ServiceAccountID != "" || tok.Kind == domain.TokenService {
+		p, err = s.serviceAccountPrincipal(ctx, tok)
+	} else {
+		p, err = s.userPrincipal(ctx, tok)
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.Scopes = append([]string(nil), tok.Scopes...)
+	if len(p.Scopes) == 0 {
+		p.Scopes = nil
+	}
+	p.TokenID = tok.ID
+	s.touch(ctx, tok, now)
+	return p, nil
+}
+
+// userPrincipal resolves a personal token (session or api) to its account.
+func (s *Service) userPrincipal(ctx context.Context, tok *domain.APIToken) (*domain.Principal, error) {
+	if tok.AccountID == "" {
+		return nil, fmt.Errorf("iam: %w", errInvalidToken)
+	}
 	acct, err := s.store.GetAccount(ctx, tok.AccountID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -376,12 +453,13 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*domain.Princ
 	if acct.Disabled {
 		return nil, fmt.Errorf("iam: account is disabled: %w", domain.ErrUnauthenticated)
 	}
-	s.touch(ctx, tok, now)
 	return &domain.Principal{
 		AccountID: acct.ID,
 		Username:  acct.Username,
 		TenantID:  acct.TenantID,
 		IsAdmin:   acct.IsAdmin,
+		Kind:      domain.PrincipalUser,
+		MFA:       tok.MFA && TokenKind(tok) == domain.TokenSession,
 	}, nil
 }
 
@@ -409,50 +487,59 @@ func (s *Service) touch(ctx context.Context, tok *domain.APIToken, now time.Time
 	}
 	s.touched[tok.ID] = now
 	s.touchMu.Unlock()
+	if mt, ok := s.store.(TokenMetaToucher); ok {
+		meta := s.requestMeta(ctx, domain.SessionMeta{})
+		// Keep the recorded client when the request carries none.
+		if meta.RemoteIP == "" {
+			meta.RemoteIP = tok.LastIP
+		}
+		if meta.UserAgent == "" {
+			meta.UserAgent = tok.UserAgent
+		}
+		_ = mt.TouchTokenMeta(ctx, tok.ID, now.UTC(), meta.RemoteIP, meta.UserAgent)
+		return
+	}
 	_ = s.store.TouchToken(ctx, tok.ID, now.UTC())
 }
 
-// CreateToken issues a named API token for accountID. ttl 0 means the
-// token never expires; negative ttl is invalid.
+// CreateToken issues a named, unrestricted personal API token (Kind api)
+// for accountID. ttl 0 means the token never expires; negative ttl is
+// invalid. CreateScopedToken issues tokens limited to some actions.
 func (s *Service) CreateToken(ctx context.Context, accountID, name string, ttl time.Duration) (string, *domain.APIToken, error) {
-	name = strings.TrimSpace(name)
-	if err := validateTokenName(name); err != nil {
-		return "", nil, fmt.Errorf("iam: %w", err)
-	}
-	if ttl < 0 {
-		return "", nil, fmt.Errorf("iam: token ttl must not be negative: %w", domain.ErrInvalid)
-	}
-	acct, err := s.store.GetAccount(ctx, accountID)
-	if err != nil {
-		return "", nil, fmt.Errorf("iam: looking up account: %w", err)
-	}
-	if acct.Disabled {
-		return "", nil, fmt.Errorf("iam: account is disabled: %w", domain.ErrForbidden)
-	}
-	return s.issueToken(ctx, acct.ID, name, ttl)
+	return s.CreateScopedToken(ctx, accountID, name, ttl, nil)
 }
 
-func (s *Service) issueToken(ctx context.Context, accountID, name string, ttl time.Duration) (string, *domain.APIToken, error) {
+// issue stores a new token built from tmpl (owner, name, kind, scopes, MFA
+// flag and client metadata) with a fresh secret, id and timestamps.
+// ttl <= 0 means no expiry.
+func (s *Service) issue(ctx context.Context, tmpl *domain.APIToken, ttl time.Duration) (string, *domain.APIToken, error) {
 	raw, h, err := newToken()
 	if err != nil {
 		return "", nil, err
 	}
 	now := s.now().UTC()
-	tok := &domain.APIToken{
-		ID:        uuid.NewString(),
-		AccountID: accountID,
-		Name:      name,
-		TokenHash: h,
-		CreatedAt: now,
+	tok := *tmpl
+	tok.ID = uuid.NewString()
+	tok.TokenHash = h
+	tok.CreatedAt = now
+	tok.ExpiresAt = nil
+	tok.LastUsedAt = nil
+	tok.Scopes = nil
+	if len(tmpl.Scopes) > 0 {
+		tok.Scopes = append([]string(nil), tmpl.Scopes...)
 	}
 	if ttl > 0 {
 		exp := now.Add(ttl)
 		tok.ExpiresAt = &exp
 	}
-	if err := s.store.CreateToken(ctx, tok); err != nil {
+	if err := s.store.CreateToken(ctx, &tok); err != nil {
 		return "", nil, fmt.Errorf("iam: storing token: %w", err)
 	}
-	out := *tok
+	out := tok
+	out.Scopes = append([]string(nil), tok.Scopes...)
+	if len(out.Scopes) == 0 {
+		out.Scopes = nil
+	}
 	return raw, &out, nil
 }
 
