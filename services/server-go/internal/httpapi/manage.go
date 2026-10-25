@@ -47,7 +47,6 @@ const (
 	maxRefNameLen    = 200
 	maxTagMessage    = 4096
 	maxTenantNameLen = 100 // characters
-	minRevPrefixLen  = 4
 	maxSearchQuery   = 100 // characters
 	defaultSearchMax = 20
 	maxSearchLimit   = 50
@@ -81,89 +80,18 @@ func validateRefNameManage(kind, name string) error {
 	return nil
 }
 
-// resolveRevManage resolves a revision of tree to a snapshot id. rev is,
-// in order of precedence: a full snapshot id of the tree, a branch name, a
-// tag name, or a unique id prefix (at least 4 characters) among the
-// snapshots reachable from the tree's branches and tags. A branch that has
-// no snapshots yet resolves to "".
-func (a *api) resolveRevManage(ctx context.Context, tree *domain.Tree, rev string) (string, error) {
-	if rev == "" {
-		return "", badRequestf("revision must not be empty")
+// revisionID resolves rev with snapshotForRev and returns the snapshot id.
+// A branch that has no snapshots yet resolves to "" (so a new branch can be
+// created from an empty one).
+func (a *api) revisionID(ctx context.Context, tree *domain.Tree, rev string) (string, error) {
+	if b, err := a.d.Store.GetBranch(ctx, tree.ID, rev); err == nil && b.Tip == "" {
+		return "", nil
 	}
-	if s, err := a.d.Store.GetSnapshot(ctx, rev); err == nil {
-		if s.TreeID == tree.ID {
-			return s.ID, nil
-		}
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return "", err
-	}
-	if b, err := a.d.Store.GetBranch(ctx, tree.ID, rev); err == nil {
-		return b.Tip, nil
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return "", err
-	}
-	if t, err := a.d.Store.GetTag(ctx, tree.ID, rev); err == nil {
-		return t.Target, nil
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return "", err
-	}
-	if len(rev) >= minRevPrefixLen {
-		id, err := a.resolvePrefixManage(ctx, tree, rev)
-		if err != nil || id != "" {
-			return id, err
-		}
-	}
-	return "", notFoundf("revision %q not found in tree %s", rev, tree.Name)
-}
-
-// resolvePrefixManage finds the unique snapshot whose id starts with prefix
-// among those reachable from tree's branch tips and tag targets. It returns
-// "" when nothing matches and a 400 error when the prefix is ambiguous.
-func (a *api) resolvePrefixManage(ctx context.Context, tree *domain.Tree, prefix string) (string, error) {
-	branches, err := a.d.Store.ListBranches(ctx, tree.ID)
+	s, err := a.snapshotForRev(ctx, tree, rev)
 	if err != nil {
 		return "", err
 	}
-	tags, err := a.d.Store.ListTags(ctx, tree.ID)
-	if err != nil {
-		return "", err
-	}
-	var heads []string
-	seenHead := map[string]bool{}
-	addHead := func(id string) {
-		if id != "" && !seenHead[id] {
-			seenHead[id] = true
-			heads = append(heads, id)
-		}
-	}
-	for _, b := range branches {
-		addHead(b.Tip)
-	}
-	for _, t := range tags {
-		addHead(t.Target)
-	}
-	matches := map[string]bool{}
-	for _, head := range heads {
-		log, err := a.d.History.Log(ctx, head, 0)
-		if err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				continue // dangling ref: nothing reachable to match
-			}
-			return "", err
-		}
-		for _, s := range log {
-			if s.TreeID == tree.ID && strings.HasPrefix(s.ID, prefix) {
-				matches[s.ID] = true
-			}
-		}
-		if len(matches) > 1 {
-			return "", badRequestf("revision %q is ambiguous: it matches several snapshots", prefix)
-		}
-	}
-	for id := range matches {
-		return id, nil
-	}
-	return "", nil
+	return s.ID, nil
 }
 
 // ---- branches ----
@@ -201,7 +129,7 @@ func (a *api) handleCreateBranch(w http.ResponseWriter, r *http.Request) error {
 		case !errors.Is(err, domain.ErrNotFound):
 			return err
 		}
-	} else if tip, err = a.resolveRevManage(ctx, tree, req.From); err != nil {
+	} else if tip, err = a.revisionID(ctx, tree, req.From); err != nil {
 		return err
 	}
 	if err := a.d.Store.CompareAndSwapBranchTip(ctx, tree.ID, req.Name, "", tip); err != nil {
@@ -294,7 +222,7 @@ func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
-	target, err := a.resolveRevManage(ctx, tree, req.Target)
+	target, err := a.revisionID(ctx, tree, req.Target)
 	if err != nil {
 		return err
 	}
