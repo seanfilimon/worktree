@@ -42,8 +42,9 @@ type meResponse struct {
 }
 
 type createTokenRequest struct {
-	Name     string `json:"name"`
-	TTLHours int    `json:"ttl_hours"`
+	Name     string   `json:"name"`
+	TTLHours int      `json:"ttl_hours"`
+	Scopes   []string `json:"scopes"` // optional action patterns (v0.4)
 }
 
 type createTokenResponse struct {
@@ -98,7 +99,20 @@ func (a *api) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	if req.Username == "" || req.Password == "" {
 		return badRequestf("username and password are required")
 	}
-	token, acct, err := a.d.Auth.Login(r.Context(), req.Username, req.Password)
+	var res *domain.LoginResult
+	var err error
+	if a.d.Security != nil {
+		res, err = a.d.Security.LoginWithMeta(r.Context(), req.Username, req.Password, sessionMeta(r))
+	} else {
+		var token string
+		var acct *domain.Account
+		if token, acct, err = a.d.Auth.Login(r.Context(), req.Username, req.Password); err == nil {
+			res = &domain.LoginResult{Token: token, Account: acct}
+		}
+	}
+	if err == nil && (res == nil || res.Account == nil) {
+		err = errors.New("login returned no account")
+	}
 	if err != nil {
 		if errors.Is(err, domain.ErrUnauthenticated) || errors.Is(err, domain.ErrNotFound) {
 			a.auditAs(r, &domain.Account{Username: req.Username}, "auth.login_failed", "", "account", "", nil)
@@ -107,9 +121,37 @@ func (a *api) handleLogin(w http.ResponseWriter, r *http.Request) error {
 		}
 		return err
 	}
+	acct := res.Account
+	if res.MFARequired {
+		a.auditAs(r, acct, "auth.mfa_challenge", acct.TenantID, "account", acct.ID, nil)
+		writeJSON(w, http.StatusOK, mfaRequiredResponse{
+			MFARequired: true, MFAToken: res.MFAToken, Account: mfaAccountView{Username: acct.Username}})
+		return nil
+	}
 	a.auditAs(r, acct, "auth.login", acct.TenantID, "account", acct.ID, nil)
-	writeJSON(w, http.StatusOK, sessionResponse{Token: token, Account: acct})
+	writeJSON(w, http.StatusOK, sessionResponse{Token: res.Token, Account: acct})
 	return nil
+}
+
+// mfaRequiredResponse is the first-step login answer for accounts with a
+// second factor; only the username is revealed until the code is given.
+type mfaRequiredResponse struct {
+	MFARequired bool           `json:"mfa_required"`
+	MFAToken    string         `json:"mfa_token"`
+	Account     mfaAccountView `json:"account"`
+}
+
+type mfaAccountView struct {
+	Username string `json:"username"`
+}
+
+// sessionMeta describes the client of r for new sessions.
+func sessionMeta(r *http.Request) domain.SessionMeta {
+	ua := r.UserAgent()
+	if len(ua) > 512 {
+		ua = ua[:512]
+	}
+	return domain.SessionMeta{RemoteIP: remoteHost(r), UserAgent: ua}
 }
 
 // auditAs records an audit event for an actor that is not (yet) the
@@ -233,11 +275,35 @@ func (a *api) handleCreateToken(w http.ResponseWriter, r *http.Request) error {
 	if req.TTLHours < 0 || req.TTLHours > maxTokenTTLHours {
 		return badRequestf("ttl_hours must be between 0 (no expiry) and %d", maxTokenTTLHours)
 	}
-	token, t, err := a.d.Auth.CreateToken(r.Context(), p.AccountID, req.Name, time.Duration(req.TTLHours)*time.Hour)
+	if p.IsServiceAccount() || p.AccountID == "" {
+		return forbiddenf("service accounts cannot create personal tokens")
+	}
+	scopes, err := validateScopes(req.Scopes, p)
 	if err != nil {
 		return err
 	}
-	a.audit(r, "token.create", p.TenantID, "token", t.ID, map[string]string{"name": t.Name})
+	ttl := time.Duration(req.TTLHours) * time.Hour
+	var (
+		token string
+		t     *domain.APIToken
+	)
+	if len(scopes) > 0 {
+		sec, err := a.security()
+		if err != nil {
+			return err
+		}
+		token, t, err = sec.CreateScopedToken(r.Context(), p.AccountID, req.Name, ttl, scopes)
+		if err != nil {
+			return err
+		}
+	} else if token, t, err = a.d.Auth.CreateToken(r.Context(), p.AccountID, req.Name, ttl); err != nil {
+		return err
+	}
+	details := map[string]string{"name": t.Name}
+	if len(scopes) > 0 {
+		details["scopes"] = strings.Join(scopes, ",")
+	}
+	a.audit(r, "token.create", p.TenantID, "token", t.ID, details)
 	writeJSON(w, http.StatusOK, createTokenResponse{Token: token, APIToken: t})
 	return nil
 }
