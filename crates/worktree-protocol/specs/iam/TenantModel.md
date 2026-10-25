@@ -1,738 +1,324 @@
 # Tenant Model Specification
 
-> **Status**: Draft v1.0
-> **Last Updated**: 2025-01-15
-> **Scope**: W0rkTree Protocol — Identity & Access Management
-
----
-
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [What is a Tenant?](#what-is-a-tenant)
-3. [Tenant Properties](#tenant-properties)
-4. [Tenant Types](#tenant-types)
-5. [Tenant Lifecycle](#tenant-lifecycle)
-6. [Cross-Tenant Access](#cross-tenant-access)
-7. [Tenant Resolution](#tenant-resolution)
-8. [Worktree Visibility Modes](#worktree-visibility-modes)
-9. [Organization Tenants](#organization-tenants)
-10. [Tenant Data Model](#tenant-data-model)
-11. [Tenant Limits and Quotas](#tenant-limits-and-quotas)
-12. [Tenant Attributes for ABAC](#tenant-attributes-for-abac)
-13. [Security Considerations](#security-considerations)
-14. [Implementation Status](#implementation-status)
+1. [Overview](#1-overview)
+2. [Tenants](#2-tenants)
+3. [Accounts](#3-accounts)
+4. [Memberships and roles](#4-memberships-and-roles)
+5. [Teams and service accounts](#5-teams-and-service-accounts)
+6. [Lifecycle](#6-lifecycle)
+7. [Tenant status](#7-tenant-status)
+8. [Limits, quotas and usage](#8-limits-quotas-and-usage)
+9. [Cross-tenant access](#9-cross-tenant-access)
+10. [Tree visibility](#10-tree-visibility)
+11. [Invitations](#11-invitations)
+12. [REST API and CLI](#12-rest-api-and-cli)
+13. [Security considerations](#13-security-considerations)
+14. [Implementation status](#14-implementation-status)
+15. [Roadmap](#15-roadmap)
+16. [References](#16-references)
 
 ---
 
-## Overview
+## 1. Overview
+
+A **tenant** is the namespace that owns trees on a W0rkTree server. A tree is
+addressed as `tenant/tree`, for example `wt clone http://host:7420 acme/web`.
 
-A **tenant** is the identity unit on the W0rkTree server. Every person or organization
-that uses W0rkTree is a tenant. Tenants own worktrees and can grant other tenants access.
+There are two kinds of tenant:
+
+| Kind | `Tenant.Kind` | Created by | Typical use |
+|---|---|---|---|
+| Personal | `user` | Account registration (one per account, slug = username) | An individual's own trees |
+| Organization | `org` | `POST /tenants` / `wt tenant create` by any signed-in account | Teams, companies, projects |
+
+People act through **accounts**. An account joins tenants through
+**memberships**, each of which carries a role. Authorization is defined in
+[IAM](./IAM.md). This document covers the tenant, account and membership data
+model and its lifecycle.
 
-Unlike Git hosting platforms where identity is an afterthought layered on top by each
-provider, W0rkTree treats tenant identity as a **first-class protocol concept**. The
-tenant model is the foundation upon which the entire IAM system is built.
+## 2. Tenants
+
+`domain.Tenant` (JSON names as in `internal/domain/types.go`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string (UUID) | Internal id; not used in URLs |
+| `slug` | string | Unique on the server. Used in URLs, CLI arguments, policy resources (`wt:tenant/<slug>`) and principals (`tenant:<slug>`). |
+| `name` | string | Display name, at most 200 characters (defaults to the slug) |
+| `kind` | `user` \| `org` | See §1 |
+| `plan` | `free` \| `pro` \| `enterprise` | Label set by server admins. It does not change limits (§8). |
+| `created_at` | timestamp | |
+| `status` | `""` / `active` \| `suspended` \| `deactivated` | v0.5, see §7 |
+| `status_reason` | string | v0.5 |
+| `limits` | `TenantLimits` or absent | v0.5 per-tenant overrides, see §8 |
 
-Key principles:
+Slug rules:
 
-- **Every actor is a tenant** — whether individual or organization
-- **Tenants own worktrees** — ownership is the root of all access
-- **Tenants grant access** — cross-tenant collaboration is built into the protocol
-- **Tenants are server-resolved** — the server is the source of truth for identity
+- **Organization slugs**: 1–63 characters from `[a-z0-9-]`, not starting or
+  ending with `-` (`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).
+- **Personal slugs** equal the username (§3).
+- Slugs cannot be changed. `wt tenant rename` changes only the display name.
+
+The server keeps no tenant email address. Email belongs to accounts.
+
+## 3. Accounts
+
+`domain.Account` has the following fields:
+
+| Field | Notes |
+|---|---|
+| `id` | Account id |
+| `username` | `^[a-z0-9][a-z0-9-]{1,38}$`, entered lower-cased. Reserved: `admin`, `anonymous`, `api`, `auth`, `events`, `healthz`, `metrics`, `system`. `admin` can be claimed only by the configured server admin. |
+| `email` | Syntax-checked, **not verified** |
+| `display_name` | Free text |
+| `tenant_id` | The personal tenant |
+| `is_admin` | Server admin |
+| `disabled` | A disabled account is denied every action |
+| `created_at` | Timestamp |
 
----
-
-## What is a Tenant?
-
-A tenant represents a single identity on a W0rkTree server. It is defined by:
-
-- A **username** (slug): unique identifier, URL-safe (e.g., `"alice-dev"`, `"acme-corp"`)
-- An **email**: used for identification and grant resolution (e.g., `"alice@company.com"`)
-- Can be **personal** (individual developer) or **organization** (team/company)
-- Owns worktrees with full control
-- Can be granted access to other tenants' worktrees
-
-### Username Rules
-
-Usernames (slugs) must conform to the following rules:
-
-- 1–64 characters in length
-- Lowercase alphanumeric characters and hyphens only: `[a-z0-9-]`
-- Must start and end with an alphanumeric character
-- No consecutive hyphens (`--`)
-- Must be unique across the entire server
-- Cannot be a reserved name (e.g., `admin`, `system`, `root`, `api`, `www`)
-
-### Email Rules
-
-- Must be a valid email address (RFC 5322)
-- Must be verified before the tenant is activated
-- Must be unique across the entire server
-- Used as an alternate lookup key for cross-tenant grants
-- Used for notifications and account recovery
-
----
-
-## Tenant Properties
-
-| Property           | Type                        | Required | Description                             |
-|--------------------|-----------------------------|----------|-----------------------------------------|
-| `id`               | `TenantId` (UUID v7)       | Yes      | Internal unique identifier              |
-| `name`             | `String`                    | Yes      | Display name (human-readable)           |
-| `slug`             | `String`                    | Yes      | URL-safe username (unique)              |
-| `email`            | `String`                    | Yes      | Primary email address (unique)          |
-| `type`             | `personal` / `organization` | Yes      | Account type                            |
-| `status`           | `Active` / `Suspended`      | Yes      | Account status                          |
-| `plan`             | `Free` / `Pro` / `Enterprise` / `Custom` | Yes | Subscription plan              |
-| `max_accounts`     | `u32`                       | No       | Max accounts (org tenants only)         |
-| `max_trees`        | `u32`                       | Yes      | Maximum number of worktrees             |
-| `max_storage_bytes`| `u64`                       | Yes      | Total storage quota in bytes            |
-| `created_at`       | `DateTime<Utc>`             | Yes      | Account creation timestamp              |
-| `updated_at`       | `DateTime<Utc>`             | Yes      | Last modification timestamp             |
-| `attributes`       | `HashMap<String, String>`   | No       | Custom attributes for ABAC conditions   |
-
-### Property Details
-
-**`id` — TenantId**
-
-A UUID v7 (time-ordered) that serves as the internal primary key. This ID is:
-- Never exposed in URLs or user-facing interfaces
-- Used internally for policy resolution and storage
-- Immutable once assigned
-- Time-ordered for efficient indexing
-
-**`slug` — Username**
-
-The tenant's public identifier. Used in:
-- Worktree URLs: `wt://server/alice-dev/my-project`
-- Cross-tenant grants: `{ tenant = "alice-dev" }`
-- CLI commands: `wt clone alice-dev/my-project`
-
-**`email` — Primary Email**
-
-Used for:
-- Account verification and recovery
-- Cross-tenant grants by email: `{ tenant = "alice@company.com" }`
-- Notifications (snapshot activity, access changes, etc.)
-- Tenant resolution (fallback after slug lookup)
-
----
-
-## Tenant Types
-
-### Personal Tenant
-
-A personal tenant represents an individual developer.
-
-- One account (the owner) — no sub-accounts
-- Cannot have teams (teams are org-only)
-- Simplified management — fewer IAM concepts to worry about
-- Ideal for solo developers and open-source contributors
-
-### Organization Tenant
-
-An organization tenant represents a team, company, or group.
-
-- Can have multiple **accounts** (members)
-- Supports **teams** for group-based access control
-- Has an **owner account** with full control
-- Has **admin accounts** that can manage the org
-- Members inherit org-level access to org-owned worktrees
-- Subject to `max_accounts` limit based on plan
-
----
-
-## Tenant Lifecycle
-
-### Creation
-
-1. User signs up with username, email, display name
-2. Server validates uniqueness of slug and email
-3. Server assigns a TenantId (UUID v7)
-4. Email verification is initiated
-5. Tenant status is set to `Active` upon email verification
-6. Default plan and limits are applied
-
-### Modification
-
-- Display name, email can be updated (email requires re-verification)
-- Slug changes are allowed but rate-limited (once per 30 days)
-- Old slugs are reserved for 90 days to prevent hijacking
-- Plan and limits are updated via billing system
-
-### Suspension
-
-- Tenant status set to `Suspended`
-- All access tokens are revoked
-- Worktrees remain intact but become read-only
-- Cross-tenant grants referencing this tenant are paused
-- Can be reactivated by admin or billing resolution
-
-### Deletion
-
-- Soft-delete with 30-day recovery window
-- All worktrees are marked for deletion
-- All cross-tenant grants are revoked
-- Slug is reserved for 1 year after deletion
-- After recovery window: permanent deletion of all data
-
----
-
-## Cross-Tenant Access
-
-Cross-tenant access is the mechanism by which one tenant grants another tenant
-access to their worktrees. This is a core feature of W0rkTree's collaborative model.
-
-### Two Methods of Granting Access
-
-#### Method 1: Simple Grants in `.wt/config.toml`
-
-Simple grants are a shorthand for common access patterns. They are defined in the
-worktree's root configuration file:
-
-```toml
-# .wt/config.toml
-
-# Grant by username (slug)
-[[tenant_access]]
-tenant = "partner-corp"
-permissions = ["tree:read"]
-
-# Grant by email
-[[tenant_access]]
-tenant = "bob@company.com"
-permissions = ["tree:read", "tree:write"]
-
-# Grant multiple permissions to a collaborator
-[[tenant_access]]
-tenant = "alice-dev"
-permissions = ["tree:read", "tree:write", "branch:create", "snapshot:create"]
-
-# Read-only access for an external reviewer
-[[tenant_access]]
-tenant = "external-reviewer"
-permissions = ["tree:read", "snapshot:read"]
-```
-
-Simple grants are **syntactic sugar** — the server resolves them into full IAM policies
-internally. They are equivalent to:
-
-```toml
-# What the server generates internally from [[tenant_access]]
-[[policy]]
-name = "tenant-grant-partner-corp"
-effect = "allow"
-subjects = [{ tenant = "partner-corp" }]
-scope = "worktree"
-permissions = ["tree:read"]
-```
-
-#### Method 2: Full IAM Policies in `.wt/access/policies.toml`
-
-For more complex access patterns, use full IAM policies:
-
-```toml
-# .wt/access/policies.toml
-
-# Basic cross-tenant read access
-[[policy]]
-name = "partner-readonly"
-effect = "allow"
-subjects = [{ tenant = "partner-corp" }]
-scope = "worktree"
-permissions = ["tree:read"]
-
-# Cross-tenant access with branch restriction
-[[policy]]
-name = "contractor-staging-only"
-effect = "allow"
-subjects = [{ tenant = "contractor-dev" }]
-scope = { branch = "staging" }
-permissions = ["tree:read", "tree:write", "branch:read", "snapshot:create"]
-
-# Cross-tenant access with path restriction (path must be registered)
-[[policy]]
-name = "partner-docs-only"
-effect = "allow"
-subjects = [{ tenant = "partner-corp" }]
-scope = { path = "docs/" }
-permissions = ["tree:read", "tree:write"]
-
-# Deny a specific tenant from a sensitive path
-[[policy]]
-name = "deny-contractor-secrets"
-effect = "deny"
-subjects = [{ tenant = "contractor-dev" }]
-scope = { path = "config/secrets.toml" }
-permissions = ["tree:read", "tree:write"]
-
-# Grant by email for tenants you know by email
-[[policy]]
-name = "email-based-grant"
-effect = "allow"
-subjects = [{ tenant = "carol@partner.com" }]
-scope = "worktree"
-permissions = ["tree:read", "branch:read"]
-```
-
-### When to Use Which Method
-
-| Scenario                          | Recommended Method      |
-|-----------------------------------|-------------------------|
-| Simple read/write access          | `[[tenant_access]]`     |
-| Branch-scoped access              | Full IAM policy         |
-| Path-scoped access                | Full IAM policy         |
-| Deny rules                        | Full IAM policy         |
-| Conditional access (ABAC)         | Full IAM policy         |
-| Quick collaboration setup         | `[[tenant_access]]`     |
-
-### Cross-Tenant Access Principles
-
-1. **Owner always has full access** — cannot be restricted by any policy
-2. **Default is deny** — no access unless explicitly granted
-3. **Grants are worktree-scoped** — granting access to one worktree doesn't affect others
-4. **Grants are version-controlled** — stored in `.wt/` files, tracked in snapshots
-5. **Server enforces** — even if a client has the data locally, the server validates on sync
-
----
-
-## Tenant Resolution
-
-When the server encounters a tenant reference (in a `[[tenant_access]]` block or a
-`{ tenant = "..." }` policy subject), it must resolve the reference to a concrete
-TenantId.
-
-### Resolution Algorithm
+Accounts are created in three ways:
+
+- **Self-registration**: `POST /auth/register`, `wt register`. This works
+  while `--allow-registration` is on, which is the default.
+- **By a server admin**: `POST /admin/accounts`, `wt admin account-create`.
+- **On first SSO login**, when `auto_create` is on.
+
+Registration creates, in one step:
+
+- the account;
+- its personal tenant (`kind: "user"`, `plan: "free"`, slug = username);
+- an `owner` membership in that tenant.
+
+Server admins can disable or enable an account and grant or revoke server
+admin with `PATCH /admin/accounts/{username}` or `wt admin account-set`.
+
+## 4. Memberships and roles
+
+A `domain.Membership` is a triple `{tenant_id, account_id, role}`. The role is
+a built-in role (`owner`, `admin`, `maintainer`, `developer`, `viewer`) or a
+custom role of that tenant. See [IAM §4](./IAM.md#4-roles) for what each role
+allows.
+
+- `GET /tenants/{t}/members` needs `tenant:read`.
+- `PUT /tenants/{t}/members/{username} {role}` and `DELETE` need
+  `tenant:admin`.
+- Only owners (and server admins) may grant or revoke `owner`.
+- The last owner cannot be removed or demoted (`409 {"code":"last_owner"}`).
+  An owner may leave only while another owner remains.
+- Personal tenants are ordinary tenants. Their owner may add members, teams
+  and grants exactly as in an organization.
+
+## 5. Teams and service accounts
+
+Both belong to exactly one tenant. See [IAM §5](./IAM.md#5-teams) and
+[IAM §2](./IAM.md#2-identities-and-principals).
+
+- **Teams** group the tenant's accounts. They receive access only through tree
+  grants and `team:<slug>` policy principals.
+- **Service accounts** (`sa:<tenant>/<name>`) act inside their tenant with
+  their own role, which can be anything except `owner`. They authenticate with
+  keys.
+
+## 6. Lifecycle
+
+| Step | How |
+|---|---|
+| Create organization | `POST /tenants {slug, name}` / `wt tenant create SLUG [--name N]`. The caller becomes `owner`. Kind `org`, plan `free`. |
+| Rename | `PATCH /tenants/{t} {name}` / `wt tenant rename T NAME` (`tenant:admin`) |
+| Change plan | `PATCH /tenants/{t} {plan}` / `wt tenant plan T free\|pro\|enterprise` (server admin) |
+| Suspend / resume / deactivate | `PATCH /admin/tenants/{t} {status, status_reason}` / `wt tenant suspend\|resume\|deactivate T [--reason]` (server admin, v0.5) |
+| Set limits | `PUT /admin/tenants/{t}/limits` / `wt admin limits T ...` (server admin, v0.5) |
+| Delete | Not supported. Deactivate the tenant instead (§7). |
+
+`tenant.create` and `tenant.update` (rename, plan, status and limits) are
+audited.
+
+## 7. Tenant status
+
+| Status | Effect |
+|---|---|
+| `active` (or `""`) | Normal |
+| `suspended` | Read-only. Authorization denies every action other than `tenant:read`, `tree:read` and `iam:read`, with reason `tenant_suspended`. |
+| `deactivated` | Authorization denies every action on the tenant and its trees. |
+
+Status changes follow these rules:
+
+- **Server admins** are never affected.
+- **No revocation.** Suspension and deactivation revoke no tokens, delete no
+  data and change no memberships. `resume` restores full access immediately.
+- **Scope.** Status applies to resources of the tenant. Members can still use
+  other tenants they belong to.
+
+## 8. Limits, quotas and usage
+
+`domain.TenantLimits` has these fields. Zero means "use the server default".
+
+| Field | Enforced by |
+|---|---|
+| `max_trees` | REST tree creation → `409 {"code":"quota_exceeded"}` |
+| `max_storage_bytes` | `limits.Limiter` push check, measuring new objects of accepted pushes (doc `tenant_usage`) → `PushDenied{Kind:"quota_exceeded"}` |
+| `max_branches_per_tree` | Push check for new branches, and REST branch creation |
+| `max_members` | REST member add → `409 quota_exceeded` |
+| `requests_per_minute` | Rate limiter override for the tenant's principals |
+
+Server defaults come from `--default-max-trees` / `WT_DEFAULT_MAX_TREES` and
+`--default-max-storage` / `WT_DEFAULT_MAX_STORAGE`. Both default to `0`, which
+means unlimited. The global rate limit is `--rate-limit` (1200 requests per
+minute per principal).
+
+The **effective** limit is the tenant override if set, else the server
+default. `GET /tenants/{t}/usage` returns `{trees, branches, members,
+storage_bytes, limits, effective}`. `wt admin usage T` prints it.
+
+## 9. Cross-tenant access
+
+A tenant's trees are private to its members unless the owners open them up.
+These mechanisms combine; the rules are in [IAM §9](./IAM.md#9-evaluation-algorithm).
+
+| Mechanism | Gives |
+|---|---|
+| **User grant** on a tree (`subject_type: "user"`) | One account of any tenant gets a role on that tree. |
+| **Tenant grant** on a tree (`subject_type: "tenant"`, v0.5) | Every member (and service account) of another tenant gets a role on that tree. |
+| **Policy allow** with `tenant:<slug>`, `user:`, `sa:<tenant>/<name>` or `authenticated` principals | Specific actions on specific resources, optionally conditional. |
+| **Policy deny** with the same principals | Removes access, including on public trees and per path. |
+| **Visibility** `internal` / `public` | `tree:read` for every signed-in principal, or for everyone (§10). |
+| **License rules** with `grantee` | Per-path content rights for non-member tenants. See [License Compliance](../licensing/LicenseCompliance.md). |
+
+Principles:
+
+- **Default deny.** Nothing outside the tenant can see a private tree without
+  a grant, an allow policy or a visibility setting.
+- **Owners stay in control.** The lockout guard keeps owners able to repair
+  IAM ([IAM §10](./IAM.md#10-owner-protection-and-tenant-status)).
+- **Server enforcement.** Clients never decide.
+- **Dual enforcement.** IAM and license rules must both allow content access.
+
+## 10. Tree visibility
+
+`Tree.Visibility` is set at creation (`POST /tenants/{t}/trees {visibility}`,
+`wt trees create --visibility`) and changed with `PATCH` or `wt trees update`
+(`tree:admin`):
+
+| Value | Read access beyond roles and grants |
+|---|---|
+| `private` (default) | none |
+| `internal` | every signed-in account and service account |
+| `public` | everyone, including anonymous clients |
+
+Visibility never grants write access. See
+[Staged Visibility](../visibility/StagedVisibility.md) for what readers of a
+tree can see of in-progress work.
+
+## 11. Invitations
+
+Holders of `iam:admin` invite people with `POST /tenants/{t}/invitations
+{email? | username?, role, team?}` or `wt invite create T (--email E|--user U)
+[--role R] [--team SLUG]`:
+
+- **The code.** The response carries a one-time code `wti_…`, valid for
+  7 days and stored hashed. The admin panel turns it into the link
+  `/admin/invite/<code>`.
+- **Preview.** `GET /invitations/{code}` is public.
+- **Accept.** `POST /invitations/{code}/accept` (signed in) adds the
+  membership and, if requested, the team membership. When the invitation
+  names an email or username, the accepting account must match it. An
+  existing higher role is never downgraded.
+- **Defaults and limits.** The default role is `developer`. Only owners can
+  invite as `owner`.
+- **Revoke** with `DELETE /tenants/{t}/invitations/{id}` or
+  `wt invite revoke`.
+
+There is no email delivery. The inviter passes the code on.
+
+## 12. REST API and CLI
 
 ```
-resolve_tenant(reference: String) -> Result<TenantId, Error>:
-    1. Try to look up `reference` as a username (slug)
-       - If found → return the tenant's TenantId
-    2. If not found, try to look up `reference` as an email
-       - If found → return the tenant's TenantId
-    3. If not found → return Error("tenant '{reference}' not found on server")
+GET    /api/v1/tenants                           -> tenants visible to the caller (all for server admins)
+POST   /api/v1/tenants {slug,name}               -> 201 tenant
+GET    /api/v1/tenants/{t}                       (tenant:read)
+PATCH  /api/v1/tenants/{t} {name?,plan?}         (tenant:admin; plan = server admin)
+GET    /api/v1/tenants/{t}/members               (tenant:read)
+PUT    /api/v1/tenants/{t}/members/{username} {role} | DELETE   (tenant:admin)
+GET    /api/v1/tenants/{t}/usage
+GET|PUT /api/v1/admin/tenants/{t}/limits         (server admin)
+PATCH  /api/v1/admin/tenants/{t} {status,status_reason}          (server admin)
 ```
 
-### Resolution Details
-
-- **Step 1: Slug lookup** — Exact match against the `slug` field. Case-insensitive
-  (slugs are always stored lowercase).
-
-- **Step 2: Email lookup** — Exact match against the `email` field. Case-insensitive
-  for the domain part, case-sensitive for the local part (per RFC 5321, though in
-  practice most providers treat it as case-insensitive).
-
-- **Step 3: Error** — If neither lookup succeeds, the server returns an error during
-  config sync. The worktree owner must fix the reference before the policy takes effect.
-
-### Resolution Timing
-
-- **On config sync**: When `.wt/config.toml` or `.wt/access/policies.toml` is synced
-  to the server, tenant references are resolved and validated.
-- **Resolved TenantId is stored**: The server stores the resolved TenantId alongside
-  the policy for efficient access checks.
-- **Re-resolution on tenant changes**: If a tenant changes their slug, the server
-  re-resolves all policies referencing the old slug (using the stored TenantId as
-  the source of truth).
-
-### Error Handling
-
-| Scenario                          | Behavior                                      |
-|-----------------------------------|-----------------------------------------------|
-| Tenant not found                  | Error on config sync; policy not applied       |
-| Tenant suspended                  | Policy stored but not active; access denied    |
-| Tenant deleted                    | Policy marked invalid; access denied           |
-| Ambiguous reference               | Not possible — slug and email are both unique  |
-
----
-
-## Worktree Visibility Modes
-
-Every worktree has a visibility mode that determines default access for tenants
-that are NOT explicitly granted access.
-
-| Mode      | Default Access | Who Can Read                | Who Can Write                        |
-|-----------|----------------|-----------------------------|--------------------------------------|
-| `private` | None           | Owner + explicit grants     | Owner + explicit grants              |
-| `shared`  | None           | Owner + listed tenants      | Owner + listed tenants with write    |
-| `public`  | Read-all       | All authenticated tenants   | Owner + explicit grants              |
-
-### Private Mode (Default)
-
-- No access for anyone except the owner
-- All access must be explicitly granted via `[[tenant_access]]` or IAM policies
-- Most secure — suitable for proprietary code, internal projects
-- The default visibility for all new worktrees
-
-```toml
-# .wt/config.toml
-[worktree]
-visibility = "private"
+```
+wt tenant list | create SLUG [--name N] | show T | rename T NAME | plan T PLAN
+wt tenant members T | add-member T USER [--role R] | set-role T USER ROLE | remove-member T USER
+wt tenant suspend|resume|deactivate T [--reason R]
+wt admin limits T [--max-trees N] [--max-storage SIZE] [--max-branches N] [--max-members N] [--rate N] [--clear]
+wt admin usage T
+wt remote add NAME URL --tenant T        # binds a worktree remote to a tenant
 ```
 
-### Shared Mode
-
-- No default access, but the worktree is "discoverable" by listed tenants
-- Listed tenants can see the worktree in search results and their dashboard
-- Access still requires explicit grants, but discovery is enabled
-- Suitable for collaborative projects within a known group
-
-```toml
-# .wt/config.toml
-[worktree]
-visibility = "shared"
-
-[[tenant_access]]
-tenant = "team-lead"
-permissions = ["tree:read", "tree:write", "branch:create"]
-
-[[tenant_access]]
-tenant = "qa-engineer"
-permissions = ["tree:read", "branch:read"]
-```
-
-### Public Mode
-
-- All authenticated tenants on the server can read the worktree
-- Write access still requires explicit grants
-- Suitable for open-source projects, public documentation, shared libraries
-- Server may enforce rate limits on public reads
-
-```toml
-# .wt/config.toml
-[worktree]
-visibility = "public"
-
-# Only explicit grants get write access
-[[tenant_access]]
-tenant = "trusted-contributor"
-permissions = ["tree:write", "branch:create", "snapshot:create"]
-```
-
-### Visibility and IAM Interaction
-
-- Visibility mode sets the **baseline** access level
-- IAM policies can **add** permissions on top of the baseline
-- IAM **deny** policies can **restrict** below the baseline (e.g., deny a specific
-  tenant from reading a public worktree)
-- The owner's access is **never** affected by visibility mode
-
----
-
-## Organization Tenants
-
-Organization tenants extend the basic tenant model with multi-user capabilities.
-
-### Organization Structure
-
-```
-Organization Tenant (e.g., "acme-corp")
-├── Owner Account
-├── Admin Accounts
-├── Member Accounts
-└── Teams
-    ├── Team "backend" → [alice, bob]
-    ├── Team "frontend" → [carol, dave]
-    └── Team "devops" → [eve]
-```
-
-### Accounts
-
-An **account** is an individual user within an organization tenant.
-
-| Property   | Type               | Description                          |
-|------------|--------------------|--------------------------------------|
-| `id`       | `AccountId` (UUID) | Unique account identifier            |
-| `username` | `String`           | Account username within the org      |
-| `email`    | `String`           | Account email                        |
-| `role`     | `Role`             | Account's role within the org        |
-| `status`   | `Active`/`Suspended`| Account status                      |
-
-### Account Roles within an Organization
-
-| Role        | Capabilities                                              |
-|-------------|-----------------------------------------------------------|
-| `owner`     | Full control — transfer ownership, delete org, manage all |
-| `admin`     | Manage accounts, teams, worktrees, policies               |
-| `member`    | Access worktrees based on team membership and policies     |
-
-### Teams
-
-Teams are groups of accounts used for group-based access control.
-
-```toml
-# .wt/access/policies.toml — Using teams in policies
-[[policy]]
-name = "backend-team-access"
-effect = "allow"
-subjects = [{ team = "backend" }]
-scope = "worktree"
-permissions = ["tree:read", "tree:write", "branch:create", "snapshot:create"]
-```
-
-### Inheritance
-
-- Organization members **inherit** the org's cross-tenant grants
-- If "acme-corp" is granted `tree:read` on a worktree, all members of "acme-corp"
-  can read that worktree
-- Team-based policies within the org provide finer-grained control
-- Individual account policies override team policies (most specific wins)
-
-### Organization Limits
-
-| Plan         | Max Accounts | Max Trees | Max Storage |
-|--------------|-------------|-----------|-------------|
-| Free         | 5           | 10        | 1 GB        |
-| Pro          | 50          | 100       | 50 GB       |
-| Enterprise   | Unlimited   | Unlimited | Custom      |
-| Custom       | Custom      | Custom    | Custom      |
-
----
-
-## Tenant Data Model
-
-### Rust Pseudocode
-
-```rust
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
-use std::collections::HashMap;
-
-/// Unique identifier for a tenant
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TenantId(Uuid);
-
-/// The type of tenant account
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TenantType {
-    /// Individual developer account
-    Personal,
-    /// Team or company account with sub-accounts
-    Organization,
-}
-
-/// Current status of the tenant
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TenantStatus {
-    /// Active and fully operational
-    Active,
-    /// Suspended — read-only, no new operations
-    Suspended,
-}
-
-/// Subscription plan
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Plan {
-    Free,
-    Pro,
-    Enterprise,
-    Custom(String),
-}
-
-/// Resource limits for the tenant
-#[derive(Debug, Clone)]
-pub struct ResourceLimits {
-    pub max_accounts: Option<u32>,   // None for personal tenants
-    pub max_trees: u32,
-    pub max_storage_bytes: u64,
-    pub max_snapshot_size_bytes: u64,
-    pub max_branches_per_tree: u32,
-}
-
-/// The core tenant struct
-#[derive(Debug, Clone)]
-pub struct Tenant {
-    /// Internal unique identifier (UUID v7)
-    pub id: TenantId,
-    /// Human-readable display name
-    pub name: String,
-    /// URL-safe username (unique, lowercase)
-    pub slug: String,
-    /// Primary email address (unique)
-    pub email: String,
-    /// Personal or organization account
-    pub tenant_type: TenantType,
-    /// Current account status
-    pub status: TenantStatus,
-    /// Subscription plan
-    pub plan: Plan,
-    /// Resource limits
-    pub limits: ResourceLimits,
-    /// Custom attributes for ABAC conditions
-    pub attributes: HashMap<String, String>,
-    /// Account creation timestamp
-    pub created_at: DateTime<Utc>,
-    /// Last modification timestamp
-    pub updated_at: DateTime<Utc>,
-}
-```
-
-### Serialization Format
-
-Tenants are stored server-side. The wire format (for API responses) uses JSON:
-
-```json
-{
-  "id": "01912345-6789-7abc-def0-123456789abc",
-  "name": "Alice Developer",
-  "slug": "alice-dev",
-  "email": "alice@company.com",
-  "type": "personal",
-  "status": "active",
-  "plan": "pro",
-  "limits": {
-    "max_trees": 100,
-    "max_storage_bytes": 53687091200
-  },
-  "attributes": {
-    "department": "engineering",
-    "location": "us-west"
-  },
-  "created_at": "2025-01-15T10:30:00Z",
-  "updated_at": "2025-01-15T10:30:00Z"
-}
-```
-
----
-
-## Tenant Limits and Quotas
-
-### Enforcement Points
-
-Limits are enforced at several points in the protocol:
-
-| Limit                | Enforcement Point                    | Behavior on Exceed                  |
-|----------------------|--------------------------------------|-------------------------------------|
-| `max_trees`          | Tree creation                        | Error: "tree limit reached"         |
-| `max_storage_bytes`  | Snapshot sync (push)                 | Error: "storage quota exceeded"     |
-| `max_accounts`       | Account creation (org only)          | Error: "account limit reached"      |
-| `max_snapshot_size`  | Snapshot creation                    | Error: "snapshot too large"         |
-| `max_branches`       | Branch creation                      | Error: "branch limit reached"       |
-
-### Quota Tracking
-
-- Storage usage is tracked per-tenant across all worktrees
-- Snapshot deduplication is accounted for (shared chunks count once)
-- Deleted worktrees free up quota after garbage collection
-- Quota information is available via the server API
-
----
-
-## Tenant Attributes for ABAC
-
-Tenants can have arbitrary key-value attributes used in ABAC (Attribute-Based
-Access Control) policy conditions.
-
-### Built-in Attributes
-
-| Attribute      | Description                    | Example Values          |
-|----------------|--------------------------------|-------------------------|
-| `department`   | Organizational department      | `"engineering"`, `"qa"` |
-| `location`     | Geographic location            | `"us-west"`, `"eu"`     |
-| `clearance`    | Security clearance level       | `"public"`, `"secret"`  |
-| `team_size`    | Number of team members         | `"5"`, `"50"`           |
-
-### Using Attributes in Policies
-
-```toml
-# .wt/access/policies.toml
-
-# Only allow tenants in the EU to access GDPR-related data
-[[policy]]
-name = "gdpr-data-eu-only"
-effect = "allow"
-subjects = [{ all_authenticated = true }]
-scope = { path = "data/gdpr/" }
-permissions = ["tree:read"]
-
-[[policy.conditions]]
-attribute = "location"
-operator = "StartsWith"
-value = "eu"
-
-# Deny access to secret data for tenants without clearance
-[[policy]]
-name = "deny-secret-without-clearance"
-effect = "deny"
-subjects = [{ all_authenticated = true }]
-scope = { path = "config/secrets/" }
-permissions = ["tree:read", "tree:write"]
-
-[[policy.conditions]]
-attribute = "clearance"
-operator = "NotEquals"
-value = "secret"
-```
-
----
-
-## Security Considerations
-
-### Tenant Isolation
-
-- Tenants are fully isolated by default (private visibility)
-- Cross-tenant access requires explicit opt-in by the worktree owner
-- Server enforces tenant boundaries on all operations
-- No implicit access through tenant relationships (except org membership)
-
-### Slug Squatting Prevention
-
-- Reserved slugs list prevents impersonation of system accounts
-- Slug changes are rate-limited and old slugs are reserved temporarily
-- Deleted tenant slugs are reserved for 1 year
-
-### Email Verification
-
-- Tenants must verify their email before activation
-- Email changes require re-verification
-- Unverified tenants cannot be used as policy subjects
-
-### Suspended Tenant Behavior
-
-- Suspended tenants cannot perform any write operations
-- Suspended tenants cannot authenticate (tokens are revoked)
-- Policies referencing suspended tenants are paused (treated as if tenant doesn't exist)
-- Worktrees owned by suspended tenants become read-only for all grantees
-
----
-
-## Implementation Status
-
-### Implemented
-
-- `Tenant` struct with `id`, `name`, `slug`, `status`, `plan`, `limits`, `attributes`
-- `TenantId` type (UUID-based)
-- `TenantStatus` enum (`Active`, `Suspended`)
-- `Plan` enum (`Free`, `Pro`, `Enterprise`, `Custom`)
-- `ResourceLimits` struct with storage and tree limits
-- ABAC attribute storage on tenant
-
-### TODO
-
-- [ ] `email` field on `Tenant` struct
-- [ ] `TenantType` enum (`Personal`, `Organization`)
-- [ ] `PolicySubject::Tenant` variant for cross-tenant policies
-- [ ] Tenant resolution algorithm (slug → email → error)
-- [ ] Cross-tenant access resolution in the access engine
-- [ ] `[[tenant_access]]` config parsing and server-side expansion
-- [ ] Worktree visibility modes (`private`, `shared`, `public`)
-- [ ] Slug reservation on change/deletion
-
-### Planned
-
-- [ ] Organization tenant support (accounts, teams, inheritance)
-- [ ] Team membership management
-- [ ] Tenant billing and plan enforcement
-- [ ] Tenant API (CRUD operations, quota queries)
-- [ ] Email verification flow
-- [ ] Tenant suspension and deletion workflows
-- [ ] Audit logging for tenant operations
-
----
-
-## References
-
-- [IAM Specification](./IAM.md) — Full IAM system overview
-- [Declarative Access](./DeclarativeAccess.md) — Declarative config files for access control
-- [W0rkTree Protocol](../protocol/) — Core protocol specification
+## 13. Security considerations
+
+- **Isolation by authorization.** Tenants share one process, one `meta.db` and
+  one object store. Isolation is enforced by authorization on every request,
+  and object downloads are scoped to objects reachable from a tree the caller
+  can read.
+- **Unverified emails.** Account emails are never verified. They are
+  therefore not used to resolve tenants or principals, and SSO links an
+  identity to an existing account by email only when `link_by_email` is
+  enabled. See [Security](../security/Security.md).
+- **Reserved names.** Reserved usernames stop accounts from shadowing URL
+  segments and system actors. Organization slugs share the slug namespace with
+  personal tenants, so a username whose slug is already taken by an
+  organization cannot register.
+- **Suspension is not revocation.** Suspension stops writes but not
+  authentication. To lock a person out, disable their account.
+
+## 14. Implementation status
+
+| Area | Status |
+|---|---|
+| Personal and organization tenants; registration creating the personal tenant | Built |
+| Memberships with built-in and custom roles; owner rules; last-owner guard | Built |
+| Teams, service accounts, invitations | Built |
+| Plans (label only) | Built |
+| Tenant status (`suspended`, `deactivated`) | Built (v0.5) |
+| Per-tenant limits, server defaults, usage endpoint, quota enforcement | Built (v0.5) |
+| Tenant grants and `tenant:<slug>` principals | Built (v0.5) |
+| Tree visibility `private` / `internal` / `public` | Built |
+| Rust `worktree_protocol::iam::tenant` types | Legacy model, not used by the server |
+
+## 15. Roadmap
+
+The following were described in earlier versions of this spec but are not
+built:
+
+- **Tenant email and email verification.** A tenant email, verification
+  before activation, and resolving tenant references by email.
+- **Slug changes** with reservation of old slugs, and reservation after
+  deletion.
+- **Tenant deletion** with a recovery window and data purge.
+- **Plan-driven limits.** Fixed quotas per plan, `max_snapshot_size`, and a
+  billing integration. Limits are server defaults plus per-tenant overrides.
+- **Tenant attributes for ABAC** (`department`, `location`, `clearance`, …).
+- **`shared` visibility** with discovery lists.
+- **`[[tenant_access]]` shorthand** in `.wt/config.toml`.
+- **Revoking tokens on suspension**, and pausing cross-tenant grants that
+  reference a suspended tenant. A suspended grantee tenant keeps the access
+  it was granted on other tenants' trees.
+- **An org-only distinction for teams and accounts.** Personal tenants can
+  have members and teams like organizations.
+- **Multi-tenant context switching in the CLI** (`wt tenant switch`). Each
+  worktree remote names its tenant (`[remote.<name>] tenant`).
+
+## 16. References
+
+- `services/server-go/internal/domain/types.go` (`Tenant`, `Account`,
+  `Membership`, `Tree.Visibility`), `domain/v05.go` (`TenantLimits`, tenant
+  status)
+- `services/server-go/internal/httpapi/{tenants.go,manage.go,admin.go,ops.go,iam_invitations.go}`
+- `services/server-go/internal/iam/{service.go,validate.go,invitations.go}`
+- `services/server-go/internal/limits/`, `internal/authz/`
+- `crates/worktree-cli/src/commands/{tenant,admin,invite,trees,remote}.rs`
+- `docs/ENGINEERING_PLAN.md` §7, §12, §13.3, §13.7
+- Related specs: [IAM](./IAM.md), [Declarative Access](./DeclarativeAccess.md),
+  [License Compliance](../licensing/LicenseCompliance.md),
+  [Server](../server/Server.md)
