@@ -169,13 +169,13 @@ func (a *api) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) error 
 }
 
 // handleListDeliveries answers GET .../webhooks/{id}/deliveries?limit=
-// (newest first; default 50, at most 200).
+// (newest first; default 50, at most the service's retention count).
 func (a *api) handleListDeliveries(w http.ResponseWriter, r *http.Request) error {
 	svc, sc, err := a.webhookScope(r)
 	if err != nil {
 		return err
 	}
-	limit, err := queryInt(r, "limit", 50, webhooks.DefaultKeep)
+	limit, err := queryInt(r, "limit", 50, svc.Keep())
 	if err != nil {
 		return err
 	}

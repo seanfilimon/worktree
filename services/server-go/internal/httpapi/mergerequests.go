@@ -86,14 +86,16 @@ func writeMergeConflict(w http.ResponseWriter, err error) bool {
 // {"fast_forward","up_to_date","methods","default","allowed","merge_base",
 // "conflicts","reasons"}.
 func (a *api) handleMergeability(w http.ResponseWriter, r *http.Request) error {
+	// Authorize first, like the other review routes, so 501 is never an
+	// oracle for trees the caller cannot read.
+	_, tree, err := a.treeFor(r, domain.ActTreeRead)
+	if err != nil {
+		return err
+	}
 	m, ok := a.d.Review.(merger)
 	if !ok {
 		return &apiError{status: http.StatusNotImplemented, code: "not_implemented",
 			msg: "server-side merge methods are not available on this server"}
-	}
-	_, tree, err := a.treeFor(r, domain.ActTreeRead)
-	if err != nil {
-		return err
 	}
 	n, err := mrNumber(r)
 	if err != nil {

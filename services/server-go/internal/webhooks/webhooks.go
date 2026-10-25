@@ -682,3 +682,7 @@ func (s *Service) Prune(ctx context.Context) error {
 	}
 	return errors.Join(errs...)
 }
+
+// Keep is how many deliveries are kept per webhook (the most a delivery
+// listing can return).
+func (s *Service) Keep() int { return s.o.Keep }
