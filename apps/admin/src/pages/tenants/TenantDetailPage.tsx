@@ -1,4 +1,4 @@
-import { Bot, FileCode2, FileText, FolderTree, Mail, Plus, Puzzle, Settings, Users, UsersRound } from "lucide-react";
+import { Bot, FileCode2, FileText, FolderTree, Mail, Plus, Puzzle, Settings, Users, UsersRound, Webhook } from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useTenant } from "@/api/queries";
@@ -19,12 +19,13 @@ import { PoliciesTab } from "@/pages/iam/PoliciesTab";
 import { RolesTab } from "@/pages/iam/RolesTab";
 import { ServiceAccountsTab } from "@/pages/iam/ServiceAccountsTab";
 import { TeamsTab } from "@/pages/iam/TeamsTab";
+import { WebhooksPanel } from "@/pages/webhooks/WebhooksPanel";
 import { TenantStatusBadge } from "./opsShared";
 import { TenantMembersTab } from "./TenantMembersTab";
 import { TenantSettingsTab } from "./TenantSettingsTab";
 import { TenantTreesTab } from "./TenantTreesTab";
 
-const TABS = ["trees", "members", "teams", "roles", "policies", "service-accounts", "invitations", "access-config", "settings"] as const;
+const TABS = ["trees", "members", "teams", "roles", "policies", "service-accounts", "invitations", "access-config", "webhooks", "settings"] as const;
 type Tab = (typeof TABS)[number];
 
 function isTab(v: string | null): v is Tab {
@@ -132,6 +133,10 @@ export function TenantDetailPage() {
                 <FileCode2 aria-hidden="true" />
                 Access config
               </TabsTrigger>
+              <TabsTrigger value="webhooks">
+                <Webhook aria-hidden="true" />
+                Webhooks
+              </TabsTrigger>
               <TabsTrigger value="settings">
                 <Settings aria-hidden="true" />
                 Settings
@@ -161,6 +166,13 @@ export function TenantDetailPage() {
           </TabsContent>
           <TabsContent value="access-config">
             <AccessConfigTab slug={slug} editable={manage} />
+          </TabsContent>
+          <TabsContent value="webhooks">
+            <WebhooksPanel
+              scope={{ tenant: slug }}
+              editable={manage}
+              description="Tenant webhooks receive events from every tree of the tenant that their creator can read."
+            />
           </TabsContent>
           <TabsContent value="settings">{tenant && <TenantSettingsTab tenant={tenant} editable={manage} />}</TabsContent>
         </Tabs>

@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, FileText, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArchiveX, Ban, FileText, History, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { iamKeys, useIamApi, usePolicies, type Policy } from "@/api/iam";
 import { EmptyState, QueryError, TableSkeleton } from "@/components/people/states";
@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { absoluteTime, relativeTime } from "@/lib/format";
 import { useToast } from "@/toast/store";
 import { PolicyEditorDialog } from "./PolicyEditorDialog";
+import { DeletedPoliciesSheet, PolicyHistorySheet } from "./PolicyHistorySheet";
 import { ConfirmAction, TableCard } from "./shared";
 import { cleanStatement } from "./util";
 
@@ -25,6 +26,8 @@ export function PoliciesTab({ slug, editable }: PoliciesTabProps) {
   const toast = useToast();
   const [editing, setEditing] = useState<Policy | "new" | null>(null);
   const [deleting, setDeleting] = useState<Policy | null>(null);
+  const [history, setHistory] = useState<{ policy: Policy; deleted: boolean } | null>(null);
+  const [showDeleted, setShowDeleted] = useState(false);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: iamKeys.policies(slug) });
   const toggle = useMutation({
@@ -54,12 +57,18 @@ export function PoliciesTab({ slug, editable }: PoliciesTabProps) {
       <TableCard
         description="Policies add fine-grained allow and deny statements on top of roles. Disabled policies are ignored."
         actions={
-          editable && (
-            <Button size="sm" onClick={() => setEditing("new")}>
-              <Plus aria-hidden="true" />
-              New policy
+          <>
+            <Button size="sm" variant="outline" onClick={() => setShowDeleted(true)}>
+              <ArchiveX aria-hidden="true" />
+              Deleted policies
             </Button>
-          )
+            {editable && (
+              <Button size="sm" onClick={() => setEditing("new")}>
+                <Plus aria-hidden="true" />
+                New policy
+              </Button>
+            )}
+          </>
         }
       >
         {policies.isPending ? (
@@ -79,11 +88,9 @@ export function PoliciesTab({ slug, editable }: PoliciesTabProps) {
                 <TableHead className="hidden sm:table-cell">Version</TableHead>
                 <TableHead className="hidden sm:table-cell">Statements</TableHead>
                 <TableHead className="hidden md:table-cell">Updated</TableHead>
-                {editable && (
-                  <TableHead>
-                    <span className="sr-only">Actions</span>
-                  </TableHead>
-                )}
+                <TableHead>
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -120,18 +127,24 @@ export function PoliciesTab({ slug, editable }: PoliciesTabProps) {
                         {relativeTime(p.updated_at)}
                       </time>
                     </TableCell>
-                    {editable && (
-                      <TableCell className="w-20 text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="icon-sm" aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>
-                            <Pencil aria-hidden="true" />
-                          </Button>
-                          <Button variant="ghost" size="icon-sm" aria-label={`Delete ${p.name}`} onClick={() => setDeleting(p)}>
-                            <Trash2 aria-hidden="true" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    )}
+                    <TableCell className="w-px text-right">
+                      <div className="flex justify-end gap-1">
+                        {/* v0.6 (§14.7): version history, diff and rollback. */}
+                        <Button variant="ghost" size="icon-sm" aria-label={`History of ${p.name}`} onClick={() => setHistory({ policy: p, deleted: false })}>
+                          <History aria-hidden="true" />
+                        </Button>
+                        {editable && (
+                          <>
+                            <Button variant="ghost" size="icon-sm" aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>
+                              <Pencil aria-hidden="true" />
+                            </Button>
+                            <Button variant="ghost" size="icon-sm" aria-label={`Delete ${p.name}`} onClick={() => setDeleting(p)}>
+                              <Trash2 aria-hidden="true" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -142,6 +155,22 @@ export function PoliciesTab({ slug, editable }: PoliciesTabProps) {
       {editable && editing !== null && (
         <PolicyEditorDialog tenant={slug} policy={editing === "new" ? null : editing} onClose={() => setEditing(null)} />
       )}
+      <PolicyHistorySheet
+        tenant={slug}
+        policy={history?.policy ?? null}
+        deleted={history?.deleted}
+        editable={editable}
+        onClose={() => setHistory(null)}
+      />
+      <DeletedPoliciesSheet
+        tenant={slug}
+        open={showDeleted}
+        onClose={() => setShowDeleted(false)}
+        onHistory={(p) => {
+          setShowDeleted(false);
+          setHistory({ policy: p, deleted: true });
+        }}
+      />
       <ConfirmAction
         open={deleting !== null}
         onOpenChange={(o) => !o && setDeleting(null)}

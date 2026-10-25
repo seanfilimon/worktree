@@ -1,4 +1,6 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { isUnavailable, retryV06, useV06Api, v06Keys } from "@/api/v06";
+import { UnavailableNotice } from "@/components/v06/UnavailableNotice";
 import { CircleCheck, CircleX, ClipboardPaste, FileCode2, ListChecks, Play } from "lucide-react";
 import { useState } from "react";
 import { iamKeys } from "@/api/iam";
@@ -39,8 +41,38 @@ const EXAMPLE = `{
   ]
 }`;
 
-function LastApplied({ slug, onLoad }: { slug: string; onLoad: (text: string) => void }) {
-  const doc = useAccessConfig(slug);
+// v0.6 (§14.9): tree-level documents (`{tree}/access-config`, deny statements only).
+const TREE_EXAMPLE = `{
+  "policies": [
+    {
+      "name": "hide-secrets",
+      "enabled": true,
+      "statements": [
+        { "sid": "no-secrets", "effect": "deny", "principals": ["role:developer"], "actions": ["tree:read"], "resources": ["wt:path/acme/web/secrets/**"] }
+      ]
+    }
+  ]
+}`;
+
+/** The last applied document of the tenant, or of `tree` when given. */
+function useScopedAccessConfig(slug: string, tree: string | undefined) {
+  const tenantDoc = useAccessConfig(tree ? "" : slug);
+  const v06 = useV06Api();
+  const treeDoc = useQuery({
+    queryKey: v06Keys.treeAccessConfig(slug, tree ?? ""),
+    queryFn: () => v06.treeAccessConfig.get(slug, tree ?? ""),
+    enabled: Boolean(tree),
+    retry: retryV06,
+  });
+  return tree ? treeDoc : tenantDoc;
+}
+
+function unavailable(err: unknown): boolean {
+  return isNotImplemented(err) || isUnavailable(err);
+}
+
+function LastApplied({ slug, tree, onLoad }: { slug: string; tree?: string; onLoad: (text: string) => void }) {
+  const doc = useScopedAccessConfig(slug, tree);
   const text = doc.data ? prettyJson(decodeBase64Text(doc.data.content)) : "";
 
   return (
@@ -48,8 +80,17 @@ function LastApplied({ slug, onLoad }: { slug: string; onLoad: (text: string) =>
       <CardHeader className="border-b pb-6">
         <CardTitle>Last applied document</CardTitle>
         <CardDescription>
-          Roles and policies applied with <span className="font-mono">wt access apply</span> or below are managed by config and
-          read-only elsewhere.
+          {tree ? (
+            <>
+              Deny policies applied from <span className="font-mono">.wt-tree/access/policies.toml</span> or below are managed by config and
+              read-only elsewhere.
+            </>
+          ) : (
+            <>
+              Roles and policies applied with <span className="font-mono">wt access apply</span> or below are managed by config and
+              read-only elsewhere.
+            </>
+          )}
         </CardDescription>
         {doc.data && (
           <CardAction>
@@ -60,9 +101,13 @@ function LastApplied({ slug, onLoad }: { slug: string; onLoad: (text: string) =>
           </CardAction>
         )}
       </CardHeader>
-      {isNotImplemented(doc.error) ? (
+      {unavailable(doc.error) ? (
         <div className="p-4">
-          <NotImplementedNotice feature="Declarative access config" />
+          {tree ? (
+            <UnavailableNotice feature="Tree access config" />
+          ) : (
+            <NotImplementedNotice feature="Declarative access config" />
+          )}
         </div>
       ) : doc.isPending ? (
         <TableSkeleton label="Loading access document" rows={2} columns={2} />
@@ -162,8 +207,9 @@ function PlanResult({ result, applied }: { result: AccessPlanResult; applied: bo
 }
 
 /** Tenant IAM: the declarative access document (plan / apply from pasted canonical JSON). */
-export function AccessConfigTab({ slug, editable }: { slug: string; editable: boolean }) {
+export function AccessConfigTab({ slug, tree, editable }: { slug: string; tree?: string; editable: boolean }) {
   const ops = useOpsApi();
+  const v06 = useV06Api();
   const queryClient = useQueryClient();
   const toast = useToast();
   const [text, setText] = useState("");
@@ -174,20 +220,22 @@ export function AccessConfigTab({ slug, editable }: { slug: string; editable: bo
   const showParseError = touched && parsed.error;
 
   const plan = useMutation({
-    mutationFn: (content: Record<string, unknown>) => ops.accessConfig.plan(slug, content),
+    mutationFn: (content: Record<string, unknown>) =>
+      tree ? v06.treeAccessConfig.plan(slug, tree, content) : ops.accessConfig.plan(slug, content),
     meta: { inlineError: true },
     onSuccess: (result) => setPlanned({ text, result, applied: false }),
   });
 
   const apply = useMutation({
-    mutationFn: (content: Record<string, unknown>) => ops.accessConfig.apply(slug, content),
+    mutationFn: (content: Record<string, unknown>) =>
+      tree ? v06.treeAccessConfig.apply(slug, tree, content) : ops.accessConfig.apply(slug, content),
     meta: { inlineError: true },
     onSuccess: async (result) => {
       setPlanned({ text, result, applied: true });
       if (result.accepted) {
         toast.success("Access config applied", `${result.changes.length} ${result.changes.length === 1 ? "change" : "changes"}`);
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: opsKeys.accessConfig(slug) }),
+          queryClient.invalidateQueries({ queryKey: tree ? v06Keys.treeAccessConfig(slug, tree) : opsKeys.accessConfig(slug) }),
           queryClient.invalidateQueries({ queryKey: iamKeys.roles(slug) }),
           queryClient.invalidateQueries({ queryKey: iamKeys.policies(slug) }),
         ]);
@@ -212,6 +260,7 @@ export function AccessConfigTab({ slug, editable }: { slug: string; editable: bo
     <div className="flex flex-col gap-4">
       <LastApplied
         slug={slug}
+        tree={tree}
         onLoad={(t) => {
           setText(t);
           setTouched(false);
@@ -221,9 +270,19 @@ export function AccessConfigTab({ slug, editable }: { slug: string; editable: bo
         <CardHeader>
           <CardTitle>Plan and apply</CardTitle>
           <CardDescription>
-            Paste the canonical JSON compiled from <span className="font-mono">.wt/access/*.toml</span> (
-            <span className="font-mono">{'{"roles":[…],"policies":[…]}'}</span>). Plan is a dry run; apply replaces every
-            config-managed role and policy atomically.
+            {tree ? (
+              <>
+                Paste the canonical JSON compiled from <span className="font-mono">.wt-tree/access/policies.toml</span> (
+                <span className="font-mono">{'{"policies":[…]}'}</span>). Tree documents may only contain deny statements. Plan is a dry
+                run; apply replaces every config-managed policy of {slug}/{tree} atomically.
+              </>
+            ) : (
+              <>
+                Paste the canonical JSON compiled from <span className="font-mono">.wt/access/*.toml</span> (
+                <span className="font-mono">{'{"roles":[…],"policies":[…]}'}</span>). Plan is a dry run; apply replaces every
+                config-managed role and policy atomically.
+              </>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -234,7 +293,7 @@ export function AccessConfigTab({ slug, editable }: { slug: string; editable: bo
               value={text}
               rows={12}
               spellCheck={false}
-              placeholder={EXAMPLE}
+              placeholder={tree ? TREE_EXAMPLE : EXAMPLE}
               aria-invalid={showParseError ? true : undefined}
               aria-describedby={showParseError ? "access-config-json-error" : undefined}
               onChange={(e) => setText(e.target.value)}
@@ -247,8 +306,12 @@ export function AccessConfigTab({ slug, editable }: { slug: string; editable: bo
               </p>
             )}
           </div>
-          {isNotImplemented(mutationError) ? (
-            <NotImplementedNotice feature="Declarative access config" />
+          {unavailable(mutationError) ? (
+            tree ? (
+              <UnavailableNotice feature="Tree access config" />
+            ) : (
+              <NotImplementedNotice feature="Declarative access config" />
+            )
           ) : (
             <FormError error={mutationError} />
           )}
@@ -281,7 +344,7 @@ export function AccessConfigTab({ slug, editable }: { slug: string; editable: bo
         open={confirming}
         onOpenChange={setConfirming}
         title="Apply this access document?"
-        description={`${current?.result.changes.length ?? 0} planned ${current?.result.changes.length === 1 ? "change" : "changes"} to ${slug}. Config-managed roles and policies not in the document are deleted.`}
+        description={`${current?.result.changes.length ?? 0} planned ${current?.result.changes.length === 1 ? "change" : "changes"} to ${tree ? `${slug}/${tree}` : slug}. Config-managed ${tree ? "policies" : "roles and policies"} not in the document are deleted.`}
         confirmLabel="Apply"
         pending={apply.isPending}
         onConfirm={async () => {

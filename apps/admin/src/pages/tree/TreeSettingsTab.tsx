@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Building2, Globe, Lock, ShieldAlert, Trash2 } from "lucide-react";
+import { Building2, Globe, Lock, ShieldAlert, Trash2, Webhook } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { useApi } from "@/api/context";
@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/toast/store";
+import { WebhooksPanel } from "@/pages/webhooks/WebhooksPanel";
 import { BranchSelect } from "./BranchSelect";
 import { useTreeContext } from "./context";
 
@@ -240,6 +241,24 @@ export function TreeSettingsTab() {
           </div>
         )}
       </form>
+      <section aria-labelledby={`${id}-webhooks`} className="flex flex-col gap-3">
+        <div>
+          <h2 id={`${id}-webhooks`} className="flex items-center gap-2 font-semibold">
+            <Webhook aria-hidden="true" className="size-4" />
+            Webhooks
+          </h2>
+          <p className="text-sm text-muted-foreground">Events of this tree only. Tenant-wide webhooks are managed on the tenant page.</p>
+        </div>
+        <WebhooksPanel
+          scope={{ tenant, tree }}
+          editable={canManage}
+          description={
+            <>
+              POST signed JSON events from <span className="font-mono text-foreground">{`${tenant}/${tree}`}</span> to your services.
+            </>
+          }
+        />
+      </section>
       {canManage && (
         <Card className="border-2 border-foreground">
           <CardHeader>
