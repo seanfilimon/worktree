@@ -77,47 +77,13 @@ func (s *Service) Open(ctx context.Context, p *domain.Principal, tree *domain.Tr
 	return mr, nil
 }
 
-// Approve records the caller's approval. It requires domain.ActMRApprove
-// and an open merge request; authors cannot approve their own merge
-// requests (domain.ErrForbidden). Approving twice is a no-op.
+// Approve records the caller's approval of the current source tip: it is
+// Review with decision domain.ReviewApproved and no body. It requires
+// domain.ActMRApprove and an open merge request; authors cannot approve
+// their own merge requests (domain.ErrForbidden). Approving the same tip
+// twice is a no-op.
 func (s *Service) Approve(ctx context.Context, p *domain.Principal, tree *domain.Tree, number int) (*domain.MergeRequest, error) {
-	if err := checkTree(tree); err != nil {
-		return nil, err
-	}
-	if err := s.authz.Authorize(ctx, p, domain.ActMRApprove, tree.TenantID, tree); err != nil {
-		return nil, err
-	}
-	if err := requirePrincipal(p); err != nil {
-		return nil, err
-	}
-
-	unlock := s.lockTree(tree.ID)
-	defer unlock()
-
-	mr, err := s.openMR(ctx, tree.ID, number)
-	if err != nil {
-		return nil, err
-	}
-	if mr.AuthorID == p.AccountID {
-		return nil, fmt.Errorf("merge request !%d: authors cannot approve their own merge request: %w",
-			number, domain.ErrForbidden)
-	}
-	for _, a := range mr.Approvals {
-		if a.AccountID == p.AccountID {
-			return mr, nil // idempotent
-		}
-	}
-	now := s.now()
-	mr.Approvals = append(mr.Approvals, domain.Approval{AccountID: p.AccountID, Username: p.Username, At: now})
-	mr.UpdatedAt = now
-	if err := s.store.UpdateMergeRequest(ctx, mr); err != nil {
-		return nil, fmt.Errorf("review: update merge request !%d: %w", number, err)
-	}
-	s.publish(domain.EventMRApproved, p, tree, snapshotMR(mr))
-	s.record(ctx, "mr.approve", p, tree, mr, map[string]string{
-		"approvals": strconv.Itoa(countApprovals(mr)),
-	})
-	return mr, nil
+	return s.Review(ctx, p, tree, number, domain.ReviewApproved, "")
 }
 
 // Close abandons an open merge request. The author may close their own
@@ -164,8 +130,12 @@ func (s *Service) Close(ctx context.Context, p *domain.Principal, tree *domain.T
 // Merge fast-forwards the target branch to the source branch's tip.
 //
 // It requires domain.ActMRMerge, an open merge request and the number of
-// approvals demanded by the target's effective protection (otherwise
-// *domain.PushDenied{Kind: "review_required"}). The target tip must be an
+// current approvals (for the source tip) demanded by the target's
+// effective protection (otherwise *domain.PushDenied{Kind:
+// "review_required"}). Outstanding change requests, required CI checks,
+// open blocking TODOs and linear history fail with a *BlockedError (code
+// "merge_blocked"); a member of an open linked group fails with code
+// "linked_group" (merge the group instead). The target tip must be an
 // ancestor of the source tip (or the target empty); otherwise the result
 // wraps domain.ErrConflict and the author must merge the target into the
 // source locally and push. A target that moves concurrently also yields
@@ -190,49 +160,42 @@ func (s *Service) Merge(ctx context.Context, p *domain.Principal, tree *domain.T
 	if err != nil {
 		return nil, err
 	}
-
-	eff, err := s.ProtectionFor(ctx, tree.ID, mr.TargetBranch)
+	ev, err := s.evaluate(ctx, tree, mr, false)
 	if err != nil {
 		return nil, err
 	}
-	if have := countApprovals(mr); have < eff.RequiredApprovals {
-		return nil, &domain.PushDenied{
-			Kind:   "review_required",
-			Reason: fmt.Sprintf("%d of %d approvals", have, eff.RequiredApprovals),
-		}
+	if err := ev.mergeError(); err != nil {
+		return nil, err
 	}
-
-	sourceTip, err := s.branchTip(ctx, tree.ID, mr.SourceBranch)
-	if err != nil {
-		return nil, fmt.Errorf("merge request !%d: %w", number, err)
-	}
-	targetTip := ""
-	switch tb, err := s.store.GetBranch(ctx, tree.ID, mr.TargetBranch); {
-	case err == nil:
-		targetTip = tb.Tip
-	case isNotFound(err):
-		// The target was deleted after the merge request was opened; the
-		// compare-and-swap below recreates it at the source tip.
-	default:
-		return nil, fmt.Errorf("review: get branch '%s': %w", mr.TargetBranch, err)
-	}
-
-	upToDate, err := s.classifyMerge(ctx, mr, sourceTip, targetTip)
+	moved, err := s.moveTarget(ctx, tree, mr, ev)
 	if err != nil {
 		return nil, err
 	}
-	moved := false
-	if !upToDate {
-		if err := s.store.CompareAndSwapBranchTip(ctx, tree.ID, mr.TargetBranch, targetTip, sourceTip); err != nil {
-			if errors.Is(err, domain.ErrConflict) {
-				return nil, fmt.Errorf("merge request !%d: target branch '%s' moved during the merge; retry: %w",
-					number, mr.TargetBranch, err)
-			}
-			return nil, fmt.Errorf("review: update branch '%s': %w", mr.TargetBranch, err)
-		}
-		moved = true
+	if err := s.markMerged(ctx, mr, ev.sourceTip); err != nil {
+		return nil, err
 	}
+	s.announceMerge(ctx, p, tree, mr, ev, moved, nil)
+	return mr, nil
+}
 
+// moveTarget fast-forwards the target branch of mr to the evaluated source
+// tip (unless the target is up to date) and reports whether it moved.
+func (s *Service) moveTarget(ctx context.Context, tree *domain.Tree, mr *domain.MergeRequest, ev *evaluation) (bool, error) {
+	if ev.upToDate {
+		return false, nil
+	}
+	if err := s.store.CompareAndSwapBranchTip(ctx, tree.ID, mr.TargetBranch, ev.targetTip, ev.sourceTip); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			return false, fmt.Errorf("merge request !%d: target branch '%s' moved during the merge; retry: %w",
+				mr.Number, mr.TargetBranch, err)
+		}
+		return false, fmt.Errorf("review: update branch '%s': %w", mr.TargetBranch, err)
+	}
+	return true, nil
+}
+
+// markMerged stores mr as merged at sourceTip.
+func (s *Service) markMerged(ctx context.Context, mr *domain.MergeRequest, sourceTip string) error {
 	now := s.now()
 	mr.State = domain.MRStateMerged
 	mr.MergedAt = &now
@@ -241,26 +204,33 @@ func (s *Service) Merge(ctx context.Context, p *domain.Principal, tree *domain.T
 	if err := s.store.UpdateMergeRequest(ctx, mr); err != nil {
 		// The branch has already moved; surface the failure so the caller
 		// can retry (a retry finds source == target and completes).
-		return nil, fmt.Errorf("review: branch '%s' updated but merge request !%d could not be saved: %w",
-			mr.TargetBranch, number, err)
+		return fmt.Errorf("review: branch '%s' updated but merge request !%d could not be saved: %w",
+			mr.TargetBranch, mr.Number, err)
 	}
+	return nil
+}
 
+// announceMerge publishes the events and audit record of a completed merge.
+func (s *Service) announceMerge(ctx context.Context, p *domain.Principal, tree *domain.Tree, mr *domain.MergeRequest, ev *evaluation, moved bool, extra map[string]string) {
 	s.publish(domain.EventMRMerged, p, tree, snapshotMR(mr))
 	if moved {
 		s.publish(domain.EventBranchPushed, p, tree, map[string]any{
 			"branch":        mr.TargetBranch,
-			"old_tip":       targetTip,
-			"new_tip":       sourceTip,
+			"old_tip":       ev.targetTip,
+			"new_tip":       ev.sourceTip,
 			"merge_request": mr.Number,
 		})
 	}
-	s.record(ctx, "mr.merge", p, tree, mr, map[string]string{
-		"old_tip":    targetTip,
-		"new_tip":    sourceTip,
-		"approvals":  strconv.Itoa(countApprovals(mr)),
+	details := map[string]string{
+		"old_tip":    ev.targetTip,
+		"new_tip":    ev.sourceTip,
+		"approvals":  strconv.Itoa(countApprovals(mr, ev.sourceTip)),
 		"up_to_date": strconv.FormatBool(!moved),
-	})
-	return mr, nil
+	}
+	for k, v := range extra {
+		details[k] = v
+	}
+	s.record(ctx, "mr.merge", p, tree, mr, details)
 }
 
 // classifyMerge classifies a merge of sourceTip into targetTip. It returns
@@ -337,15 +307,42 @@ func requireOpen(mr *domain.MergeRequest) error {
 	return nil
 }
 
+// isApproval reports whether a records an approval (Decision "" is a
+// pre-v0.5 approval).
+func isApproval(a domain.Approval) bool {
+	return a.Decision == "" || a.Decision == domain.ReviewApproved
+}
+
+// isCurrent reports whether an approval was given for sourceTip ("" =
+// recorded before v0.5, always current).
+func isCurrent(a domain.Approval, sourceTip string) bool {
+	return a.SnapshotID == "" || a.SnapshotID == sourceTip
+}
+
 // countApprovals returns the number of distinct approvers other than the
-// author.
-func countApprovals(mr *domain.MergeRequest) int {
-	seen := make(map[string]struct{}, len(mr.Approvals))
+// author whose approval is for sourceTip.
+func countApprovals(mr *domain.MergeRequest, sourceTip string) int {
+	current, _ := tallyApprovals(mr, sourceTip)
+	return current
+}
+
+// tallyApprovals counts distinct non-author approvers whose approval is
+// current (for sourceTip) and those whose approval is stale.
+func tallyApprovals(mr *domain.MergeRequest, sourceTip string) (current, stale int) {
+	cur := make(map[string]struct{}, len(mr.Approvals))
+	old := make(map[string]struct{})
 	for _, a := range mr.Approvals {
-		if a.AccountID == "" || a.AccountID == mr.AuthorID {
+		if a.AccountID == "" || a.AccountID == mr.AuthorID || !isApproval(a) {
 			continue
 		}
-		seen[a.AccountID] = struct{}{}
+		if isCurrent(a, sourceTip) {
+			cur[a.AccountID] = struct{}{}
+		} else {
+			old[a.AccountID] = struct{}{}
+		}
 	}
-	return len(seen)
+	for id := range cur {
+		delete(old, id)
+	}
+	return len(cur), len(old)
 }

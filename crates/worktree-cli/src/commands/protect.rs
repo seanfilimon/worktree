@@ -1,4 +1,4 @@
-//! `wt protect` — branch protection rules of a server tree.
+//! `wt protect` — branch and tag protection rules of a server tree.
 
 use clap::{Args, Subcommand};
 use colored::Colorize;
@@ -46,8 +46,67 @@ pub enum ProtectCommand {
         /// Matching branches cannot be deleted
         #[arg(long)]
         no_delete: bool,
+        /// Merges need passing CI on the source tip (every --check, or every reported check)
+        #[arg(long)]
+        require_ci: bool,
+        /// CI context that must succeed (repeatable; implies --require-ci)
+        #[arg(long = "check", value_name = "NAME")]
+        checks: Vec<String>,
+        /// Pushed snapshots must carry a verified signature
+        #[arg(long)]
+        require_signed: bool,
+        /// No merge snapshots: direct pushes and merged sources must be linear
+        #[arg(long)]
+        require_linear: bool,
+        /// Open blocking TODOs of the source branch block merging
+        #[arg(long)]
+        block_on_todos: bool,
     },
     /// Remove the rule for a branch pattern
+    #[command(allow_missing_positional = true)]
+    Remove {
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+        pattern: String,
+        /// Do not ask for confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Tag protection rules: who may create tags, and whether they can move or be deleted
+    Tag(TagArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TagArgs {
+    #[command(subcommand)]
+    pub command: TagCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TagCommand {
+    /// List the tag protection rules of a tree
+    List {
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+    },
+    /// Create or replace the rule for a tag pattern (unset flags are off)
+    #[command(allow_missing_positional = true)]
+    Set {
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+        /// Tag name or glob, e.g. "v*"
+        pattern: String,
+        /// Matching tags cannot be deleted
+        #[arg(long)]
+        no_delete: bool,
+        /// Matching tags cannot be replaced (moved to another snapshot)
+        #[arg(long)]
+        no_move: bool,
+        /// Account allowed to create, move or delete matching tags (repeatable; default: anyone with write access)
+        #[arg(long = "tagger", value_name = "U")]
+        taggers: Vec<String>,
+    },
+    /// Remove the rule for a tag pattern
     #[command(allow_missing_positional = true)]
     Remove {
         #[arg(id = "tree_ref", value_name = "TREE")]
@@ -69,6 +128,23 @@ struct Protection {
     #[serde(deserialize_with = "nullable")]
     allowed_pushers: Vec<String>,
     no_delete: bool,
+    require_ci_pass: bool,
+    #[serde(deserialize_with = "nullable")]
+    required_checks: Vec<String>,
+    require_signed: bool,
+    require_linear: bool,
+    block_on_todos: bool,
+}
+
+/// `domain.TagProtection` (also the PUT body).
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct TagProtection {
+    pattern: String,
+    no_delete: bool,
+    no_move: bool,
+    #[serde(deserialize_with = "nullable")]
+    allowed_taggers: Vec<String>,
 }
 
 pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
@@ -87,6 +163,11 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
             approvals,
             pushers,
             no_delete,
+            require_ci,
+            checks,
+            require_signed,
+            require_linear,
+            block_on_todos,
         } => {
             let tree = tree_or_default(ctx, tree)?;
             let rule = Protection {
@@ -95,6 +176,11 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
                 required_approvals: approvals,
                 allowed_pushers: pushers,
                 no_delete,
+                require_ci_pass: require_ci || !checks.is_empty(),
+                required_checks: checks,
+                require_signed,
+                require_linear,
+                block_on_todos,
             };
             let value = api.put(&path(&tree), &rule)?;
             render(out, &value, |t, rule: Protection| {
@@ -122,11 +208,69 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
                 },
             )
         }
+        ProtectCommand::Tag(args) => run_tag(ctx, &api, args.command),
+    }
+}
+
+fn run_tag(ctx: &Context, api: &Api, command: TagCommand) -> Result<()> {
+    let out = &ctx.out;
+    match command {
+        TagCommand::List { tree } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let value = api.get(&tag_path(&tree))?;
+            render(out, &value, |t, rules: Vec<TagProtection>| {
+                tag_table(t, &rules)
+            })
+        }
+        TagCommand::Set {
+            tree,
+            pattern,
+            no_delete,
+            no_move,
+            taggers,
+        } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let rule = TagProtection {
+                pattern,
+                no_delete,
+                no_move,
+                allowed_taggers: taggers,
+            };
+            let value = api.put(&tag_path(&tree), &rule)?;
+            render(out, &value, |t, rule: TagProtection| {
+                t.line(format_args!(
+                    "Protected tags {} on {tree}: {}",
+                    rule.pattern.green().bold(),
+                    describe_tag(&rule)
+                ));
+            })
+        }
+        TagCommand::Remove { tree, pattern, yes } => {
+            let tree = tree_or_default(ctx, tree)?;
+            confirm(
+                yes,
+                &format!("remove the tag protection of {pattern} on {tree}"),
+            )?;
+            api.delete(&tag_path(&tree), &[("pattern", &pattern)])?;
+            out.emit(
+                &json!({ "tree": tree.to_string(), "pattern": pattern, "removed": true }),
+                |t| {
+                    t.line(format_args!(
+                        "Removed the tag protection of {} on {tree}",
+                        pattern.bold()
+                    ));
+                },
+            )
+        }
     }
 }
 
 fn path(tree: &TreeRef) -> String {
     format!("{}/protections", tree.api())
+}
+
+fn tag_path(tree: &TreeRef) -> String {
+    format!("{}/tag-protections", tree.api())
 }
 
 fn pushers(rule: &Protection) -> String {
@@ -135,6 +279,29 @@ fn pushers(rule: &Protection) -> String {
     } else {
         rule.allowed_pushers.join(", ")
     }
+}
+
+/// The merge requirements of a rule beyond approvals (CI, signatures,
+/// linear history, TODOs).
+fn merge_checks(rule: &Protection) -> Vec<String> {
+    let mut parts = Vec::new();
+    if rule.require_ci_pass {
+        if rule.required_checks.is_empty() {
+            parts.push("ci".to_string());
+        } else {
+            parts.push(format!("ci ({})", rule.required_checks.join(", ")));
+        }
+    }
+    if rule.require_signed {
+        parts.push("signed".into());
+    }
+    if rule.require_linear {
+        parts.push("linear".into());
+    }
+    if rule.block_on_todos {
+        parts.push("todos".into());
+    }
+    parts
 }
 
 /// One-line summary of a rule.
@@ -155,6 +322,40 @@ fn describe(rule: &Protection) -> String {
     if rule.no_delete {
         parts.push("cannot be deleted".into());
     }
+    if rule.require_ci_pass {
+        if rule.required_checks.is_empty() {
+            parts.push("passing CI required".into());
+        } else {
+            parts.push(format!("CI {} required", rule.required_checks.join(", ")));
+        }
+    }
+    if rule.require_signed {
+        parts.push("signed snapshots only".into());
+    }
+    if rule.require_linear {
+        parts.push("linear history".into());
+    }
+    if rule.block_on_todos {
+        parts.push("blocking TODOs block merges".into());
+    }
+    if parts.is_empty() {
+        "no restrictions".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn describe_tag(rule: &TagProtection) -> String {
+    let mut parts = Vec::new();
+    if rule.no_move {
+        parts.push("cannot be moved".to_string());
+    }
+    if rule.no_delete {
+        parts.push("cannot be deleted".into());
+    }
+    if !rule.allowed_taggers.is_empty() {
+        parts.push(format!("taggers {}", rule.allowed_taggers.join(", ")));
+    }
     if parts.is_empty() {
         "no restrictions".into()
     } else {
@@ -163,7 +364,41 @@ fn describe(rule: &Protection) -> String {
 }
 
 fn table(t: &mut Text, rules: &[Protection]) {
-    let mut table = Table::new(&["PATTERN", "DIRECT PUSH", "APPROVALS", "DELETE", "PUSHERS"]);
+    let mut table = Table::new(&[
+        "PATTERN",
+        "DIRECT PUSH",
+        "APPROVALS",
+        "DELETE",
+        "PUSHERS",
+        "CHECKS",
+    ]);
+    let allowed = |blocked: bool| {
+        if blocked {
+            Cell::from("blocked").red()
+        } else {
+            Cell::from("allowed")
+        }
+    };
+    for rule in rules {
+        let checks = merge_checks(rule);
+        table.row([
+            Cell::from(rule.pattern.as_str()).green().bold(),
+            allowed(rule.no_direct_push),
+            rule.required_approvals.to_string().into(),
+            allowed(rule.no_delete),
+            pushers(rule).into(),
+            if checks.is_empty() {
+                "-".into()
+            } else {
+                checks.join(", ").into()
+            },
+        ]);
+    }
+    table.render(t, "No protection rules.");
+}
+
+fn tag_table(t: &mut Text, rules: &[TagProtection]) {
+    let mut table = Table::new(&["PATTERN", "MOVE", "DELETE", "TAGGERS"]);
     let allowed = |blocked: bool| {
         if blocked {
             Cell::from("blocked").red()
@@ -174,13 +409,16 @@ fn table(t: &mut Text, rules: &[Protection]) {
     for rule in rules {
         table.row([
             Cell::from(rule.pattern.as_str()).green().bold(),
-            allowed(rule.no_direct_push),
-            rule.required_approvals.to_string().into(),
+            allowed(rule.no_move),
             allowed(rule.no_delete),
-            pushers(rule).into(),
+            if rule.allowed_taggers.is_empty() {
+                "anyone with write access".into()
+            } else {
+                rule.allowed_taggers.join(", ").into()
+            },
         ]);
     }
-    table.render(t, "No protection rules.");
+    table.render(t, "No tag protection rules.");
 }
 
 #[cfg(test)]
@@ -217,6 +455,11 @@ mod tests {
             approvals,
             pushers,
             no_delete,
+            require_ci,
+            checks,
+            require_signed,
+            require_linear,
+            block_on_todos,
         } = protect(&[
             "set",
             "acme/web",
@@ -229,6 +472,14 @@ mod tests {
             "--pusher",
             "bob",
             "--no-delete",
+            "--require-ci",
+            "--check",
+            "build",
+            "--check",
+            "test",
+            "--require-signed",
+            "--require-linear",
+            "--block-on-todos",
         ])
         else {
             panic!()
@@ -236,14 +487,18 @@ mod tests {
         assert_eq!(tree.map(|t| t.to_string()).as_deref(), Some("acme/web"));
         assert_eq!(pattern, "release/*");
         assert!(no_direct_push && no_delete);
+        assert!(require_ci && require_signed && require_linear && block_on_todos);
         assert_eq!(approvals, 2);
         assert_eq!(pushers, ["ada", "bob"]);
+        assert_eq!(checks, ["build", "test"]);
         assert!(matches!(
             protect(&["set", "main"]),
             ProtectCommand::Set {
                 tree: None,
                 approvals: 0,
                 no_direct_push: false,
+                require_ci: false,
+                require_linear: false,
                 ..
             }
         ));
@@ -274,6 +529,50 @@ mod tests {
     }
 
     #[test]
+    fn parses_tag_subcommands() {
+        let tag = |args: &[&str]| match protect(args) {
+            ProtectCommand::Tag(a) => a.command,
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(
+            tag(&["tag", "list", "acme/web"]),
+            TagCommand::List { tree: Some(_) }
+        ));
+        let TagCommand::Set {
+            tree,
+            pattern,
+            no_delete,
+            no_move,
+            taggers,
+        } = tag(&[
+            "tag",
+            "set",
+            "v*",
+            "--no-delete",
+            "--no-move",
+            "--tagger",
+            "ada",
+        ])
+        else {
+            panic!()
+        };
+        assert!(tree.is_none() && no_delete && no_move);
+        assert_eq!((pattern.as_str(), taggers), ("v*", vec!["ada".to_string()]));
+        assert!(matches!(
+            tag(&["tag", "remove", "acme/web", "v*", "--yes"]),
+            TagCommand::Remove {
+                tree: Some(_),
+                yes: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            parse_err(&["protect", "tag", "set"]),
+            ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
     fn describes_rules() {
         let mut rule = Protection {
             pattern: "main".into(),
@@ -293,7 +592,45 @@ mod tests {
         table(&mut t, &[rule]);
         assert_eq!(
             t.as_str(),
-            "PATTERN  DIRECT PUSH  APPROVALS  DELETE   PUSHERS\nmain     blocked      1          blocked  ada\n"
+            "PATTERN  DIRECT PUSH  APPROVALS  DELETE   PUSHERS  CHECKS\nmain     blocked      1          blocked  ada      -\n"
+        );
+
+        let rule = Protection {
+            pattern: "main".into(),
+            require_ci_pass: true,
+            required_checks: vec!["build".into()],
+            require_linear: true,
+            block_on_todos: true,
+            require_signed: true,
+            ..Protection::default()
+        };
+        assert_eq!(
+            describe(&rule),
+            "CI build required, signed snapshots only, linear history, blocking TODOs block merges"
+        );
+        assert_eq!(
+            merge_checks(&rule),
+            ["ci (build)", "signed", "linear", "todos"]
+        );
+        let body = serde_json::to_value(&rule).expect("json");
+        assert_eq!(body["require_ci_pass"], true);
+        assert_eq!(body["required_checks"], json!(["build"]));
+    }
+
+    #[test]
+    fn describes_tag_rules() {
+        let rule: TagProtection = serde_json::from_value(json!({
+            "pattern": "v*", "no_move": true, "no_delete": false, "allowed_taggers": null
+        }))
+        .expect("rule");
+        assert_eq!(describe_tag(&rule), "cannot be moved");
+        assert_eq!(describe_tag(&TagProtection::default()), "no restrictions");
+        colored::control::set_override(false);
+        let mut t = Text::default();
+        tag_table(&mut t, &[rule]);
+        assert_eq!(
+            t.as_str(),
+            "PATTERN  MOVE     DELETE   TAGGERS\nv*       blocked  allowed  anyone with write access\n"
         );
     }
 }

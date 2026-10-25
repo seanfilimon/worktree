@@ -1,16 +1,20 @@
-//! `wt mr` — merge requests: list, open, review, approve, merge, close.
+//! `wt mr` — merge requests: list, open, review, approve, merge, close,
+//! comments, merge readiness checks and linked groups.
 
 use clap::{Args, Subcommand, ValueEnum};
 use colored::Colorize;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use worktree_sdk::remote::rest::seg;
+
 use crate::commands::server_common::{
-    decode, nullable, render, tree_or_default, when, Api, Cell, Table, TreeRef,
+    cwd_origin_tenant, decode, nullable, render, tenant_path, tree_or_default, when, Api, Cell,
+    Table, TreeRef,
 };
 use crate::commands::trees::{compare, render_compare, CompareResult, CompareView};
 use crate::context::Context;
-use crate::error::Result;
+use crate::error::{CliError, Result};
 use crate::output::format::{plural, short};
 use crate::output::Text;
 
@@ -72,6 +76,107 @@ pub enum MrCommand {
         #[arg(id = "tree_ref", value_name = "TREE")]
         tree: Option<TreeRef>,
     },
+    /// Review a merge request: approve, request changes or comment
+    ///
+    /// Approvals and change requests apply to the current source tip: when
+    /// the source moves, approvals go stale and must be renewed; a change
+    /// request blocks merging until the same reviewer approves.
+    #[command(group(clap::ArgGroup::new("decision").required(true)
+        .args(["approve", "request_changes", "comment"])))]
+    Review {
+        number: u32,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+        /// Approve the current source tip
+        #[arg(long)]
+        approve: bool,
+        /// Request changes (blocks merging until you approve)
+        #[arg(long)]
+        request_changes: bool,
+        /// Comment without approving (needs -m)
+        #[arg(long, requires = "message")]
+        comment: bool,
+        /// Review text
+        #[arg(short, long, value_name = "TEXT")]
+        message: Option<String>,
+    },
+    /// Comment on a merge request, optionally on a file line
+    Comment {
+        number: u32,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+        /// Comment text
+        #[arg(short, long, value_name = "TEXT")]
+        message: String,
+        /// File the comment refers to
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+        /// Line of --path the comment refers to
+        #[arg(long, value_name = "N", requires = "path",
+              value_parser = clap::value_parser!(u32).range(1..))]
+        line: Option<u32>,
+    },
+    /// List the comments of a merge request
+    Comments {
+        number: u32,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+    },
+    /// Show whether a merge request can be merged, and what blocks it
+    Checks {
+        number: u32,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+    },
+    /// Link merge requests of several trees into a group that merges atomically
+    Link {
+        /// Name of the group
+        name: String,
+        /// Members as TENANT/TREE#N (at least two)
+        #[arg(value_name = "TREE#N", num_args = 2.., required = true)]
+        members: Vec<MemberRef>,
+        /// Tenant that owns the group (default: the first member's tenant)
+        #[arg(long, value_name = "SLUG")]
+        tenant: Option<String>,
+    },
+    /// Merge every merge request of a linked group, all or nothing
+    MergeGroup {
+        /// Group id (see `wt mr groups`)
+        id: String,
+        /// Tenant that owns the group (default: this worktree's origin tenant)
+        #[arg(long, value_name = "SLUG")]
+        tenant: Option<String>,
+    },
+    /// List the linked groups of a tenant
+    Groups {
+        /// Tenant (default: this worktree's origin tenant)
+        #[arg(long, value_name = "SLUG")]
+        tenant: Option<String>,
+    },
+}
+
+/// A merge request of a linked group: `TENANT/TREE#N`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberRef {
+    pub tree: TreeRef,
+    pub number: u32,
+}
+
+impl std::str::FromStr for MemberRef {
+    type Err = String;
+
+    fn from_str(spec: &str) -> std::result::Result<Self, Self::Err> {
+        let bad = || format!("'{spec}' is not of the form TENANT/TREE#N");
+        let (tree, number) = spec.rsplit_once('#').ok_or_else(bad)?;
+        let number: u32 = number.parse().map_err(|_| bad())?;
+        if number == 0 {
+            return Err(bad());
+        }
+        Ok(Self {
+            tree: tree.parse().map_err(|_| bad())?,
+            number,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -110,13 +215,104 @@ struct MergeRequest {
     updated_at: String,
     merged_at: Option<String>,
     merged_snapshot: Option<String>,
+    linked_group: Option<String>,
 }
 
+/// `domain.Approval`: a review decision ("" = a pre-v0.5 approval).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Approval {
     username: String,
     at: String,
+    decision: String,
+    snapshot_id: String,
+    body: String,
+}
+
+impl Approval {
+    fn approved(&self) -> bool {
+        self.decision.is_empty() || self.decision == "approved"
+    }
+}
+
+/// `domain.ReviewComment`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Comment {
+    id: String,
+    author: String,
+    body: String,
+    path: String,
+    line: u32,
+    snapshot_id: String,
+    resolved: bool,
+    created_at: String,
+}
+
+/// `review.MergeChecks`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Checks {
+    mergeable: bool,
+    #[serde(deserialize_with = "nullable")]
+    blockers: Vec<Blocker>,
+    approvals: ApprovalSummary,
+    ci: CiSummary,
+    todos: TodoSummary,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Blocker {
+    kind: String,
+    message: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ApprovalSummary {
+    required: u32,
+    current: u32,
+    stale: u32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct CiSummary {
+    state: String,
+    #[serde(deserialize_with = "nullable")]
+    required: Vec<String>,
+    #[serde(deserialize_with = "nullable")]
+    missing: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct TodoSummary {
+    blocking_open: u32,
+}
+
+/// A linked group as served by `/tenants/{t}/linked-groups`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Group {
+    id: String,
+    name: String,
+    state: String,
+    created_by: String,
+    created_at: String,
+    #[serde(deserialize_with = "nullable")]
+    members: Vec<GroupMember>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct GroupMember {
+    tree_id: String,
+    mr_number: u32,
+    tree: String,
+    title: String,
+    state: String,
 }
 
 pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
@@ -189,7 +385,132 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
         MrCommand::Close { number, tree } => action(ctx, &api, tree, number, "close", |t, mr| {
             t.line(format_args!("Closed {}", format!("!{}", mr.number).bold()));
         }),
+        MrCommand::Review {
+            number,
+            tree,
+            approve,
+            request_changes,
+            comment: _,
+            message,
+        } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let decision = decision(approve, request_changes);
+            let body = json!({ "decision": decision, "body": message.unwrap_or_default() });
+            let value = api.post(&format!("{}/review", mr_path(&tree, number)), &body)?;
+            render(out, &value, |t, mr: MergeRequest| {
+                let what = match decision {
+                    "approved" => "Approved",
+                    "changes_requested" => "Requested changes on",
+                    _ => "Commented on",
+                };
+                t.line(format_args!(
+                    "{what} {} ({})",
+                    format!("!{}", mr.number).bold(),
+                    approvals(&mr)
+                ));
+            })
+        }
+        MrCommand::Comment {
+            number,
+            tree,
+            message,
+            path,
+            line,
+        } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let mut body = json!({ "body": message });
+            if let Some(path) = path {
+                body["path"] = json!(path);
+            }
+            if let Some(line) = line {
+                body["line"] = json!(line);
+            }
+            let value = api.post(&format!("{}/comments", mr_path(&tree, number)), &body)?;
+            render(out, &value, |t, c: Comment| {
+                t.line(format_args!(
+                    "Commented on {} (comment {})",
+                    format!("!{number}").bold(),
+                    c.id
+                ));
+            })
+        }
+        MrCommand::Comments { number, tree } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let value = api.get(&format!("{}/comments", mr_path(&tree, number)))?;
+            render(out, &value, |t, cs: Vec<Comment>| comments(t, &cs))
+        }
+        MrCommand::Checks { number, tree } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let value = api.get(&format!("{}/checks", mr_path(&tree, number)))?;
+            render(out, &value, |t, c: Checks| checks(t, number, &c))
+        }
+        MrCommand::Link {
+            name,
+            members,
+            tenant,
+        } => {
+            let tenant = tenant.unwrap_or_else(|| members[0].tree.tenant.clone());
+            let body = json!({
+                "name": name,
+                "members": members
+                    .iter()
+                    .map(|m| json!({ "tree": m.tree.to_string(), "number": m.number }))
+                    .collect::<Vec<_>>(),
+            });
+            let value = api.post(&groups_path(&tenant), &body)?;
+            render(out, &value, |t, g: Group| {
+                t.line(format_args!(
+                    "Linked {} as group {} ({})",
+                    plural(g.members.len(), "merge request", "merge requests"),
+                    g.name.bold(),
+                    g.id.yellow()
+                ));
+            })
+        }
+        MrCommand::MergeGroup { id, tenant } => {
+            let tenant = group_tenant(ctx, tenant)?;
+            let value = api.post(
+                &format!("{}/{}/merge", groups_path(&tenant), seg(&id)),
+                &json!({}),
+            )?;
+            render(out, &value, |t, g: Group| {
+                t.line(format_args!(
+                    "Merged group {} ({})",
+                    g.name.bold(),
+                    plural(g.members.len(), "merge request", "merge requests")
+                ));
+                group_members(t, &g);
+            })
+        }
+        MrCommand::Groups { tenant } => {
+            let tenant = group_tenant(ctx, tenant)?;
+            let value = api.get(&groups_path(&tenant))?;
+            render(out, &value, |t, gs: Vec<Group>| groups(t, &gs))
+        }
     }
+}
+
+/// The review decision chosen by the flags (`--comment` otherwise).
+fn decision(approve: bool, request_changes: bool) -> &'static str {
+    if approve {
+        "approved"
+    } else if request_changes {
+        "changes_requested"
+    } else {
+        "commented"
+    }
+}
+
+fn groups_path(tenant: &str) -> String {
+    format!("{}/linked-groups", tenant_path(tenant))
+}
+
+/// `explicit`, else the origin tenant of the current worktree.
+fn group_tenant(ctx: &Context, explicit: Option<String>) -> Result<String> {
+    explicit.or_else(|| cwd_origin_tenant(ctx)).ok_or_else(|| {
+        CliError::usage("no --tenant given and not inside a worktree with an origin remote")
+            .with_hint("pass --tenant SLUG")
+    })
 }
 
 fn mrs_path(tree: &TreeRef) -> String {
@@ -238,7 +559,122 @@ fn state_cell(state: &str) -> Cell {
 }
 
 fn approvals(mr: &MergeRequest) -> String {
-    plural(mr.approvals.len(), "approval", "approvals")
+    plural(
+        mr.approvals.iter().filter(|a| a.approved()).count(),
+        "approval",
+        "approvals",
+    )
+}
+
+fn comments(t: &mut Text, cs: &[Comment]) {
+    if cs.is_empty() {
+        t.line("No comments.");
+        return;
+    }
+    for (i, c) in cs.iter().enumerate() {
+        if i > 0 {
+            t.blank();
+        }
+        let mut head = format!("#{} {} {}", c.id, c.author.bold(), when(&c.created_at));
+        if !c.path.is_empty() {
+            head.push_str(&format!("  {}", c.path.cyan()));
+            if c.line > 0 {
+                head.push_str(&format!(":{}", c.line));
+            }
+        }
+        if !c.snapshot_id.is_empty() {
+            head.push_str(&format!(" @ {}", short(&c.snapshot_id).yellow()));
+        }
+        if c.resolved {
+            head.push_str(&format!("  {}", "[resolved]".dimmed()));
+        }
+        t.line(head);
+        for line in c.body.lines() {
+            t.line(format_args!("    {line}"));
+        }
+    }
+}
+
+fn checks(t: &mut Text, number: u32, c: &Checks) {
+    if c.mergeable {
+        t.line(format_args!(
+            "{} can be merged",
+            format!("!{number}").bold().green()
+        ));
+    } else {
+        t.line(format_args!(
+            "{} cannot be merged",
+            format!("!{number}").bold().red()
+        ));
+    }
+    let a = &c.approvals;
+    let mut approvals = format!("{} of {} required", a.current, a.required);
+    if a.stale > 0 {
+        approvals.push_str(&format!(", {} stale", a.stale));
+    }
+    t.line(format_args!("  approvals: {approvals}"));
+    let state = if c.ci.state.is_empty() {
+        "no checks"
+    } else {
+        c.ci.state.as_str()
+    };
+    let mut ci = state.to_string();
+    if !c.ci.required.is_empty() {
+        ci.push_str(&format!(", required {}", c.ci.required.join(", ")));
+    }
+    if !c.ci.missing.is_empty() {
+        ci.push_str(&format!(", missing {}", c.ci.missing.join(", ")));
+    }
+    t.line(format_args!("  ci: {ci}"));
+    t.line(format_args!("  blocking todos: {}", c.todos.blocking_open));
+    for b in &c.blockers {
+        t.line(format_args!("  {} {}: {}", "x".red(), b.kind, b.message));
+    }
+}
+
+fn group_members(t: &mut Text, g: &Group) {
+    for m in &g.members {
+        let tree = if m.tree.is_empty() {
+            m.tree_id.as_str()
+        } else {
+            m.tree.as_str()
+        };
+        let mut line = format!("  {tree}!{}", m.mr_number);
+        if !m.title.is_empty() {
+            line.push_str(&format!(" {}", m.title));
+        }
+        if !m.state.is_empty() {
+            line.push_str(&format!(" [{}]", m.state));
+        }
+        t.line(line);
+    }
+}
+
+fn groups(t: &mut Text, gs: &[Group]) {
+    let mut table = Table::new(&["ID", "NAME", "STATE", "MEMBERS", "CREATED BY", "CREATED"]);
+    for g in gs {
+        let members: Vec<String> = g
+            .members
+            .iter()
+            .map(|m| {
+                let tree = if m.tree.is_empty() {
+                    &m.tree_id
+                } else {
+                    &m.tree
+                };
+                format!("{tree}!{}", m.mr_number)
+            })
+            .collect();
+        table.row([
+            Cell::from(g.id.as_str()).yellow(),
+            Cell::from(g.name.as_str()).bold(),
+            state_cell(&g.state),
+            members.join(", ").into(),
+            g.created_by.as_str().into(),
+            when(&g.created_at).into(),
+        ]);
+    }
+    table.render(t, "No linked groups.");
 }
 
 fn list(t: &mut Text, mrs: &[MergeRequest]) {
@@ -258,7 +694,12 @@ fn list(t: &mut Text, mrs: &[MergeRequest]) {
             format!("{} -> {}", mr.source_branch, mr.target_branch).into(),
             mr.author.as_str().into(),
             state_cell(&mr.state),
-            mr.approvals.len().to_string().into(),
+            mr.approvals
+                .iter()
+                .filter(|a| a.approved())
+                .count()
+                .to_string()
+                .into(),
             when(&mr.updated_at).into(),
         ]);
     }
@@ -281,15 +722,45 @@ fn show(t: &mut Text, mr: &MergeRequest) {
         when(&mr.created_at),
         when(&mr.updated_at)
     ));
-    if mr.approvals.is_empty() {
+    let review = |a: &Approval| {
+        let mut s = format!("{} ({}", a.username, when(&a.at));
+        if !a.snapshot_id.is_empty() {
+            s.push_str(&format!(" at {}", short(&a.snapshot_id)));
+        }
+        s.push(')');
+        s
+    };
+    let approved: Vec<String> = mr
+        .approvals
+        .iter()
+        .filter(|a| a.approved())
+        .map(review)
+        .collect();
+    let changes: Vec<&Approval> = mr
+        .approvals
+        .iter()
+        .filter(|a| a.decision == "changes_requested")
+        .collect();
+    if approved.is_empty() {
         t.line("  no approvals yet".dimmed());
     } else {
-        let names: Vec<String> = mr
-            .approvals
-            .iter()
-            .map(|a| format!("{} ({})", a.username, when(&a.at)))
-            .collect();
-        t.line(format_args!("  approved by {}", names.join(", ")));
+        t.line(format_args!("  approved by {}", approved.join(", ")));
+    }
+    for a in changes {
+        t.line(format_args!(
+            "  {} {}",
+            "changes requested by".red(),
+            review(a)
+        ));
+        for line in a.body.lines() {
+            t.line(format_args!("      {line}"));
+        }
+    }
+    if let Some(group) = mr.linked_group.as_deref().filter(|g| !g.is_empty()) {
+        t.line(format_args!(
+            "  linked group {} (merge with `wt mr merge-group`)",
+            group.yellow()
+        ));
     }
     if let Some(merged) = mr.merged_snapshot.as_deref().filter(|s| !s.is_empty()) {
         t.line(format_args!(
@@ -396,6 +867,210 @@ mod tests {
             parse_err(&["mr", "list", "--state", "draft"]),
             ErrorKind::InvalidValue
         );
+    }
+
+    #[test]
+    fn parses_review_commands() {
+        let MrCommand::Review {
+            number,
+            tree,
+            approve,
+            request_changes,
+            comment,
+            message,
+        } = mr(&["review", "3", "acme/web", "--request-changes", "-m", "fix"])
+        else {
+            panic!()
+        };
+        assert_eq!(number, 3);
+        assert!(tree.is_some() && request_changes && !approve && !comment);
+        assert_eq!(message.as_deref(), Some("fix"));
+        assert_eq!(decision(false, true), "changes_requested");
+        assert_eq!(decision(true, false), "approved");
+        assert_eq!(decision(false, false), "commented");
+        assert!(matches!(
+            mr(&["review", "3", "--approve"]),
+            MrCommand::Review { approve: true, .. }
+        ));
+        assert!(matches!(
+            mr(&["review", "3", "--comment", "-m", "hi"]),
+            MrCommand::Review { comment: true, .. }
+        ));
+        assert_eq!(
+            parse_err(&["mr", "review", "3"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_err(&["mr", "review", "3", "--approve", "--request-changes"]),
+            ErrorKind::ArgumentConflict
+        );
+        assert_eq!(
+            parse_err(&["mr", "review", "3", "--comment"]),
+            ErrorKind::MissingRequiredArgument
+        );
+
+        let MrCommand::Comment {
+            number,
+            message,
+            path,
+            line,
+            ..
+        } = mr(&[
+            "comment", "2", "-m", "why?", "--path", "src/a.rs", "--line", "7",
+        ])
+        else {
+            panic!()
+        };
+        assert_eq!((number, message.as_str()), (2, "why?"));
+        assert_eq!((path.as_deref(), line), (Some("src/a.rs"), Some(7)));
+        assert_eq!(
+            parse_err(&["mr", "comment", "2", "-m", "x", "--line", "3"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_err(&["mr", "comment", "2"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert!(matches!(
+            mr(&["comments", "2", "acme/web"]),
+            MrCommand::Comments {
+                number: 2,
+                tree: Some(_)
+            }
+        ));
+        assert!(matches!(
+            mr(&["checks", "5"]),
+            MrCommand::Checks {
+                number: 5,
+                tree: None
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_group_commands() {
+        let MrCommand::Link {
+            name,
+            members,
+            tenant,
+        } = mr(&["link", "release", "acme/web#2", "other/api#10"])
+        else {
+            panic!()
+        };
+        assert_eq!(name, "release");
+        assert!(tenant.is_none());
+        assert_eq!(members[0].tree.to_string(), "acme/web");
+        assert_eq!((members[0].number, members[1].number), (2, 10));
+        assert_eq!(members[1].tree.tenant, "other");
+        assert_eq!(
+            parse_err(&["mr", "link", "release", "acme/web#2"]),
+            ErrorKind::TooFewValues
+        );
+        assert_eq!(
+            parse_err(&["mr", "link", "g", "acme/web", "acme/api#1"]),
+            ErrorKind::ValueValidation
+        );
+        for bad in ["acme/web#0", "acme/web#x", "web#1", "#1"] {
+            assert!(bad.parse::<MemberRef>().is_err(), "{bad}");
+        }
+        assert!(matches!(
+            mr(&["merge-group", "abc", "--tenant", "acme"]),
+            MrCommand::MergeGroup {
+                tenant: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            mr(&["groups"]),
+            MrCommand::Groups { tenant: None }
+        ));
+    }
+
+    #[test]
+    fn renders_reviews_checks_comments_and_groups() {
+        colored::control::set_override(false);
+        let mr: MergeRequest = serde_json::from_value(json!({
+            "number": 4, "title": "T", "source_branch": "feat", "target_branch": "main",
+            "author": "ada", "state": "open", "created_at": "", "updated_at": "",
+            "linked_group": "g1",
+            "approvals": [
+                {"username": "bob", "at": "", "decision": "approved", "snapshot_id": "0123456789abcdef"},
+                {"username": "cy", "at": "", "decision": "changes_requested", "body": "fix x"},
+                {"username": "old", "at": ""}
+            ]
+        }))
+        .expect("mr");
+        assert_eq!(approvals(&mr), "2 approvals");
+        let mut t = Text::default();
+        show(&mut t, &mr);
+        assert_eq!(
+            t.as_str(),
+            "!4 T  [open]\n  feat -> main, opened by ada -, updated -\n  approved by bob (- at 01234567), old (-)\n  changes requested by cy (-)\n      fix x\n  linked group g1 (merge with `wt mr merge-group`)\n"
+        );
+
+        let c: Checks = serde_json::from_value(json!({
+            "mergeable": false,
+            "blockers": [{"kind": "ci", "message": "required CI checks have not passed: missing test"}],
+            "approvals": {"required": 2, "current": 1, "stale": 1},
+            "ci": {"state": "success", "required": ["build", "test"], "missing": ["test"]},
+            "todos": {"blocking_open": 0}
+        }))
+        .expect("checks");
+        let mut t = Text::default();
+        checks(&mut t, 4, &c);
+        assert_eq!(
+            t.as_str(),
+            "!4 cannot be merged\n  approvals: 1 of 2 required, 1 stale\n  ci: success, required build, test, missing test\n  blocking todos: 0\n  x ci: required CI checks have not passed: missing test\n"
+        );
+        let mut t = Text::default();
+        checks(
+            &mut t,
+            4,
+            &Checks {
+                mergeable: true,
+                ..Checks::default()
+            },
+        );
+        assert!(
+            t.as_str().starts_with("!4 can be merged\n"),
+            "{}",
+            t.as_str()
+        );
+        assert!(t.as_str().contains("ci: no checks"), "{}", t.as_str());
+
+        let cs: Vec<Comment> = serde_json::from_value(json!([
+            {"id": "1", "author": "bob", "body": "why?", "path": "a.txt", "line": 3,
+             "snapshot_id": "0123456789abcdef", "resolved": true, "created_at": ""},
+            {"id": "2", "author": "ada", "body": "because\nreasons", "created_at": ""}
+        ]))
+        .expect("comments");
+        let mut t = Text::default();
+        comments(&mut t, &cs);
+        assert_eq!(
+            t.as_str(),
+            "#1 bob -  a.txt:3 @ 01234567  [resolved]\n    why?\n\n#2 ada -\n    because\n    reasons\n"
+        );
+        let mut t = Text::default();
+        comments(&mut t, &[]);
+        assert_eq!(t.as_str(), "No comments.\n");
+
+        let gs: Vec<Group> = serde_json::from_value(json!([{
+            "id": "g1", "name": "rel", "state": "open", "created_by": "ada", "created_at": "",
+            "members": [
+                {"tree_id": "t1", "mr_number": 2, "tree": "acme/web", "title": "Web", "state": "open"},
+                {"tree_id": "t2", "mr_number": 1}
+            ]
+        }]))
+        .expect("groups");
+        let mut t = Text::default();
+        groups(&mut t, &gs);
+        assert_eq!(
+            t.as_str(),
+            "ID  NAME  STATE  MEMBERS           CREATED BY  CREATED\ng1  rel   open   acme/web!2, t2!1  ada         -\n"
+        );
+        let mut t = Text::default();
+        group_members(&mut t, &gs[0]);
+        assert_eq!(t.as_str(), "  acme/web!2 Web [open]\n  t2!1\n");
     }
 
     #[test]

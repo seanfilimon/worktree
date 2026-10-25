@@ -10,6 +10,14 @@
 // to the source tip with a compare-and-swap, and fails with
 // domain.ErrConflict when the target has diverged and needs a local merge.
 //
+// v0.5 (docs/ENGINEERING_PLAN.md §13.4) adds review decisions with stale
+// approvals (decisions.go), merge readiness checks: CI, TODOs, linear
+// history (checks.go), merge request comments (comments.go), linked
+// groups that merge atomically across trees (groups.go), tag protections
+// (tags.go) and the RequireLinear push check (pushcheck.go). Their state
+// lives in DocStore collections mr_comments, linked_groups and
+// tag_protections; CI results and TODOs are read from ci_status and todos.
+//
 // Concurrency: the MetaStore's UpdateMergeRequest is a plain overwrite, so
 // every read-modify-write of a merge request is serialized per tree with an
 // in-process lock. Branch tips are additionally guarded by the store's
@@ -22,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"slices"
 	"strconv"
 	"sync"
@@ -46,9 +55,26 @@ type Service struct {
 
 	now   func() time.Time
 	locks [lockStripes]sync.Mutex
+	// groupMu serializes linked-group operations (taken before any tree
+	// lock).
+	groupMu sync.Mutex
+	log     *slog.Logger
 }
 
-var _ domain.ReviewService = (*Service)(nil)
+var (
+	_ domain.ReviewService = (*Service)(nil)
+	_ domain.PushChecker   = (*Service)(nil)
+)
+
+// SetLogger sets the logger for background failures (default slog.Default).
+func (s *Service) SetLogger(l *slog.Logger) { s.log = l }
+
+func (s *Service) logger() *slog.Logger {
+	if s.log == nil {
+		return slog.Default()
+	}
+	return s.log
+}
 
 // New returns a review service. bus and audit may be nil, in which case
 // events and audit records are not emitted.

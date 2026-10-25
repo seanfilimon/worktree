@@ -37,6 +37,15 @@ type Effective struct {
 	// allowed by each restricting rule, so the lists intersect; an empty
 	// slice with RestrictPushers set means nobody may push directly.
 	AllowedPushers []string `json:"allowed_pushers"`
+
+	// v0.5 (§13.4). Each flag is set when any matching rule sets it;
+	// RequiredChecks is the sorted union of the lists of the matching rules
+	// that require CI (empty with RequireCIPass = every reported check).
+	RequireCIPass  bool     `json:"require_ci_pass"`
+	RequiredChecks []string `json:"required_checks"`
+	RequireSigned  bool     `json:"require_signed"`
+	RequireLinear  bool     `json:"require_linear"`
+	BlockOnTodos   bool     `json:"block_on_todos"`
 }
 
 // Protected reports whether at least one rule matched the branch.
@@ -57,8 +66,9 @@ func (e Effective) MayPush(username string) bool {
 
 // Resolve computes the effective protection of branch from a tree's rules.
 func Resolve(rules []domain.BranchProtection, branch string) Effective {
-	eff := Effective{Branch: branch, Patterns: []string{}, AllowedPushers: []string{}}
+	eff := Effective{Branch: branch, Patterns: []string{}, AllowedPushers: []string{}, RequiredChecks: []string{}}
 	var allowed map[string]struct{}
+	checks := map[string]struct{}{}
 	for i := range rules {
 		r := &rules[i]
 		if !MatchPattern(r.Pattern, branch) {
@@ -68,6 +78,17 @@ func Resolve(rules []domain.BranchProtection, branch string) Effective {
 		eff.NoDirectPush = eff.NoDirectPush || r.NoDirectPush
 		eff.NoDelete = eff.NoDelete || r.NoDelete
 		eff.RequiredApprovals = max(eff.RequiredApprovals, r.RequiredApprovals)
+		eff.RequireCIPass = eff.RequireCIPass || r.RequireCIPass
+		eff.RequireSigned = eff.RequireSigned || r.RequireSigned
+		eff.RequireLinear = eff.RequireLinear || r.RequireLinear
+		eff.BlockOnTodos = eff.BlockOnTodos || r.BlockOnTodos
+		if r.RequireCIPass {
+			for _, c := range r.RequiredChecks {
+				if c = strings.TrimSpace(c); c != "" {
+					checks[c] = struct{}{}
+				}
+			}
+		}
 
 		list := pusherSet(r.AllowedPushers)
 		if len(list) == 0 {
@@ -88,6 +109,10 @@ func Resolve(rules []domain.BranchProtection, branch string) Effective {
 		eff.AllowedPushers = append(eff.AllowedPushers, u)
 	}
 	slices.Sort(eff.AllowedPushers)
+	for c := range checks {
+		eff.RequiredChecks = append(eff.RequiredChecks, c)
+	}
+	slices.Sort(eff.RequiredChecks)
 	return eff
 }
 

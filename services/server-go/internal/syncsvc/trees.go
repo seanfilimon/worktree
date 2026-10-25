@@ -137,6 +137,12 @@ func (s *Service) ListTags(ctx context.Context, req *syncpb.ListTagsRequest) (*s
 	return resp, nil
 }
 
+// tagPolicy is implemented by review services that enforce tag protections
+// (internal/review.Service, §13.4). replace is true when the tag exists.
+type tagPolicy interface {
+	CheckTagPush(ctx context.Context, p *domain.Principal, tree *domain.Tree, name string, replace bool) error
+}
+
 // maxTagMessageLen bounds tag annotations.
 const maxTagMessageLen = 64 << 10
 
@@ -185,6 +191,26 @@ func (s *Service) PushTag(ctx context.Context, req *syncpb.PushTagRequest) (*syn
 		// are not trusted.
 		Tagger:    p.Username,
 		CreatedAt: created,
+	}
+	// Tag protections (§13.4): AllowedTaggers for new tags, NoMove for
+	// existing ones (tags stay immutable either way).
+	if tp, ok := s.d.Review.(tagPolicy); ok {
+		_, gerr := s.d.Store.GetTag(ctx, t.ID, tag.Name)
+		if gerr != nil && !errors.Is(gerr, domain.ErrNotFound) {
+			return nil, s.toStatus(ctx, gerr, "tag")
+		}
+		if err := tp.CheckTagPush(ctx, p, t, tag.Name, gerr == nil); err != nil {
+			var denied *domain.PushDenied
+			if errors.As(err, &denied) {
+				s.audit(ctx, p, domain.AuditEvent{
+					TenantID: t.TenantID, Action: "tag.push_rejected", ResourceType: "tag",
+					ResourceID: t.ID + "/" + tag.Name,
+					Details:    map[string]string{"tree": t.Name, "tag": tag.Name, "reason": denied.Reason},
+				})
+				return &syncpb.PushTagResponse{Accepted: false, Error: proto.String(denied.Reason)}, nil
+			}
+			return nil, s.toStatus(ctx, err, "tag protection")
+		}
 	}
 	if err := s.d.Store.PutTag(ctx, tag); err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {

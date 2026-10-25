@@ -17,6 +17,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/events"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
+	"github.com/seanfilimon/worktree/services/server-go/internal/review"
 )
 
 // registerManageRoutes registers the management endpoints of
@@ -196,9 +197,23 @@ type createTagRequest struct {
 	Name    string `json:"name"`
 	Target  string `json:"target"`
 	Message string `json:"message"`
+	// Force replaces an existing tag (requires tree:admin; refused by
+	// NoMove tag protections).
+	Force bool `json:"force,omitempty"`
 }
 
-// handleCreateTag answers POST {tree}/tags.
+// checkTag enforces tag protections (§13.4) when the review service
+// supports them.
+func (a *api) checkTag(r *http.Request, tree *domain.Tree, name string, op review.TagOp) error {
+	rv, ok := a.d.Review.(reviewer)
+	if !ok {
+		return nil
+	}
+	return rv.CheckTag(r.Context(), principal(r), tree, name, op)
+}
+
+// handleCreateTag answers POST {tree}/tags. Tag protections may restrict
+// who creates matching tags; "force" replaces an existing tag.
 func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 	p, err := requireLogin(r)
 	if err != nil {
@@ -229,6 +244,31 @@ func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 	if target == "" {
 		return badRequestf("target %q has no snapshots", req.Target)
 	}
+	var replaced *domain.Tag
+	switch old, err := a.d.Store.GetTag(ctx, tree.ID, req.Name); {
+	case err == nil:
+		if !req.Force {
+			return conflictf("tag %q already exists", req.Name)
+		}
+		if err := a.d.Authz.Authorize(ctx, p, domain.ActTreeAdmin, t.ID, tree); err != nil {
+			return err
+		}
+		if err := a.checkTag(r, tree, req.Name, review.TagMove); err != nil {
+			return err
+		}
+		replaced = old
+	case errors.Is(err, domain.ErrNotFound):
+		if err := a.checkTag(r, tree, req.Name, review.TagCreate); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	if replaced != nil {
+		if err := a.d.Store.DeleteTag(ctx, tree.ID, req.Name); err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+	}
 	tag := &domain.Tag{
 		TreeID:    tree.ID,
 		Name:      req.Name,
@@ -243,7 +283,11 @@ func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 		}
 		return err
 	}
-	a.audit(r, "tag.create", t.ID, "tag", tree.ID+"/"+tag.Name, map[string]string{"tag": tag.Name, "target": tag.Target})
+	details := map[string]string{"tag": tag.Name, "target": tag.Target}
+	if replaced != nil {
+		details["previous_target"] = replaced.Target
+	}
+	a.audit(r, "tag.create", t.ID, "tag", tree.ID+"/"+tag.Name, details)
 	a.publish(r, domain.EventTagPushed, t.ID, tree.ID, tag)
 	writeJSON(w, http.StatusCreated, tag)
 	return nil
@@ -262,6 +306,9 @@ func (a *api) handleDeleteTag(w http.ResponseWriter, r *http.Request) error {
 		if errors.Is(err, domain.ErrNotFound) {
 			return notFoundf("tag %q not found", name)
 		}
+		return err
+	}
+	if err := a.checkTag(r, tree, name, review.TagDelete); err != nil {
 		return err
 	}
 	if err := a.d.Store.DeleteTag(ctx, tree.ID, name); err != nil {

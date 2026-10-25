@@ -127,6 +127,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	accessCfg := accesscfg.New(accesscfg.Deps(v5))
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	_ = todos // started below by its owning workstream
+	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
+	rev.SetLogger(log)
+	rev.Start(ctx)
+	ciSvc.Start(ctx)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
@@ -142,6 +146,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 
 		PushChecks: []domain.PushChecker{
 			pathACL, // sec-paths (§13.1): path ACLs run first
+			rev,     // review-ci (§13.4): RequireLinear on direct pushes
 			signer,  // signing (§13.6): verifies signatures, sets Verified; keep last
 		},
 		AccessCfg: accessCfg,
