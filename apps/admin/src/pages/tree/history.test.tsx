@@ -1,14 +1,11 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { installDomPolyfills } from "@/test/dom.history";
 import * as fx from "@/test/fixtures";
 import * as hx from "@/test/fixtures.history";
 import { apiError, json, noContent } from "@/test/mockFetch";
 import { renderApp, treeRoutes } from "@/test/renderApp";
 
 const T = "/api/v1/trees/acme/web";
-
-installDomPolyfills();
 
 describe("tree overview", () => {
   it("renders stats, charts, contributors, events and the README", async () => {

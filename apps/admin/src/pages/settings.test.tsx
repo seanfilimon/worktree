@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import * as px from "@/test/fixtures.people";
 import { apiError, json, noContent } from "@/test/mockFetch";
 import { renderApp } from "@/test/renderApp";
-import "@/test/radixDom.people";
 
 const base = { "GET /api/v1/auth/me": px.meMulti, "GET /api/v1/auth/tokens": [] };
 

@@ -1,13 +1,10 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AuditEvent } from "@/api/types";
 import { toCsv } from "@/components/dashboard/csv";
 import * as fx from "@/test/fixtures";
 import * as dx from "@/test/fixtures.dashboard";
-import { polyfillRadixSelect } from "@/test/radixPolyfills";
 import { renderApp } from "@/test/renderApp";
-
-beforeAll(polyfillRadixSelect);
 
 /** jsdom's Blob has no text(). */
 function readText(blob: Blob): Promise<string> {

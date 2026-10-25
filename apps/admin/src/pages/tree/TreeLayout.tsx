@@ -15,14 +15,15 @@ import {
   Tag,
   type LucideIcon,
 } from "lucide-react";
-import { Fragment, useEffect } from "react";
+import { useEffect } from "react";
 import { Link, Outlet, useLocation, useParams } from "react-router";
 import { keys, useTree } from "@/api/queries";
 import type { ServerEvent, TreeSummary, Visibility } from "@/api/types";
 import { useServerEvents } from "@/api/useServerEvents";
 import { canMaintain, useAuth } from "@/auth/context";
 import { Badge } from "@/components/ui/badge";
-import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
+import { Breadcrumbs } from "@/components/shell/Breadcrumbs";
+import { usePageTrail } from "@/components/shell/usePageTrail";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatNumber } from "@/lib/format";
 import { tenantPath, treePath } from "@/lib/paths";
@@ -137,6 +138,11 @@ export function TreeLayout() {
     document.title = `${tenant}/${tree} · W0rkTree Admin`;
   }, [tenant, tree]);
 
+  const { trail, inShell } = usePageTrail(
+    [{ label: "Trees", to: "/trees" }, { label: tenant, to: tenantPath(tenant) }, { label: tree }],
+    `${tenant}/${tree}`,
+  );
+
   const s = summary.data;
   const base = treePath(tenant, tree);
   const section = pathname.startsWith(`${base}/`) ? (pathname.slice(base.length + 1).split("/", 1)[0] ?? "") : "";
@@ -152,26 +158,7 @@ export function TreeLayout() {
   return (
     <div className="flex flex-col gap-5">
       <header className="flex flex-col gap-2">
-        <Breadcrumb>
-          <BreadcrumbList>
-            {[
-              { label: "Trees", to: "/trees" },
-              { label: tenant, to: tenantPath(tenant) },
-            ].map((c) => (
-              <Fragment key={c.to}>
-                <BreadcrumbItem>
-                  <BreadcrumbLink asChild>
-                    <Link to={c.to}>{c.label}</Link>
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator />
-              </Fragment>
-            ))}
-            <BreadcrumbItem>
-              <BreadcrumbPage>{tree}</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
+        {!inShell && <Breadcrumbs crumbs={trail.crumbs} />}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="min-w-0 truncate font-mono text-xl font-semibold tracking-tight">
             <span className="text-muted-foreground">{tenant}/</span>

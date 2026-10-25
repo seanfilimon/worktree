@@ -1,11 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { installDomPolyfills } from "@/test/dom.history";
 import { fileDiffs } from "@/test/fixtures.history";
 import { DiffViewer } from "./DiffViewer";
-
-installDomPolyfills();
 
 /** All cells, including the aria-hidden +/- gutters. */
 const cellText = (row: HTMLElement) => [...row.querySelectorAll("td")].map((c) => c.textContent);

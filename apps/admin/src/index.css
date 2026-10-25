@@ -144,27 +144,6 @@
 
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, monospace;
-
-  /*
-   * Legacy aliases used by pages not yet migrated to shadcn components.
-   * They resolve to the monochrome tokens above. Remove once no file under
-   * src/ references bg-surface, text-fg, text-subtle, bg-accent-soft, ...
-   */
-  --color-bg: var(--background);
-  --color-surface: var(--card);
-  --color-surface-2: var(--muted);
-  --color-border-strong: var(--input);
-  --color-fg: var(--foreground);
-  --color-subtle: var(--muted-foreground);
-  --color-accent-fg: var(--primary-foreground);
-  --color-accent-soft: var(--accent);
-  --color-danger: var(--foreground);
-  --color-danger-soft: var(--accent);
-  --color-warning: var(--foreground);
-  --color-warning-soft: var(--accent);
-  --color-info: var(--foreground);
-  --color-info-soft: var(--accent);
-  --shadow-card: 0 1px 2px oklch(0 0 0 / 0.06);
 }
 
 @layer base {

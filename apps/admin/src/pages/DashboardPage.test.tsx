@@ -1,12 +1,9 @@
 import { act, screen, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { FakeEventSource } from "@/test/fakeEventSource";
 import * as fx from "@/test/fixtures";
 import * as dx from "@/test/fixtures.dashboard";
-import { polyfillRadixSelect } from "@/test/radixPolyfills";
 import { renderApp } from "@/test/renderApp";
-
-beforeAll(polyfillRadixSelect);
 
 const pushes = [dx.auditEvents[0]!];
 

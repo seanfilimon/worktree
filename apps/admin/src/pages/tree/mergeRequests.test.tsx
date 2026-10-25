@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { CompareResult, MergeRequest } from "@/api/types";
 import * as fx from "@/test/fixtures";
 import * as mr from "@/test/fixtures.mr";
@@ -10,19 +10,6 @@ const T = "/api/v1/trees/acme/web";
 const MR = `${T}/merge-requests/7`;
 const LIST = "/trees/acme/web/merge-requests";
 const DETAIL = `${LIST}/7`;
-
-beforeAll(() => {
-  // Radix Select / Popper rely on layout APIs jsdom does not implement.
-  const stubs = { hasPointerCapture: () => false, releasePointerCapture: () => undefined, scrollIntoView: () => undefined };
-  for (const [name, value] of Object.entries(stubs)) {
-    if (!(name in Element.prototype)) Object.defineProperty(Element.prototype, name, { value, configurable: true });
-  }
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
-});
 
 /** Detail-page mocks: the MR (GET reflects the last action) and a comparison. */
 function detailRoutes(

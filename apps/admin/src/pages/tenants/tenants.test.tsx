@@ -4,7 +4,6 @@ import * as fx from "@/test/fixtures";
 import * as px from "@/test/fixtures.people";
 import { apiError, json, noContent } from "@/test/mockFetch";
 import { renderApp } from "@/test/renderApp";
-import "@/test/radixDom.people";
 
 const listRoutes = {
   "GET /api/v1/auth/me": px.meMulti,

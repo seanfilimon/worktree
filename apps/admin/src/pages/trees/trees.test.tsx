@@ -4,7 +4,6 @@ import * as fx from "@/test/fixtures";
 import * as px from "@/test/fixtures.people";
 import { json } from "@/test/mockFetch";
 import { renderApp } from "@/test/renderApp";
-import "@/test/radixDom.people";
 
 const routes = {
   "GET /api/v1/auth/me": px.meMember,

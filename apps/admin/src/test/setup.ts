@@ -28,10 +28,12 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   };
 }
 
-const proto: Partial<Pick<Element, "scrollIntoView" | "hasPointerCapture" | "releasePointerCapture">> =
-  Element.prototype;
+const proto: Partial<
+  Pick<Element, "scrollIntoView" | "hasPointerCapture" | "setPointerCapture" | "releasePointerCapture">
+> = Element.prototype;
 proto.scrollIntoView ??= () => undefined;
 proto.hasPointerCapture ??= () => false;
+proto.setPointerCapture ??= () => undefined;
 proto.releasePointerCapture ??= () => undefined;
 
 beforeEach(() => {

@@ -1,5 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { detectLanguage, tokenize } from "@/lib/code";
 import { licenseGlobMatch, spdxError } from "@/components/files/license";
 import { parseMarkdown } from "@/components/files/markdown";
@@ -11,18 +11,6 @@ import { json, noContent } from "@/test/mockFetch";
 import { renderApp, treeRoutes } from "@/test/renderApp";
 
 const T = "/api/v1/trees/acme/web";
-
-beforeAll(() => {
-  // jsdom lacks the layout APIs Radix / cmdk touch.
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
-  const proto = Element.prototype as unknown as Record<string, unknown>;
-  for (const method of ["scrollIntoView", "setPointerCapture", "releasePointerCapture"]) proto[method] ??= () => {};
-  proto.hasPointerCapture ??= () => false;
-});
 
 const fileRoutes = (extra = {}) =>
   treeRoutes({

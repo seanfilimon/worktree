@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import * as fx from "@/test/fixtures";
 import { json, noContent } from "@/test/mockFetch";
 import { renderApp } from "@/test/renderApp";
-import "@/test/radixDom.people";
 
 describe("accounts page", () => {
   it("toggles admin and disabled flags with PATCH after confirmation", async () => {

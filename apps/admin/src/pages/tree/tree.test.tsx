@@ -1,14 +1,11 @@
 import { act, screen, within, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { installDomPolyfills } from "@/test/dom.history";
 import { FakeEventSource } from "@/test/fakeEventSource";
 import * as fx from "@/test/fixtures";
 import { json } from "@/test/mockFetch";
 import { renderApp, treeRoutes } from "@/test/renderApp";
 
 const T = "/api/v1/trees/acme/web";
-
-installDomPolyfills();
 
 describe("tree detail", () => {
   it("redirects the tree root to the overview tab", async () => {
@@ -48,44 +45,7 @@ describe("tree detail", () => {
     expect(fetchMock.find(`GET ${T}/snapshots`).at(-1)?.url.searchParams.get("branch")).toBe("feature/login");
   });
 
-  it("browses the manifest as a directory tree and shows text with line numbers", async () => {
-    const { user, fetchMock } = renderApp({
-      route: "/trees/acme/web/files",
-      api: treeRoutes({
-        [`GET ${T}/snapshots/snap-3`]: fx.snapshotDetail,
-        [`GET ${T}/blob/snap-3/src/app.ts`]: new Response("const a = 1;\nexport default a;\n"),
-      }),
-    });
-
-    const root = await screen.findByRole("table", { name: "Files in root" });
-    expect(within(root).getByRole("link", { name: "src/" })).toBeInTheDocument();
-    expect(within(root).getByRole("link", { name: /README\.md/ })).toBeInTheDocument();
-
-    await user.click(within(root).getByRole("link", { name: "src/" }));
-    const src = await screen.findByRole("table", { name: "Files in src" });
-    expect(within(src).getByRole("link", { name: "lib/" })).toBeInTheDocument();
-
-    await user.click(within(src).getByRole("link", { name: /app\.ts/ }));
-    const code = await screen.findByRole("region", { name: "Contents of src/app.ts" });
-    expect(within(code).getByText("const a = 1;")).toBeInTheDocument();
-    expect(within(code).getByText("export default a;")).toBeInTheDocument();
-    expect(within(code).getByText("1")).toBeInTheDocument();
-    expect(within(code).getByText("2")).toBeInTheDocument();
-    expect(screen.getByText("· 2 lines")).toBeInTheDocument();
-    expect(fetchMock.find(`GET ${T}/blob/snap-3/src/app.ts`)[0]?.headers.get("Authorization")).toBe("Bearer test-token");
-  });
-
-  it("offers binary files as a download instead of a preview", async () => {
-    renderApp({
-      route: "/trees/acme/web/files?snapshot=snap-3&path=assets&file=assets%2Flogo.png",
-      api: treeRoutes({
-        [`GET ${T}/snapshots/snap-3`]: fx.snapshotDetail,
-        [`GET ${T}/blob/snap-3/assets/logo.png`]: new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x1a])),
-      }),
-    });
-    expect(await screen.findByText("Binary file")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Download" })).toBeEnabled();
-  });
+  // Files and Protections tabs are covered by files.test.tsx.
 
   it("shows staged WIP and refreshes it live from SSE", async () => {
     let current = fx.staged;
@@ -120,31 +80,6 @@ describe("tree detail", () => {
       FakeEventSource.latest().emit("snapshot.staged", { type: "snapshot.staged", tenant_id: "x", tree_id: "other-tree", at: new Date().toISOString() });
     });
     expect(fetchMock.find(`GET ${T}/staged`).length).toBe(before);
-  });
-
-  it("saves a branch protection via PUT", async () => {
-    const { user, fetchMock } = renderApp({
-      route: "/trees/acme/web/protections",
-      api: treeRoutes({ [`PUT ${T}/protections`]: (req) => json(req.body) }),
-    });
-    await user.click(await screen.findByRole("button", { name: "Add protection" }));
-    const form = screen.getByRole("form", { name: "Add protection" });
-    await user.type(within(form).getByLabelText("Branch pattern"), "release/*");
-    await user.clear(within(form).getByLabelText("Required approvals"));
-    await user.type(within(form).getByLabelText("Required approvals"), "3");
-    await user.type(within(form).getByLabelText("Allowed pushers"), "alice, bob");
-    await user.click(within(form).getByLabelText("Prevent deletion"));
-    await user.click(within(form).getByRole("button", { name: "Add protection" }));
-
-    await screen.findByText("Protection added");
-    expect(fetchMock.find(`PUT ${T}/protections`)[0]?.body).toEqual({
-      tree_id: "tree-web",
-      pattern: "release/*",
-      no_direct_push: true,
-      required_approvals: 3,
-      allowed_pushers: ["alice", "bob"],
-      no_delete: false,
-    });
   });
 
   it("shows tags with links to their target snapshot detail", async () => {

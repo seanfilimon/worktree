@@ -26,5 +26,17 @@ export default defineConfig(({ command }) => ({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        // Long-lived vendor chunks cache across releases of the app code.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (/[\\/](recharts|d3-[^\\/]+|victory-vendor)[\\/]/.test(id)) return "charts";
+          if (/[\\/](radix-ui|@radix-ui|cmdk|sonner|@floating-ui)[\\/]/.test(id)) return "ui";
+          if (/[\\/](react|react-dom|react-router|scheduler|@tanstack)[\\/]/.test(id)) return "react";
+          return "vendor";
+        },
+      },
+    },
   },
 }));

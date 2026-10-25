@@ -1,6 +1,7 @@
-import { useContext, useEffect, useId, useMemo, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Breadcrumbs } from "./shell/Breadcrumbs";
-import { HeaderTrailContext, type Crumb } from "./shell/headerTrail";
+import type { Crumb } from "./shell/headerTrail";
+import { usePageTrail } from "./shell/usePageTrail";
 
 export type { Crumb };
 
@@ -21,21 +22,11 @@ export function PageHeader({ title, documentTitle, breadcrumbs, description, act
     if (docTitle) document.title = `${docTitle} · W0rkTree Admin`;
   }, [docTitle]);
 
-  const registry = useContext(HeaderTrailContext);
-  const id = useId();
-  // Callers pass fresh arrays each render; key the trail on its content.
-  const crumbsKey = JSON.stringify(breadcrumbs ?? []);
-  const trail = useMemo(() => ({ crumbs: JSON.parse(crumbsKey) as Crumb[], title: docTitle }), [crumbsKey, docTitle]);
-
-  useEffect(() => {
-    if (!registry) return;
-    registry.set(id, trail);
-    return () => registry.set(id, null);
-  }, [registry, id, trail]);
+  const { trail, inShell } = usePageTrail(breadcrumbs, docTitle);
 
   return (
     <header className="mb-6 flex flex-col gap-3">
-      {!registry && <Breadcrumbs crumbs={trail.crumbs} />}
+      {!inShell && <Breadcrumbs crumbs={trail.crumbs} />}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0 space-y-1">
           <h1 className="truncate text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1>
