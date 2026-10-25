@@ -473,7 +473,12 @@ async fn prepare_switch_snapshots_the_tree_first() {
     let home = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
     let root = init_worktree(work.path(), 3600);
-    let tree = Repository::open(&root).unwrap().root_tree().unwrap().name;
+    // Opt in: the default (refuse) leaves dirty trees alone.
+    let mut repo = Repository::open(&root).unwrap();
+    let mut cfg = repo.config().clone();
+    cfg.auto_snapshot.on_branch_switch = worktree_sdk::config::OnBranchSwitch::Snapshot;
+    repo.set_config(cfg).unwrap();
+    let tree = repo.root_tree().unwrap().name;
     let (task, info) = start(home.path(), std::future::pending()).await;
     request_ok(&info, IpcRequest::Watch { path: root.clone() }).await;
 

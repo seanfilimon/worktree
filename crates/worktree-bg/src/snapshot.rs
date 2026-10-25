@@ -53,16 +53,10 @@ pub fn auto_message(changed: usize) -> String {
     format!("auto: {changed} files changed")
 }
 
-/// What `auto_snapshot.on_branch_switch` asks for (`snapshot`, `stash` or
-/// `refuse`). The key is added by the local-config workstream; it is read
-/// through [`WorktreeConfig::get`] so this compiles and behaves before and
-/// after it lands. Unset means `snapshot`.
+/// What `auto_snapshot.on_branch_switch` asks for: `snapshot`, `stash`
+/// or `refuse` (the default).
 pub fn on_branch_switch(config: &WorktreeConfig) -> String {
-    config
-        .get("auto_snapshot.on_branch_switch")
-        .map(|v| v.trim().to_ascii_lowercase())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "snapshot".to_string())
+    config.auto_snapshot.on_branch_switch.as_str().to_string()
 }
 
 /// Snapshot every tree (or only tree `only`) with working changes. Returns
@@ -211,15 +205,11 @@ mod tests {
     }
 
     #[test]
-    fn on_branch_switch_defaults_to_snapshot() {
-        let cfg = config(false, None);
-        // Before the local-config workstream adds the key, `get` knows
-        // nothing about it; the default applies either way.
-        let v = on_branch_switch(&cfg);
-        assert!(["snapshot", "stash", "refuse"].contains(&v.as_str()), "{v}");
-        if cfg.get("auto_snapshot.on_branch_switch").is_none() {
-            assert_eq!(v, "snapshot");
-        }
+    fn on_branch_switch_defaults_to_refuse() {
+        let mut cfg = config(false, None);
+        assert_eq!(on_branch_switch(&cfg), "refuse");
+        cfg.auto_snapshot.on_branch_switch = worktree_sdk::config::OnBranchSwitch::Snapshot;
+        assert_eq!(on_branch_switch(&cfg), "snapshot");
     }
 
     #[test]
