@@ -21,6 +21,7 @@ are not implemented yet) live in [`crates/worktree-protocol/specs/`](../crates/w
 | [Storage format](./storage-format.md) | The `.wt/` directory: objects, manifests, snapshots, refs, index, reflog, merge state |
 | [Sync protocol](./protocol-spec.md) | `worktree.sync.v1.SyncService`, hashing, push / pull / stage flows, rejections |
 | [Server architecture](./server-architecture.md) | Go packages, request flow, storage, IAM and role matrix, staged snapshots, branch protection, merge requests, licenses, events, audit, REST API |
+| [Identity and access](./iam.md) | Roles, custom roles, teams, grants, policies and the simulator, service accounts, tokens, sessions, MFA, invitations, password resets, SSO |
 | [Security](./security.md) | Secret scanning, passwords and tokens, history guarantees, deployment notes |
 | [Daemon](./daemon.md) | `worktree-bg`: lifecycle, auto-snapshot pipeline, IPC protocol |
 | [SDK guide](./sdk-guide.md) | Embedding `worktree-sdk` in Rust programs |
