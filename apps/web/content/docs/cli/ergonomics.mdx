@@ -1,0 +1,180 @@
+---
+title: Completions, Doctor, Aliases and Open
+description: Install shell completions for wt, diagnose your setup with wt doctor, define command aliases, and open trees, merge requests, snapshots and files in the admin panel with wt open.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+These conveniences change nothing about history or the protocol. The [CLI ergonomics specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/cli/CliErgonomics.md) is normative.
+
+## `wt completions`
+
+```text
+Usage: wt completions [OPTIONS] <SHELL>
+```
+
+Prints a completion script for `bash`, `zsh`, `fish`, `powershell` or `elvish`. It completes every command, subcommand, flag and enumerated value, plus the [aliases](#aliases) configured when the script is generated.
+
+<Tabs items={['bash', 'zsh', 'fish', 'PowerShell', 'elvish']}>
+<Tab value="bash">
+
+```bash
+mkdir -p ~/.local/share/bash-completion/completions
+wt completions bash > ~/.local/share/bash-completion/completions/wt
+```
+
+Needs the `bash-completion` package; open a new shell afterwards.
+
+</Tab>
+<Tab value="zsh">
+
+```bash
+wt completions zsh > "${fpath[1]}/_wt"
+```
+
+Restart zsh (or run `compinit`). If `${fpath[1]}` is not writable, save the file to a directory of your own, for example `~/.zfunc/_wt`, and add `fpath=(~/.zfunc $fpath)` before `compinit` in `~/.zshrc`.
+
+</Tab>
+<Tab value="fish">
+
+```bash
+wt completions fish > ~/.config/fish/completions/wt.fish
+```
+
+Fish loads it on the next start.
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+wt completions powershell >> $PROFILE
+```
+
+Or save it once and dot-source it from your profile, so regenerating does not append twice:
+
+```powershell
+wt completions powershell > "$HOME\Documents\PowerShell\wt-completions.ps1"
+Add-Content $PROFILE '. "$HOME\Documents\PowerShell\wt-completions.ps1"'
+```
+
+</Tab>
+<Tab value="elvish">
+
+```bash
+wt completions elvish >> ~/.config/elvish/rc.elv
+```
+
+</Tab>
+</Tabs>
+
+The script is static: regenerate it after upgrading `wt` or changing aliases. An unknown shell name is a usage error (exit code `2`).
+
+## `wt doctor`
+
+```text
+Usage: wt doctor [OPTIONS]
+```
+
+Checks the local setup and every server you use, and prints one line per check with a fix where one is known:
+
+```text
+$ wt doctor
+✓ worktree            /home/ada/web (tree web, branch main)
+✓ config.user         /home/ada/.wt/config.toml
+✓ config.worktree     /home/ada/web/.wt/config.toml
+! user                user.email not set (snapshot authorship)
+                      fix: wt config set --global user.email "you@example.com"
+✓ origin: server      http://localhost:7420 is reachable
+✓ origin: sync        gRPC Ping ok (server 0.6.0)
+✓ origin: version     wt 0.6.0, server 0.6.0
+✓ origin: clock       in sync (within 30s)
+✓ origin: credential  logged in as ada
+✓ origin: token       the session expires in 29 days
+✓ daemon              running (pid 4242, version 0.6.0), watching this worktree
+- signing             no signing key configured ([signing] key)
+- hooks               no hooks
+
+0 errors, 1 warning
+```
+
+`✓` is ok, `!` a warning, `✗` an error and `-` skipped. The exit code is `1` when any check is an error, so `wt doctor` works as a CI or onboarding gate.
+
+| Flag | Description |
+|---|---|
+| `--offline` | Skip every check that needs the network (servers, credentials, clock). The daemon check on `127.0.0.1` still runs. |
+| `--timeout <SECS>` | Timeout of each network check (default `5`). |
+| `--json` | `{"ok", "errors", "warnings", "checks": [{"name", "status", "message", "fix"}]}`, `status` = `ok`, `warn`, `error` or `skip`. |
+
+| Check | Looks at |
+|---|---|
+| `worktree`, `config.*` | The worktree opens and each config layer (user, worktree, every tree) parses and is valid for that layer. |
+| `user` | `user.name` and `user.email` are set. |
+| `aliases` | Every alias expands; warns about aliases named like built-in commands. |
+| `<remote>: server`, `sync`, `version` | `/healthz` answers, gRPC `Ping` works, and the server's major version matches `wt`. |
+| `<remote>: clock` | Skew against the server's `Date` header: warning at 30 s, error at 5 minutes (tokens and signatures depend on time). |
+| `<remote>: credential`, `token` | The saved credential (or `WT_TOKEN`) is accepted, and the session does not expire within 7 days. |
+| `daemon` | Running, same version, watching this worktree, not paused, no recent snapshot or sync error. |
+| `signing` | The configured key exists in `$WT_HOME/keys` and is registered and not revoked on its server. |
+| `hooks` | Files in `.wt/hooks/` and `.wt-tree/hooks/` that would never run (unknown name, not executable, shadowed variant), or hooks present while `[hooks] enabled = false`. |
+
+Outside a worktree, `wt doctor` checks the user config and every server with a saved login.
+
+## Aliases
+
+Define shortcuts in an `[alias]` table of the user config (`$WT_HOME/config.toml`) or the worktree config (`.wt/config.toml`); a worktree alias replaces a user alias of the same name.
+
+```bash
+wt config set --global alias.st status
+wt config set --global alias.lg "log --oneline -n 20"
+wt config set alias.wip "snapshot --allow-empty -m 'work in progress'"
+wt lg main            # runs: wt log --oneline -n 20 main
+wt config unset --global alias.st
+```
+
+```toml
+[alias]
+st  = "status"
+lg  = "log --oneline -n 20"
+wip = "snapshot --allow-empty -m 'work in progress'"
+```
+
+- The alias is replaced by its words, split like a shell: whitespace separates words, `'...'` quotes literally and `"..."` quotes with `\"` and `\\` escapes. Backslashes elsewhere are kept, so Windows paths need no doubling. Arguments after the alias are appended.
+- **Built-in commands cannot be shadowed**: an alias named `status` is ignored (and `wt doctor` warns about it).
+- An expansion may start with another alias, up to 5 levels. A longer chain or a cycle is a usage error naming the chain.
+- Global flags before the alias still work: `wt -C ../api lg`. An unknown word keeps clap's "a similar subcommand exists" suggestion.
+- Names are 1-64 characters of `A-Z a-z 0-9 _ -`. `wt config set alias.NAME ""` removes one. `--global` works outside a worktree. `[alias]` in a nested tree's `.wt-tree/config.toml` is not read.
+- Shell aliases (git's `!command`) are not supported.
+
+## `wt open`
+
+```text
+Usage: wt open [OPTIONS] [COMMAND]
+```
+
+Opens the current tree in the [admin panel](/guides/admin-panel) of the remote's server:
+
+| Command | Opens |
+|---|---|
+| `wt open` / `wt open tree` | `<server>/admin/trees/<tenant>/<tree>` |
+| `wt open mr <NUMBER>` | The merge request |
+| `wt open snapshot <REV>` | A snapshot (`HEAD`, `HEAD~2`, a branch, a tag or an id prefix, resolved locally) |
+| `wt open file <PATH>` | The Files tab at that file or directory, on the current branch |
+
+```bash
+wt open mr 4
+wt open snapshot HEAD~1
+wt open file src/refund.rs
+wt open --remote company           # another remote's server and tenant (default: origin)
+wt open mr 4 --print               # print the URL only
+```
+
+The browser is `$BROWSER` when set, else `start` on Windows, `open` on macOS and `xdg-open` elsewhere. `--print` only prints the URL (scriptable: `curl "$(wt open --print)"`), and `--json` prints `{"url", "opened"}`. A missing remote is an error with a hint to add one.
+
+## Grouped help
+
+`wt --help` lists the commands grouped by topic (Local history, Branches and merging, Worktree structure and configuration, Servers and sync, Export and interop, Background daemon, Collaboration, Administration, Identity and access, Maintenance and setup). A new command without a group appears under "Other commands". `wt CMD --help` is unchanged.
+
+<Callout type="info" title="Roadmap">
+  Shell aliases and parameters in aliases, dynamic completion of branch, tag, tree and remote names, `wt doctor --fix`, and `wt open` for releases and outside a worktree are not built. See the [roadmap](/roadmap).
+</Callout>

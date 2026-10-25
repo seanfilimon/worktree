@@ -7,7 +7,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 Merging and diffing are implemented as pure functions (no I/O) in `worktree_sdk::merge` and `worktree_sdk::diff`. `Repository::merge` and `Repository::diff_*` combine them with the object store and working directory. This page describes the semantics that [`wt merge`](/docs/cli/branches#wt-merge) and [`wt diff`](/docs/cli/snapshots#wt-diff) expose; the [Tree specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Tree.md) (§10) is normative.
 
-Merges always happen on the client. The server only fast-forwards merge requests and never creates merge snapshots; see [Reviews, CI and merges](/docs/cli/merge-requests).
+The server runs the same three-way merge (Go package `internal/merge3`) when it merges a merge request with the `merge` or `squash` method, so a server merge produces the snapshot `wt merge` would. It never writes conflict markers: a conflicting merge request is refused and merged locally first. See [Server-side merges](/docs/server/merging). [`wt cherry-pick`, `wt rebase`](/docs/cli/history-rewriting) and `wt stash apply` reuse the engine too.
 
 ## Merge overview
 

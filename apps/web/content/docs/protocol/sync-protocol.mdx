@@ -17,7 +17,7 @@ Clients synchronize with the server through one gRPC service, `worktree.sync.v1.
 | Max message size | 64 MiB in both directions. One object may be at most 64 MiB; files over 8 MiB are [chunked](/docs/protocol/large-files#chunked-large-files). |
 | Health | `grpc.health.v1.Health` reports `SERVING` until shutdown begins. |
 
-Messages are plain protobuf inside gRPC framing: no custom envelope, no compression, no packs or deltas.
+Messages are plain protobuf inside gRPC framing: no custom envelope, no packs or deltas. Since v0.6 the client sends `UploadObjects` and `DownloadObjects` requests gzip-compressed (gRPC message compression) and advertises `grpc-accept-encoding: gzip`, so object payloads travel compressed in both directions; the objects inside are always the uncompressed content. Against a server without gzip the client retries uncompressed and keeps compression off. Other RPCs are not compressed.
 
 ## Authentication
 
@@ -108,7 +108,7 @@ A rejected push returns `PushResponse{accepted: false, rejection_reason}` and ch
 The SDK maps every rejection to `SdkError::PushRejected` with a readable message (`remote::rejection_message`), and `wt push` exits with code `1`.
 
 <Callout type="info" title="No force push">
-  There is no way to move a server branch to a snapshot that does not descend from its current tip. History on the server only grows; tips move only by fast-forward pushes, fast-forward merge-request merges, and the REST branch create and delete endpoints.
+  There is no way to move a server branch to a snapshot that does not descend from its current tip. History on the server only grows; tips move only by fast-forward pushes, [merge-request merges](/docs/server/merging) (a fast-forward, or a new merge or squash snapshot on top of the target), and the REST branch create and delete endpoints.
 </Callout>
 
 ## Pull flow
@@ -174,7 +174,7 @@ Policy refusals of `Push`, `Stage`, `PushTag` and `SyncAccessConfig` are reporte
 Every operation is idempotent: uploads are content-addressed, re-pushing the same tip succeeds, re-staging replaces the entry, and re-pushing an existing tag is refused without side effects. Clients retry network errors and `ResourceExhausted`, never `PermissionDenied` or push rejections.
 
 <Callout type="info" title="Not built yet">
-  A QUIC transport, wire compression, pack files and delta transfer, resumable uploads, an offline queue, and tag deletion over gRPC are not built (see the [roadmap](/roadmap)).
+  A QUIC transport, pack files and delta transfer, resumable uploads, an offline queue, and tag deletion over gRPC are not built (see the [roadmap](/roadmap)).
 </Callout>
 
 ## Related

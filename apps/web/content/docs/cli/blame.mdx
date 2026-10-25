@@ -1,0 +1,114 @@
+---
+title: Blame
+description: Find the snapshot that last changed each line of a file with wt blame, line ranges, porcelain and JSON output, and the server's blame endpoint.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`wt blame` attributes every line of a text file to the snapshot that last changed it. The same algorithm runs locally and on the server, so for the same history both give the same answer. The [Blame specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Blame.md) is normative.
+
+## `wt blame`
+
+```text
+Usage: wt blame [OPTIONS] <PATH>
+```
+
+| Argument / flag | Description |
+|---|---|
+| `PATH` | File to blame, relative to the current directory. It must be a file of the selected tree. |
+| `--rev <REV>` | Blame the file as of this revision (default `HEAD`). Any [revision](/docs/cli#revision-syntax) works. |
+| `-L <START,END>` | Only these lines: `START,END`, `START,+COUNT`, `START,` or `START` (the last two run to the end of the file). |
+| `--porcelain` | Machine-readable blocks, one per line (below). |
+| `--json` | `{"path", "snapshot", "lines": [BlameLine]}`. Cannot be combined with `--porcelain`. |
+
+```bash
+wt blame src/main.rs
+wt blame src/main.rs -L 40,+20
+wt blame src/main.rs --rev v1.2.0
+wt blame README.md --json | jq -r '.lines[] | "\(.line) \(.author)"'
+```
+
+Default output has one row per line: short snapshot id, author name (without the email), local date, line number and text:
+
+```text
+1f2e3d4c (Ada Lovelace 2026-10-25 1) fn main() {
+9a8b7c6d (Bob          2026-10-26 2)     run();
+1f2e3d4c (Ada Lovelace 2026-10-25 3) }
+```
+
+Look a snapshot up with `wt show 9a8b7c6d`, or open it in the admin panel with [`wt open snapshot 9a8b7c6d`](/docs/cli/ergonomics#wt-open).
+
+### Porcelain
+
+`--porcelain` prints a block per line, like `git blame --line-porcelain`:
+
+```text
+9a8b7c6d-1e2f-4a3b-8c4d-5e6f7a8b9c0d 2
+author Bob <bob@example.com>
+author-time 1793005200
+created-at 2026-10-26T09:00:00+00:00
+summary Call run from main
+filename src/main.rs
+	    run();
+```
+
+The first line is the full snapshot id and the line number; the text follows a tab.
+
+### JSON
+
+Each element of `lines` is a `BlameLine`:
+
+```json
+{"line": 2, "text": "    run();", "snapshot_id": "9a8b7c6d-...", "author": "Bob <bob@example.com>",
+ "message": "Call run from main", "at": "2026-10-26T09:00:00Z"}
+```
+
+`message` is the first line of the snapshot message; `snapshot` is the snapshot the revision resolved to.
+
+## How lines are attributed
+
+Blame walks the history back from the revision, newest first:
+
+- If a parent has the file unchanged, the parent takes every pending line without a diff, so a file that stopped changing long ago is cheap to blame.
+- Otherwise each parent, **first parent first**, takes the lines the line diff matches to it. For a merge snapshot, lines on the main line follow first-parent history and lines brought in by the merged branch follow that branch.
+- Lines no parent takes belong to the snapshot itself: new and edited lines, and lines written while resolving a merge conflict.
+
+| Case | Behaviour |
+|---|---|
+| Renamed file | Renames are **not** followed: every line belongs to the snapshot that renamed the file. |
+| Binary file (NUL in the first 8 KiB, or invalid UTF-8) | Error. A binary version in a parent takes no lines. |
+| Path missing at the revision | Error. |
+| Large (chunked) files | Supported. |
+| Shallow clone | Lines stop at the shallow boundary snapshot. Run `wt fetch --deepen N` for more history. |
+| Empty file | Empty result. |
+
+`-L` traces only the requested lines, so blaming a small range of a long-lived file stops early. The end of the range is clamped to the file length; `START` past the end, `0` or an end before the start is an error.
+
+## Server API
+
+```text
+GET /api/v1/trees/{tenant}/{tree}/blame/{rev}/{path...}[?start=N&end=M]
+```
+
+```bash
+curl -s "$WT/api/v1/trees/acme/web/blame/main/src/main.rs?start=1&end=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns `{"lines": [BlameLine], "snapshot": Snapshot}`. `rev` is a snapshot id, unique id prefix, branch or tag; it is one path segment, so a branch with `/` in its name must be given by snapshot id. The read checks are those of the blob endpoint:
+
+| Condition | Response |
+|---|---|
+| No `tree:read` | `403` / `404`, as for every tree route |
+| Unknown revision, or the file is missing at it | `404 not_found` |
+| Path denied by a `tree:read` path policy | `403 path_denied` (checked first, so existence is not revealed) |
+| Path withheld by a license rule | `451 license_restricted` |
+| Binary file | `422 binary_file` |
+| A version larger than 32 MiB | `413 payload_too_large` |
+| Bad `start` / `end` | `400 bad_request` |
+
+The admin panel shows the same data with the **Blame** toggle in a tree's Files tab.
+
+<Callout type="info" title="Roadmap">
+  Following renames and copies, blaming uncommitted working-copy lines, ignoring formatting revisions, whitespace-insensitive matching and several `-L` ranges are not built. See the [roadmap](/roadmap).
+</Callout>

@@ -1,0 +1,122 @@
+---
+title: Policy History
+description: Every change to a tenant policy is kept as a version - list versions, diff them statement by statement, roll back, and restore deleted policies with wt policy or the REST API.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Every tenant [policy](/docs/server/access-control) keeps a version history on the server. Each change appends an immutable version holding the whole policy after the change, who made it, when and why. Use it to answer "who changed this deny statement, and when", to compare two versions, and to roll a policy back, including bringing back a deleted one. The [Policy history specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/PolicyHistory.md) is normative.
+
+## What records a version
+
+| Change | `change` |
+|---|---|
+| `wt policy create` (`POST {t}/policies`) | `create` |
+| `wt policy update`, `enable`, `disable` (`PUT {t}/policies/{id}`) | `update` |
+| `wt policy delete` | `delete` (holds the policy as it was before the delete) |
+| `wt policy rollback` | `rollback` |
+| `wt access apply` creating, updating or deleting a config-managed policy | `create` / `update` / `delete`, comment `applied from the access document of tenant <slug>` |
+
+Applies that leave a policy unchanged, and dry runs (`wt access plan`), record nothing. Because REST edits and [declarative access](/docs/server/declarative-access) applies both record versions, a policy keeps one continuous history when it moves between the two. Versions are never modified or deleted, and they stay after the policy is deleted.
+
+Policies created before v0.6 get a **synthetic version 1** the first time their history is read or changed, holding the policy as it was at that moment (comment `synthetic version: the policy existed before version history was recorded`).
+
+## Commands
+
+```text
+wt policy history [--tenant <SLUG>] <ID>
+wt policy show-version [--tenant <SLUG>] <ID> <VERSION>
+wt policy diff [--from <V>] [--to <V>] [--tenant <SLUG>] <ID>
+wt policy rollback [-m <MSG>] [--force] [--tenant <SLUG>] <ID> <VERSION>
+wt policy deleted [--tenant <SLUG>]
+```
+
+`--tenant` defaults to the tenant of the worktree's origin remote. All commands accept `--json` (the server's JSON). Reads need `iam:read`, rollback needs `iam:admin`.
+
+### Find who changed a policy
+
+```bash
+wt policy list acme
+wt policy history d082c1f4-... --tenant acme
+wt policy show-version d082c1f4-... 2 --tenant acme
+```
+
+Each version records `version`, `change`, `changed_by`, `changed_at` and `comment`.
+
+### Compare versions
+
+```bash
+wt policy diff d082c1f4-... --tenant acme              # latest against the one before
+wt policy diff d082c1f4-... --from 1 --to 3 --tenant acme
+wt policy diff d082c1f4-... --from 0 --tenant acme     # 0 = the empty policy: everything added
+```
+
+```text
+Policy d082c1f4-...: version 1 -> 3
+~ enabled: true -> false
++ statement 1 (allow-ci): ALLOW ci:report on wt:tree/acme/web for sa:acme/ci
+- statement 2 (no-force): DENY branch:delete on wt:branch/acme/*/main for *
+~ statement 3
+    - DENY branch:push on wt:branch/acme/*/main for team:contractors
+    + DENY branch:push on wt:branch/acme/*/release/* for team:contractors
+```
+
+Statements with a `sid` are matched by sid; statements without one by their position among the sid-less statements, so inserting a sid'd statement does not shift them. `--to` defaults to the latest version and `--from` to the one before it; `--from` may be greater than `--to` for a reverse diff. Statement numbers are 1-based, as in `wt policy show`.
+
+### Roll back or restore
+
+```bash
+wt policy rollback d082c1f4-... 1 -m "undo the rename" --tenant acme
+wt policy deleted --tenant acme                         # deleted policies, newest first
+wt policy rollback 5b7e9a02-... 3 --tenant acme         # restores a deleted policy with its id
+```
+
+A rollback copies the name, description, enabled flag and statements of the chosen version onto the policy and records a **new** `rollback` version (comment `rollback to version N: <message>`); history is never rewritten. The statements are validated against the current action catalog (`400` if an action no longer exists), the name must still be free (`409`), and rolling back to the content the policy already has is `409 conflict`.
+
+Policies managed by an access document (`managed_by: "config"`) are refused with `409 managed_by_config`. `--force` overrides that, but only for tenant owners and server admins; the next `wt access apply` reconciles the policy with the document again, so change the document instead where you can.
+
+## REST
+
+All under `/api/v1/tenants/{tenant}/policies`; reads need `iam:read`, rollback `iam:admin`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /deleted` | The latest (`delete`) version of each deleted policy, newest first. |
+| `GET /{id}/versions` | Every version, oldest first (also for deleted policies). |
+| `GET /{id}/versions/{v}` | One version. |
+| `GET /{id}/diff?from=&to=` | `{from, to, changes, fields}` |
+| `POST /{id}/rollback[?force=true]` | Body `{"version": N, "comment"?}`; returns the new version. |
+
+```json
+{
+  "tenant_id": "6f0c...",
+  "policy_id": "d082...",
+  "version": 3,
+  "change": "rollback",
+  "policy": {"id": "d082...", "name": "protect-main", "enabled": true, "statements": [], "version": 3},
+  "changed_by": "olga",
+  "changed_at": "2026-10-25T12:00:00Z",
+  "comment": "rollback to version 1: undo the rename"
+}
+```
+
+A diff lists `changes` (`op` = `add`, `remove` or `change`, with `sid`, `index` and `statement` or `before`/`after`) and `fields` (differences of `name`, `description` and `enabled`):
+
+```json
+{
+  "from": 1, "to": 2,
+  "changes": [
+    {"op": "add", "sid": "allow-ci", "index": 0, "statement": {"effect": "allow", "actions": ["ci:report"]}},
+    {"op": "remove", "sid": "gone", "index": 1, "statement": {"effect": "deny", "actions": ["branch:push"]}}
+  ],
+  "fields": [{"field": "enabled", "before": true, "after": false}]
+}
+```
+
+## Events and audit
+
+Every recorded version publishes `policy.changed` (payload `policy_id`, `name`, `version`, `change`, `comment`), so [webhooks](/docs/server/webhooks) and `wt events` see policy changes. Rollbacks are audited as `policy.rollback`; creates, updates and deletes keep their `policy.create|update|delete` records with an added `history_version`. The admin panel shows the history, a diff view and rollback in the policy drawer.
+
+<Callout type="info" title="Roadmap">
+  History for custom roles and for access documents themselves, pruning old versions, and rolling back a whole access apply at once are not built. Versions are kept forever. See the [roadmap](/roadmap).
+</Callout>

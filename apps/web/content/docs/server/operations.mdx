@@ -1,6 +1,6 @@
 ---
 title: Operations
-description: Run worktree-server day to day - TLS, trusted proxies, garbage collection and retention, tenant quotas, rate limiting, tenant status and the wt admin commands.
+description: Run worktree-server day to day - TLS, trusted proxies, garbage collection and retention, object compression and fsck, webhook targets, tenant quotas, rate limiting, tenant status and the wt admin commands.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -65,7 +65,42 @@ Each run produces a report:
 }
 ```
 
-REST: `POST /api/v1/admin/gc?dry_run=true|false` returns the report; `GET /api/v1/admin/gc` returns `{"config", "running", "next_run_at", "runs"}`. Runs are counted in the `worktree_gc_runs_total` and `worktree_gc_deleted_objects_total` metrics. Deleting a tree or a server branch makes its objects unreachable; they are removed by a later run after the grace period.
+REST: `POST /api/v1/admin/gc?dry_run=true|false` returns the report; `GET /api/v1/admin/gc` returns `{"config", "running", "next_run_at", "runs"}`. Runs are counted in the `worktree_gc_runs_total` and `worktree_gc_deleted_objects_total` metrics. Deleting a tree or a server branch makes its objects unreachable; they are removed by a later run after the grace period. Snapshots written by [server-side merges](/docs/server/merging) are ordinary branch history and are kept like pushed ones.
+
+## Object compression
+
+New objects are stored zstd-compressed (the `WTZ1` encoding) when that saves at least 10 % and the object is at least 512 bytes. Object ids are unchanged, so no migration is needed, and objects stored raw before v0.6 stay readable.
+
+```bash
+worktree-server --compress-objects=false     # write new objects raw (WT_COMPRESS_OBJECTS=false)
+```
+
+- Compressed objects are always readable, whatever the setting, so the flag can be changed at any time.
+- `freed_bytes`, `wt admin stats`, tenant storage usage and the `max_storage_bytes` quota count **stored** bytes, so compression lowers usage for new pushes.
+- Existing raw objects are not recompressed on the server (local `wt gc` does compact client stores).
+- gRPC object transfers are gzip-compressed in both directions; clients fall back to uncompressed transfers against older servers.
+
+See [Storage maintenance](/docs/cli/maintenance#compressed-objects).
+
+## Integrity checks
+
+`wt admin fsck` re-hashes every stored object and checks that every snapshot reachable from a branch or tag has its manifest, blobs, chunk lists and chunks. It exits `1` when anything is corrupt or missing, so it can run from a scheduled job:
+
+```bash
+wt admin fsck --json > fsck-$(date +%F).json || echo "object store problems found"
+```
+
+The report (`POST /api/v1/admin/fsck`) lists `corrupt` objects, `missing` objects with a referencing snapshot, and `missing_snapshots`. The check reads the whole store; run it off-peak. Restore damaged object files from a [backup](/docs/server/storage#backup). See [Server fsck](/docs/cli/maintenance#server-fsck).
+
+## Webhook targets
+
+[Webhooks](/docs/server/webhooks) refuse targets that are, or resolve to, loopback, link-local (including cloud metadata addresses), private, carrier-grade NAT or other non-public addresses, both when a hook is saved and on every connection. When receivers live on the server's own network, allow them explicitly:
+
+```bash
+worktree-server --webhook-allow-private      # WT_WEBHOOK_ALLOW_PRIVATE=true
+```
+
+The setting applies to every tenant, so any tenant or tree admin can then point a webhook at internal services reachable from the server. Enable it only when all of them are trusted, and restrict the server's outbound network access instead where you can. Deliveries time out after 10 seconds, do not follow redirects, ignore proxy environment variables, and are retried after 1 m, 5 m, 30 m and 2 h; a hook is deactivated after 20 consecutive failures (`webhook.failing`).
 
 ## Quotas
 

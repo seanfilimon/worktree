@@ -1,0 +1,140 @@
+---
+title: Cherry-pick, Rebase and Stash
+description: Copy snapshots between branches with wt cherry-pick, replay unpushed work onto a new base with wt rebase, set changes aside with wt stash, and auto-stash on branch switches.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Three local tools reshape work before it is shared. They act on the selected tree (`--tree NAME` or the tree containing the current directory), reuse the three-way merge engine of [`wt merge`](/docs/cli/branches#wt-merge), and stop on conflicts the same way. The [History rewriting specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/HistoryRewriting.md) is normative.
+
+| Command | Does | Creates |
+|---|---|---|
+| `wt cherry-pick REV...` | Applies the change of existing snapshots onto the current branch | New snapshots |
+| `wt rebase ONTO` | Replays the branch's own snapshots on top of `ONTO` and moves the branch | New snapshots (new ids) |
+| `wt stash` | Sets uncommitted changes aside and restores them later | Stash entries, no snapshots |
+
+<Callout type="info" title="Server history stays append-only">
+  The server never accepts a push that drops snapshots it already has, and there is no force push. Rebase therefore refuses to rewrite snapshots that are already pushed. The originals of a cherry-pick or rebase are not deleted: they stay reachable through the [reflog](/guides/reflog-and-recovery) until it expires.
+</Callout>
+
+## `wt cherry-pick`
+
+```text
+Usage: wt cherry-pick [OPTIONS] <REV|--continue|--abort|--skip>
+```
+
+| Argument / flag | Description |
+|---|---|
+| `REV...` | Snapshots to apply, in order: ids, branches, `HEAD~N`, `origin/main`, tags, `@{N}`. |
+| `-n, --no-snapshot` | Apply the changes to the working tree only; create no snapshots and do not move the branch. |
+| `--continue` | Finish the stopped step after resolving its conflicts and apply the rest. |
+| `--skip` | Drop the stopped step and apply the rest. |
+| `--abort` | Return the branch and working tree to their state before the cherry-pick. |
+
+```bash
+wt switch release/1.4
+wt cherry-pick 5e6f7a8b                  # one fix from main
+wt cherry-pick main~3 main~1             # two snapshots, in this order
+wt cherry-pick -n feature/login          # its change, uncommitted, to review first
+```
+
+- Each snapshot's change relative to its **first** parent is merged onto the current branch and recorded as a new snapshot with the same author and message. Snapshot dependencies are dropped (a copy would create duplicate TODOs on push).
+- A snapshot whose change is already present is **skipped** and listed as such.
+- Needs a clean working tree and no merge, cherry-pick or rebase in progress.
+- Each new snapshot writes a reflog entry `cherry-pick <short id>: <subject>`.
+
+## `wt rebase`
+
+```text
+Usage: wt rebase [OPTIONS] <ONTO|--continue|--abort|--skip>
+```
+
+| Argument / flag | Description |
+|---|---|
+| `ONTO` | Revision to replay the branch onto (`main`, `origin/main`, an id, ...). |
+| `--force` | Rewrite snapshots even if they were already pushed. |
+| `--continue`, `--skip`, `--abort` | As for cherry-pick. |
+
+```bash
+wt fetch
+wt rebase origin/main          # replay unpushed work on the latest main
+wt push --branch feature/search
+```
+
+1. If `ONTO` is already in the branch, nothing changes. If the branch is an ancestor of `ONTO`, it fast-forwards.
+2. Otherwise the branch's first-parent snapshots since it forked from `ONTO` are replayed on top of `ONTO`, oldest first, as new snapshots (new ids; author, message, dependencies and `reverts` kept). They are signed again when [signing](/docs/cli/signing) is configured with `[signing] auto = true`; the original signatures are not copied because the signed content changes.
+3. Snapshots whose changes `ONTO` already has are dropped. Merge snapshots are replayed as their change against the first parent, with a single parent.
+4. The branch moves to the result. One reflog entry `rebase` records the old and new tips, so `BRANCH@{1}` is the pre-rebase tip.
+
+**Pushed history is protected.** If a remote-tracking ref of the branch (`origin/BRANCH`) already contains a snapshot that would be rewritten, the rebase is refused with exit code `1`: the rewritten branch would need a force push, which the server refuses. `--force` rewrites anyway, for example when the pushed branch will be abandoned. In a shallow clone, a replay that needs snapshots beyond the boundary asks for `wt fetch --deepen N`.
+
+## Conflicts
+
+A conflicting step stops the operation with exit code `3`. The steps before it are already snapshots; the working tree holds the merged result with diff3 markers labelled `ours (<branch> <id>)`, `base (<id>)` and `theirs (<id>)`. Resolve with the `wt merge` commands, then continue with the operation's own flag:
+
+```bash
+wt rebase origin/main
+# exit code 3
+wt merge status                            # lists the conflicts of the stopped step
+wt merge resolve src/config.rs --theirs    # theirs = the snapshot being replayed
+# edit the remaining files and remove the markers
+wt rebase --continue
+```
+
+| Command | During a stopped cherry-pick or rebase |
+|---|---|
+| `wt merge status`, `wt merge resolve PATH --ours\|--theirs\|--file F`, `--all` | Work as during a merge; `ours` is the progress so far, `theirs` the replayed snapshot. |
+| `wt cherry-pick --continue` / `wt rebase --continue` | Requires no markers left; snapshots the result as the step's replacement (secret scanning applies) and replays the rest. |
+| `--skip` | Drops the step and replays the rest. |
+| `--abort` | Moves the branch back to where it was, resets the working tree, and clears the state. |
+| `wt merge --continue`, `wt merge abort`, `wt snapshot` | Refused with a hint to use `wt <op> --continue/--skip/--abort`. |
+
+The state of a stopped operation is kept in `.wt/trees/<tree>/REWRITE_STATE.json` next to the merge state; the daemon does not auto-snapshot while it exists.
+
+## `wt stash`
+
+```text
+wt stash [push] [-m <MSG>] [-u|--include-untracked]
+wt stash list
+wt stash show [-p] [N]
+wt stash apply [N]
+wt stash pop [N]
+wt stash drop [N]
+wt stash clear
+```
+
+```bash
+wt stash -m "half-done refund validation"
+wt switch main
+# ... fix something, snapshot, switch back ...
+wt switch feature/refunds
+wt stash list
+wt stash show -p
+wt stash pop
+```
+
+| Subcommand | Description |
+|---|---|
+| `push` (default) | Save changes to files of the head snapshot (modified and deleted files) and reset them. New files are stashed, and removed, only with `-u`. Default message: `WIP on BRANCH: ID SUBJECT`. Nothing to stash is an error. |
+| `list` | Entries, newest first. |
+| `show [N]` | Changed file names, or patches with `-p`. |
+| `apply [N]` | Three-way merge the entry into the working tree and keep it. The working tree may be dirty and the head may have moved. |
+| `pop [N]` | `apply`, then drop the entry unless the apply conflicted. |
+| `drop [N]`, `clear` | Delete one entry or all of them. |
+
+- `N` counts from the newest entry (`0`, the default) and may be written `stash@{N}`.
+- A conflicting apply writes markers into text files (`ours (working tree)` / `theirs (stash@{N}: message)`), keeps the working copy for other conflicts and exits `3`. No merge state is recorded: edit the files, then snapshot.
+- Entries are per tree, in `.wt/trees/<tree>/stash.jsonl`. Their stored files are kept by [`wt gc`](/docs/cli/maintenance#wt-gc) until the entry is dropped. Stashes are local; they are never pushed.
+- Stashing is refused during a merge, cherry-pick or rebase.
+
+### Auto-stash on branch switch
+
+```bash
+wt config set auto_snapshot.on_branch_switch stash
+```
+
+With this setting, `wt switch NAME` on a dirty working tree stashes everything (new files included) as `auto-stash on <current branch>`, switches, and pops the newest auto-stash recorded for `NAME`, if any. Switching back therefore restores your unfinished work. If the switch fails, the auto-stash is popped back. `--force`, `-c` (which carries the changes to the new branch) and switching to the current branch bypass it. A conflicting pop keeps the entry, prints the conflicts and exits `3`; the switch itself succeeded. `wt switch --json` reports `stashed` and `restored`. See [`on_branch_switch`](/docs/cli/configuration#branch-switches-with-uncommitted-changes).
+
+<Callout type="info" title="Roadmap">
+  Interactive rebase (reorder, squash, fixup, reword), `wt rebase --onto NEWBASE UPSTREAM`, replaying merges with their topology, cherry-pick ranges (`A..B`), partial stashes (`wt stash push PATH`), `wt stash branch` and showing a stopped operation in `wt status` are not built. See the [roadmap](/roadmap).
+</Callout>

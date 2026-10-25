@@ -30,7 +30,7 @@ These pages summarize the protocol. The normative text is the set of specificati
 - **64 MiB messages.** The gRPC maximum message size is 64 MiB in both directions. Files over 8 MiB are split into content-defined chunks, so a large file never needs one large message.
 
 <Callout type="info" title="Not built yet">
-  A QUIC transport, wire compression, pack files and delta transfer are described in earlier designs but are not built (see the [roadmap](/roadmap)). Objects travel whole in `ObjectData` messages.
+  A QUIC transport, pack files and delta transfer are described in earlier designs but are not built (see the [roadmap](/roadmap)). Objects travel whole in `ObjectData` messages; since v0.6 object transfers are gzip-compressed gRPC messages and objects are stored zstd-compressed on disk.
 </Callout>
 
 ## Versioning

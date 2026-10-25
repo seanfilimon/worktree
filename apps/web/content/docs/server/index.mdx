@@ -18,11 +18,13 @@ The W0rkTree server (`worktree-server`, source in `services/server-go`) is the s
 - **Hosts tenants and trees.** Every account gets a personal tenant; organizations are org tenants. Trees are `private`, `internal` or `public`.
 - **Authenticates and authorizes.** argon2id passwords, scoped bearer tokens, sessions, TOTP two-factor authentication, OpenID Connect SSO, invitations. Built-in and custom roles, teams, per-tree grants and allow/deny policies. See [Access control](/docs/server/access-control).
 - **Enforces rules on every push and read.** Per-branch and per-path policies, [branch and tag protection](/docs/server/branch-protection), [license rules](/docs/server/licensing), tenant quotas and snapshot signature verification.
-- **Runs code review.** Merge requests with reviews, stale-approval tracking, comments, CI status checks, merge readiness and linked groups that merge across trees atomically.
+- **Runs code review.** Merge requests with reviews, stale-approval tracking, comments, CI status checks, merge readiness, [server-side fast-forward, merge and squash merges](/docs/server/merging) and linked groups that merge across trees atomically.
+- **Searches and explains code.** [Code search](/docs/server/code-search) over every readable tree's default branch, and [blame](/docs/cli/blame#server-api) per file.
+- **Notifies other systems.** Signed, retried [webhooks](/docs/server/webhooks) for every event, and an [OpenAPI description](/docs/server/openapi) of the REST API.
 - **Tracks cross-tree work.** Snapshot dependencies become TODOs in the target tree; releases with downloadable assets hang off tags.
 - **Shares work in progress.** Staged snapshots from `wt stage` or the daemon are visible to the team without entering branch history.
 - **Streams and records activity.** Server-Sent Events, a gRPC `WatchBranches` stream, and an append-only audit log with NDJSON export.
-- **Maintains itself.** Garbage collection with a grace period, staged and audit retention, rate limiting, health probes and Prometheus metrics. See [Operations](/docs/server/operations).
+- **Maintains itself.** Garbage collection with a grace period, compressed object storage, an integrity check (`wt admin fsck`), staged and audit retention, rate limiting, health probes and Prometheus metrics. See [Operations](/docs/server/operations).
 
 ## Single-port architecture
 
@@ -58,7 +60,8 @@ The server is organised as small packages under `services/server-go/internal`, w
 | `httpapi` | REST `/api/v1`, SSE, `/healthz`, `/metrics`, static admin panel. |
 | `meta`, `objstore`, `content` | bbolt metadata and document collections; BLAKE3 object store; reading (chunked) file content. |
 | `iam`, `authz`, `sso` | Authentication (accounts, tokens, sessions, MFA, invitations, resets); authorization (roles, teams, grants, policies, simulator); OIDC SSO. |
-| `review`, `ci` | Branch protection, merge requests, reviews, linked groups; CI check status. |
+| `review`, `merge3`, `ci` | Branch protection, merge requests, reviews, linked groups and server-side merges; the three-way merge engine; CI check status. |
+| `webhooks`, `codesearch`, `blame`, `policyhist` | Webhook delivery; the code search index; server blame; policy version history. |
 | `license`, `pathacl`, `signing`, `limits` | License rules; path-level write denies; Ed25519 signature verification; quotas and rate limiting. |
 | `staged`, `events`, `audit` | Staged snapshots and overlap detection; event bus; audit log. |
 | `todo`, `release`, `gc`, `accesscfg` | Dependencies to TODOs; releases and assets; garbage collection and retention; declarative access documents. |

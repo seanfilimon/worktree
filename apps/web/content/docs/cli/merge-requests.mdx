@@ -52,7 +52,8 @@ wt mr review 4 --approve
 
 ```bash
 wt mr checks 4
-wt mr merge 4
+wt mr merge 4                         # fast-forward if possible, else a merge snapshot
+wt mr merge 4 --method squash -m "Add refund endpoint (!4)"
 ```
 
 </Step>
@@ -65,9 +66,19 @@ wt mr merge 4
 - **Authors cannot approve** (or request changes on) their own merge request.
 - `--approve` and `--request-changes` need `mr:approve` (maintainer); `--comment` and `wt mr comment` need only `tree:read`.
 
-### Merges are fast-forward only
+### Merge methods
 
-The server moves the target branch to the source tip with a compare-and-swap. It never creates a merge snapshot. If the target has moved on, bring it into the source branch locally and push again:
+The server merges with one of three methods (see [Server-side merges](/docs/server/merging)):
+
+| `--method` | Result |
+|---|---|
+| `fast-forward` | The target moves to the source tip; no new snapshot. |
+| `merge` | A merge snapshot with parents `[target tip, source tip]`. |
+| `squash` | One snapshot on the target with all the source's changes. |
+
+Without `--method` the server fast-forwards when it can and otherwise writes a merge snapshot, whichever branch protection allows first (`wt protect set --merge-methods` restricts the methods; `--require-linear` forbids `merge`, `--require-signed` forbids `merge` and `squash`). `-m` sets the message of a merge or squash snapshot. `wt mr mergeability 4` shows the possible methods, the merge base and any conflicts before you try.
+
+The server never writes conflict markers: a merge with conflicts is refused (`409 merge_conflict` listing the paths, exit code `3`). Bring the target into the source locally, resolve, push and merge again:
 
 ```bash
 wt pull --branch main
@@ -76,12 +87,12 @@ wt merge main -m "Merge main into feature/refunds"
 wt push --branch feature/refunds
 ```
 
-A refused merge reports why, in this order of precedence: a linked group answers `409 linked_group`; missing approvals answer `403 review_required`; change requests, CI, blocking TODOs and linear-history violations answer `409 merge_blocked` listing every blocker; a target that has diverged from the source (and nothing else) answers `409 conflict`. Run `wt mr checks` first to see all blockers at once. See [`wt merge`](/docs/cli/branches#wt-merge).
+A refused merge reports why, in this order of precedence: a linked group answers `409 linked_group`; missing approvals answer `403 review_required`; change requests, CI, blocking TODOs and linear-history violations answer `409 merge_blocked` listing every blocker; a method protection refuses answers `409 merge_method_not_allowed`; conflicts answer `409 merge_conflict`; a fast-forward on diverged branches answers `409 conflict`. Run `wt mr checks` first to see all blockers at once. See [`wt merge`](/docs/cli/branches#wt-merge).
 
 ## `wt mr`
 
 ```text
-wt mr <list|show|create|approve|merge|close|review|comment|comments|checks|link|merge-group|groups>
+wt mr <list|show|create|approve|merge|mergeability|close|review|comment|comments|checks|link|merge-group|groups>
 ```
 
 | Command | Usage | Notes |
@@ -94,10 +105,11 @@ wt mr <list|show|create|approve|merge|close|review|comment|comments|checks|link|
 | `comment` | `wt mr comment --message <TEXT> [--path <PATH>] [--line <N>] <NUMBER> [TREE]` | `--line` refers to a line of `--path`. |
 | `comments` | `wt mr comments <NUMBER> [TREE]` | |
 | `checks` | `wt mr checks <NUMBER> [TREE]` | Merge readiness, below. |
-| `merge` | `wt mr merge <NUMBER> [TREE]` | Needs `mr:merge`. Fast-forward only. |
+| `merge` | `wt mr merge [--method <fast-forward\|merge\|squash>] [-m <MSG>] <NUMBER> [TREE]` | Needs `mr:merge`. Conflicts exit with code `3`. |
+| `mergeability` | `wt mr mergeability <NUMBER> [TREE]` | Possible methods, default, merge base, conflicts. |
 | `close` | `wt mr close <NUMBER> [TREE]` | Close without merging. |
 | `link` | `wt mr link [--tenant <SLUG>] <NAME> <TREE#N> <TREE#N>...` | Linked group, below. |
-| `merge-group` | `wt mr merge-group [--tenant <SLUG>] <ID>` | |
+| `merge-group` | `wt mr merge-group [--tenant <SLUG>] [--method <METHOD>] <ID>` | One method for every member (default: each member's default). |
 | `groups` | `wt mr groups [--tenant <SLUG>]` | |
 
 ### `wt mr checks`
@@ -117,7 +129,7 @@ Shows whether the merge request can be merged now and what blocks it. With `--js
 }
 ```
 
-Blocker kinds: `state` (not open), `source` (source branch missing or empty), `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `linear` (the source brings merge snapshots), `diverged` (the target is not an ancestor of the source). Messages above are illustrative.
+Blocker kinds: `state` (not open), `source` (source branch missing or empty), `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `conflicts` (the three-way merge has conflicts), `merge_method` (no allowed method can merge), and, when no other allowed method can merge, `linear` (the source brings merge snapshots) and `diverged` (the target is not an ancestor of the source). The JSON also lists the possible `methods` and the `conflicts`. Messages above are illustrative.
 
 ### Linked merges across trees
 
@@ -130,7 +142,7 @@ wt mr merge-group <id>
 ```
 
 - Creating a group needs `mr:merge` on every member tree. A merge request belongs to at most one open group.
-- `merge-group` merges only when every member is mergeable. Tips move in order with compare-and-swap and are rolled back if one fails; the server publishes `group.merged`.
+- `merge-group` merges only when every member is mergeable; `--method` applies one method to every member. Merge and squash snapshots of every member are written first, then the tips move in order with compare-and-swap and are rolled back if one fails; the server publishes `group.merged`.
 - Merging a member alone with `wt mr merge` answers `409` with code `linked_group`.
 
 ## `wt ci`
@@ -186,10 +198,12 @@ wt protect tag list|set|remove ...
 | `--require-signed` | `require_signed` | Every pushed snapshot must carry a verified signature. See [Snapshot signing](/docs/cli/signing). |
 | `--require-linear` | `require_linear` | No merge snapshots, in direct pushes or merged sources. |
 | `--block-on-todos` | `block_on_todos` | Open blocking TODOs that target the source branch block merging. See [Dependencies](/docs/cli/dependencies#blocking-merges-on-todos). |
+| `--merge-methods <METHODS>` | `merge_methods` | Merge methods allowed into matching branches, comma-separated (`fast-forward`, `merge`, `squash`; default: all). See [Server-side merges](/docs/server/merging#restricting-methods-with-protection). |
 
 ```bash
 wt protect set main --no-direct-push --approvals 2 --no-delete --check ci/build --check ci/test --require-signed
 wt protect set "release/*" --no-direct-push --approvals 1 --require-linear
+wt protect set develop --no-direct-push --merge-methods squash,fast-forward
 wt protect list
 ```
 

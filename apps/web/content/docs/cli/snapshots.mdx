@@ -149,6 +149,7 @@ wt diff --word-diff docs/guide.md
 
 - Binary files (a NUL byte in the first 8 KiB, or invalid UTF-8) are reported as changed without a patch.
 - Paths are relative to the tree root and use `/` separators. Chunked large files are reassembled before diffing.
+- To find which snapshot last changed each line of a file, use [`wt blame`](/docs/cli/blame).
 
 ## `wt reflog`
 
@@ -164,7 +165,7 @@ Show the tree's reflog, newest first. The reflog is an append-only log at `.wt/t
 | `-n, --max-count <N>` | Show at most `N` entries. |
 | `-b, --branch <BRANCH>` | Only entries of this branch, numbered as `BRANCH@{N}`. |
 
-Recorded actions include `init`, `snapshot`, `auto-snapshot`, `switch`, `branch.create`, `branch.archive`, `branch.restore`, `merge`, `fast-forward`, `revert`, `restore`, `pull`, `push`, `tag.create`, `tag.delete`.
+Recorded actions include `init`, `snapshot`, `auto-snapshot`, `switch`, `branch.create`, `branch.archive`, `branch.restore`, `merge`, `fast-forward`, `revert`, `restore`, `pull`, `push`, `tag.create`, `tag.delete`, `cherry-pick` and `rebase`. After a [rebase](/docs/cli/history-rewriting#wt-rebase), `BRANCH@{1}` is the pre-rebase tip.
 
 ```bash
 wt reflog -n 20
@@ -179,7 +180,7 @@ wt branch create rescue --from @{3}
 Usage: wt reflog expire [OPTIONS]
 ```
 
-Drop old reflog entries. Snapshots are never deleted.
+Drop old reflog entries. Snapshots are not deleted by this command; [`wt gc`](/docs/cli/maintenance#wt-gc) later removes snapshots that no ref, reflog entry within its prune window or stash still references.
 
 | Flag | Description |
 |---|---|

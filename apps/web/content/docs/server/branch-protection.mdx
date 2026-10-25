@@ -1,6 +1,6 @@
 ---
 title: Branch Protection and Merge Requests
-description: Protect branches and tags with glob-matched rules, and move protected branches forward through reviewed, CI-checked, fast-forward merge requests.
+description: Protect branches and tags with glob-matched rules, and move protected branches forward through reviewed, CI-checked merge requests that the server fast-forwards, merges or squashes.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -23,9 +23,10 @@ A rule belongs to one tree and is keyed by its `pattern`.
 | `no_delete` | bool | `--no-delete` | Matching branches cannot be deleted. |
 | `require_ci_pass` | bool | `--require-ci` | Merges need passing CI on the source tip. |
 | `required_checks` | string array | `--check NAME` (repeatable, implies `--require-ci`) | CI contexts that must be `success`. Empty with `require_ci_pass`: every reported check must succeed. |
-| `require_signed` | bool | `--require-signed` | Every pushed snapshot must carry a verified signature. See [signing](/docs/cli/signing). |
-| `require_linear` | bool | `--require-linear` | No merge snapshots: direct pushes must be linear and merged sources must fast-forward without merges. |
+| `require_signed` | bool | `--require-signed` | Every pushed snapshot must carry a verified signature. See [signing](/docs/cli/signing). Also forbids the `merge` and `squash` methods, because the server cannot sign the snapshots it writes. |
+| `require_linear` | bool | `--require-linear` | No merge snapshots: direct pushes must be linear, the `merge` method is forbidden, and fast-forwarded sources must not contain merges. |
 | `block_on_todos` | bool | `--block-on-todos` | Open blocking TODOs that target the source branch block merging. See [TODOs](/docs/cli/dependencies#wt-todo). |
+| `merge_methods` | string array | `--merge-methods a,b` | Merge methods allowed for merge requests into matching branches (`fast-forward`, `merge`, `squash`). Empty: all. Lists of several matching rules intersect. See [Server-side merges](/docs/server/merging). |
 
 Every rule whose pattern matches a branch applies to it; matching rules combine into their most restrictive form. Branch listings report `protected: true` for branches that at least one rule matches.
 
@@ -52,7 +53,7 @@ wt protect remove acme/payments 'release/*'
 ```bash
 curl -s -X PUT http://localhost:7420/api/v1/trees/acme/payments/protections \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"pattern":"main","no_direct_push":true,"required_approvals":2,"allowed_pushers":[],"no_delete":true,"require_ci_pass":true,"required_checks":["ci/build"]}'
+  -d '{"pattern":"main","no_direct_push":true,"required_approvals":2,"allowed_pushers":[],"no_delete":true,"require_ci_pass":true,"required_checks":["ci/build"],"merge_methods":["squash","fast-forward"]}'
 ```
 
 `DELETE .../protections?pattern=main` removes a rule. See the [branch protection guide](/guides/branch-protection) for recommended setups.
@@ -88,12 +89,12 @@ A rejected push changes nothing and `wt push` exits with an error naming the rul
 
 ## Merge requests
 
-A merge request asks the server to move `target_branch` to the tip of `source_branch`, within one tree.
+A merge request asks the server to bring `source_branch` into `target_branch`, within one tree.
 
 | State | Meaning |
 |---|---|
 | `open` | Created and awaiting reviews or merge. |
-| `merged` | The target was fast-forwarded. `merged_at` and `merged_snapshot` are set. |
+| `merged` | The target was fast-forwarded, merged or squashed. `merged_at`, `merged_snapshot` and `merge_method` are set. |
 | `closed` | Closed without merging. |
 
 Numbers are per tree and start at 1.
@@ -147,7 +148,7 @@ The combined state is `failure` if any check failed or errored, else `pending` i
 
 ```bash
 wt mr checks 4
-wt mr merge 4
+wt mr merge 4                    # or --method fast-forward|merge|squash
 ```
 
 `wt mr checks` (`GET .../merge-requests/{n}/checks`) shows `mergeable` and the blockers:
@@ -165,9 +166,9 @@ wt mr merge 4
 }
 ```
 
-Blocker kinds are `state`, `source`, `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `linear` and `diverged` (the target is not an ancestor of the source). The messages above are illustrative.
+Blocker kinds are `state`, `source`, `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `conflicts`, `merge_method`, and, when no other allowed method can merge, `linear` and `diverged` (the target is not an ancestor of the source). The response also lists the possible `methods` and any `conflicts`. The messages above are illustrative.
 
-A merge (`mr:merge`) enforces the same checks (required approvals, change requests, `require_ci_pass`, `block_on_todos`, `require_linear`, fast-forwardability), then moves the target to the source tip with compare-and-swap. No new snapshot is created. A refused merge answers `409 linked_group` for a linked-group member, `403 review_required` for missing approvals, `409 merge_blocked` (listing the blockers) for change requests, CI, blocking TODOs or non-linear history, and `409 conflict` when the only problem is a diverged target. Success publishes `mr.merged` and `branch.pushed`.
+A merge (`mr:merge`) enforces the same checks (required approvals, change requests, `require_ci_pass`, `block_on_todos`), then merges with the requested method, or by default fast-forwards when it can and otherwise writes a merge snapshot (the first method protection allows). The target moves with compare-and-swap. A refused merge answers `409 linked_group` for a linked-group member, `403 review_required` for missing approvals, `409 merge_blocked` (listing the blockers) for change requests, CI, blocking TODOs or non-linear history, `409 merge_method_not_allowed`, `409 merge_conflict` with the conflicting paths, or `409 conflict` for a fast-forward on diverged branches. Success publishes `mr.merged` and `branch.pushed`. Methods, conflicts and mergeability: [Server-side merges](/docs/server/merging).
 
 </Step>
 </Steps>
@@ -184,11 +185,11 @@ wt mr groups
 wt mr merge-group <ID>
 ```
 
-Creating a group needs `mr:merge` on every member tree. Every member must be mergeable; tips move in order and are rolled back on failure, and `group.merged` is published. Merging one member alone answers `409 linked_group`.
+Creating a group needs `mr:merge` on every member tree. Every member must be mergeable; `wt mr merge-group --method M` uses one method for all of them. Tips move in order and are rolled back on failure, and `group.merged` is published. Merging one member alone answers `409 linked_group`.
 
 ### Resolving a merge conflict
 
-The server only fast-forwards; it never creates merge snapshots. When the target has moved on, bring it into the source locally and push:
+A diverged target is merged on the server with `merge` or `squash` as long as the three-way merge is clean. The server never writes conflict markers: when there are conflicts (`409 merge_conflict`), or when protection allows only fast-forwards, bring the target into the source locally and push:
 
 ```bash
 wt pull --branch main
@@ -198,8 +199,8 @@ wt merge main -m "Merge main into feature/refunds"
 wt push --branch feature/refunds
 ```
 
-The source tip now descends from the target, so the merge request can fast-forward. Pushing the source makes existing approvals stale, so reviewers approve again. With `require_linear`, the merged source must not contain merge snapshots. See [`wt merge`](/docs/cli/branches#wt-merge) and the [merge strategies guide](/guides/merge-strategies).
+The source tip now descends from the target, so the merge request can fast-forward. Pushing the source makes existing approvals stale, so reviewers approve again. With `require_linear`, the merged source must not contain merge snapshots: merge with `--method squash`, or keep unpushed work linear with [`wt rebase`](/docs/cli/history-rewriting#wt-rebase) before the first push (pushed snapshots cannot be rewritten). See [`wt merge`](/docs/cli/branches#wt-merge) and the [merge strategies guide](/guides/merge-strategies).
 
 <Callout type="info">
-  Server-side three-way merges, automatic source-branch deletion and force pushes are not built (see the [roadmap](/roadmap)). The wire protocol defines a `ci_checks_failed` push rejection, but CI gates apply to merges, not pushes.
+  Rebase merges on the server, resolving conflicts in the browser, automatic source-branch deletion and force pushes are not built (see the [roadmap](/roadmap)). The wire protocol defines a `ci_checks_failed` push rejection, but CI gates apply to merges, not pushes.
 </Callout>

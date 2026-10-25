@@ -1,0 +1,101 @@
+---
+title: Code Search
+description: Search file contents on the default branch of every tree you can read with wt search code or GET /api/v1/search/code - literal and RE2 queries, path globs, context and access rules.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Code search answers "which lines of which files contain X" across the trees you may read. It searches the **tip of each tree's default branch** with a trigram index kept in server memory, and returns one hit per matching line, like `grep`. The [Code search specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/CodeSearch.md) is normative.
+
+## Search from the CLI
+
+```text
+wt search code [OPTIONS] <QUERY>
+```
+
+```bash
+wt search code 'fn main' --path '*.rs'
+wt search code -E -i 'todo|fixme' --tree acme/web --context 1
+wt search code 'STRIPE_API' --tenant acme --limit 200
+wt search code 'retry_after' --json | jq -r '.hits[] | "\(.tree):\(.path):\(.line)"'
+```
+
+| Flag | Meaning |
+|---|---|
+| `QUERY` | Literal text (at least 3 characters), or with `--regex` an RE2 regular expression. |
+| `--tree TENANT/TREE` | Search one tree (the global `--tree` flag, written `TENANT/TREE` here). |
+| `--tenant T` | Search the trees of one tenant. Without `--tree` and `--tenant`: every tree you may read. |
+| `--path GLOB` | Only files matching the glob. `*.go` matches at any depth, `src/**/*.rs` is anchored at the tree root, a directory covers its files. |
+| `-E`, `--regex` | Treat `QUERY` as an RE2 expression, matched per line (`^` and `$` anchor at line boundaries). |
+| `-i`, `--ignore-case` | Ignore case (Unicode case folding). The CLI is case-sensitive otherwise. |
+| `--context N` | Lines of context before and after each hit, 0-10 (default 0). `-C` stays the global "run in directory" flag. |
+| `-n`, `--limit N` | Maximum matching lines, 1-1000 (server default 50). |
+
+Output is `TENANT/TREE:PATH:LINE:TEXT` per hit. Context lines use `-` instead of `:`, groups are separated by `--`, and literal matches are highlighted when colors are on. A truncated result ends with a note.
+
+```text
+acme/web:src/main.rs-11-// entry point
+acme/web:src/main.rs:12:fn main() {
+acme/web:src/main.rs-13-    run();
+--
+acme/web:tools/gen/main.rs:3:fn main() -> anyhow::Result<()> {
+```
+
+`wt search QUERY` (without `code`) still searches tenant, tree, branch and account names; see [`wt search`](/docs/cli/administration#wt-search). The admin panel has the same search at `/admin/search/code` and in its command palette.
+
+## What is searched
+
+- Only the **default branch tip** of each tree. Other branches, tags, staged snapshots and history are not searched.
+- Text files up to **1 MiB**. Binary files (a NUL byte in the first 8000 bytes), larger files and chunked files are skipped.
+- The index is built lazily: a tree is indexed by the first search that includes it, and rebuilt when its default branch moves (on `branch.pushed`, including server-side merges, and when a search sees a newer tip). Rebuilds reuse unchanged files, so only new or changed blobs are read. Deleting a tree drops its index.
+- The index lives in memory and is rebuilt lazily after a restart. The first search of a large tree can therefore take longer; a search returns what it found within its time budget, and the build finishes for later searches.
+
+## Access rules
+
+Results never show more than the blob endpoint would:
+
+- Only trees where you hold `tree:read` are searched. Anonymous callers search **public** trees only.
+- Paths denied to you by a `tree:read` path policy, and paths the tree's [license rules](/docs/server/licensing) withhold, are dropped silently and do not count towards the limit.
+- An explicit `--tree` you may not read answers `401`/`403` like other tree endpoints; in tenant-wide or server-wide searches such trees are simply skipped.
+
+## REST
+
+```text
+GET /api/v1/search/code?q=&tenant=&tree=&path=&regex=false&case=false&context=2&limit=50
+```
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `q` | required | Literal text (at least 3 characters, no line breaks) or, with `regex=true`, an RE2 expression. At most 1000 bytes. |
+| `tree` | | `TENANT/TREE`, or `tree=TREE` together with `tenant=T`. |
+| `tenant` | | Limit to one tenant's trees. |
+| `path` | | Path glob. |
+| `regex` | `false` | Treat `q` as a regular expression. |
+| `case` | `false` | `true` = case-sensitive. The API default is case-**insensitive**; the CLI sends `case=true` unless `-i`. |
+| `context` | `2` | Context lines, 0-10. |
+| `limit` | `50` | Maximum hits, 1-1000 (larger values are clamped). |
+
+```bash
+curl -s "$WT/api/v1/search/code?q=fn%20main&tree=acme/web&path=*.rs&context=1" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "hits": [
+    {"tenant": "acme", "tree": "web", "branch": "main", "snapshot_id": "7a1d5c2e-...",
+     "path": "src/main.rs", "line": 12, "text": "fn main() {",
+     "before": ["// entry point"], "after": ["    run();"]}
+  ],
+  "truncated": false,
+  "searched_trees": 1
+}
+```
+
+Hits are ordered by tenant, tree, path and line. `before` and `after` are omitted when empty, and hit text is cut at 1000 bytes. `truncated` is `true` when more hits exist than `limit`, or when the **5 second** time budget ran out. `searched_trees` counts the trees actually searched.
+
+Errors: `400 bad_request` (missing or short `q`, invalid regex, bad `path` or other parameters, `tree` without a tenant), `404 not_found` (unknown tenant or tree), `401`/`403` (an explicit tree you may not read), `501 not_implemented` (code search disabled).
+
+<Callout type="info" title="Roadmap">
+  A persistent index, a memory budget, searching other branches, tags or history, match offsets and ranking, searching files over 1 MiB, and an index status view are not built. See the [roadmap](/roadmap).
+</Callout>

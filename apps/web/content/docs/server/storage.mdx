@@ -1,6 +1,6 @@
 ---
 title: Storage
-description: Layout of the server data directory, integrity guarantees, garbage collection, quotas, and how to back up and restore it.
+description: Layout of the server data directory, object compression, integrity guarantees and fsck, garbage collection, quotas, and how to back up and restore it.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -34,6 +34,9 @@ A `docs` bucket holds the document collections added with reviews, CI, releases 
 | `signing_keys`, `signing_key_index` | Registered Ed25519 signing keys |
 | `access_docs` | Last applied declarative access documents |
 | `gc_marks`, `gc_runs`, `tenant_usage` | GC bookkeeping, the last 20 GC reports, tenant storage usage |
+| `webhooks`, `webhook_deliveries` | [Webhooks](/docs/server/webhooks) (with their secrets) and their delivery logs |
+| `policy_versions` | [Policy history](/docs/server/policy-history) |
+| `code_index_meta` | Metadata of the in-memory [code search](/docs/server/code-search) index, one document per indexed tree |
 
 The file is opened exclusively with a 5 second lock timeout, so a second server on the same data directory fails to start. Every write is one bbolt transaction. A schema version is stored, and the server refuses to open a database written by a newer schema.
 
@@ -45,13 +48,14 @@ A content-addressed store of:
 - **manifests**: the encoded file list of one snapshot;
 - **chunk lists**: the ordered chunks of a file larger than 8 MiB (see [Large files](/docs/protocol/large-files)).
 
-Each object is named by the 64-character lowercase hex BLAKE3-256 hash of its exact bytes, split into a two-character fan-out directory and the remaining 62 characters. Objects are stored raw (no compression) and are at most 64 MiB each.
+Each object is named by the 64-character lowercase hex BLAKE3-256 hash of its content, split into a two-character fan-out directory and the remaining 62 characters. Objects are at most 64 MiB each. A file holds either the raw content or, since v0.6, the magic `WTZ1` followed by a zstd frame of it: objects of at least 512 bytes are compressed when that saves at least 10 % (`--compress-objects`, default on). The hash is always over the uncompressed content, so files written before v0.6 need no migration. See [Object compression](/docs/server/operations#object-compression).
 
 Objects are shared and deduplicated across all trees and tenants. Which tenant may read which object is decided by the metadata: an object is readable only through a tree whose branches, tags or staged snapshots reach it, and object downloads are scoped to one tree. See the [object model](/docs/protocol/object-model). Release assets are stored as blobs too.
 
 ## Integrity and immutability
 
 - **Verified writes.** The server hashes every uploaded object and rejects it if the bytes do not match. Manifests and chunk lists must also decode and validate.
+- **Verified store.** `wt admin fsck` re-hashes every stored object and checks that every reachable snapshot is complete. See [Integrity checks](/docs/server/operations#integrity-checks).
 - **Idempotent, atomic writes.** Writing an existing object is a no-op. Objects are written to a temporary file, fsynced and renamed into place, so a crash never leaves a partial object under its final name.
 - **Immutable snapshots.** A stored snapshot never changes; storing the same id with different content is rejected.
 - **Append-only history.** Branch tips only move forward, with compare-and-swap. There is no force push.
