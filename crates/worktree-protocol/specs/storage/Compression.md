@@ -195,7 +195,7 @@ each absent object once with the first snapshot found referencing it;
 | `wt gc` (roots, grace, dry run, compaction, temp files) | Built (v0.6 §14.6) |
 | `wt fsck [--full]` | Built (v0.6 §14.6) |
 | `POST /api/v1/admin/fsck`, `wt admin fsck` | Built (v0.6 §14.6) |
-| Stash roots via `Repository::stash_roots()` | Partial: gc reads `stash.jsonl` (and other state files) generically |
+| Stash and rewrite roots | Built: gc uses `Repository::stash_roots()` and `rewrite_roots()`, plus a generic scan of the per-tree JSON state files |
 | Server-side recompression of existing raw objects | Roadmap |
 
 ## Roadmap

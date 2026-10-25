@@ -145,7 +145,7 @@ curl -s -X POST http://localhost:7420/api/v1/trees/acme/app/merge-requests/4/mer
   -H "Authorization: Bearer $WT_TOKEN"
 ```
 
-The server **fast-forwards** the target branch to the source branch's tip. On success `state` becomes `merged` and `merged_at` and `merged_snapshot` are set.
+The server merges with the requested method (`fast-forward`, `merge` or `squash`; default: fast-forward when possible, else a merge snapshot) — see [server-side merges](/docs/server/merging). Protections can restrict the methods with `merge_methods`. On success `state` becomes `merged` and `merged_at`, `merged_snapshot` and `merge_method` are set.
 
 </Step>
 </Steps>
@@ -154,7 +154,7 @@ Other MR endpoints: `GET .../merge-requests?state=open|merged|closed` to list, `
 
 ### When the target branch moved
 
-A server-side merge only fast-forwards. If someone else merged into `main` after you pushed, `main`'s tip is no longer an ancestor of your branch and the merge fails with `409 conflict`. Bring `main` into your branch locally, push, and retry:
+If someone else merged into `main` after you pushed, the server can still merge with a merge or squash snapshot unless the two sides conflict (`409 merge_conflict`) or the protection allows only fast-forward. In those cases bring `main` into your branch locally, push, and retry:
 
 ```bash
 wt switch feature/login

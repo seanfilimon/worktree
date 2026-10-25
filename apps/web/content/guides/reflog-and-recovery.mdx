@@ -12,7 +12,7 @@ W0rkTree never rewrites history. Undoing something always means **adding** to hi
 
 | Thing | Guarantee |
 |---|---|
-| Snapshots | Immutable. No command rewrites or deletes one. There is no `amend`, `rebase` or `reset`. |
+| Snapshots | Immutable. `wt rebase` and `wt cherry-pick` create *new* snapshots and move the branch (the old ones stay reachable from the reflog until `wt gc` prunes them); there is no `amend` or `reset`. |
 | Undo | `wt revert` creates a **new** snapshot that undoes an earlier one. |
 | Branches | Never hard-deleted. `wt branch archive` hides a branch; `wt branch restore` brings it back with all its history. |
 | Reflog | Every ref-moving action is appended to `.wt/trees/<tree>/reflog.jsonl`. Entries are never removed. |

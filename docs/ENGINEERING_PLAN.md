@@ -1125,7 +1125,7 @@ Shared foundation (already on `main`):
   and license `CheckRead`; anonymous callers search public trees only.
   Max 1000 hits; 5 s budget per query.
 - CLI: `wt search code QUERY [--tree T/TREE] [--tenant T] [--path GLOB]
-  [--regex] [-i] [-C N] [--limit N]` (grep-like output `tree:path:line:text`).
+  [--regex] [-i] [--context N] [--limit N]` (grep-like output `tree:path:line:text`; `-C` is the global directory flag).
 - Spec: `specs/server/CodeSearch.md`.
 - Owns: `internal/codesearch/**`, `httpapi/codesearch.go`,
   `commands/search.rs`, `server/server.go` (one Start call).

@@ -42,8 +42,8 @@ Invoke-WebRequest http://localhost:7420/api/v1/openapi.yaml -OutFile openapi.yam
 - Wildcards that match several segments (branch names with `/`, file paths) are written `{name}`; their description says so.
 - It also covers `GET /healthz` and `GET /metrics`. The static admin panel (`/admin/*`) is not part of the API.
 
-<Callout type="warn" title="v0.6 routes">
-  The document does not yet describe the routes added in v0.6: webhooks, `GET /search/code`, `blame`, `merge-requests/{n}/mergeability`, policy versions, diff and rollback, `POST /admin/fsck` and the staged file browser. They are documented on [Webhooks](/docs/server/webhooks), [Code search](/docs/server/code-search), [Blame](/docs/cli/blame#server-api), [Server-side merges](/docs/server/merging#rest), [Policy history](/docs/server/policy-history#rest) and [Storage maintenance](/docs/cli/maintenance#server-fsck).
+<Callout title="Complete by construction">
+  The document covers every registered route, including the v0.6 ones (webhooks, `GET /search/code`, `blame`, `merge-requests/{n}/mergeability`, policy versions, diff and rollback, `POST /admin/fsck` and the staged file browser). A server test fails whenever a route is added without being documented.
 </Callout>
 
 ## Authorization: `x-wt-action`

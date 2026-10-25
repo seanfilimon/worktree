@@ -210,4 +210,5 @@ A live Git mirror mode and automatic submodule-to-nested-tree conversion are not
 | `git config user.name "Name"` | `wt config set user.name "Name"` |
 | `git check-ignore -v path` | `wt ignore check path` |
 | `git submodule add URL path` | `wt tree add NAME path` |
-| `git stash` | no stash: `wt snapshot -m "wip"` on your feature branch (`wt switch` refuses with uncommitted changes), or share it with `wt stage` |
+| `git stash` / `git stash pop` | `wt stash` / `wt stash pop` (or `auto_snapshot.on_branch_switch = "stash"` to stash automatically on `wt switch`) |
+| `git rebase main` / `git cherry-pick X` | `wt rebase main` / `wt cherry-pick X` (unpushed history only, unless `--force`) |
