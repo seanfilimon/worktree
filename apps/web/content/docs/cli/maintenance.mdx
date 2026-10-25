@@ -1,0 +1,100 @@
+---
+title: Storage Maintenance
+description: Compressed object storage (WTZ1), gzip object transfers, reclaiming local space with wt gc, checking local history with wt fsck, and verifying the server store with wt admin fsck.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Since v0.6 objects are stored zstd-compressed when that pays off, object transfers are gzip-compressed, and both the local store and the server have integrity tools. Compression changes no object ids: hashes are always computed over the uncompressed content, so existing worktrees and servers need no migration. The [Compression and integrity specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Compression.md) is normative.
+
+## Compressed objects
+
+An object file under `.wt/objects/` or the server's `<data>/objects/` is either the raw content or the 4-byte magic `WTZ1` followed by one zstd frame of the content.
+
+- Objects of at least 512 bytes are compressed when that saves at least 10 %; smaller or incompressible objects stay raw.
+- Readers accept both forms and verify the decoded content against its hash. Objects written before v0.6 are read as they are.
+- Sizes reported by stores, `wt admin stats`, tenant storage usage and quotas are **stored** (compressed) bytes.
+- `wt` always compresses new local objects. The server compresses unless started with `--compress-objects=false` (`WT_COMPRESS_OBJECTS=false`); existing compressed objects are still read either way. See [Server configuration](/docs/server/configuration#webhooks-and-storage).
+- Push and pull send `UploadObjects` and `DownloadObjects` gzip-compressed (the content on the wire is the uncompressed object, inside a gzip-compressed gRPC message). A server without gzip support is detected and the client falls back to uncompressed transfers.
+
+## `wt gc`
+
+```text
+Usage: wt gc [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `-n, --dry-run` | Report what would be deleted without changing anything. |
+| `--prune <DAYS>` | Reflog entries newer than `DAYS` keep their snapshots (default `30`; `0` = only refs, merge and stash state protect history). |
+
+```bash
+wt gc --dry-run
+wt gc
+wt gc --prune 7 --json | jq '{bytes_before, bytes_after, objects_deleted}'
+```
+
+`wt gc` deletes local objects and snapshot records that nothing references any more, removes interrupted-write temp files, and rewrites surviving raw objects in the compressed form where that saves at least 10 % (so old worktrees shrink). Everything reachable from these roots is kept:
+
+- every branch tip (archived branches included), remote-tracking ref (`origin/*`) and tag of every tree;
+- the old and new snapshots of reflog entries younger than `--prune` days;
+- a merge in progress, a stopped [cherry-pick or rebase](/docs/cli/history-rewriting#conflicts), and every [stash entry](/docs/cli/history-rewriting#wt-stash);
+- anything written within the last hour (or within the prune window when it is shorter), so a concurrent snapshot or fetch is never broken.
+
+gc holds every tree's lock for the whole run (not in a dry run). If a reachable snapshot, manifest or chunk list cannot be read, it stops **before deleting anything** and asks you to run `wt fsck`. The report lists `objects_scanned`, `objects_reachable`, `objects_deleted`, `bytes_deleted`, `snapshots_deleted`, `objects_compacted`, `bytes_compacted`, `temp_files_deleted`, `bytes_before` and `bytes_after`.
+
+<Callout type="warn" title="What gc can delete">
+  Snapshots that only a reflog entry still points at, for example the pre-rebase originals after a `wt rebase`, are deleted once that entry is older than `--prune` days. Use `wt gc --dry-run` first, and keep the default prune window unless you need the space.
+</Callout>
+
+## `wt fsck`
+
+```text
+Usage: wt fsck [OPTIONS]
+```
+
+```bash
+wt fsck              # structure: snapshots, parents, manifests, refs, referenced objects
+wt fsck --full       # also read back and re-hash every stored object
+```
+
+| Check | Issue kind |
+|---|---|
+| Every snapshot record parses and is named after its id | `bad_snapshot` |
+| Every parent is stored (unless the snapshot is at a shallow boundary) | `missing_parent` |
+| Every snapshot's manifest is stored, reads back with its hash and decodes | `missing_manifest`, `corrupt_object`, `bad_manifest` |
+| Every file's blob or chunk list, and every chunk, is stored and decodes | `missing_object`, `bad_chunk_list`, `corrupt_object` |
+| Every branch, remote-tracking ref and tag names a stored snapshot | `dangling_ref` |
+| `--full`: every stored object reads back with its hash | `corrupt_object` |
+
+Blobs of paths the server withheld from you (restricted paths) may be absent; they are counted as `restricted_missing`, not errors. `wt fsck` exits `1` when it finds errors and prints each as `kind`, `id` and `detail` (`--json`: `errors[]`). History that is on the server can be recovered with a fresh [`wt clone`](/docs/cli/remote#wt-clone).
+
+## Server fsck
+
+```bash
+wt admin fsck
+wt admin fsck --json | jq '.corrupt, .missing'
+```
+
+`wt admin fsck` (`POST /api/v1/admin/fsck`, server admins only) re-hashes every object in the server store and walks every snapshot reachable from a branch tip or tag of every tree, checking manifests, blobs, chunk lists and chunks. It exits `1` when any list in the report is non-empty:
+
+```json
+{
+  "objects_checked": 1234,
+  "corrupt": [],
+  "missing": [{"snapshot": "7a1d5c2e-...", "object": "af1349b9..."}],
+  "missing_snapshots": [],
+  "snapshots_checked": 87,
+  "duration_ms": 412
+}
+```
+
+- `corrupt`: objects whose stored bytes do not decode to content with their hash, and manifests or chunk lists that do not parse.
+- `missing`: absent objects, each with the first snapshot found referencing it.
+- `missing_snapshots`: ids named by refs or parents that have no record.
+
+The check reads the whole store, so run it off-peak on large servers. To repair, restore the affected object files from a [backup](/docs/server/storage#backup) (object files are immutable and named by their hash, so copying them back is safe). Server garbage collection is a separate command, [`wt admin gc`](/docs/server/operations#garbage-collection).
+
+<Callout type="info" title="Roadmap">
+  Recompressing objects the server stored raw before v0.6, dictionary compression and pack files, automatic re-fetch of objects `wt fsck` reports, fsck progress for very large stores and local gc from the daemon are not built. See the [roadmap](/roadmap).
+</Callout>

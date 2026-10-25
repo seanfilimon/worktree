@@ -66,7 +66,8 @@ wt switch main --force
 **Notes**
 
 - With uncommitted changes and no `--force`, `wt switch` refuses ("working tree has uncommitted changes (N files)"). When both branches point at the same snapshot, uncommitted changes are carried over untouched.
-- With `auto_snapshot.on_branch_switch = "snapshot"` and the daemon watching the worktree, `wt switch` first asks the daemon to auto-snapshot the tree, so the switch can proceed. `stash` is accepted but currently behaves like the default `refuse`. See [`on_branch_switch`](/docs/cli/configuration#branch-switches-with-uncommitted-changes).
+- With `auto_snapshot.on_branch_switch = "snapshot"` and the daemon watching the worktree, `wt switch` first asks the daemon to auto-snapshot the tree, so the switch can proceed. With `stash`, it stashes the changes as `auto-stash on <branch>` and restores them when you switch back to that branch (see [Auto-stash](/docs/cli/history-rewriting#auto-stash-on-branch-switch)). See [`on_branch_switch`](/docs/cli/configuration#branch-switches-with-uncommitted-changes).
+- To set changes aside by hand, use [`wt stash`](/docs/cli/history-rewriting#wt-stash).
 - Switching is refused while a merge is in progress. Appends a `switch` entry to the reflog.
 
 ## `wt merge`
@@ -167,7 +168,8 @@ wt merge abort
 - `--continue` fails (exit code `3`) while conflict markers remain in paths that were not resolved with `wt merge resolve`. `wt snapshot -m MSG` also completes the merge once markers are gone.
 - Commands that cannot run during a pending merge fail with "a merge is in progress", and the daemon does not auto-snapshot the tree.
 - Merges never cross trees. Strategies and examples: [Merge strategies](/guides/merge-strategies); algorithm details: [Merge and diff](/docs/protocol/merge-and-diff).
-- Server-side merges of merge requests are fast-forward only; open, review and merge them with [`wt mr`](/docs/cli/merge-requests#wt-mr).
+- The same conflict commands (`wt merge status`, `wt merge resolve`) resolve a stopped [`wt cherry-pick` or `wt rebase`](/docs/cli/history-rewriting#conflicts); finish those with their own `--continue`.
+- Merge requests are merged on the server by fast-forward, merge snapshot or squash, with the same merge rules but without conflict markers: a conflicting request must be merged locally first. Open, review and merge them with [`wt mr`](/docs/cli/merge-requests#wt-mr); see [Server-side merges](/docs/server/merging).
 
 ## `wt tag`
 

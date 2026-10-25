@@ -1,0 +1,246 @@
+---
+title: Webhooks
+description: Have the server POST signed JSON to your endpoint on pushes, merge requests, CI, releases and other events - setup, payload, signature verification, retries, the delivery log and the SSRF guard.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+A webhook makes the server send an HTTP `POST` with a signed JSON document to a URL whenever a matching event happens. Every event of the [event stream](/docs/server/events) can be delivered: pushes, merge request activity, CI results, releases, TODOs, access applies and policy changes. The [Webhooks specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Webhooks.md) is normative.
+
+| Scope | Receives | Managed with |
+|---|---|---|
+| Tenant | Events of every tree of the tenant and the tenant's own events (`access.applied`, ...) | `tenant:admin`, `--tenant T` |
+| Tree | Events of that tree only | `tree:admin`, `--tree TENANT/TREE` (default: the current worktree's tree) |
+
+## Set up a webhook
+
+```bash
+# a tree webhook for pushes and merge requests
+wt webhook create https://ci.example.com/hooks/wt -e branch.pushed -e 'mr.*' \
+  --tree acme/payments --description "CI trigger"
+
+# a tenant webhook for everything
+wt webhook create https://audit.example.com/wt --event '*' --tenant acme
+
+wt webhook test <ID> --tree acme/payments          # send a ping now
+wt webhook list --tree acme/payments
+```
+
+- `-e`/`--event` takes event-type patterns, repeated or comma-separated: an exact type (`branch.pushed`), a prefix ending in `.*` (`mr.*`) or `*`. At most 50 patterns per hook.
+- Without `--secret` the server generates one (`whsec_` + 64 hex digits). **`create` prints it once**; it is never returned again. Store it in your receiver's secret store.
+- `--inactive` creates the hook disabled. `wt webhook update ID --active` enables it (and resets its failure count).
+- At most 50 webhooks per tenant scope and per tree.
+
+| Command | Purpose |
+|---|---|
+| `wt webhook list` | Webhooks of the scope, oldest first. |
+| `wt webhook create [OPTIONS] --event <PATTERN> <URL>` | Create. |
+| `wt webhook show <ID>` | One webhook: URL, events, `active`, `last_status`, `failure_count`. |
+| `wt webhook update [OPTIONS] <ID>` | Change only the given fields: `--url`, `-e` (replaces the patterns), `--secret`, `--description`, `--active` / `--inactive`. |
+| `wt webhook delete [-y] <ID>` | Delete it and its delivery log. |
+| `wt webhook deliveries [-n N] <ID> [DELIVERY]` | Delivery log, newest first (default 20), or one delivery with request body and response. |
+| `wt webhook redeliver <ID> <DELIVERY>` | Send a delivery again, as a new delivery. |
+| `wt webhook test <ID>` | Send a `ping` event. |
+
+Every command takes `--tenant T` or `--tree TENANT/TREE` and `--json`. `test` and `redeliver` exit `1` when the delivery failed. Webhooks can also be managed in the admin panel (tenant settings and tree settings).
+
+## What a hook receives
+
+A hook gets an event when it is active, the event belongs to its tenant (and tree), the type matches one of its patterns, and **its creator can still read the event** (`tree:read` on the tree, `tenant:read` for tenant events). The check runs for every event, so revoking the creator's access, or disabling the account, silences the hook.
+
+Event types: `branch.pushed`, `branch.created`, `branch.deleted`, `tag.pushed`, `tag.deleted`, `tree.created`, `tree.deleted`, `snapshot.staged`, `staged.cleared`, `mr.opened`, `mr.approved`, `mr.reviewed`, `mr.commented`, `mr.merged`, `mr.closed`, `group.merged`, `ci.status`, `todo.created`, `todo.updated`, `release.created`, `release.deleted`, `access.applied`, `policy.changed`, `webhook.failing`, and `ping` (test deliveries only).
+
+### Request
+
+```http
+POST /hooks/wt HTTP/1.1
+Content-Type: application/json
+User-Agent: W0rkTree-Hookshot/0.6.0
+X-WT-Event: branch.pushed
+X-WT-Delivery: 6f1c2a3b-4d5e-4f60-8a1b-2c3d4e5f6a7b
+X-WT-Hook-ID: 0e9d8c7b-6a5f-4e3d-9c2b-1a0f9e8d7c6b
+X-WT-Signature: sha256=5d2f...e81a
+```
+
+```json
+{
+  "id": "6f1c2a3b-4d5e-4f60-8a1b-2c3d4e5f6a7b",
+  "event": "branch.pushed",
+  "tenant": "acme",
+  "tree": "payments",
+  "actor": "ada",
+  "at": "2026-10-25T07:08:09Z",
+  "payload": {"branch": "main", "old_tip": "0b9a8c7d-...", "new_tip": "7a1d5c2e-...", "count": 1}
+}
+```
+
+`id` is the delivery id (also `X-WT-Delivery`), `tenant` the tenant slug, `tree` the tree name (omitted for tenant events), and `payload` the event's payload as published on the event bus. Payloads are not a stable contract yet: route on `event`, `tenant` and `tree`, and re-read state over the [REST API](/docs/server/rest-api) when you need exact data.
+
+### Response
+
+Answer with any `2xx` within **10 seconds**. Anything else is a failure: another status, a timeout, a network error, or a redirect (`3xx` is not followed). Respond quickly and do slow work asynchronously.
+
+## Verify the signature
+
+`X-WT-Signature` is `sha256=` followed by the hex HMAC-SHA256 of the **raw request body** with the hook's secret. Compute it over the exact bytes you received (before any JSON parsing), compare in constant time, and reject mismatches. Use `X-WT-Delivery` to deduplicate: automatic retries of one delivery carry the same id; a redelivery gets a new one.
+
+<Tabs items={['Node.js', 'Python', 'Go', 'Rust']}>
+<Tab value="Node.js">
+
+```js
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import express from 'express';
+
+const app = express();
+const secret = process.env.WT_WEBHOOK_SECRET;
+
+app.post('/hooks/wt', express.raw({ type: 'application/json' }), (req, res) => {
+  const expected = 'sha256=' + createHmac('sha256', secret).update(req.body).digest('hex');
+  const got = req.get('X-WT-Signature') ?? '';
+  if (got.length !== expected.length || !timingSafeEqual(Buffer.from(got), Buffer.from(expected))) {
+    return res.sendStatus(401);
+  }
+  const delivery = JSON.parse(req.body.toString('utf8'));
+  console.log(delivery.event, delivery.tenant, delivery.tree);
+  res.sendStatus(204);
+});
+
+app.listen(8080);
+```
+
+</Tab>
+<Tab value="Python">
+
+```python
+import hashlib, hmac, os
+from flask import Flask, abort, request
+
+app = Flask(__name__)
+SECRET = os.environ["WT_WEBHOOK_SECRET"].encode()
+
+@app.post("/hooks/wt")
+def wt_hook():
+    body = request.get_data()  # raw bytes
+    expected = "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(request.headers.get("X-WT-Signature", ""), expected):
+        abort(401)
+    delivery = request.get_json()
+    print(delivery["event"], delivery["tenant"], delivery.get("tree"))
+    return "", 204
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+package main
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"net/http"
+	"os"
+)
+
+func main() {
+	secret := []byte(os.Getenv("WT_WEBHOOK_SECRET"))
+	http.HandleFunc("POST /hooks/wt", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
+		}
+		mac := hmac.New(sha256.New, secret)
+		mac.Write(body)
+		expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(r.Header.Get("X-WT-Signature")), []byte(expected)) {
+			http.Error(w, "bad signature", http.StatusUnauthorized)
+			return
+		}
+		// handle body ...
+		w.WriteHeader(http.StatusNoContent)
+	})
+	http.ListenAndServe(":8080", nil)
+}
+```
+
+</Tab>
+<Tab value="Rust">
+
+```rust
+// Cargo.toml: hmac = "0.12", sha2 = "0.10", hex = "0.4"
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+/// `signature` is the X-WT-Signature header, `body` the raw request body.
+fn verify(secret: &[u8], body: &[u8], signature: &str) -> bool {
+    let Some(hex_sig) = signature.strip_prefix("sha256=") else { return false };
+    let Ok(sig) = hex::decode(hex_sig) else { return false };
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("any key length");
+    mac.update(body);
+    mac.verify_slice(&sig).is_ok() // constant-time comparison
+}
+```
+
+</Tab>
+</Tabs>
+
+<Callout type="warn" title="Replay">
+  The signature covers the body only; there is no timestamp in it yet. Reject delivery ids you have already processed, and check that `at` is recent if replays matter to you.
+</Callout>
+
+## Retries and deactivation
+
+- A failed automatic delivery is retried after **1 minute, 5 minutes, 30 minutes and 2 hours** (five attempts in total). The schedule is stored and survives server restarts.
+- Every failed automatic attempt increments the hook's `failure_count`; any success resets it. At **20** consecutive failures the hook is deactivated, its scheduled retries are dropped, and the server publishes `webhook.failing` with `webhook_id`, `url`, `failure_count`, `last_status` and `last_error`. Subscribe another hook (or `wt events --type webhook.failing`) to notice.
+- Fix the receiver, then `wt webhook update ID --active` to resume. Missed events are not replayed automatically; use `wt webhook redeliver` for the ones you need.
+- Test pings and redeliveries are attempted once, immediately, even on inactive hooks. A success resets the failure count; a failure neither counts towards deactivation nor schedules retries.
+
+## Delivery log
+
+Each delivery records the exact request body, attempts, status code, the first 2 KiB of the response, the error, the duration and the next retry time. The log keeps the **200** newest deliveries per hook and none older than **30 days**.
+
+```bash
+wt webhook deliveries <ID> --tree acme/payments -n 5
+wt webhook deliveries <ID> <DELIVERY> --tree acme/payments      # body and response
+wt webhook redeliver <ID> <DELIVERY> --tree acme/payments
+```
+
+## SSRF guard
+
+By default the server refuses webhook targets that are, or resolve to, non-public addresses: loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`, including cloud metadata endpoints), private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`), carrier-grade NAT (`100.64/10`), unspecified and other reserved ranges.
+
+- On create and update the host is resolved; a non-public address, or a host that does not resolve, answers `400 bad_request`.
+- On every delivery the dialer checks the address it actually connects to, so DNS rebinding cannot get around the check ("refusing to connect to non-public address").
+- Plain `http://` targets are allowed. Proxy environment variables are ignored.
+
+When receivers live on the server's private network (for example an internal CI), start the server with `--webhook-allow-private` (`WT_WEBHOOK_ALLOW_PRIVATE=true`). This disables the guard for every tenant, so only use it when every tenant admin is trusted. See [Configuration](/docs/server/configuration#webhooks-and-storage).
+
+## REST
+
+Tenant scope under `/api/v1/tenants/{tenant}` (`tenant:admin`), tree scope under `/api/v1/trees/{tenant}/{tree}` (`tree:admin`):
+
+| Method and path | Body / query | Response |
+|---|---|---|
+| `GET .../webhooks` | | `{"webhooks": [Webhook]}` |
+| `POST .../webhooks` | `{url, events[], secret?, description?, active?}` | `201` Webhook, plus `secret` once when generated |
+| `GET`, `PATCH`, `DELETE .../webhooks/{id}` | `PATCH`: any of `url`, `events`, `secret`, `description`, `active` | Webhook / `204` |
+| `GET .../webhooks/{id}/deliveries` | `?limit=` (default 50, max 200) | `{"deliveries": [WebhookDelivery]}`, newest first |
+| `GET .../webhooks/{id}/deliveries/{did}` | | WebhookDelivery |
+| `POST .../webhooks/{id}/deliveries/{did}/redeliver` | | `201` the new delivery |
+| `POST .../webhooks/{id}/test` | | `201` the `ping` delivery |
+
+```bash
+curl -s -X POST $WT/api/v1/trees/acme/payments/webhooks \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"url":"https://ci.example.com/hooks/wt","events":["branch.pushed","mr.*"],"description":"CI trigger"}'
+```
+
+A hook of one scope is not visible through the other (`404`). More than 50 hooks in a scope is `409 conflict`. Creating, updating and deleting are audited as `webhook.create`, `webhook.update` and `webhook.delete`; secrets never appear in the audit log. Deleting a tree deletes its webhooks.
+
+<Callout type="info" title="Roadmap">
+  Custom headers, secret rotation with two valid signatures, signature timestamps, payload filters (branch or path globs) and delivery metrics on `/metrics` are not built. See the [roadmap](/roadmap).
+</Callout>

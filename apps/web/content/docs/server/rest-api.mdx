@@ -8,7 +8,7 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 The REST API is served under `/api/v1` on the same port as gRPC (default `http://localhost:7420`). Requests and responses are JSON unless noted, and JSON field names are the `json` tags of the Go types in `services/server-go/internal/domain`. The admin panel and the server-side `wt` commands (`wt mr`, `wt trees`, `wt iam`, `wt admin`, ...) use this API; anything they can do, you can script.
 
-`wt` uses gRPC for push, pull, stage, tags and access-config sync (see [Sync protocol](/docs/protocol/sync-protocol)). This page documents the conventions and the core endpoints in detail; the [catalogue](#endpoint-catalogue) lists every other group with a link to the page that explains it. The complete route list is in the [Server specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md).
+`wt` uses gRPC for push, pull, stage, tags and access-config sync (see [Sync protocol](/docs/protocol/sync-protocol)). This page documents the conventions and the core endpoints in detail; the [catalogue](#endpoint-catalogue) lists every other group with a link to the page that explains it. Every server also serves a machine-readable OpenAPI 3.1 description at `GET /api/v1/openapi.yaml`, and `wt api` makes raw authenticated calls; see [OpenAPI and wt api](/docs/server/openapi).
 
 ## Conventions
 
@@ -43,6 +43,8 @@ Every error uses the same envelope:
 | `method_not_allowed` | 405 | Wrong method; the `Allow` header lists the right ones. |
 | `conflict` | 409 | Name already taken; concurrent update. |
 | `quota_exceeded`, `merge_blocked`, `linked_group`, `managed_by_config`, `last_owner` | 409 | Tenant quota reached; merge request not mergeable; member of a linked group; object managed by declarative config; last owner of a tenant. |
+| `merge_conflict`, `merge_method_not_allowed`, `gc_running` | 409 | Server-side merge has conflicts (the body lists `conflicts`); merge method refused by protection; a GC run is already in progress. |
+| `binary_file` | 422 | Blame of a binary file. |
 | `payload_too_large` | 413 | JSON body over 1 MiB (release assets: 64 MiB). |
 | `unsupported_media_type` | 415 | Body is not `application/json`. |
 | `rate_limited` | 429 | Rate limit reached; see `Retry-After`. |
@@ -559,6 +561,7 @@ Semantics are described in [Licensing](/docs/server/licensing).
 | `POST` | `.../merge-requests/{n}/approve` | `mr:approve` | `200` |
 | `POST` | `.../merge-requests/{n}/review` | `mr:approve` (`commented`: `tree:read`) | `200` |
 | `GET` | `.../merge-requests/{n}/checks` | `tree:read` | `200` |
+| `GET` | `.../merge-requests/{n}/mergeability` | `tree:read` | `200` |
 | `POST` | `.../merge-requests/{n}/merge` | `mr:merge` | `200` |
 | `POST` | `.../merge-requests/{n}/close` | author or `mr:merge` | `200` |
 | `GET`, `POST` | `.../merge-requests/{n}/comments` | `tree:read` | `200` / `201` |
@@ -594,7 +597,7 @@ Response `201`, the shape returned by every merge request endpoint:
 }
 ```
 
-After a merge, `state` is `merged` and `merged_at` and `merged_snapshot` (the new target tip) are present; `linked_group` appears for members of a linked group. Each review entry in `approvals` looks like `{"account_id": "...", "username": "alice", "at": "...", "snapshot_id": "...", "decision": "approved", "body": "..."}`.
+After a merge, `state` is `merged` and `merged_at`, `merged_snapshot` (the new target tip) and `merge_method` are present; `linked_group` appears for members of a linked group. Each review entry in `approvals` looks like `{"account_id": "...", "username": "alice", "at": "...", "snapshot_id": "...", "decision": "approved", "body": "..."}`.
 
 ### `POST .../merge-requests/{n}/review`
 
@@ -606,11 +609,19 @@ After a merge, `state` is `merged` and `merged_at` and `merged_snapshot` (the ne
 
 ### `GET .../merge-requests/{n}/checks`
 
-Merge readiness: `{"mergeable", "blockers": [{"kind", "message"}], "approvals": {"required", "current", "stale"}, "ci": {"state", "required", "missing"}, "todos": {"blocking_open"}}`. See [Branch protection](/docs/server/branch-protection#merge-requests).
+Merge readiness: `{"mergeable", "blockers": [{"kind", "message"}], "approvals": {"required", "current", "stale"}, "ci": {"state", "required", "missing"}, "todos": {"blocking_open"}, "methods", "conflicts"}`. See [Branch protection](/docs/server/branch-protection#merge-requests). `GET .../mergeability` reports only the method side (possible methods, default, merge base, conflicts); see [Server-side merges](/docs/server/merging#mergeability).
 
 ### `POST .../merge-requests/{n}/merge`
 
-Fast-forwards the target branch to the source tip. No body. Returns the merged merge request. Refusals, in order of precedence: `409 linked_group` for a member of a linked group, `403 review_required` for missing approvals, `409 merge_blocked` naming the blockers (change requests, CI, TODOs, linearity), and `409 conflict` when the target is not an ancestor of the source. Merge the target into the source locally (`wt merge`), push, and retry when it has diverged.
+Merges the source into the target and returns the merged merge request. The body is optional: `{"method"?: "fast-forward"|"merge"|"squash", "message"?}`. Without a method the server fast-forwards when it can and otherwise writes a merge snapshot, whichever branch protection allows first.
+
+```bash
+curl -s -X POST $WT/api/v1/trees/acme/payments/merge-requests/4/merge \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"method":"squash"}'
+```
+
+Refusals, in order of precedence: `409 linked_group` for a member of a linked group, `403 review_required` for missing approvals, `409 merge_blocked` naming the blockers (change requests, CI, TODOs, linearity), `409 merge_method_not_allowed`, `409 merge_conflict` with a `conflicts` list, and `409 conflict` for a fast-forward on diverged branches or a target that moved during the merge. Details: [Server-side merges](/docs/server/merging#rest).
 
 ### `POST .../merge-requests/{n}/close`
 
@@ -675,6 +686,7 @@ All admin endpoints require a server admin (`is_admin: true`).
 | `POST` | `/api/v1/admin/accounts/{username}/password`, `.../reset-code` | `204` / `200` |
 | `GET`, `PUT` | `/api/v1/admin/sso` | `200` |
 | `POST`, `GET` | `/api/v1/admin/gc` (`POST ?dry_run=true`) | `200` |
+| `POST` | `/api/v1/admin/fsck` | `200` |
 | `GET`, `PUT` | `/api/v1/admin/tenants/{tenant}/limits` | `200` |
 | `PATCH` | `/api/v1/admin/tenants/{tenant}` (`status`, `status_reason`) | `200` |
 
@@ -707,7 +719,7 @@ curl -s -X PATCH $WT/api/v1/admin/accounts/mallory \
   -d '{"disabled":true}'
 ```
 
-GC, limits and tenant status are described in [Operations](/docs/server/operations).
+GC, limits and tenant status are described in [Operations](/docs/server/operations); fsck in [Storage maintenance](/docs/cli/maintenance#server-fsck).
 
 ## Endpoint catalogue
 
@@ -720,15 +732,20 @@ Every other endpoint group, all under `/api/v1`. `{t}` = `/tenants/{tenant}`, `{
 | Signing keys | `GET\|POST /auth/keys`, `DELETE /auth/keys/{id}`, `GET /accounts/{username}/keys` | [`wt identity`](/docs/cli/signing#wt-identity) |
 | Invitations | `GET\|POST {t}/invitations`, `DELETE {t}/invitations/{id}`, `GET /invitations/{code}`, `POST /invitations/{code}/accept` | [`wt invite`](/docs/cli/iam) |
 | IAM | `{t}/teams[/{team}[/members/{username}]]`, `{t}/roles[/{name}]`, `{t}/policies[/{id}]`, `POST {t}/policies/validate`, `{t}/service-accounts[/{name}[/keys[/{id}]]]`, `GET\|PUT\|DELETE {tree}/grants`, `GET /iam/actions`, `POST /iam/simulate`, `GET /iam/effective` | [Access control](/docs/server/access-control) |
+| Policy history | `GET {t}/policies/deleted`, `GET {t}/policies/{id}/versions[/{v}]`, `GET {t}/policies/{id}/diff?from=&to=`, `POST {t}/policies/{id}/rollback[?force=true]` | [Policy history](/docs/server/policy-history) |
+| Webhooks | `GET\|POST {t}/webhooks`, `GET\|PATCH\|DELETE {t}/webhooks/{id}`, `GET {t}/webhooks/{id}/deliveries[/{did}]`, `POST {t}/webhooks/{id}/deliveries/{did}/redeliver`, `POST {t}/webhooks/{id}/test`, same under `{tree}/webhooks` | [Webhooks](/docs/server/webhooks) |
+| Code search | `GET /search/code?q=&tenant=&tree=&path=&regex=&case=&context=&limit=` | [Code search](/docs/server/code-search) |
+| Blame | `GET {tree}/blame/{rev}/{path...}?start=&end=` | [Blame](/docs/cli/blame#server-api) |
 | Declarative access | `GET {t}/access-config`, `POST {t}/access-config/plan`, `POST {t}/access-config/apply`, same under `{tree}/access-config` | [Declarative access](/docs/server/declarative-access) |
 | Branches and tags | `POST {tree}/branches {name, from?}`, `DELETE {tree}/branches/{name...}`, `POST {tree}/tags`, `DELETE {tree}/tags/{name...}` | [`wt trees`](/docs/cli/administration#wt-trees) |
 | Insights | `GET {tree}/compare?to=&from=&context=`, `GET {tree}/history?path=&branch=&limit=`, `GET {tree}/stats?branch=&days=`, `GET {tree}/staged/summary`, `GET /search?q=&limit=` | [`wt trees`](/docs/cli/administration#wt-trees) |
 | Archives | `GET {tree}/archive/{snapshot}?format=tar.gz\|zip` (license-aware, adds `LICENSES/NOTICE`) | [Licensing](/docs/server/licensing) |
 | CI | `POST {tree}/ci/status {snapshot, context, state, description?, target_url?}` (`ci:report`), `GET {tree}/ci/status?snapshot=\|branch=` | [`wt ci`](/docs/cli/merge-requests#wt-ci) |
-| Linked groups | `GET\|POST {t}/linked-groups`, `GET\|DELETE {t}/linked-groups/{id}`, `POST {t}/linked-groups/{id}/merge` | [Branch protection](/docs/server/branch-protection#linked-merge-requests) |
+| Linked groups | `GET\|POST {t}/linked-groups`, `GET\|DELETE {t}/linked-groups/{id}`, `POST {t}/linked-groups/{id}/merge {method?}` | [Branch protection](/docs/server/branch-protection#linked-merge-requests) |
 | TODOs and dependencies | `GET\|POST {tree}/todos`, `GET\|PATCH {tree}/todos/{n}`, `POST {tree}/todos/{n}/claim\|complete\|cancel`, `GET {tree}/dependencies?branch=` | [`wt todo`](/docs/cli/dependencies#wt-todo) |
 | Releases | `GET\|POST {tree}/releases`, `GET\|PATCH\|DELETE {tree}/releases/{tag}`, `PUT\|GET\|DELETE {tree}/releases/{tag}/assets/{name}` (raw body up to 64 MiB) | [`wt release`](/docs/cli/dependencies#wt-release) |
-| Staged | `GET {tree}/staged/summary`, `DELETE {tree}/staged?branch=&account=` | [Staged snapshots](#staged-snapshots) |
+| Staged | `GET {tree}/staged/summary`, `DELETE {tree}/staged?branch=&account=`, `GET {tree}/staged/{snapshot}/files`, `GET {tree}/staged/{snapshot}/files/{path...}` (a staged entry's file list and file contents, with the blob endpoint's read checks) | [Staged snapshots](#staged-snapshots) |
+| OpenAPI | `GET /openapi.yaml` (no auth) | [OpenAPI and wt api](/docs/server/openapi) |
 
 ## Health and metrics
 

@@ -164,6 +164,51 @@ match repo.merge(&tree, "feature/login", opts)? {
 }
 ```
 
+## Cherry-pick, rebase and stash
+
+```rust
+pub fn cherry_pick(&self, tree: &str, revs: &[String], opts: &CherryPickOptions) -> Result<RewriteOutcome>
+pub fn cherry_pick_continue(&self, tree: &str) -> Result<RewriteOutcome>
+pub fn cherry_pick_skip(&self, tree: &str) -> Result<RewriteOutcome>
+pub fn cherry_pick_abort(&self, tree: &str) -> Result<()>
+pub fn rebase(&self, tree: &str, onto: &str, opts: &RebaseOptions) -> Result<RewriteOutcome>
+pub fn rebase_continue(&self, tree: &str) -> Result<RewriteOutcome>
+pub fn rebase_skip(&self, tree: &str) -> Result<RewriteOutcome>
+pub fn rebase_abort(&self, tree: &str) -> Result<()>
+pub fn rewrite_state(&self, tree: &str) -> Result<Option<RewriteState>>
+
+pub fn stash_push(&self, tree: &str, opts: &StashOptions) -> Result<StashEntry>
+pub fn stash_list(&self, tree: &str) -> Result<Vec<StashEntry>>
+pub fn stash_show(&self, tree: &str, index: usize, opts: &DiffOptions) -> Result<(StashEntry, Vec<FileDiff>)>
+pub fn stash_apply(&self, tree: &str, index: usize) -> Result<StashApplyOutcome>
+pub fn stash_pop(&self, tree: &str, index: usize) -> Result<StashApplyOutcome>
+pub fn stash_drop(&self, tree: &str, index: usize) -> Result<StashEntry>
+pub fn stash_clear(&self, tree: &str) -> Result<usize>
+```
+
+A conflicting cherry-pick or rebase step leaves the same merge state as `merge`, so `merge_status` and `resolve_conflict` work on it; continue with the operation's own `*_continue`. Stash index `0` is the newest entry. Semantics: [Cherry-pick, rebase and stash](/docs/cli/history-rewriting).
+
+## Blame
+
+```rust
+pub fn blame(&self, tree: &str, path: &str, rev: Option<&str>) -> Result<Vec<BlameLine>>
+pub fn blame_lines(&self, tree: &str, path: &str, rev: Option<&str>,
+                   lines: Option<RangeInclusive<usize>>) -> Result<Vec<BlameLine>>
+```
+
+`BlameLine` has `line` (1-based), `text`, `snapshot_id`, `author`, `message` (first line) and `created_at` (serialized as `at`). Binary files, missing paths and bad ranges are `InvalidArgument`. See [Blame](/docs/cli/blame).
+
+## Garbage collection and fsck
+
+```rust
+pub fn gc(&self, opts: &GcOptions) -> Result<GcReport>
+pub fn fsck(&self, opts: &FsckOptions) -> Result<FsckReport>
+pub fn stash_roots(&self) -> Result<Vec<ObjectHash>>
+pub fn rewrite_roots(&self) -> Result<Vec<SnapshotId>>
+```
+
+`gc` takes every tree's lock (except in a dry run) and keeps everything reachable from refs, recent reflog entries, merge, rewrite and stash state. `FsckReport::is_ok()` is `true` when no errors were found. See [Storage maintenance](/docs/cli/maintenance).
+
 ## Revert and restore
 
 ```rust

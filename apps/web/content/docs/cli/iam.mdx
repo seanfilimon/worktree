@@ -102,6 +102,11 @@ wt policy validate --file <FILE> <TENANT>
 wt policy enable <TENANT> <ID>
 wt policy disable <TENANT> <ID>
 wt policy simulate [--only] --file <FILE> --principal <PRINCIPAL> --action <ACTION> [--tree <TREE>] [--branch <BRANCH>] [--path <PATH>] [--ip <IP>] [--mfa] <TENANT>
+wt policy history [--tenant <SLUG>] <ID>
+wt policy show-version [--tenant <SLUG>] <ID> <VERSION>
+wt policy diff [--from <V>] [--to <V>] [--tenant <SLUG>] <ID>
+wt policy rollback [-m <MSG>] [--force] [--tenant <SLUG>] <ID> <VERSION>
+wt policy deleted [--tenant <SLUG>]
 ```
 
 Policy files are JSON (`-` reads stdin):
@@ -129,6 +134,17 @@ wt policy validate acme --file protect-main.json
 wt policy simulate acme --file protect-main.json --principal user:bob --action branch:push --tree web --branch main
 wt policy create acme --file protect-main.json
 ```
+
+Every create, update, delete and rollback, and every `wt access apply` that changes a policy, records a version. The history commands take the tenant as `--tenant` (default: the origin tenant):
+
+```bash
+wt policy history <ID> --tenant acme
+wt policy diff <ID> --from 1 --to 3 --tenant acme
+wt policy rollback <ID> 2 -m "undo the contractor deny" --tenant acme
+wt policy deleted --tenant acme            # restore one with wt policy rollback
+```
+
+Diffs match statements by `sid`. Rollbacks record a new version; config-managed policies need `--force` by a tenant owner. See [Policy history](/docs/server/policy-history).
 
 ## `wt grant`
 

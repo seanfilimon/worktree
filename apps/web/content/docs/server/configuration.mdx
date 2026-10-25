@@ -63,11 +63,17 @@ See [Garbage collection](/docs/server/operations#garbage-collection).
 
 Per-tenant overrides are set with `wt admin limits`. See [Quotas](/docs/server/operations#quotas) and [Rate limiting](/docs/server/operations#rate-limiting).
 
+### Webhooks and storage
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--compress-objects` | `WT_COMPRESS_OBJECTS` | `true` | Store new objects zstd-compressed when that saves at least 10 %. With `false`, new objects are written raw; compressed objects are still read. See [Object compression](/docs/server/operations#object-compression). |
+| `--webhook-allow-private` | `WT_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow webhook targets on loopback, link-local and private addresses (disables the SSRF guard for every tenant). See [Webhook targets](/docs/server/operations#webhook-targets). |
 ### Precedence and syntax
 
 - A flag on the command line overrides the matching environment variable, which overrides the default.
 - Durations use Go syntax: `90s`, `15m`, `24h`, `720h`.
-- `--allow-registration` is a boolean flag; turn it off with an explicit value, `--allow-registration=false`. The environment variable accepts `true` or `false`.
+- `--allow-registration` and `--compress-objects` are boolean flags; turn them off with an explicit value, `--allow-registration=false`. The environment variables accept `true` or `false`.
 - Invalid values make the server exit with code `2`; a runtime error exits with `1`.
 
 ### Fixed settings
@@ -80,6 +86,9 @@ Per-tenant overrides are set with `wt admin limits`. See [Quotas](/docs/server/o
 | Release asset upload | 64 MiB |
 | SSE heartbeat interval | 15 seconds |
 | Audit query page | 100 events by default, at most 1000 (`format=ndjson` has no limit) |
+| Webhook delivery timeout and retries | 10 seconds; retries after 1 m, 5 m, 30 m, 2 h; deactivated after 20 consecutive failures |
+| Webhook delivery log | 200 newest deliveries per hook, at most 30 days |
+| Code search | Default-branch tips, text files up to 1 MiB, at most 1000 hits and 5 seconds per query |
 
 Single sign-on is not a flag: a server admin configures it at runtime with [`wt sso set`](/docs/cli/iam#wt-sso) or `PUT /api/v1/admin/sso`. Encryption at rest is not built yet (see the [roadmap](/roadmap)); use volume encryption.
 

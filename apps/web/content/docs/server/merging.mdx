@@ -1,0 +1,148 @@
+---
+title: Server-side Merges
+description: How the server merges a merge request - the fast-forward, merge and squash methods, the default choice, protection restrictions, conflicts and the mergeability endpoint.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Since v0.6 the server can merge a merge request whose target has moved on: besides fast-forwarding, it runs a three-way merge and writes a merge or squash snapshot itself. Reviews, CI and the other readiness gates are unchanged and are checked first (see [Branch protection](/docs/server/branch-protection#merge-requests)). The [Merging specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Merging.md) is normative.
+
+## Merge methods
+
+| Method | Target branch afterwards | Snapshot written by the server |
+|---|---|---|
+| `fast-forward` | Moves to the source tip | None |
+| `merge` | Moves to a new merge snapshot | Parents `[target tip, source tip]`, files = three-way merge |
+| `squash` | Moves to a new snapshot | Parent `[target tip]`, files = three-way merge (all changes in one snapshot) |
+
+```bash
+wt mr merge 4                                  # default method
+wt mr merge 4 --method squash -m "Add refund endpoint (#4)"
+wt mr merge 4 --method merge
+wt mr merge-group <ID> --method squash         # every member of a linked group
+```
+
+- **Default.** Without `--method` (REST: an empty body or `{}`) the server uses the first of `fast-forward`, `merge`, `squash` that is allowed and possible: a fast-forward when the target is an ancestor of the source, otherwise a merge snapshot.
+- **Messages.** `-m` sets the message of a merge or squash snapshot (at most 64 KiB). The defaults are `Merge branch '<source>' into <target> (!N)` for `merge` and the merge request title for `squash`. Fast-forwards ignore it.
+- **Server-made snapshots** get a new id, `branch_name` = the target, `author` = the merger's username and `pushed_by` = the merger's account. They are not signed. Clients fetch them like any pushed snapshot.
+- `merge` on a fast-forwardable request still writes a merge snapshot (a "no-ff" merge); `squash` writes one snapshot with the source files on top of the target.
+- A target that already contains the source is **up to date**: every allowed method succeeds without moving the branch, and the merge request is marked merged.
+- The target moves with compare-and-swap. If it moved during the merge, the server answers `409 conflict`; retrying recomputes the merge.
+
+`wt mr show` prints the method of non-fast-forward merges (`merged as 1a2b3c4d (squash)`), and the merge request records it in `merge_method` (`""` for requests merged before v0.6, which were fast-forwards).
+
+## Restricting methods with protection
+
+Branch protection decides which methods are **allowed** into a branch:
+
+| Rule | Effect |
+|---|---|
+| `merge_methods` (`wt protect set --merge-methods`) | Only these methods; empty = all. Several matching rules intersect, and an empty intersection allows nothing. |
+| `require_linear` | Forbids `merge`. A fast-forward that would bring merge snapshots into the branch is refused too. |
+| `require_signed` | Forbids `merge` and `squash`, because the server cannot sign the snapshots it writes. |
+
+```bash
+wt protect set main --no-direct-push --approvals 1 --merge-methods squash,fast-forward
+wt protect set "release/*" --no-direct-push --require-linear
+```
+
+`wt protect set` replaces the whole rule, so pass every flag the rule should keep. Requesting a refused method answers `409 merge_method_not_allowed`.
+
+## Mergeability
+
+`wt mr mergeability` shows which methods can merge a request right now, the merge base and any conflicts. It does not evaluate approvals, CI or TODOs; [`wt mr checks`](/docs/cli/merge-requests#wt-mr-checks) does.
+
+```text
+$ wt mr mergeability 5
+!5 cannot be merged on the server
+  history: diverged (needs a merge or squash snapshot)
+  merge base: 01234567
+  allowed by protection: merge, squash
+  - fast-forward: target has diverged
+  - merge: 2 conflicting paths
+  2 conflicts:
+    x src/refund.rs (content)
+    x assets/logo.png (binary)
+```
+
+`GET /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/mergeability` (`tree:read`) returns:
+
+```json
+{
+  "fast_forward": false,
+  "up_to_date": false,
+  "methods": [],
+  "default": "",
+  "allowed": ["merge", "squash"],
+  "merge_base": "01234567-89ab-4cde-8f01-23456789abcd",
+  "conflicts": [{"path": "src/refund.rs", "kind": "content"}, {"path": "assets/logo.png", "kind": "binary"}],
+  "reasons": {"fast-forward": "target has diverged", "merge": "2 conflicting paths"}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `fast_forward` | The target can be fast-forwarded (or already contains the source), independent of protection. |
+| `methods`, `default` | Allowed **and** possible methods in preference order; `default` is the first (`""` = none). |
+| `allowed` | Methods protection admits. |
+| `reasons` | Why a method is not possible. |
+
+The three-way outcome is cached per (source tip, target tip), so repeated calls are cheap. `GET .../checks` also reports `methods` and `conflicts`, and counts a diverged request without conflicts as mergeable when `merge` or `squash` is allowed.
+
+## Conflicts
+
+The server merges the source into the target against their best common ancestor, with the same rules as the local [`wt merge`](/docs/cli/branches#wt-merge): changes on one side are taken, text changed on both sides is merged line by line (diff3), and overlapping or adjacent edits conflict. Conflict kinds are `content`, `add_add`, `modify_delete`, `executable`, `binary`, `chunked` (files over 8 MiB) and `file_directory`.
+
+The server never writes conflict markers. A merge with conflicts is refused with `409 merge_conflict`, and `wt mr merge` exits with code `3`:
+
+```json
+{
+  "error": {
+    "code": "merge_conflict",
+    "message": "merge request !3 cannot be merged automatically: 1 conflicting path: a.txt (content); merge 'main' into 'feature' locally, resolve and push",
+    "conflicts": [{"path": "a.txt", "kind": "content"}]
+  },
+  "conflicts": [{"path": "a.txt", "kind": "content"}]
+}
+```
+
+Resolve locally, push the source and merge again (pushing makes existing approvals stale):
+
+```bash
+wt pull --branch main
+wt switch feature/refunds
+wt merge main -m "Merge main into feature/refunds"
+wt merge status                      # resolve, then wt merge --continue
+wt push --branch feature/refunds
+wt mr merge 4
+```
+
+## REST
+
+| Endpoint | Body | Notes |
+|---|---|---|
+| `POST {tree}/merge-requests/{n}/merge` | `{"method"?, "message"?}` (optional) | `mr:merge`. `200` with the merged merge request: `merge_method`, and `merged_snapshot` (the new snapshot, or the source tip for a fast-forward). |
+| `GET {tree}/merge-requests/{n}/mergeability` | | `tree:read`. See above. |
+| `POST /api/v1/tenants/{t}/linked-groups/{id}/merge` | `{"method"?}` (optional) | Every member merges with that method (or its own default), all or nothing. |
+
+```bash
+curl -s -X POST $WT/api/v1/trees/acme/payments/merge-requests/4/merge \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"method":"squash","message":"Add refund endpoint (#4)"}'
+```
+
+| Status and code | When |
+|---|---|
+| `400 bad_request` | Unknown `method`, invalid `message`, unknown body fields. |
+| `403 review_required` | Missing approvals. |
+| `409 merge_blocked` | Change requests, CI, blocking TODOs; a fast-forward that would bring merge snapshots under `require_linear`. |
+| `409 linked_group` | A member of an open linked group merged alone. |
+| `409 merge_method_not_allowed` | Protection refuses the method. |
+| `409 merge_conflict` | The three-way merge has conflicts (`conflicts` lists them; linked-group entries carry `tree`). |
+| `409 conflict` | Fast-forward requested on diverged branches; the target moved during the merge; merge or squash into an empty target. |
+
+A successful merge publishes `mr.merged` and, when the target moved, `branch.pushed` with `merge_request` and `merge_method` in its payload, so watchers, [code search](/docs/server/code-search) and [webhooks](/docs/server/webhooks) see server-made snapshots. The audit record `mr.merge` carries `old_tip`, `new_tip`, `method` and `approvals`.
+
+<Callout type="info" title="Roadmap">
+  Rebase merges, resolving conflicts in the browser, signing server-made snapshots (so `require_signed` can allow merge and squash), deleting the source branch after a merge and content merges of chunked files are not built. Merges do not check tenant storage quotas. See the [roadmap](/roadmap).
+</Callout>

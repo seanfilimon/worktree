@@ -86,7 +86,7 @@ Payloads are not a stable contract yet. Route on `type`, `tenant_id`, `tree_id` 
 |---|---|---|
 | `tree.created` | A tree is created, by REST or by a first push. | `name`, `tenant` |
 | `tree.deleted` | A tree is deleted. | `name` |
-| `branch.pushed` | A push is accepted or a merge request is merged. | `branch`, `old_tip`, `new_tip`, `count` |
+| `branch.pushed` | A push is accepted or a merge request is merged. | `branch`, `old_tip`, `new_tip`, `count`; after a merge also `merge_request` and `merge_method` |
 | `branch.created`, `branch.deleted` | A branch is created or deleted over REST. | branch |
 | `tag.pushed`, `tag.deleted` | A tag is created (gRPC or REST) or deleted. | `tag`, `target` |
 | `snapshot.staged` | `wt stage` or the daemon uploads a staged snapshot. | the staged snapshot |
@@ -97,6 +97,10 @@ Payloads are not a stable contract yet. Route on `type`, `tenant_id`, `tree_id` 
 | `todo.created`, `todo.updated` | A TODO is created from a dependency or changed (published in the target tenant). | the TODO |
 | `release.created`, `release.deleted` | Release activity. | release |
 | `access.applied` | A declarative access document is applied. | plan |
+| `policy.changed` | A policy version is recorded: create, update, delete, rollback or access apply. See [Policy history](/docs/server/policy-history). | `policy_id`, `name`, `version`, `change`, `comment` |
+| `webhook.failing` | A webhook was deactivated after 20 consecutive failed deliveries (`actor` is `system`). See [Webhooks](/docs/server/webhooks#retries-and-deactivation). | `webhook_id`, `url`, `failure_count`, `last_status`, `last_error` |
+
+Every event type can also be delivered to an HTTP endpoint with a [webhook](/docs/server/webhooks).
 
 ## Recent events
 
@@ -104,7 +108,7 @@ Payloads are not a stable contract yet. Route on `type`, `tenant_id`, `tree_id` 
 
 ## Delivery semantics
 
-- Events are delivered to subscribers connected when they are published. There is no replay and no `Last-Event-ID` resume; after reconnecting, read `/events/recent` or re-read state over REST.
+- Events are delivered to subscribers connected when they are published. There is no replay and no `Last-Event-ID` resume; after reconnecting, read `/events/recent` or re-read state over REST. For delivery that survives your consumer being offline, use [webhooks](/docs/server/webhooks), which retry failed deliveries.
 - Publishing never blocks the server. Each subscriber has a 64-event buffer; a subscriber that reads too slowly drops events instead of slowing pushes down.
 - Order is the publish order within the server process.
 

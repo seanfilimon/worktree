@@ -30,6 +30,8 @@ Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the 
   trees/<tree>/shallow        boundary snapshot ids of a shallow history
   trees/<tree>/stubbed        paths whose content the server withheld
   trees/<tree>/MERGE_STATE.json
+  trees/<tree>/REWRITE_STATE.json  stopped cherry-pick or rebase
+  trees/<tree>/stash.jsonl    StashEntry per line (wt stash)
   trees/<tree>/LOCK           OS lock held by mutating operations
   conflicts/<tree>.json       machine-readable conflict list during a merge
   hooks/<phase>               worktree-wide snapshot hooks
@@ -42,7 +44,7 @@ Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the 
 |---|---|
 | `config.toml` | Worktree configuration (`WorktreeConfig`, see below). Hand-editable; unknown keys are preserved when `wt` rewrites it. |
 | `ignore` | Ignore patterns for the whole worktree. `wt ignore add` appends here; `wt git import` copies the Git repository's root `.gitignore` patterns here. Not shared: put team rules in a tracked `.wtignore`. |
-| `objects/` | The content-addressed object store: blobs, manifests and chunk lists, stored raw at `objects/<hh>/<62 hex>`. Shared by all trees of the worktree and never deleted locally. See [Object model](/docs/protocol/object-model). |
+| `objects/` | The content-addressed object store: blobs, manifests and chunk lists at `objects/<hh>/<62 hex>`, raw or zstd-compressed (`WTZ1`). Shared by all trees of the worktree. Objects are deleted only by [`wt gc`](/docs/cli/maintenance#wt-gc), when nothing references them. See [Object model](/docs/protocol/object-model). |
 | `snapshots/<id>.json` | One JSON `Snapshot` record per snapshot, named by its UUID. Shared by all trees. |
 | `trees/<tree>/tree.toml` | `TreeInfo` for one tree: name, id, path relative to the root (empty for the root tree), default branch, and server-side (remote) name. |
 | `trees/<tree>/HEAD` | Name of the tree's current branch. |
@@ -54,14 +56,16 @@ Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the 
 | `trees/<tree>/reflog.jsonl` | Append-only log of every ref change, one JSON `ReflogEntry` per line. See below. |
 | `trees/<tree>/shallow` | Present after a shallow clone or fetch: the boundary snapshot ids. See [Shallow sync](/docs/protocol/large-files#shallow-sync). |
 | `trees/<tree>/stubbed` | Paths the server withheld (license or path policy); they are not checked out. See [Restricted paths](/docs/protocol/large-files#restricted-paths). |
-| `trees/<tree>/MERGE_STATE.json` | Present only while a conflicted merge awaits resolution. See [Merge and diff](/docs/protocol/merge-and-diff#merge-state). |
+| `trees/<tree>/MERGE_STATE.json` | Present only while a conflicted merge (or a stopped cherry-pick or rebase step) awaits resolution. See [Merge and diff](/docs/protocol/merge-and-diff#merge-state). |
+| `trees/<tree>/REWRITE_STATE.json` | Present while a cherry-pick or rebase is stopped at a conflict: operation, branch, original tip, remaining steps, replaced ids. See [Conflicts](/docs/cli/history-rewriting#conflicts). |
+| `trees/<tree>/stash.jsonl` | Stash entries, oldest first, one JSON `StashEntry` per line (message, branch, base snapshot, base and stashed manifests). See [`wt stash`](/docs/cli/history-rewriting#wt-stash). |
 | `trees/<tree>/LOCK` | OS advisory lock taken by every mutating operation, so the CLI and the daemon never interleave writes to one tree. Released when the process exits; stale files are removed by the daemon's maintenance pass. |
 | `conflicts/<tree>.json` | Machine-readable conflict list (`path`, `kind`, `hunks`) during a conflicted merge, for editors and scripts. |
 | `hooks/<phase>` | Worktree-wide `pre-snapshot` / `post-snapshot` executables. See [Hooks](/docs/cli/configuration#hooks). |
 | `access/*.toml` | Declarative roles and policies applied with `wt access apply`. See [Declarative access](/docs/server/declarative-access). |
 | `git-map.json` | Mapping between snapshot ids and Git commit SHAs, written by the Git bridge so repeated imports and exports are incremental. |
 
-`hooks/`, `access/`, `conflicts/` and the per-tree `shallow` and `stubbed` files are created only when used. Nothing under `.wt/` is ever part of a snapshot, so its contents are not shared by `wt push` or `wt clone`.
+`hooks/`, `access/`, `conflicts/` and the per-tree `shallow`, `stubbed`, `stash.jsonl` and `REWRITE_STATE.json` files are created only when used. Nothing under `.wt/` is ever part of a snapshot, so its contents are not shared by `wt push` or `wt clone`.
 
 ### Reflog entries
 
@@ -71,7 +75,7 @@ Each line of `reflog.jsonl` is a `ReflogEntry`:
 |---|---|
 | `at` | Timestamp (UTC). |
 | `tree`, `branch` | Tree and branch affected. |
-| `action` | `init`, `snapshot`, `auto-snapshot`, `switch`, `branch.create`, `branch.archive`, `branch.restore`, `merge`, `fast-forward`, `revert`, `restore`, `pull`, `push`, `tag.create`, `tag.delete`, or `import` (Git import). |
+| `action` | `init`, `snapshot`, `auto-snapshot`, `switch`, `branch.create`, `branch.archive`, `branch.restore`, `merge`, `fast-forward`, `revert`, `restore`, `pull`, `push`, `tag.create`, `tag.delete`, `cherry-pick`, `rebase`, or `import` (Git import). |
 | `old`, `new` | Snapshot ids before and after (either may be null). |
 | `message` | Human-readable description. |
 
@@ -139,8 +143,9 @@ url = "https://example.com/acme/web.git"
 | `[hooks]` | `enabled`, `timeout_secs` | `true`, `60` |
 | `[signing]` | `key`, `auto` | `""`, `false` |
 | `[git_remote.<name>]` | `url` | none |
+| `[alias]` | `<name> = "command line"` | none; see [Aliases](/docs/cli/ergonomics#aliases) |
 
-`[secret_scanning]`, `[hooks]`, `[signing]` and `[git_remote.*]` are omitted from the file while they hold their defaults.
+`[secret_scanning]`, `[hooks]`, `[signing]`, `[git_remote.*]` and `[alias]` are omitted from the file while they hold their defaults.
 
 ### Configuration layers
 
@@ -148,7 +153,7 @@ Configuration is layered, lowest precedence first:
 
 | Layer | File | Sections read |
 |---|---|---|
-| User | `$WT_HOME/config.toml` | `[user]`, `[signing]`, `[secret_scanning]` |
+| User | `$WT_HOME/config.toml` | `[user]`, `[signing]`, `[secret_scanning]`, `[alias]` |
 | Worktree | `.wt/config.toml` | everything above |
 | Tree | `<tree>/.wt-tree/config.toml` | `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` |
 
@@ -184,7 +189,7 @@ See [Nested trees](/guides/nested-trees).
 | File | Written by | Contents |
 |---|---|---|
 | `credentials.toml` | `wt login`, `wt register`, `wt logout` | One entry per normalized server URL (no trailing slash), each with `username` and `token`. Mode 0600 on Unix. |
-| `config.toml` | `wt config set --global`, user | User-level `[user]`, `[signing]`, `[secret_scanning]`. |
+| `config.toml` | `wt config set --global`, user | User-level `[user]`, `[signing]`, `[secret_scanning]`, `[alias]`. |
 | `keys/<name>.key`, `keys/<name>.pub` | `wt identity generate`, `wt identity register` | Ed25519 signing keys (hex seed, mode 0600) and the public key with its registered key id. See [Snapshot signing](/docs/cli/signing). |
 | `bg.json` | `worktree-bg` | `{"pid", "port", "version", "token"}` of the running daemon. Removed on clean shutdown. |
 | `bg.toml` | `worktree-bg` | `watched = ["path", ...]`: watched worktree roots, persisted on watch / unwatch. |

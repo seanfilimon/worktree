@@ -13,7 +13,7 @@ Three files are read, lowest precedence first. A value in a higher layer replace
 
 | Layer | File | Sections read from it | Written with |
 |---|---|---|---|
-| User | `$WT_HOME/config.toml` (default `~/.wt/config.toml`) | `[user]`, `[signing]`, `[secret_scanning]` | `wt config set KEY VALUE --global` |
+| User | `$WT_HOME/config.toml` (default `~/.wt/config.toml`) | `[user]`, `[signing]`, `[secret_scanning]`, `[alias]` | `wt config set KEY VALUE --global` |
 | Worktree | `.wt/config.toml` | every section | `wt config set KEY VALUE` |
 | Tree | `<tree>/.wt-tree/config.toml` | `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` | `wt --tree NAME config set KEY VALUE` |
 
@@ -111,9 +111,10 @@ url = "https://example.com/acme/web.git"
 | `hooks.enabled` | bool | `true` | worktree, tree | Run snapshot hooks. |
 | `hooks.timeout_secs` | integer | `60` | worktree, tree | Kill a hook after this many seconds (`0` = no limit). |
 | `signing.key` | string | empty | user, worktree | Key name under `$WT_HOME/keys/` (empty = signing off). |
-| `signing.auto` | bool | `false` | user, worktree | Sign every snapshot, not only `wt snapshot --sign`. |
+| `signing.auto` | bool | `false` | user, worktree | Sign every snapshot, not only `wt snapshot --sign`. Also re-signs snapshots created by `wt rebase` and `wt cherry-pick`. |
+| `alias.<name>` | string | | user, worktree | A command alias, for example `alias.lg = "log --oneline -n 20"`; an empty value removes it. A worktree alias replaces a user alias of the same name. See [Aliases](/docs/cli/ergonomics#aliases). |
 
-Booleans accept `true/false/yes/no/on/off/1/0`. An unparsable config file makes every command fail with `InvalidConfig` naming the file.
+Booleans accept `true/false/yes/no/on/off/1/0`. An unparsable config file makes every command fail with `InvalidConfig` naming the file. [`wt doctor`](/docs/cli/ergonomics#wt-doctor) validates every layer and reports which file is wrong.
 
 ### Branch switches with uncommitted changes
 
@@ -121,7 +122,7 @@ Booleans accept `true/false/yes/no/on/off/1/0`. An unparsable config file makes 
 |---|---|
 | `refuse` (default) | `wt switch` refuses while the tree has uncommitted changes; `--force` discards them. |
 | `snapshot` | Before switching, `wt switch` asks the running daemon to auto-snapshot the tree first. |
-| `stash` | Accepted, but currently behaves like `refuse`. |
+| `stash` | `wt switch` stashes the changes (new files included) as `auto-stash on <branch>` and, when you switch back to that branch, pops that auto-stash again. See [Auto-stash on branch switch](/docs/cli/history-rewriting#auto-stash-on-branch-switch). |
 
 <Callout type="warn">
 `snapshot` only takes effect when the daemon is running, watches this worktree, and auto-snapshots are not paused or disabled. Without the daemon the switch is refused as with `refuse`. Snapshot your work yourself (`wt snapshot -m ...`) if you are unsure.

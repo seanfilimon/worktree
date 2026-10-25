@@ -9,7 +9,7 @@ W0rkTree stores file content in a **content-addressed object store** and records
 
 ## Hashes
 
-- An object's hash is **BLAKE3-256 of its exact bytes**. There is no header, type prefix, or compression in the hashed data.
+- An object's hash is **BLAKE3-256 of its exact (uncompressed) bytes**. There is no header, type prefix, or compression in the hashed data; on-disk compression (below) does not change it.
 - On the wire, `ContentHash.value` is the **32 raw bytes** of the hash.
 - In JSON (local snapshot records, REST responses) and in file paths, a hash is written as **64 lowercase hex characters**.
 - In Rust the type is `worktree_sdk::ObjectHash` (a re-export of `worktree_protocol::core::hash::ContentHash`); `worktree_sdk::store::hash_bytes(data)` computes it. The Go server uses an equivalent 32-byte type, so hashes round-trip without re-encoding.
@@ -97,13 +97,13 @@ A tag names one snapshot: `TagRecord{name, target, message?, tagger, created_at}
 
 | Location | Path |
 |---|---|
-| Local worktree | `.wt/objects/<hh>/<62 hex>`: the first two hex characters of the hash form the directory, the remaining 62 the file name. Objects are never deleted locally. |
+| Local worktree | `.wt/objects/<hh>/<62 hex>`: the first two hex characters of the hash form the directory, the remaining 62 the file name. Objects are deleted only by [`wt gc`](/docs/cli/maintenance#wt-gc), when nothing references them. |
 | Server | `<data>/objects/<hh>/<62 hex>` in the server's data directory (default `./wt-data`), shared and deduplicated across tenants. Metadata, including snapshot records and branch tips, lives in `<data>/meta.db` (bbolt). See [Storage](/docs/server/storage). |
 
-Objects are stored raw. Writes go to a temporary file followed by a rename, so concurrent writers are safe; if the rename target already exists, the content is by definition identical.
+A stored file is either the raw content or, since v0.6, the 4-byte magic `WTZ1` followed by one zstd frame of the content. Writers compress objects of at least 512 bytes when that saves at least 10 % (content that itself starts with `WTZ1` is always stored compressed, so the magic is unambiguous); readers accept both forms and verify the decoded content against the hash. Writes go to a temporary file followed by a rename, so concurrent writers are safe; if the rename target already exists, it decodes to the same content. See [Storage maintenance](/docs/cli/maintenance#compressed-objects).
 
 <Callout type="info" title="Not built yet">
-  Pack files, delta compression, object compression and per-directory tree objects are not part of the format (see the [roadmap](/roadmap)). Objects are stored and transferred whole.
+  Pack files, delta compression and per-directory tree objects are not part of the format (see the [roadmap](/roadmap)). Objects are stored and transferred whole; transfers are gzip-compressed per gRPC message.
 </Callout>
 
 ## Related

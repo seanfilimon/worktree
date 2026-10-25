@@ -1,0 +1,117 @@
+---
+title: OpenAPI and wt api
+description: The OpenAPI 3.1 description every server serves at /api/v1/openapi.yaml, the x-wt-action extension, authentication, the error envelope, limits and versioning, and raw REST calls with wt api.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+Every server describes its REST API in an OpenAPI 3.1 document and serves it at `GET /api/v1/openapi.yaml`. Use it to generate clients, browse the API in your OpenAPI tool of choice, or check which action an endpoint authorizes. For raw calls from a terminal, `wt api` sends authenticated requests with your saved credentials. Conventions and the core endpoints are explained in the [REST API reference](/docs/server/rest-api); the [REST API specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/RestApi.md) is normative.
+
+## Get the document
+
+The document needs no authentication and is embedded in the server binary, so it always matches the running version (`info.version` is the release it describes).
+
+<Tabs items={['wt', 'curl', 'PowerShell']}>
+<Tab value="wt">
+
+```bash
+wt api GET openapi.yaml --raw > openapi.yaml
+```
+
+</Tab>
+<Tab value="curl">
+
+```bash
+curl -s http://localhost:7420/api/v1/openapi.yaml -o openapi.yaml
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+Invoke-WebRequest http://localhost:7420/api/v1/openapi.yaml -OutFile openapi.yaml
+```
+
+</Tab>
+</Tabs>
+
+- It is served as `application/yaml` with `Cache-Control: public, max-age=300`. The source is `services/server-go/internal/httpapi/openapi.yaml`.
+- Paths are absolute (`servers: [{url: /}]`), so tools resolve them against the server that served the document.
+- Every operation has an `operationId`, a summary, tags, parameters, a request body and its exact response codes. Component schemas use the Go JSON field names; nullable fields are typed `[<type>, "null"]`, and every non-`omitempty` response field is `required`.
+- Wildcards that match several segments (branch names with `/`, file paths) are written `{name}`; their description says so.
+- It also covers `GET /healthz` and `GET /metrics`. The static admin panel (`/admin/*`) is not part of the API.
+
+<Callout type="warn" title="v0.6 routes">
+  The document does not yet describe the routes added in v0.6: webhooks, `GET /search/code`, `blame`, `merge-requests/{n}/mergeability`, policy versions, diff and rollback, `POST /admin/fsck` and the staged file browser. They are documented on [Webhooks](/docs/server/webhooks), [Code search](/docs/server/code-search), [Blame](/docs/cli/blame#server-api), [Server-side merges](/docs/server/merging#rest), [Policy history](/docs/server/policy-history#rest) and [Storage maintenance](/docs/cli/maintenance#server-fsck).
+</Callout>
+
+## Authorization: `x-wt-action`
+
+Each operation names the authorization it performs in the `x-wt-action` extension:
+
+| Value | Meaning |
+|---|---|
+| `tree:read`, `mr:merge`, `iam:admin`, ... | The catalog action checked on the route's tenant or tree (see `GET /api/v1/iam/actions`). A list when a route checks several; the description says when each applies. |
+| `public` | No check. |
+| `authenticated` | Any signed-in principal. |
+| `self` | The caller's own account (tokens, sessions, MFA, keys). |
+| `server:admin` | Server administrators only. |
+
+```bash
+# which action does merging need?
+yq '.paths["/api/v1/trees/{tenant}/{tree}/merge-requests/{n}/merge"].post["x-wt-action"]' openapi.yaml
+```
+
+The same evaluation applies as for gRPC: token scopes, roles, grants, visibility and policies (see [Access control](/docs/server/access-control)). A refusal answers `403 forbidden` (or a feature-specific code) and is audited as `access.denied`.
+
+## Authentication
+
+- `Authorization: Bearer <token>` with a session token (`POST /auth/login`, then `/auth/login/mfa` with two-factor authentication), a personal API token (`wt token create`) or a service-account key (`wt sa key-create`). The document calls this scheme `bearerAuth`.
+- `GET` requests may pass `?access_token=<token>` instead (`accessTokenQuery`), for `EventSource` clients of the [event stream](/docs/server/events).
+- A token that is present but invalid answers `401 unauthenticated` on every route, public ones included; it is never downgraded to anonymous. Operations that also work anonymously declare `security: [{}, {bearerAuth: []}]`.
+
+## Errors, limits and versioning
+
+Every error uses one envelope; `code` is stable, `message` is for humans:
+
+```json
+{"error": {"code": "not_found", "message": "tree acme/web not found"}}
+```
+
+- The document's `components.responses` holds the common error responses (`BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `Conflict`, ...). Operations list their feature codes, such as `path_denied` (403), `license_restricted` (451) or `merge_blocked` (409). The full table is in [Errors](/docs/server/rest-api#errors).
+- Any operation can answer `429 rate_limited` (with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`) and `500 internal`. Every response carries `X-Request-Id`; quote it when reporting a `500`.
+- JSON bodies are at most 1 MiB, must be one JSON value and must not contain unknown fields (`400` naming the field).
+- There are no page cursors. Unbounded lists take `limit` (clamped to the maximum): snapshots and file history 50 by default and 1000 at most, the audit log 100 and 1000, `/events/recent` 50 and 200, `/search` 20 and 50. Narrow older pages with filters such as `until=` on `/audit`.
+- `/api/v1` is the major version. Within v1 changes are additive (new routes, optional request fields, response fields, error codes), so ignore unknown response fields. Because requests reject unknown fields, do not send fields an older server does not know. A breaking change would ship as `/api/v2` next to v1.
+
+## `wt api`
+
+```text
+wt api [OPTIONS] <METHOD> <PATH>
+```
+
+| Argument / flag | Meaning |
+|---|---|
+| `METHOD` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD` or `OPTIONS`. |
+| `PATH` | A path with an optional query string. Paths not starting with `/` are relative to `/api/v1/` (`tenants` = `/api/v1/tenants`). Full URLs are refused. |
+| `-d, --data <JSON\|@FILE>` | Request body: inline JSON, `@FILE`, or `@-` for stdin. Validated and sent as `application/json` unless a `Content-Type` header is given, in which case the bytes are sent as is. |
+| `-H, --header <K:V>` | Extra header `"Name: value"` (repeatable). Overrides defaults, including `Authorization`. |
+| `--raw` | Print the body exactly as received. |
+
+The server is resolved like every server-side command (`--server` / `WT_SERVER`, else the worktree's origin, else the only saved login) and the request carries that server's saved token, or `WT_TOKEN` when set.
+
+```bash
+wt api GET tenants
+wt api GET "trees/acme/web/snapshots?branch=main&limit=5"
+wt api POST tenants -d '{"slug":"acme","name":"Acme"}'
+wt api PUT trees/acme/web/protections -d @rule.json
+wt api PUT trees/acme/web/releases/v1/assets/app.tar.gz -d @app.tar.gz -H 'Content-Type: application/gzip'
+wt api GET /api/v1/trees/acme/web/merge-requests/4/mergeability | jq .methods
+```
+
+JSON responses are pretty-printed with their key order and number spelling kept; other bodies are written unchanged. A `204` prints nothing (`null` with `--json`). A non-2xx response prints `HTTP <status> <code>: <message>` on stderr and exits `1`; usage errors exit `2` before any request is sent.
+
+<Callout type="info" title="Roadmap">
+  Generated client SDKs, cursor pagination, a JSON rendering (`openapi.json`), an API explorer in the admin panel and per-operation examples are not built. See the [roadmap](/roadmap).
+</Callout>

@@ -1,6 +1,6 @@
 ---
 title: Administration
-description: Manage tenants and their members, server trees, license rules, search, live events, server administration (accounts, garbage collection, quotas) and the audit log from the wt CLI.
+description: Manage tenants and their members, server trees, license rules, search and code search, webhooks, live events, server administration (accounts, garbage collection, fsck, quotas), the audit log and raw API calls from the wt CLI.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -96,9 +96,34 @@ wt license detect --apply --yes
 
 ```text
 wt search [-n <N>] <QUERY>
+wt search code [OPTIONS] <QUERY>
 ```
 
-Case-insensitive substring search over tenants, trees, branches and accounts, limited to what you can read (accounts are searched for server admins only). `-n` caps hits per kind (server default 20).
+`wt search QUERY` is a case-insensitive substring search over tenants, trees, branches and accounts, limited to what you can read (accounts are searched for server admins only). `-n` caps hits per kind (server default 20).
+
+`wt search code` searches **file contents** on the default branch of every tree you can read, with grep-like output:
+
+```bash
+wt search code 'fn main' --path '*.rs'
+wt search code -E -i 'todo|fixme' --tree acme/web --context 1
+```
+
+Flags, output format and access rules: [Code search](/docs/server/code-search).
+
+## `wt webhook`
+
+```text
+wt webhook <list|create|show|update|delete|deliveries|redeliver|test> [--tenant <T> | --tree <TENANT/TREE>]
+```
+
+Outgoing webhooks of a tenant (`tenant:admin`) or tree (`tree:admin`):
+
+```bash
+wt webhook create https://ci.example.com/hooks/wt -e branch.pushed -e 'mr.*' --tree acme/payments
+wt webhook deliveries <ID> --tree acme/payments
+```
+
+Setup, payload, signature verification and retries: [Webhooks](/docs/server/webhooks).
 
 ## `wt events`
 
@@ -128,6 +153,7 @@ wt admin system
 wt admin stats
 wt admin gc [--dry-run]
 wt admin gc-status
+wt admin fsck
 wt admin limits [--max-trees <N>] [--max-storage <SIZE>] [--max-branches <N>] [--max-members <N>] [--rate <N>] [--clear] <TENANT>
 wt admin usage <TENANT>
 ```
@@ -141,6 +167,7 @@ wt admin usage <TENANT>
 | `system`, `stats` | Version, runtime and storage information; object counts. |
 | `gc` | Runs garbage collection now: marks unreachable objects, deletes those marked longer than the grace period, expires staged snapshots and audit events. `--dry-run` only reports. |
 | `gc-status` | GC configuration and the last runs. |
+| `fsck` | Re-hashes every stored object and checks that every snapshot reachable from a branch or tag has its manifest, blobs and chunks. Exits `1` on problems. See [Server fsck](/docs/cli/maintenance#server-fsck). |
 | `limits` | Without flags, shows the tenant's limits. Flags set tenant-specific limits; `0` unsets one and `--clear` removes them all (back to the server defaults). Sizes accept `500M`, `10GiB` or `1TB` (`K/M/G/T` and `KiB`..`TiB` are powers of 1024, `KB`..`TB` powers of 1000). `--rate` is requests per minute per principal. |
 | `usage` | Trees, branches, members and stored bytes against the effective limits. Needs only `tenant:read`. |
 
@@ -170,3 +197,19 @@ wt audit --tenant acme --format ndjson > acme-audit.ndjson
 ```
 
 Retention, export and the list of actions: [Monitoring](/docs/server/monitoring#audit-log).
+
+## `wt api`
+
+```text
+wt api [-d <JSON|@FILE>] [-H <K:V>]... [--raw] <METHOD> <PATH>
+```
+
+Raw authenticated REST calls for endpoints without a dedicated command; paths not starting with `/` are relative to `/api/v1/`:
+
+```bash
+wt api GET tenants
+wt api POST tenants -d '{"slug":"acme","name":"Acme"}'
+wt api GET openapi.yaml --raw > openapi.yaml
+```
+
+See [OpenAPI and wt api](/docs/server/openapi#wt-api).
