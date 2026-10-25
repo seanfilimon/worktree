@@ -53,12 +53,36 @@ var (
 	bktLicenses         = []byte("licenses")          // tree\0glob -> LicenseRule
 	bktAccess           = []byte("access_config")     // tenant\0kind -> 'v' + content
 
+	// v0.4 IAM (iam_bolt.go).
+	bktTokensBySA        = []byte("idx_token_sa")         // service account\0id -> token id
+	bktTeams             = []byte("teams")                // id -> Team
+	bktTeamSlug          = []byte("idx_team_slug")        // tenant\0slug -> team id
+	bktTeamMembers       = []byte("team_members")         // team\0account -> TeamMember
+	bktTeamMembersByAcct = []byte("idx_team_member_acct") // account\0team -> team\0account
+	bktRoles             = []byte("roles")                // tenant\0name -> CustomRole
+	bktPolicies          = []byte("policies")             // tenant\0id -> Policy
+	bktGrants            = []byte("grants")               // tree\0subject type\0subject id -> Grant
+	bktGrantsBySubject   = []byte("idx_grant_subject")    // subject type\0subject id\0tree -> grant key
+	bktSAs               = []byte("service_accounts")     // id -> ServiceAccount
+	bktSAName            = []byte("idx_sa_name")          // tenant\0name -> service account id
+	bktMFA               = []byte("mfa")                  // account -> mfaRec
+	bktInvites           = []byte("invitations")          // tenant\0id -> invitationRec
+	bktInviteCode        = []byte("idx_invitation_code")  // code hash -> tenant\0id
+	bktResets            = []byte("password_resets")      // code hash -> passwordResetRec
+	bktSSO               = []byte("sso")                  // "config" -> ssoConfigRec
+	bktSSOIdent          = []byte("sso_identities")       // issuer\0subject -> SSOIdentity
+	bktSSOIdentByAcct    = []byte("idx_sso_ident_acct")   // account\0issuer\0subject -> issuer\0subject
+
 	allBuckets = [][]byte{
 		bktMeta, bktTenants, bktTenantSlug, bktAccounts, bktAccountName,
 		bktMembers, bktMembersByAccount, bktTokens, bktTokenHash,
 		bktTokensByAccount, bktTrees, bktTreeName, bktBranches, bktSnapshots,
 		bktSnapsByTree, bktCounters, bktTags, bktStaged, bktProtections,
 		bktMRs, bktMRSeq, bktAudit, bktLicenses, bktAccess,
+		bktTokensBySA, bktTeams, bktTeamSlug, bktTeamMembers, bktTeamMembersByAcct,
+		bktRoles, bktPolicies, bktGrants, bktGrantsBySubject, bktSAs, bktSAName,
+		bktMFA, bktInvites, bktInviteCode, bktResets, bktSSO, bktSSOIdent,
+		bktSSOIdentByAcct,
 	}
 
 	// Per-tree MR, tag... buckets cleared by DeleteTree (keys prefixed by
@@ -619,10 +643,14 @@ func (b *Bolt) CreateToken(ctx context.Context, t *domain.APIToken) error {
 		if hb.Get([]byte(t.TokenHash)) != nil {
 			return alreadyExists("token hash", "")
 		}
+		if t.ServiceAccountID != "" && tx.Bucket(bktSAs).Get([]byte(t.ServiceAccountID)) == nil {
+			return notFound("service account", t.ServiceAccountID)
+		}
 		if err := hb.Put([]byte(t.TokenHash), []byte(t.ID)); err != nil {
 			return err
 		}
-		if err := tx.Bucket(bktTokensByAccount).Put([]byte(key(t.AccountID, t.ID)), []byte(t.ID)); err != nil {
+		ib, ik := tokenOwnerIndex(tx, t)
+		if err := ib.Put(ik, []byte(t.ID)); err != nil {
 			return err
 		}
 		return putTokenTx(tx, *t)
@@ -671,14 +699,30 @@ func (b *Bolt) DeleteToken(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		if err := tx.Bucket(bktTokenHash).Delete([]byte(t.TokenHash)); err != nil {
-			return err
-		}
-		if err := tx.Bucket(bktTokensByAccount).Delete([]byte(key(t.AccountID, t.ID))); err != nil {
-			return err
-		}
-		return tx.Bucket(bktTokens).Delete([]byte(id))
+		return deleteTokenTx(tx, t)
 	})
+}
+
+// tokenOwnerIndex returns the owner index bucket and key of t: keys of
+// service accounts are indexed by service account (so they never appear in
+// an account's ListTokens), all other tokens by account.
+func tokenOwnerIndex(tx *bolt.Tx, t *domain.APIToken) (*bolt.Bucket, []byte) {
+	if t.ServiceAccountID != "" {
+		return tx.Bucket(bktTokensBySA), []byte(key(t.ServiceAccountID, t.ID))
+	}
+	return tx.Bucket(bktTokensByAccount), []byte(key(t.AccountID, t.ID))
+}
+
+// deleteTokenTx removes t and its hash and owner index entries.
+func deleteTokenTx(tx *bolt.Tx, t *domain.APIToken) error {
+	if err := tx.Bucket(bktTokenHash).Delete([]byte(t.TokenHash)); err != nil {
+		return err
+	}
+	ib, ik := tokenOwnerIndex(tx, t)
+	if err := ib.Delete(ik); err != nil {
+		return err
+	}
+	return tx.Bucket(bktTokens).Delete([]byte(t.ID))
 }
 
 // TouchToken implements domain.MetaStore.
@@ -823,7 +867,7 @@ func (b *Bolt) UpdateTree(ctx context.Context, t *domain.Tree) error {
 
 // DeleteTree implements domain.MetaStore. It cascades to every per-tree
 // record: branches, snapshots, tags, staged snapshots, protections, merge
-// requests (and the MR counter) and license rules.
+// requests (and the MR counter), license rules and grants.
 func (b *Bolt) DeleteTree(ctx context.Context, id string) error {
 	return b.update(ctx, func(tx *bolt.Tx) error {
 		t, err := getTreeTx(tx, id)
@@ -859,6 +903,9 @@ func (b *Bolt) DeleteTree(ctx context.Context, id string) error {
 			return err
 		}
 		if err := tx.Bucket(bktMRSeq).Delete([]byte(id)); err != nil {
+			return err
+		}
+		if err := deleteTreeGrantsTx(tx, id); err != nil {
 			return err
 		}
 		if err := tx.Bucket(bktTreeName).Delete([]byte(key(t.TenantID, t.Name))); err != nil {

@@ -84,6 +84,11 @@ func runConformance(t *testing.T, newStore storeFactory) {
 			tc.fn(t, newStore(t))
 		})
 	}
+	for _, tc := range iamConformanceTests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.fn(t, newStore(t))
+		})
+	}
 	t.Run("History", func(t *testing.T) { runHistoryConformance(t, newStore) })
 }
 

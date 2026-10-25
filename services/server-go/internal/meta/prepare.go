@@ -48,7 +48,19 @@ func prepareToken(t *domain.APIToken) error {
 	if err := checkOptionalKey("token id", t.ID); err != nil {
 		return err
 	}
-	if err := checkKeys("account id", t.AccountID, "token hash", t.TokenHash); err != nil {
+	if err := checkKey("token hash", t.TokenHash); err != nil {
+		return err
+	}
+	// A token belongs to exactly one owner: an account, or (service-account
+	// keys) a service account with an empty AccountID.
+	if t.ServiceAccountID != "" {
+		if t.AccountID != "" {
+			return invalid("token has both an account and a service account")
+		}
+		if err := checkKey("service account id", t.ServiceAccountID); err != nil {
+			return err
+		}
+	} else if err := checkKey("account id", t.AccountID); err != nil {
 		return err
 	}
 	if t.ID == "" {

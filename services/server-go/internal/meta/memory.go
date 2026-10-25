@@ -43,6 +43,8 @@ type Memory struct {
 	auditSeq      uint64
 	licenses      map[string]map[string]domain.LicenseRule
 	access        map[string][]byte // key(tenantID, kind)
+
+	iam memIAM // v0.4 IAM (iam_memory.go)
 }
 
 type memAudit struct {
@@ -72,6 +74,7 @@ func NewMemory() *Memory {
 		mrSeq:         map[string]int{},
 		licenses:      map[string]map[string]domain.LicenseRule{},
 		access:        map[string][]byte{},
+		iam:           newMemIAM(),
 	}
 }
 
@@ -414,6 +417,9 @@ func (m *Memory) CreateToken(ctx context.Context, t *domain.APIToken) error {
 		if _, ok := m.tokenByHash[t.TokenHash]; ok {
 			return alreadyExists("token hash", "")
 		}
+		if t.ServiceAccountID != "" && !hasKey(m.iam.sas, t.ServiceAccountID) {
+			return notFound("service account", t.ServiceAccountID)
+		}
 		m.tokens[t.ID] = normToken(*t)
 		m.tokenByHash[t.TokenHash] = t.ID
 		return nil
@@ -438,12 +444,13 @@ func (m *Memory) GetTokenByHash(ctx context.Context, tokenHash string) (*domain.
 }
 
 // ListTokens implements domain.MetaStore (ordered by creation time).
+// Service-account keys are never listed.
 func (m *Memory) ListTokens(ctx context.Context, accountID string) ([]domain.APIToken, error) {
 	var out []domain.APIToken
 	err := m.read(ctx, func() error {
 		out = []domain.APIToken{}
 		for _, t := range m.tokens {
-			if t.AccountID == accountID {
+			if t.AccountID == accountID && t.ServiceAccountID == "" {
 				out = append(out, normToken(t))
 			}
 		}
@@ -584,7 +591,7 @@ func (m *Memory) UpdateTree(ctx context.Context, t *domain.Tree) error {
 
 // DeleteTree implements domain.MetaStore. It cascades to every per-tree
 // record: branches, snapshots, tags, staged snapshots, protections, merge
-// requests (and the MR counter) and license rules.
+// requests (and the MR counter), license rules and grants.
 func (m *Memory) DeleteTree(ctx context.Context, id string) error {
 	return m.write(ctx, func() error {
 		t, ok := m.trees[id]
@@ -604,6 +611,7 @@ func (m *Memory) DeleteTree(ctx context.Context, id string) error {
 		delete(m.mrs, id)
 		delete(m.mrSeq, id)
 		delete(m.licenses, id)
+		delete(m.iam.grants, id)
 		return nil
 	})
 }
