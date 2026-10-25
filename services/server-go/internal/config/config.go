@@ -25,6 +25,12 @@ const (
 	DefaultDataDir         = "./wt-data"
 	DefaultAdminUser       = "admin"
 	DefaultShutdownTimeout = 15 * time.Second
+
+	// Operations defaults (§13.3).
+	DefaultGCInterval      = 24 * time.Hour
+	DefaultGCGrace         = 720 * time.Hour
+	DefaultStagedRetention = 168 * time.Hour
+	DefaultRateLimit       = 1200 // requests per minute per principal / IP
 )
 
 // Config is the complete server configuration.
@@ -62,6 +68,39 @@ type Config struct {
 	PublicURL string
 	// ShowVersion requests printing the version and exiting (--version).
 	ShowVersion bool
+
+	// ---- operations (§13.3) ----
+
+	// TLSCert and TLSKey are PEM files; when both are set the server
+	// serves HTTPS and gRPC over TLS (ALPN h2, http/1.1). Flags
+	// --tls-cert/--tls-key, env WT_TLS_CERT/WT_TLS_KEY.
+	TLSCert string
+	TLSKey  string
+	// TLSClientCA is a PEM bundle of CAs; when set, clients must present a
+	// certificate signed by one of them (mTLS). Flag --tls-client-ca, env
+	// WT_TLS_CLIENT_CA.
+	TLSClientCA string
+	// GCInterval is the period of automatic garbage collection (0
+	// disables). Flag --gc-interval, env WT_GC_INTERVAL.
+	GCInterval time.Duration
+	// GCGrace is how long an unreachable object stays marked before it is
+	// deleted. Flag --gc-grace, env WT_GC_GRACE.
+	GCGrace time.Duration
+	// StagedRetention expires staged snapshots older than this (0 keeps
+	// them). Flag --staged-retention, env WT_STAGED_RETENTION.
+	StagedRetention time.Duration
+	// AuditRetention deletes audit events older than this (0 keeps them).
+	// Flag --audit-retention, env WT_AUDIT_RETENTION.
+	AuditRetention time.Duration
+	// RateLimit is the request budget per minute per principal (or
+	// anonymous IP); 0 disables. Flag --rate-limit, env WT_RATE_LIMIT.
+	RateLimit int
+	// DefaultMaxTrees and DefaultMaxStorage are the server-wide tenant
+	// quotas (0 = unlimited) that tenant limits override. Flags
+	// --default-max-trees/--default-max-storage, env
+	// WT_DEFAULT_MAX_TREES/WT_DEFAULT_MAX_STORAGE.
+	DefaultMaxTrees   int
+	DefaultMaxStorage int64
 
 	// The fields below are set programmatically, not from flags.
 
@@ -115,6 +154,10 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		LogLevel:          slog.LevelInfo,
 		LogFormat:         "text",
 		ShutdownTimeout:   DefaultShutdownTimeout,
+		GCInterval:        DefaultGCInterval,
+		GCGrace:           DefaultGCGrace,
+		StagedRetention:   DefaultStagedRetention,
+		RateLimit:         DefaultRateLimit,
 	}
 	str := func(key string, dst *string) {
 		if v, ok := lookup(key); ok && v != "" {
@@ -152,6 +195,40 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 	if v, ok := lookup("WT_CORS_ORIGINS"); ok {
 		cfg.CORSOrigins = splitList(v)
 	}
+
+	// Operations (§13.3).
+	str("WT_TLS_CERT", &cfg.TLSCert)
+	str("WT_TLS_KEY", &cfg.TLSKey)
+	str("WT_TLS_CLIENT_CA", &cfg.TLSClientCA)
+	dur := func(key string, dst *time.Duration) {
+		if v, ok := lookup(key); ok && v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: invalid duration %q", key, v))
+				return
+			}
+			*dst = d
+		}
+	}
+	dur("WT_GC_INTERVAL", &cfg.GCInterval)
+	dur("WT_GC_GRACE", &cfg.GCGrace)
+	dur("WT_STAGED_RETENTION", &cfg.StagedRetention)
+	dur("WT_AUDIT_RETENTION", &cfg.AuditRetention)
+	integer := func(key string, dst *int64) {
+		if v, ok := lookup(key); ok && v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: invalid integer %q", key, v))
+				return
+			}
+			*dst = n
+		}
+	}
+	var rate, maxTrees = int64(cfg.RateLimit), int64(cfg.DefaultMaxTrees)
+	integer("WT_RATE_LIMIT", &rate)
+	integer("WT_DEFAULT_MAX_TREES", &maxTrees)
+	integer("WT_DEFAULT_MAX_STORAGE", &cfg.DefaultMaxStorage)
+	cfg.RateLimit, cfg.DefaultMaxTrees = int(rate), int(maxTrees)
 	return cfg, errors.Join(errs...)
 }
 
@@ -175,6 +252,18 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 	fs.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", cfg.ShutdownTimeout, "graceful shutdown `timeout` (env WT_SHUTDOWN_TIMEOUT)")
 	fs.StringVar(&cfg.PublicURL, "public-url", cfg.PublicURL, "externally visible base `URL` of the server, used for the default SSO redirect URL (env WT_PUBLIC_URL)")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "print the version and exit")
+
+	// Operations (§13.3).
+	fs.StringVar(&cfg.TLSCert, "tls-cert", cfg.TLSCert, "PEM certificate `file`; with --tls-key serves HTTPS and gRPC over TLS (env WT_TLS_CERT)")
+	fs.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "PEM private key `file` for --tls-cert (env WT_TLS_KEY)")
+	fs.StringVar(&cfg.TLSClientCA, "tls-client-ca", cfg.TLSClientCA, "PEM CA bundle `file`; requires client certificates signed by it (mTLS) (env WT_TLS_CLIENT_CA)")
+	fs.DurationVar(&cfg.GCInterval, "gc-interval", cfg.GCInterval, "garbage-collection `period`; 0 disables automatic runs (env WT_GC_INTERVAL)")
+	fs.DurationVar(&cfg.GCGrace, "gc-grace", cfg.GCGrace, "how long unreachable objects stay marked before deletion (env WT_GC_GRACE)")
+	fs.DurationVar(&cfg.StagedRetention, "staged-retention", cfg.StagedRetention, "expire staged snapshots older than this `age`; 0 keeps them (env WT_STAGED_RETENTION)")
+	fs.DurationVar(&cfg.AuditRetention, "audit-retention", cfg.AuditRetention, "delete audit events older than this `age`; 0 keeps them (env WT_AUDIT_RETENTION)")
+	fs.IntVar(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "requests per minute per principal or anonymous IP; 0 disables (env WT_RATE_LIMIT)")
+	fs.IntVar(&cfg.DefaultMaxTrees, "default-max-trees", cfg.DefaultMaxTrees, "default maximum trees per tenant; 0 = unlimited (env WT_DEFAULT_MAX_TREES)")
+	fs.Int64Var(&cfg.DefaultMaxStorage, "default-max-storage", cfg.DefaultMaxStorage, "default maximum stored `bytes` per tenant; 0 = unlimited (env WT_DEFAULT_MAX_STORAGE)")
 	return fs
 }
 
@@ -236,5 +325,55 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("public-url %q: want scheme://host[:port][/path]", c.PublicURL))
 		}
 	}
+	errs = append(errs, c.validateOps()...)
 	return errors.Join(errs...)
+}
+
+// validateOps checks the §13.3 operations settings.
+func (c *Config) validateOps() []error {
+	var errs []error
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		errs = append(errs, errors.New("tls-cert and tls-key must be given together"))
+	}
+	if c.TLSClientCA != "" && c.TLSCert == "" {
+		errs = append(errs, errors.New("tls-client-ca requires tls-cert and tls-key"))
+	}
+	for _, d := range []struct {
+		name string
+		v    time.Duration
+	}{{"gc-interval", c.GCInterval}, {"gc-grace", c.GCGrace}, {"staged-retention", c.StagedRetention}, {"audit-retention", c.AuditRetention}} {
+		if d.v < 0 {
+			errs = append(errs, fmt.Errorf("%s must not be negative, got %s", d.name, d.v))
+		}
+	}
+	if c.RateLimit < 0 {
+		errs = append(errs, fmt.Errorf("rate-limit must not be negative, got %d", c.RateLimit))
+	}
+	if c.DefaultMaxTrees < 0 {
+		errs = append(errs, fmt.Errorf("default-max-trees must not be negative, got %d", c.DefaultMaxTrees))
+	}
+	if c.DefaultMaxStorage < 0 {
+		errs = append(errs, fmt.Errorf("default-max-storage must not be negative, got %d", c.DefaultMaxStorage))
+	}
+	return errs
+}
+
+// TLSEnabled reports whether the server serves TLS.
+func (c *Config) TLSEnabled() bool { return c.TLSCert != "" && c.TLSKey != "" }
+
+// CleartextExposed reports whether the server listens without TLS on an
+// address reachable from other hosts (anything but a loopback host).
+func (c *Config) CleartextExposed() bool {
+	if c.TLSEnabled() {
+		return false
+	}
+	host, _, err := net.SplitHostPort(c.Addr)
+	if err != nil {
+		return true
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
 }

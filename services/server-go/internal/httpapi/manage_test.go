@@ -248,7 +248,8 @@ func hasEvent(t *testing.T, f *fixture, typ string) {
 
 func noSideEffects(t *testing.T, f *fixture, _ *httptest.ResponseRecorder) {
 	t.Helper()
-	if got := f.audit.actions(); len(got) != 0 {
+	// ops (§13.3): 403s are audited as access.denied by design.
+	if got := nonDenialActions(f); len(got) != 0 {
 		t.Fatalf("unexpected audit events %v", got)
 	}
 	if got := f.recBus().types(); len(got) != 0 {

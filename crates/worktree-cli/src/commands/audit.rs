@@ -1,9 +1,10 @@
 //! `wt audit` — query the server audit log (newest first).
 
 use std::collections::BTreeMap;
+use std::io::{ErrorKind, Write};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use serde::Deserialize;
 
 use crate::commands::server_common::{or_dash, render, when, Api, Cell, Table};
@@ -17,17 +18,45 @@ pub struct AuditArgs {
     #[arg(long, value_name = "T")]
     pub tenant: Option<String>,
 
-    /// Only events with this action, e.g. `branch.push` or `tree.create`
+    /// Only events with this action, e.g. `branch.push` or `tree.create`;
+    /// a trailing `.*` matches a prefix, e.g. `iam.*`
     #[arg(long, value_name = "A")]
     pub action: Option<String>,
+
+    /// Only events on this resource type, e.g. `tree` or `account`
+    #[arg(long, value_name = "T")]
+    pub resource_type: Option<String>,
+
+    /// Only events on this resource id
+    #[arg(long, value_name = "ID")]
+    pub resource_id: Option<String>,
 
     /// Only events at or after this RFC 3339 time, e.g. 2026-01-31T00:00:00Z
     #[arg(long, value_name = "RFC3339", value_parser = parse_since)]
     pub since: Option<DateTime<Utc>>,
 
-    /// Maximum number of events (server default: 100)
+    /// Only events before this RFC 3339 time (exclusive)
+    #[arg(long, value_name = "RFC3339", value_parser = parse_since)]
+    pub until: Option<DateTime<Utc>>,
+
+    /// Maximum number of events (server default: 100; ignored with
+    /// `--format ndjson`)
     #[arg(short = 'n', value_name = "N", value_parser = clap::value_parser!(u32).range(1..=1000))]
     pub max_count: Option<u32>,
+
+    /// Output format: `table`, or `ndjson` to export every matching event
+    /// as one JSON object per line (no limit)
+    #[arg(long, value_enum, value_name = "FORMAT", default_value_t = AuditFormat::Table)]
+    pub format: AuditFormat,
+}
+
+/// `wt audit --format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AuditFormat {
+    /// Aligned table (the JSON array with `--json`)
+    Table,
+    /// Newline-delimited JSON export of every match
+    Ndjson,
 }
 
 /// `domain.AuditEvent`.
@@ -49,22 +78,52 @@ fn parse_since(s: &str) -> std::result::Result<DateTime<Utc>, String> {
         .map_err(|e| format!("not an RFC 3339 timestamp ({e})"))
 }
 
-pub fn run(ctx: &Context, args: AuditArgs) -> Result<()> {
-    let api = Api::connect(ctx)?;
-    let query = [
-        ("tenant", args.tenant.unwrap_or_default()),
-        ("action", args.action.unwrap_or_default()),
-        (
-            "since",
-            args.since
-                .map(|t| t.to_rfc3339_opts(SecondsFormat::Secs, true))
-                .unwrap_or_default(),
-        ),
+fn rfc3339(t: Option<DateTime<Utc>>) -> String {
+    t.map(|t| t.to_rfc3339_opts(SecondsFormat::Secs, true))
+        .unwrap_or_default()
+}
+
+/// Query parameters of `GET /api/v1/audit` (empty values are dropped by
+/// the client).
+fn query(args: &AuditArgs) -> Vec<(&'static str, String)> {
+    let ndjson = args.format == AuditFormat::Ndjson;
+    let opt = |v: &Option<String>| v.clone().unwrap_or_default();
+    vec![
+        ("tenant", opt(&args.tenant)),
+        ("action", opt(&args.action)),
+        ("resource_type", opt(&args.resource_type)),
+        ("resource_id", opt(&args.resource_id)),
+        ("since", rfc3339(args.since)),
+        ("until", rfc3339(args.until)),
         (
             "limit",
-            args.max_count.map(|n| n.to_string()).unwrap_or_default(),
+            match args.max_count {
+                Some(n) if !ndjson => n.to_string(),
+                _ => String::new(),
+            },
         ),
-    ];
+        (
+            "format",
+            if ndjson {
+                "ndjson".into()
+            } else {
+                String::new()
+            },
+        ),
+    ]
+}
+
+pub fn run(ctx: &Context, args: AuditArgs) -> Result<()> {
+    let api = Api::connect(ctx)?;
+    let query = query(&args);
+    if args.format == AuditFormat::Ndjson {
+        let body = api.block_on(api.client().get_bytes_query("/api/v1/audit", &query))?;
+        let mut stdout = std::io::stdout().lock();
+        return match stdout.write_all(&body).and_then(|()| stdout.flush()) {
+            Err(e) if e.kind() != ErrorKind::BrokenPipe => Err(e.into()),
+            _ => Ok(()),
+        };
+    }
     let value = api.get_query("/api/v1/audit", &query)?;
     render(&ctx.out, &value, |t, events: Vec<AuditEvent>| {
         table(t, &events)
@@ -138,6 +197,55 @@ mod tests {
             ErrorKind::ValueValidation
         );
         assert_eq!(parse_err(&["audit", "-n", "0"]), ErrorKind::ValueValidation);
+        assert_eq!(a.format, AuditFormat::Table);
+    }
+
+    fn param(q: &[(&str, String)], key: &str) -> String {
+        q.iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("no {key} parameter"))
+    }
+
+    #[test]
+    fn parses_resource_filters_and_builds_the_query() {
+        let a = audit(&[
+            "--action",
+            "iam.*",
+            "--resource-type",
+            "tree",
+            "--resource-id",
+            "t1",
+            "--until",
+            "2026-02-01T01:00:00+01:00",
+            "-n",
+            "5",
+        ]);
+        assert_eq!(a.resource_type.as_deref(), Some("tree"));
+        assert_eq!(a.resource_id.as_deref(), Some("t1"));
+        let q = query(&a);
+        assert_eq!(param(&q, "action"), "iam.*");
+        assert_eq!(param(&q, "resource_type"), "tree");
+        assert_eq!(param(&q, "resource_id"), "t1");
+        assert_eq!(param(&q, "until"), "2026-02-01T00:00:00Z");
+        assert_eq!(param(&q, "since"), "");
+        assert_eq!(param(&q, "limit"), "5");
+        assert_eq!(param(&q, "format"), "");
+
+        let a = audit(&["--format", "ndjson", "-n", "5"]);
+        assert_eq!(a.format, AuditFormat::Ndjson);
+        let q = query(&a);
+        assert_eq!(param(&q, "format"), "ndjson");
+        assert_eq!(param(&q, "limit"), "", "ndjson exports are unlimited");
+
+        assert_eq!(
+            parse_err(&["audit", "--format", "csv"]),
+            ErrorKind::InvalidValue
+        );
+        assert_eq!(
+            parse_err(&["audit", "--until", "tomorrow"]),
+            ErrorKind::ValueValidation
+        );
     }
 
     #[test]

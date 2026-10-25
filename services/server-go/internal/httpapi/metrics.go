@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/opsmetrics"
 )
 
 // latencyBuckets are the upper bounds (seconds) of the request duration
@@ -164,6 +165,8 @@ func (a *api) writeMetrics(ctx context.Context, w io.Writer) {
 		gauge(w, "worktree_storage_bytes", "Bytes used by stored objects.", float64(st.StorageBytes))
 	}
 
+	writeOpsCounters(w)
+
 	header(w, "worktree_build_info", "gauge", "Build information; the value is always 1.")
 	fmt.Fprintf(w, "worktree_build_info{version=\"%s\",goversion=\"%s\"} 1\n", escapeLabel(a.d.Version), escapeLabel(runtime.Version()))
 	gauge(w, "worktree_uptime_seconds", "Seconds since the server started.", time.Since(a.d.StartedAt).Seconds())
@@ -172,6 +175,37 @@ func (a *api) writeMetrics(ctx context.Context, w io.Writer) {
 	runtime.ReadMemStats(&ms)
 	gauge(w, "go_memstats_heap_alloc_bytes", "Number of heap bytes allocated and still in use.", float64(ms.HeapAlloc))
 	gauge(w, "go_memstats_sys_bytes", "Number of bytes obtained from the system.", float64(ms.Sys))
+}
+
+// writeOpsCounters renders the process-wide §13.3 counters. Labelled
+// counters always list their well-known label values (as 0 until used) so
+// dashboards see the series from the start.
+func writeOpsCounters(w io.Writer) {
+	known := map[string][]string{
+		opsmetrics.SyncPushes.Name:     {"accepted", "rejected", "error"},
+		opsmetrics.AuthzDecisions.Name: {"allow", "deny"},
+	}
+	for _, c := range opsmetrics.All() {
+		header(w, c.Name, "counter", c.Help)
+		if c.Label == "" {
+			fmt.Fprintf(w, "%s %d\n", c.Name, c.Get(""))
+			continue
+		}
+		seen := map[string]bool{}
+		samples := c.Samples()
+		for _, s := range samples {
+			seen[s.Label] = true
+		}
+		for _, l := range known[c.Name] {
+			if !seen[l] {
+				samples = append(samples, opsmetrics.Sample{Label: l})
+			}
+		}
+		sort.Slice(samples, func(i, j int) bool { return samples[i].Label < samples[j].Label })
+		for _, s := range samples {
+			fmt.Fprintf(w, "%s{%s=\"%s\"} %d\n", c.Name, c.Label, escapeLabel(s.Label), s.Value)
+		}
+	}
 }
 
 func header(w io.Writer, name, typ, help string) {

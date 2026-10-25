@@ -111,7 +111,44 @@ func (a *api) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if status == http.StatusUnauthorized {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="worktree"`)
 	}
+	if status == http.StatusForbidden {
+		a.auditDenied(r, code, msg)
+	}
 	writeJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: msg}})
+}
+
+// auditDenied records access.denied for a 403 answered by the REST API
+// (§13.3). The tenant is the {tenant} of the route when it resolves.
+func (a *api) auditDenied(r *http.Request, code, msg string) {
+	if a.d.Audit == nil {
+		return
+	}
+	route := r.Pattern
+	if route == "" {
+		route = r.Method + " " + r.URL.Path
+	}
+	details := map[string]string{"method": r.Method, "path": r.URL.Path, "route": route, "code": code}
+	if act := deniedAction(msg); act != "" {
+		details["action"] = act
+	}
+	tenantID := ""
+	if ref := r.PathValue("tenant"); ref != "" {
+		if t, err := a.tenantByRef(r.Context(), ref); err == nil {
+			tenantID = t.ID
+		}
+	}
+	a.audit(r, "access.denied", tenantID, "route", route, details)
+}
+
+// deniedAction extracts an action name ("tree:write") from an
+// authorization error message, when it mentions one.
+func deniedAction(msg string) string {
+	for _, f := range strings.FieldsFunc(msg, func(r rune) bool { return r == ' ' || r == '"' || r == '(' || r == ')' || r == ',' }) {
+		if i := strings.IndexByte(f, ':'); i > 0 && i < len(f)-1 && !strings.ContainsAny(f, "/.") {
+			return strings.TrimRight(f, ":;")
+		}
+	}
+	return ""
 }
 
 // writeJSON writes v as a JSON response with the given status.

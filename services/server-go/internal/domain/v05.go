@@ -224,6 +224,14 @@ type GCReport struct {
 	FreedBytes  int64     `json:"freed_bytes"`
 	StartedAt   time.Time `json:"started_at"`
 	FinishedAt  time.Time `json:"finished_at"`
+
+	// Retention (§13.3): staged snapshots older than the staged retention
+	// and audit events older than the audit retention removed by the run
+	// (dry runs count what would be removed).
+	StagedDeleted int `json:"staged_deleted"`
+	AuditPruned   int `json:"audit_pruned"`
+	// Error is set when the run stopped early.
+	Error string `json:"error,omitempty"`
 }
 
 // v0.5 events.

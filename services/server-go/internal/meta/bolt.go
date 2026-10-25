@@ -1441,7 +1441,17 @@ func (b *Bolt) ListAudit(ctx context.Context, f domain.AuditFilter) ([]domain.Au
 	}
 	err := b.view(ctx, func(tx *bolt.Tx) error {
 		c := tx.Bucket(bktAudit).Cursor()
-		for k, v := c.Last(); k != nil && len(out) < limit; k, v = c.Prev() {
+		k, v := c.Last()
+		if !f.Until.IsZero() {
+			// Start just before the exclusive upper bound instead of
+			// scanning from the newest event (paged exports).
+			if k, _ = c.Seek(auditKey(f.Until, 0)); k == nil {
+				k, v = c.Last()
+			} else {
+				k, v = c.Prev()
+			}
+		}
+		for ; k != nil && len(out) < limit; k, v = c.Prev() {
 			if sinceKey != nil && bytes.Compare(k, sinceKey) < 0 {
 				break
 			}
@@ -1459,6 +1469,37 @@ func (b *Bolt) ListAudit(ctx context.Context, f domain.AuditFilter) ([]domain.Au
 		return nil, err
 	}
 	return out, nil
+}
+
+// PruneAudit implements domain.MetaStore: it deletes every event whose At
+// is before the given instant. Keys sort by time, so this is a forward
+// cursor scan that stops at the first key at or after the bound.
+func (b *Bolt) PruneAudit(ctx context.Context, before time.Time) (int, error) {
+	if before.IsZero() {
+		return 0, nil
+	}
+	bound := auditKey(before, 0)
+	n := 0
+	err := b.update(ctx, func(tx *bolt.Tx) error {
+		bk := tx.Bucket(bktAudit)
+		// Collect first: deleting under a moving cursor can skip keys.
+		var doomed [][]byte
+		c := bk.Cursor()
+		for k, _ := c.First(); k != nil && bytes.Compare(k, bound) < 0; k, _ = c.Next() {
+			doomed = append(doomed, append([]byte(nil), k...))
+		}
+		for _, k := range doomed {
+			if err := bk.Delete(k); err != nil {
+				return err
+			}
+		}
+		n = len(doomed)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // ---- license rules ----------------------------------------------------

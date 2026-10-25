@@ -63,7 +63,7 @@ func (noAuth) Authenticate(context.Context, string) (*domain.Principal, error) {
 // startUnit serves a gRPC+HTTP mux like Run does, without the storage stack.
 func startUnit(t *testing.T, svc *testSync) (addr string, stop func(timeout time.Duration) error) {
 	t.Helper()
-	g, hs := newGRPCServer(noAuth{}, svc, quietLog)
+	g, hs := newGRPCServer(noAuth{}, svc, quietLog, grpcOps{})
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Proto", r.Proto)
 		_, _ = io.WriteString(w, "hello "+r.URL.Path)

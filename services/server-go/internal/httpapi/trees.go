@@ -124,6 +124,11 @@ func (a *api) handleCreateTree(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
+	// ---- ops (§13.3): tenant MaxTrees quota (409 quota_exceeded) ----
+	if err := a.checkTreeQuota(ctx, t); err != nil {
+		return err
+	}
+	// ---- end ops ----
 	now := time.Now().UTC()
 	tree := &domain.Tree{
 		ID:            newID(),
