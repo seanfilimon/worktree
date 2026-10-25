@@ -1,166 +1,576 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router";
+import { ArrowLeft, CircleX, GitMerge, GitPullRequestClosed, LoaderCircle, Shield, ThumbsUp } from "lucide-react";
+import { useId, useMemo, useState, type ReactNode } from "react";
+import { Link, useParams, useSearchParams } from "react-router";
+import { errorMessage } from "@/api/client";
 import { useApi } from "@/api/context";
-import { keys, useMergeRequest, useProtections } from "@/api/queries";
-import type { MergeRequest } from "@/api/types";
+import { keys, useBranches, useCompare, useMergeRequest, useProtections } from "@/api/queries";
+import type { BranchProtection, CompareResult, MergeRequest } from "@/api/types";
 import { useAuth } from "@/auth/context";
-import { StateBadge } from "@/components/legacy/Badge";
-import { Button } from "@/components/legacy/Button";
-import { Card, Section } from "@/components/legacy/Card";
-import { ConfirmButton } from "@/components/legacy/ConfirmButton";
-import { Alert, EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
-import { RelativeTime } from "@/components/legacy/Time";
-import { pathMatch } from "@/lib/glob";
-import { shortId } from "@/lib/format";
+import { DiffViewer } from "@/components/diff/DiffViewer";
+import { BranchFlow } from "@/components/mr/BranchFlow";
+import { DiffStat } from "@/components/mr/ChangeSummary";
+import { MergeErrorAlert } from "@/components/mr/MergeErrorAlert";
+import { MergeStateBadge } from "@/components/mr/MergeStateBadge";
+import { MergeTimeline } from "@/components/mr/MergeTimeline";
+import { ReadinessChecklist } from "@/components/mr/ReadinessChecklist";
+import { Timestamp } from "@/components/mr/Timestamp";
+import { UserAvatar, UserChip } from "@/components/mr/UserAvatar";
+import {
+  approvalCount,
+  branchRelation,
+  findBranch,
+  matchingProtections,
+  readiness,
+  requiredApprovals,
+  type BranchRelation,
+} from "@/components/mr/model";
+import { useHotkeys } from "@/components/mr/useHotkeys";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { firstLine, shortId } from "@/lib/format";
 import { describeMergeError } from "@/lib/mergeErrors";
-import { filesPath, treePath } from "@/lib/paths";
+import { treePath } from "@/lib/paths";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
 
 type Action = "approve" | "merge" | "close";
-
 const DONE: Record<Action, string> = { approve: "Approved", merge: "Merged", close: "Closed" };
 
+const TABS = ["overview", "changes", "snapshots"] as const;
+type Tab = (typeof TABS)[number];
+
 export function MergeRequestDetail() {
-  const api = useApi();
   const { tenant, tree } = useTreeContext();
   const { number = "" } = useParams();
   const n = Number(number);
   const mr = useMergeRequest(tenant, tree, n);
-  const protections = useProtections(tenant, tree);
-  const { account } = useAuth();
+
+  if (!Number.isInteger(n) || n <= 0) {
+    return <Notice title="Invalid merge request number" message={`“${number}” is not a merge request number.`} />;
+  }
+  if (mr.isPending) {
+    return (
+      <div aria-label="Loading merge request" className="flex flex-col gap-3">
+        <Skeleton className="h-6 w-2/3" />
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="h-48 w-full" />
+      </div>
+    );
+  }
+  if (mr.isError) {
+    return (
+      <Notice title="Could not load merge request" message={errorMessage(mr.error)}>
+        <Button size="sm" variant="outline" onClick={() => void mr.refetch()}>
+          Retry
+        </Button>
+      </Notice>
+    );
+  }
+  return <Detail mr={mr.data} tenant={tenant} tree={tree} />;
+}
+
+function Notice({ title, message, children }: { title: string; message: string; children?: ReactNode }) {
+  return (
+    <Alert>
+      <CircleX aria-hidden />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription>
+        <p>{message}</p>
+        {children}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
+ * What the Changes tab compares: open/closed MRs compare the target tip with
+ * the source tip; merged ones the merged snapshot with its parent.
+ */
+function useMergeComparison(tenant: string, tree: string, m: MergeRequest) {
+  const branches = useBranches(tenant, tree);
+  let to = "";
+  let from: string | undefined;
+  let problem: string | undefined;
+  let targetEmpty = false;
+
+  if (m.state === "merged") {
+    to = m.merged_snapshot ?? "";
+  } else if (branches.data) {
+    const source = findBranch(branches.data, m.source_branch);
+    const target = findBranch(branches.data, m.target_branch);
+    if (!source) problem = `Source branch “${m.source_branch}” no longer exists.`;
+    else if (!source.tip) problem = `Source branch “${m.source_branch}” has no snapshots.`;
+    else if (!target?.tip) targetEmpty = true;
+    else {
+      to = source.tip;
+      from = target.tip;
+    }
+  } else if (branches.isError) {
+    problem = `Could not load branches: ${errorMessage(branches.error)}`;
+  }
+
+  const compare = useCompare(tenant, tree, to, from);
+  const current = compare.data && !compare.isPlaceholderData ? compare.data : undefined;
+  let relation: BranchRelation | null = null;
+  if (targetEmpty) relation = "fast_forward";
+  else if (current) relation = branchRelation(current);
+  if (!problem && compare.isError && m.state !== "merged") {
+    problem = `Could not compare branches: ${errorMessage(compare.error)}`;
+  }
+  return { compare, current, relation, problem, targetEmpty, hasSnapshot: to !== "" };
+}
+
+function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tree: string }) {
+  const api = useApi();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { account } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const tab: Tab = TABS.find((t) => t === params.get("tab")) ?? "overview";
+  const [confirmMerge, setConfirmMerge] = useState(false);
+
+  const protections = useProtections(tenant, tree);
+  const rules = matchingProtections(protections.data ?? [], m.target_branch);
+  const required = requiredApprovals(rules);
+  const have = approvalCount(m);
+  const cmp = useMergeComparison(tenant, tree, m);
+  const { checks, blocker } = readiness({ mr: m, required, relation: cmp.relation, relationProblem: cmp.problem });
 
   const act = useMutation({
-    mutationFn: (action: Action) => api.mergeRequests[action](tenant, tree, n),
+    mutationFn: (action: Action) => api.mergeRequests[action](tenant, tree, m.number),
     meta: { inlineError: true },
     onSuccess: async (updated: MergeRequest, action) => {
-      queryClient.setQueryData(keys.mergeRequest(tenant, tree, n), updated);
+      queryClient.setQueryData(keys.mergeRequest(tenant, tree, m.number), updated);
       toast.success(`${DONE[action]} !${updated.number}`, updated.title);
       await queryClient.invalidateQueries({ queryKey: ["tree", tenant, tree] });
     },
   });
 
-  if (!Number.isInteger(n) || n <= 0) {
-    return <EmptyState title="Invalid merge request number" />;
-  }
-  if (mr.isPending) return <SkeletonRows rows={6} label="Loading merge request" />;
-  if (mr.isError) return <ErrorState error={mr.error} onRetry={() => void mr.refetch()} />;
-
-  const m = mr.data;
-  const approvals = m.approvals ?? [];
-  const rule = (protections.data ?? []).find((p) => pathMatch(p.pattern, m.target_branch));
-  const required = rule?.required_approvals ?? 0;
-  const approvedByMe = approvals.some((a) => a.account_id === account?.id);
+  const { mutate } = act;
+  const blockerId = useId();
   const open = m.state === "open";
+  const isAuthor = account?.id === m.author_id;
+  const approvedByMe = (m.approvals ?? []).some((a) => a.account_id === account?.id);
+  const canApprove = open && !isAuthor && !approvedByMe && !act.isPending;
+  const canMerge = open && blocker === null && !protections.isPending && !act.isPending;
   const error = act.isError ? describeMergeError(act.error) : null;
+  const snapshotHref = (id: string) => treePath(tenant, tree, `snapshots/${encodeURIComponent(id)}`);
+
+  const hotkeys = useMemo(
+    () => ({
+      a: canApprove ? () => mutate("approve") : undefined,
+      m: canMerge ? () => setConfirmMerge(true) : undefined,
+    }),
+    [canApprove, canMerge, mutate],
+  );
+  useHotkeys(hotkeys);
+
+  const setTab = (value: string) =>
+    setParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        if (value === "overview") p.delete("tab");
+        else p.set("tab", value);
+        return p;
+      },
+      { replace: true },
+    );
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <Link to={treePath(tenant, tree, "merge-requests")} className="text-[13px] text-muted-foreground hover:text-fg hover:underline">
-          ← All merge requests
+      <header className="flex flex-col gap-2">
+        <Link
+          to={treePath(tenant, tree, "merge-requests")}
+          className="inline-flex w-fit items-center gap-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+        >
+          <ArrowLeft aria-hidden className="size-3.5" />
+          All merge requests
         </Link>
-        <h2 className="mt-2 flex flex-wrap items-center gap-2 text-lg font-semibold">
-          <span className="font-mono text-muted-foreground">!{m.number}</span>
-          {m.title}
-          <StateBadge value={m.state} />
+        <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xl font-semibold tracking-tight break-words">
+          <span>{m.title}</span>
+          <span className="font-mono font-normal text-muted-foreground">!{m.number}</span>
         </h2>
-        <p className="mt-1 text-[13px] text-muted-foreground">
-          <span className="font-medium text-fg">{m.author}</span> wants to merge{" "}
-          <code className="rounded bg-surface-2 px-1 font-mono text-fg">{m.source_branch}</code> into{" "}
-          <code className="rounded bg-surface-2 px-1 font-mono text-fg">{m.target_branch}</code> · opened <RelativeTime value={m.created_at} />
-        </p>
-      </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
+          <MergeStateBadge state={m.state} />
+          <UserChip name={m.author} className="text-foreground" />
+          <span className="inline-flex flex-wrap items-center gap-1">
+            wants to merge <BranchFlow source={m.source_branch} target={m.target_branch} />
+          </span>
+          <span>
+            opened <Timestamp value={m.created_at} />
+          </span>
+          <span>
+            updated <Timestamp value={m.updated_at} />
+          </span>
+        </div>
+      </header>
 
       {error && (
-        <Alert tone={error.kind === "review_required" ? "warning" : "danger"} title={error.title}>
-          <p>{error.message}</p>
+        <MergeErrorAlert error={error}>
           {error.kind === "review_required" && required > 0 && (
-            <p className="mt-1">
-              {approvals.length} of {required} required approvals.
+            <p>
+              {have} of {required} required approvals.
             </p>
           )}
-          {error.detail !== error.message && <p className="mt-1 font-mono text-xs">Server: {error.detail}</p>}
-        </Alert>
+        </MergeErrorAlert>
       )}
 
-      {m.state === "merged" && (
-        <Alert tone="success" title="Merged">
-          {m.target_branch} was fast-forwarded <RelativeTime value={m.merged_at} />
-          {m.merged_snapshot && (
-            <>
-              {" "}
-              to{" "}
-              <Link to={filesPath(tenant, tree, { snapshot: m.merged_snapshot })} className="font-mono text-foreground hover:underline">
-                {shortId(m.merged_snapshot)}
-              </Link>
-            </>
-          )}
-          .
-        </Alert>
-      )}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <Tabs value={tab} onValueChange={setTab} className="min-w-0">
+          <TabsList variant="line" className="w-full justify-start overflow-x-auto border-b">
+            <TabsTrigger value="overview" className="flex-none">
+              Overview
+            </TabsTrigger>
+            <TabsTrigger value="changes" className="flex-none">
+              Changes
+              {cmp.current && <span className="font-mono text-xs text-muted-foreground tabular-nums">{cmp.current.stats.files}</span>}
+            </TabsTrigger>
+            <TabsTrigger value="snapshots" className="flex-none">
+              Snapshots
+              {cmp.current && (
+                <span className="font-mono text-xs text-muted-foreground tabular-nums">{cmp.current.snapshots.length}</span>
+              )}
+            </TabsTrigger>
+          </TabsList>
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        <Section title="Description" className="lg:col-span-2">
-          {m.description ? (
-            <p className="text-sm whitespace-pre-wrap">{m.description}</p>
-          ) : (
-            <p className="text-[13px] text-subtle italic">No description provided.</p>
-          )}
-        </Section>
-
-        <div className="flex flex-col gap-5">
-          <Section title="Review">
-            <p className="text-[13px]">
-              <span className="font-semibold tabular-nums">{approvals.length}</span>
-              {required > 0 ? ` of ${required} required` : ""} {approvals.length === 1 && required === 0 ? "approval" : "approvals"}
-            </p>
-            {rule && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Protected by <span className="font-mono">{rule.pattern}</span>
-                {rule.no_direct_push && " · no direct push"}
-              </p>
-            )}
-            {approvals.length > 0 && (
-              <ul aria-label="Approvals" className="mt-3 flex flex-col gap-1.5 text-[13px]">
-                {approvals.map((a) => (
-                  <li key={a.account_id} className="flex items-center justify-between gap-2">
-                    <span className="font-medium">{a.username}</span>
-                    <RelativeTime value={a.at} className="text-xs text-muted-foreground" />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          {open && (
-            <Card className="flex flex-col gap-2 p-4">
-              <Button
-                onClick={() => act.mutate("approve")}
-                loading={act.isPending && act.variables === "approve"}
-                disabled={act.isPending || approvedByMe}
-              >
-                {approvedByMe ? "You approved" : "Approve"}
-              </Button>
-              <Button variant="primary" onClick={() => act.mutate("merge")} loading={act.isPending && act.variables === "merge"} disabled={act.isPending}>
-                Merge (fast-forward)
-              </Button>
-              <ConfirmButton
-                confirmLabel="Close merge request"
-                onConfirm={() => act.mutate("close")}
-                loading={act.isPending && act.variables === "close"}
-                disabled={act.isPending}
-                variant="ghost"
-                size="md"
-              >
-                Close
-              </ConfirmButton>
+          <TabsContent value="overview" className="flex flex-col gap-5 pt-2">
+            <Card className="gap-3 py-4">
+              <CardHeader className="flex items-center gap-2 px-4">
+                <UserAvatar name={m.author} />
+                <CardTitle className="text-sm">{m.author}</CardTitle>
+                <Timestamp value={m.created_at} className="text-xs text-muted-foreground" />
+              </CardHeader>
+              <CardContent className="px-4">
+                {m.description ? (
+                  <p className="text-sm break-words whitespace-pre-wrap">{m.description}</p>
+                ) : (
+                  <p className="text-sm text-muted-foreground italic">No description provided.</p>
+                )}
+              </CardContent>
             </Card>
+            <MergeTimeline mr={m} snapshotHref={snapshotHref} />
+          </TabsContent>
+
+          <TabsContent value="changes" className="pt-2">
+            <ChangesPanel cmp={cmp} merged={m.state === "merged"} />
+          </TabsContent>
+
+          <TabsContent value="snapshots" className="pt-2">
+            <SnapshotsPanel cmp={cmp} snapshotHref={snapshotHref} />
+          </TabsContent>
+        </Tabs>
+
+        <aside aria-label="Review" className="flex flex-col gap-4">
+          <ReviewCard mr={m} rules={rules} required={required} protectionsLoading={protections.isPending} />
+
+          {open ? (
+            <Card className="gap-4 py-4">
+              <CardHeader className="px-4">
+                <CardTitle className="text-sm">Merge readiness</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4 px-4">
+                <ReadinessChecklist checks={checks} />
+                <Separator />
+                <div className="flex flex-col gap-2">
+                  {!isAuthor && (
+                    <Button
+                      variant="outline"
+                      aria-keyshortcuts="a"
+                      disabled={!canApprove}
+                      onClick={() => act.mutate("approve")}
+                    >
+                      {act.isPending && act.variables === "approve" ? (
+                        <LoaderCircle aria-hidden className="animate-spin" />
+                      ) : (
+                        <ThumbsUp aria-hidden />
+                      )}
+                      {approvedByMe ? "You approved" : "Approve"}
+                      {!approvedByMe && <Kbd>A</Kbd>}
+                    </Button>
+                  )}
+                  <AlertDialog open={confirmMerge} onOpenChange={setConfirmMerge}>
+                    <AlertDialogTrigger asChild>
+                      <Button aria-keyshortcuts="m" disabled={!canMerge} aria-describedby={blocker ? blockerId : undefined}>
+                        {act.isPending && act.variables === "merge" ? (
+                          <LoaderCircle aria-hidden className="animate-spin" />
+                        ) : (
+                          <GitMerge aria-hidden />
+                        )}
+                        Merge
+                        <Kbd inverted>M</Kbd>
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          Merge !{m.number} into {m.target_branch}?
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          {cmp.relation === "up_to_date"
+                            ? `${m.target_branch} already contains ${m.source_branch}; the merge request will be marked merged.`
+                            : `${m.target_branch} will be fast-forwarded to the tip of ${m.source_branch}.`}
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => act.mutate("merge")}>Merge</AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                  {blocker && (
+                    <p id={blockerId}className="text-xs text-muted-foreground">
+                      {blocker}
+                    </p>
+                  )}
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="ghost" disabled={act.isPending}>
+                        <GitPullRequestClosed aria-hidden />
+                        Close
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Close !{m.number}?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          The merge request is abandoned without merging. Its branches are kept.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => act.mutate("close")}>Close merge request</AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <OutcomeCard mr={m} snapshotHref={snapshotHref} />
           )}
-        </div>
+        </aside>
       </div>
     </div>
+  );
+}
+
+function Kbd({ children, inverted = false }: { children: string; inverted?: boolean }) {
+  return (
+    <kbd
+      aria-hidden
+      className={
+        inverted
+          ? "ml-auto rounded border border-primary-foreground/40 px-1 font-mono text-[10px] leading-4"
+          : "ml-auto rounded border px-1 font-mono text-[10px] leading-4 text-muted-foreground"
+      }
+    >
+      {children}
+    </kbd>
+  );
+}
+
+function ReviewCard({
+  mr: m,
+  rules,
+  required,
+  protectionsLoading,
+}: {
+  mr: MergeRequest;
+  rules: BranchProtection[];
+  required: number;
+  protectionsLoading: boolean;
+}) {
+  const approvals = m.approvals ?? [];
+  const have = approvals.length;
+  return (
+    <Card className="gap-4 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="text-sm">Reviewers</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 px-4">
+        <div className="flex flex-col gap-2">
+          <p className="text-sm">
+            <span className="font-semibold tabular-nums">{have}</span>
+            {required > 0 ? (
+              <> of {required} required approvals</>
+            ) : (
+              <> {have === 1 ? "approval" : "approvals"}</>
+            )}
+          </p>
+          {required > 0 && (
+            <Progress
+              value={Math.min(100, (have / required) * 100)}
+              aria-label="Required approvals"
+              aria-valuetext={`${have} of ${required}`}
+            />
+          )}
+        </div>
+        {approvals.length > 0 ? (
+          <ul aria-label="Approvals" className="flex flex-col gap-2 text-sm">
+            {approvals.map((a) => (
+              <li key={a.account_id} className="flex items-center justify-between gap-2">
+                <UserChip name={a.username} />
+                <Timestamp value={a.at} className="text-xs text-muted-foreground" />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">No approvals yet.</p>
+        )}
+        <Separator />
+        <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+          <p className="inline-flex items-center gap-1.5 font-medium text-foreground">
+            <Shield aria-hidden className="size-3.5" />
+            Protection
+          </p>
+          {protectionsLoading ? (
+            <Skeleton className="h-3 w-40" />
+          ) : rules.length === 0 ? (
+            <p>
+              <span className="font-mono">{m.target_branch}</span> is not protected.
+            </p>
+          ) : (
+            <ul aria-label="Protection rules" className="flex flex-col gap-1">
+              {rules.map((r) => (
+                <li key={r.pattern}>
+                  <span className="font-mono text-foreground">{r.pattern}</span>
+                  {" · "}
+                  {[
+                    `${r.required_approvals} ${r.required_approvals === 1 ? "approval" : "approvals"}`,
+                    r.no_direct_push && "no direct push",
+                    r.no_delete && "no delete",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OutcomeCard({ mr: m, snapshotHref }: { mr: MergeRequest; snapshotHref: (id: string) => string }) {
+  const merged = m.state === "merged";
+  return (
+    <Card className="gap-2 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="inline-flex items-center gap-1.5 text-sm">
+          {merged ? <GitMerge aria-hidden className="size-4" /> : <GitPullRequestClosed aria-hidden className="size-4" />}
+          {merged ? "Merged" : "Closed"}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-4 text-sm text-muted-foreground">
+        {merged ? (
+          <p>
+            <span className="font-mono text-foreground">{m.target_branch}</span> was fast-forwarded{" "}
+            <Timestamp value={m.merged_at} />
+            {m.merged_snapshot && (
+              <>
+                {" to "}
+                <Link to={snapshotHref(m.merged_snapshot)} className="font-mono text-foreground underline-offset-4 hover:underline">
+                  {shortId(m.merged_snapshot)}
+                </Link>
+              </>
+            )}
+            .
+          </p>
+        ) : (
+          <p>
+            Closed without merging <Timestamp value={m.updated_at} />.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+type Comparison = ReturnType<typeof useMergeComparison>;
+
+function ComparisonState({ cmp, children }: { cmp: Comparison; children: (c: CompareResult) => ReactNode }) {
+  if (cmp.problem) return <p className="py-8 text-center text-sm text-muted-foreground">{cmp.problem}</p>;
+  if (cmp.targetEmpty) {
+    return <p className="py-8 text-center text-sm text-muted-foreground">The target branch is empty: merging sets it to the source tip.</p>;
+  }
+  if (!cmp.hasSnapshot) return <p className="py-8 text-center text-sm text-muted-foreground">No merged snapshot was recorded.</p>;
+  if (cmp.compare.isError) {
+    return <p className="py-8 text-center text-sm text-muted-foreground">Could not compare: {errorMessage(cmp.compare.error)}</p>;
+  }
+  if (!cmp.current) {
+    return (
+      <div aria-label="Loading changes" className="flex flex-col gap-2">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+  return children(cmp.current);
+}
+
+function ChangesPanel({ cmp, merged }: { cmp: Comparison; merged: boolean }) {
+  return (
+    <ComparisonState cmp={cmp}>
+      {(c) =>
+        c.files.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">No file changes.</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm">
+              <DiffStat stats={c.stats} />
+              {merged && <span className="text-muted-foreground"> in the merged snapshot</span>}
+            </p>
+            <DiffViewer files={c.files} />
+          </div>
+        )
+      }
+    </ComparisonState>
+  );
+}
+
+function SnapshotsPanel({ cmp, snapshotHref }: { cmp: Comparison; snapshotHref: (id: string) => string }) {
+  return (
+    <ComparisonState cmp={cmp}>
+      {(c) =>
+        c.snapshots.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">No snapshots to merge.</p>
+        ) : (
+          <ol aria-label="Snapshots" className="divide-y rounded-md border">
+            {c.snapshots.map((s) => (
+              <li key={s.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                <UserAvatar name={s.author} />
+                <div className="min-w-0 flex-1">
+                  <Link to={snapshotHref(s.id)} className="block truncate font-medium underline-offset-4 hover:underline">
+                    {firstLine(s.message) || "(no message)"}
+                  </Link>
+                  <p className="text-xs text-muted-foreground">
+                    {s.author} · <Timestamp value={s.created_at} />
+                  </p>
+                </div>
+                <code className="shrink-0 font-mono text-xs text-muted-foreground">{shortId(s.id)}</code>
+              </li>
+            ))}
+          </ol>
+        )
+      }
+    </ComparisonState>
   );
 }
