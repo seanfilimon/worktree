@@ -10,7 +10,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useCommandState } from "cmdk";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { errorMessage } from "@/api/client";
 import { useSearch } from "@/api/queries";
@@ -32,6 +32,7 @@ import { visibleNavGroups } from "./nav";
 import { paletteShortcut } from "./shortcuts";
 import { THEME_OPTIONS } from "./themeOptions";
 import { useDebouncedValue } from "./useDebouncedValue";
+import type { Account, SearchResults } from "@/api/types";
 
 const SEARCH_DEBOUNCE_MS = 150;
 
@@ -61,6 +62,18 @@ function Item({ value, keywords, forceMount, icon: Icon, hint, onSelect, childre
       {hint && <CommandShortcut className="max-w-[45%] truncate tracking-normal">{hint}</CommandShortcut>}
     </CommandItem>
   );
+}
+
+/** cmdk value of the first server result in display order ("" if none). */
+function firstResultValue(results: SearchResults, accounts: Account[]): string {
+  const [tenant] = results.tenants;
+  if (tenant) return `tenant:${tenant.slug}`;
+  const [tree] = results.trees;
+  if (tree) return `tree:${tree.tenant_slug}/${tree.tree.name}`;
+  const [branch] = results.branches;
+  if (branch) return `branch:${branch.tenant_slug}/${branch.tree}@${branch.branch.name}`;
+  const [account] = accounts;
+  return account ? `account:${account.username}` : "";
 }
 
 /** Shown when neither a local command nor a server result matches. */
@@ -123,6 +136,20 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const serverResults =
     (results?.tenants.length ?? 0) + (results?.trees.length ?? 0) + (results?.branches.length ?? 0) + accounts.length;
 
+  // cmdk auto-selects the first match only when the query changes. Server
+  // results arrive after that, so when the selection no longer points at a
+  // rendered item (every command was filtered out), select the first result.
+  const [selected, setSelected] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const firstResult = results ? firstResultValue(results, accounts) : "";
+  useEffect(() => {
+    if (!firstResult) return;
+    setSelected((current) => {
+      const rendered = current && rootRef.current?.querySelector(`[cmdk-item][data-value="${CSS.escape(current)}"]`);
+      return rendered ? current : firstResult;
+    });
+  }, [firstResult]);
+
   return (
     // shadcn's CommandDialog, composed here so the cmdk root gets a `label`
     // (it names the search input via aria-labelledby).
@@ -134,7 +161,14 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             Jump to a page, run a command, or search tenants, trees, branches and accounts.
           </DialogDescription>
         </DialogHeader>
-        <Command label="Search" filter={filterCommand} className={PALETTE_CLASSES}>
+        <Command
+          ref={rootRef}
+          label="Search"
+          filter={filterCommand}
+          value={selected}
+          onValueChange={setSelected}
+          className={PALETTE_CLASSES}
+        >
           <CommandInput value={query} onValueChange={setQuery} placeholder="Search or jump to…" />
           <CommandList className="max-h-[min(60vh,420px)]">
             {term !== "" && !searching && !search.isError && <NoResults term={term} serverResults={serverResults} />}

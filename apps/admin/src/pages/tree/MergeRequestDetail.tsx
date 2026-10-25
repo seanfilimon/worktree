@@ -234,7 +234,7 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <Tabs value={tab} onValueChange={setTab} className="min-w-0">
-          <TabsList variant="line" className="w-full justify-start overflow-x-auto border-b">
+          <TabsList variant="line" className="w-full justify-start overflow-x-auto overflow-y-hidden border-b">
             <TabsTrigger value="overview" className="flex-none">
               Overview
             </TabsTrigger>

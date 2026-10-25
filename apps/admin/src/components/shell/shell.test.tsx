@@ -122,6 +122,22 @@ describe("command palette", () => {
     expect(router.state.location.search).toBe("?branch=feature%2Flogin");
   });
 
+  it("selects the first server result when no command matches, so Enter opens it", async () => {
+    const { user, router } = renderApp({
+      route: "/nowhere",
+      api: treeRoutes({ "GET /api/v1/search": { ...fx.searchResults, tenants: [], accounts: [] } }),
+    });
+    await screen.findByRole("heading", { name: "Page not found" });
+    await user.keyboard("{Control>}k{/Control}");
+    const dialog = await screen.findByRole("dialog", { name: "Command palette" });
+    await user.type(within(dialog).getByRole("combobox"), "zzweb");
+
+    const result = await within(dialog).findByRole("option", { name: /^acme\/web/ });
+    await waitFor(() => expect(result).toHaveAttribute("aria-selected", "true"));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/trees/acme/web/overview"));
+  });
+
   it("opens with / and runs navigation commands from the keyboard", async () => {
     const { user, router } = renderApp({ route: "/nowhere", api: auditApi });
     await screen.findByRole("heading", { name: "Page not found" });
