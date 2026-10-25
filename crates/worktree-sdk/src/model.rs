@@ -680,6 +680,26 @@ pub struct ReflogEntry {
     pub message: String,
 }
 
+// ---- v0.6 blame workstream (docs/ENGINEERING_PLAN.md §14.4) ----
+
+/// One line of a file attributed to the snapshot that last changed it
+/// (`Repository::blame`). Mirrors the server's `domain.BlameLine`, with
+/// `created_at` in place of the server's `at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlameLine {
+    /// 1-based line number in the blamed revision.
+    pub line: usize,
+    /// The line without its `\n` (or `\r\n`) terminator.
+    pub text: String,
+    pub snapshot_id: SnapshotId,
+    pub author: String,
+    /// First line of the snapshot's message.
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+}
+
+// ---- end v0.6 blame workstream ----
+
 /// Options for `Repository::init`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InitOptions {

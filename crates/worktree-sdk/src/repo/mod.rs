@@ -43,6 +43,7 @@
 //! so the CLI and the background daemon never interleave writes to the same
 //! tree; the lock is released automatically if a process dies.
 
+mod blame; // v0.6 blame workstream (§14.4)
 mod diffing;
 pub(crate) mod fsutil;
 mod history;
