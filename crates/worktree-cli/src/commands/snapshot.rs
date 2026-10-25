@@ -22,6 +22,13 @@ pub struct SnapshotArgs {
     /// Skip the pre-snapshot secret scan
     #[arg(long)]
     pub no_scan: bool,
+
+    // --- signing (ENGINEERING_PLAN §13.6) ---
+    /// Sign this snapshot with the configured key ([signing] key, else the
+    /// `default` key; see `wt identity generate`)
+    #[arg(long)]
+    pub sign: bool,
+    // --- end signing ---
 }
 
 pub fn run(ctx: &Context, args: SnapshotArgs) -> Result<()> {
@@ -32,6 +39,7 @@ pub fn run(ctx: &Context, args: SnapshotArgs) -> Result<()> {
             message: args.message,
             allow_empty: args.allow_empty,
             skip_secret_scan: args.no_scan,
+            sign: args.sign, // signing (§13.6)
             ..SnapshotOptions::default()
         },
     )?;

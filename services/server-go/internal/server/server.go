@@ -140,8 +140,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Audit:   auditLog,
 		Version: cfg.Version,
 
-		PushChecks: []domain.PushChecker{},
-		AccessCfg:  accessCfg,
+		PushChecks: []domain.PushChecker{
+			signer, // signing (§13.6): verifies signatures, sets Verified; keep last
+		},
+		AccessCfg: accessCfg,
 	})
 	_ = pathACL // becomes a PushChecker in its workstream
 

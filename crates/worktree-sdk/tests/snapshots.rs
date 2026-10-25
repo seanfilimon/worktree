@@ -122,6 +122,7 @@ fn snapshot_options_are_honored() {
                 allow_empty: false,
                 skip_secret_scan: true,
                 dependencies: Vec::new(),
+                sign: false,
             },
         )
         .unwrap();

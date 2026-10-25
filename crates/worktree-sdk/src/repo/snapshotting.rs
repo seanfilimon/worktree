@@ -153,7 +153,8 @@ impl Repository {
             reverts: None,
             signature: None,
         };
-        crate::signing::sign_snapshot(self, &mut snapshot)?;
+        // signing (§13.6): `opts.sign` forces a signature (`wt snapshot --sign`).
+        crate::signing::sign_snapshot_with(self, &mut snapshot, opts.sign)?;
         self.write_snapshot(&snapshot)?;
         self.write_tip(tree, &branch, Some(&snapshot.id))?;
         self.save_index(tree, &working.index)?;
