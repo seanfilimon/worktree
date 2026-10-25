@@ -1,189 +1,118 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
-import { useParams } from "react-router";
-import { useApi } from "@/api/context";
-import { keys, useMembers, useTenant, useTenantTrees } from "@/api/queries";
-import { ROLES, type Member, type Role } from "@/api/types";
-import { canManage, useAuth } from "@/auth/context";
+import { FolderTree, Plus, Settings, Users } from "lucide-react";
+import { useState } from "react";
+import { useParams, useSearchParams } from "react-router";
+import { useTenant } from "@/api/queries";
+import { canMaintain, canManage, useAuth } from "@/auth/context";
+import { PlanBadge, RoleBadge, TenantKindBadge } from "@/components/people/badges";
+import { CreateTreeDialog } from "@/components/people/CreateTreeDialog";
+import { QueryError } from "@/components/people/states";
+import { UserAvatar } from "@/components/people/UserAvatar";
 import { PageHeader } from "@/components/PageHeader";
-import { TreeTable } from "@/components/TreeTable";
-import { Badge } from "@/components/legacy/Badge";
-import { ButtonLink, Button } from "@/components/legacy/Button";
-import { Section } from "@/components/legacy/Card";
-import { ConfirmButton } from "@/components/legacy/ConfirmButton";
-import { SelectField, TextField } from "@/components/legacy/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
-import { Table, Td, Th, Tr } from "@/components/legacy/Table";
-import { RelativeTime } from "@/components/legacy/Time";
-import { useToast } from "@/toast/store";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { absoluteTime, relativeTime } from "@/lib/format";
+import { TenantMembersTab } from "./TenantMembersTab";
+import { TenantSettingsTab } from "./TenantSettingsTab";
+import { TenantTreesTab } from "./TenantTreesTab";
 
-function RoleSelect({ value, onChange, label, disabled }: { value: Role; onChange: (r: Role) => void; label: string; disabled?: boolean }) {
-  return (
-    <SelectField label={label} hideLabel value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as Role)} className="w-36">
-      {ROLES.map((r) => (
-        <option key={r} value={r}>
-          {r}
-        </option>
-      ))}
-    </SelectField>
-  );
-}
+const TABS = ["trees", "members", "settings"] as const;
+type Tab = (typeof TABS)[number];
 
-function MembersSection({ tenant, editable }: { tenant: string; editable: boolean }) {
-  const api = useApi();
-  const queryClient = useQueryClient();
-  const toast = useToast();
-  const { account } = useAuth();
-  const members = useMembers(tenant);
-  const [username, setUsername] = useState("");
-  const [role, setRole] = useState<Role>("developer");
-
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: keys.members(tenant) });
-  const setMember = useMutation({
-    mutationFn: (v: { username: string; role: Role }) => api.tenants.setMember(tenant, v.username, v.role),
-    onSuccess: async (_m, v) => {
-      toast.success("Member updated", `${v.username} is now ${v.role}`);
-      await invalidate();
-    },
-  });
-  const removeMember = useMutation({
-    mutationFn: (u: string) => api.tenants.removeMember(tenant, u),
-    onSuccess: async (_r, u) => {
-      toast.success("Member removed", u);
-      await invalidate();
-    },
-  });
-
-  const onAdd = (e: FormEvent) => {
-    e.preventDefault();
-    const u = username.trim();
-    if (!u) return;
-    setMember.mutate({ username: u, role }, { onSuccess: () => setUsername("") });
-  };
-
-  const row = (m: Member) => {
-    const self = m.account.id === account?.id;
-    return (
-      <Tr key={m.account.id}>
-        <Td>
-          <span className="font-medium">{m.account.username}</span>
-          {self && <Badge className="ml-1.5">you</Badge>}
-          {m.account.display_name && <p className="text-xs text-muted-foreground">{m.account.display_name}</p>}
-        </Td>
-        <Td className="text-muted-foreground">{m.account.email}</Td>
-        <Td>
-          {editable ? (
-            <RoleSelect
-              label={`Role of ${m.account.username}`}
-              value={m.role}
-              disabled={setMember.isPending}
-              onChange={(r) => setMember.mutate({ username: m.account.username, role: r })}
-            />
-          ) : (
-            <Badge>{m.role}</Badge>
-          )}
-        </Td>
-        <Td className="text-right">
-          {editable && (
-            <ConfirmButton confirmLabel="Remove" onConfirm={() => removeMember.mutate(m.account.username)} aria-label={`Remove ${m.account.username}`}>
-              Remove
-            </ConfirmButton>
-          )}
-        </Td>
-      </Tr>
-    );
-  };
-
-  return (
-    <Section title="Members" description={editable ? "Change roles inline. Owners and admins can manage members." : undefined} flush>
-      {editable && (
-        <form onSubmit={onAdd} aria-label="Add member" className="flex flex-wrap items-end gap-2 border-b border-border p-4">
-          <TextField label="Username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="jane" fieldClassName="w-56" />
-          <SelectField label="Role" value={role} onChange={(e) => setRole(e.target.value as Role)} fieldClassName="w-40">
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </SelectField>
-          <Button type="submit" variant="primary" loading={setMember.isPending} disabled={!username.trim()}>
-            Add member
-          </Button>
-        </form>
-      )}
-      {members.isPending ? (
-        <SkeletonRows rows={3} label="Loading members" />
-      ) : members.isError ? (
-        <ErrorState error={members.error} onRetry={() => void members.refetch()} />
-      ) : members.data.length === 0 ? (
-        <EmptyState title="No members" />
-      ) : (
-        <Table label="Members">
-          <thead>
-            <tr>
-              <Th>Account</Th>
-              <Th>Email</Th>
-              <Th>Role</Th>
-              <Th>
-                <span className="sr-only">Actions</span>
-              </Th>
-            </tr>
-          </thead>
-          <tbody>{members.data.map(row)}</tbody>
-        </Table>
-      )}
-    </Section>
-  );
+function isTab(v: string | null): v is Tab {
+  return (TABS as readonly string[]).includes(v ?? "");
 }
 
 export function TenantDetailPage() {
-  const { tenant = "" } = useParams();
-  const t = useTenant(tenant);
-  const trees = useTenantTrees(tenant);
+  const { tenant: slug = "" } = useParams();
+  const t = useTenant(slug);
   const { roleIn, isAdmin } = useAuth();
-  const editable = t.data ? canManage(roleIn(t.data.id), isAdmin) : false;
+  const [params, setParams] = useSearchParams();
+  const [creatingTree, setCreatingTree] = useState(false);
+  const tabParam = params.get("tab");
+  const tab: Tab = isTab(tabParam) ? tabParam : "trees";
+
+  const tenant = t.data;
+  const role = tenant ? roleIn(tenant.id) : undefined;
+  const manage = canManage(role, isAdmin);
+  const createTrees = canMaintain(role, isAdmin);
+
+  const setTab = (v: string) =>
+    setParams(
+      (p) => {
+        if (v === "trees") p.delete("tab");
+        else p.set("tab", v);
+        return p;
+      },
+      { replace: true },
+    );
 
   return (
     <>
       <PageHeader
-        title={t.data?.name ?? tenant}
-        breadcrumbs={[{ label: "Tenants", to: "/tenants" }, { label: tenant }]}
+        title={
+          <span className="flex items-center gap-3">
+            <UserAvatar name={tenant?.name || slug} square size="lg" />
+            <span className="truncate">{tenant?.name || slug}</span>
+          </span>
+        }
+        documentTitle={tenant?.name || slug}
+        breadcrumbs={[{ label: "Tenants", to: "/tenants" }, { label: slug }]}
         description={
-          t.data && (
+          tenant ? (
             <span className="flex flex-wrap items-center gap-2">
-              <span className="font-mono">{t.data.slug}</span>
-              <Badge>{t.data.kind}</Badge>
-              <Badge tone="info">{t.data.plan}</Badge>
+              <span className="font-mono">{tenant.slug}</span>
+              <TenantKindBadge kind={tenant.kind} />
+              <PlanBadge plan={tenant.plan} />
+              {role && <RoleBadge role={role} />}
               <span>
-                created <RelativeTime value={t.data.created_at} />
+                created{" "}
+                <time dateTime={tenant.created_at} title={absoluteTime(tenant.created_at)}>
+                  {relativeTime(tenant.created_at)}
+                </time>
               </span>
             </span>
-          )
+          ) : t.isPending ? (
+            <Skeleton className="h-4 w-64" />
+          ) : undefined
         }
         actions={
-          <ButtonLink to={`/trees?tenant=${encodeURIComponent(tenant)}&new=1`} variant="primary">
-            New tree
-          </ButtonLink>
+          createTrees && (
+            <Button onClick={() => setCreatingTree(true)}>
+              <Plus aria-hidden="true" />
+              New tree
+            </Button>
+          )
         }
       />
       {t.isError ? (
-        <ErrorState error={t.error} onRetry={() => void t.refetch()} />
+        <QueryError error={t.error} onRetry={() => void t.refetch()} title="Could not load tenant" />
       ) : (
-        <div className="flex flex-col gap-5">
-          <Section title="Trees" flush>
-            {trees.isPending ? (
-              <SkeletonRows rows={3} label="Loading trees" />
-            ) : trees.isError ? (
-              <ErrorState error={trees.error} onRetry={() => void trees.refetch()} />
-            ) : trees.data.length === 0 ? (
-              <EmptyState title="No trees in this tenant">Create one here or push with <code className="font-mono">wt push</code>.</EmptyState>
-            ) : (
-              <TreeTable rows={trees.data.map((summary) => ({ tenant, summary }))} />
-            )}
-          </Section>
-          <MembersSection tenant={tenant} editable={editable} />
-        </div>
+        <Tabs value={tab} onValueChange={setTab} className="gap-4">
+          <TabsList>
+            <TabsTrigger value="trees">
+              <FolderTree aria-hidden="true" />
+              Trees
+            </TabsTrigger>
+            <TabsTrigger value="members">
+              <Users aria-hidden="true" />
+              Members
+            </TabsTrigger>
+            <TabsTrigger value="settings">
+              <Settings aria-hidden="true" />
+              Settings
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="trees">
+            <TenantTreesTab slug={slug} canCreate={createTrees} onCreate={() => setCreatingTree(true)} />
+          </TabsContent>
+          <TabsContent value="members">
+            <TenantMembersTab slug={slug} editable={manage} canGrantOwner={isAdmin || role === "owner"} />
+          </TabsContent>
+          <TabsContent value="settings">{tenant && <TenantSettingsTab tenant={tenant} editable={manage} />}</TabsContent>
+        </Tabs>
       )}
+      {tenant && createTrees && <CreateTreeDialog open={creatingTree} onOpenChange={setCreatingTree} tenants={[tenant]} />}
     </>
   );
 }

@@ -1,96 +1,63 @@
-import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useQueries } from "@tanstack/react-query";
+import { FolderTree, Plus } from "lucide-react";
+import { useSearchParams } from "react-router";
 import { useApi } from "@/api/context";
 import { keys, useTenants } from "@/api/queries";
-import { VISIBILITIES, type Tenant, type Visibility } from "@/api/types";
+import { VISIBILITIES, type Visibility } from "@/api/types";
+import { canMaintain, useAuth } from "@/auth/context";
+import { CreateTreeDialog } from "@/components/people/CreateTreeDialog";
+import { SearchInput } from "@/components/people/SearchInput";
+import { EmptyState, QueryError, TableSkeleton } from "@/components/people/states";
+import { DEFAULT_DIR, isTreeSortKey, type TreeRow, type TreeSort } from "@/components/people/treeSort";
 import { PageHeader } from "@/components/PageHeader";
-import { TreeTable, type TreeRow } from "@/components/TreeTable";
-import { Button } from "@/components/legacy/Button";
-import { Section } from "@/components/legacy/Card";
-import { SelectField, TextField } from "@/components/legacy/Field";
-import { EmptyState, ErrorState, SkeletonRows } from "@/components/legacy/States";
-import { treePath } from "@/lib/paths";
-import { useToast } from "@/toast/store";
+import { TreeTable } from "@/components/TreeTable";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { formatNumber } from "@/lib/format";
 
-const NAME_RE = /^[A-Za-z0-9._-]+$/;
+const ALL = "all";
 
-function CreateTreeForm({ tenants, initialTenant, onDone }: { tenants: Tenant[]; initialTenant: string; onDone: () => void }) {
-  const api = useApi();
-  const queryClient = useQueryClient();
-  const toast = useToast();
-  const navigate = useNavigate();
-  const [tenant, setTenant] = useState(initialTenant || tenants[0]?.slug || "");
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [visibility, setVisibility] = useState<Visibility>("private");
-  const [defaultBranch, setDefaultBranch] = useState("main");
-  const [touched, setTouched] = useState(false);
-  const nameError = NAME_RE.test(name) ? undefined : "Letters, digits, '.', '_' and '-' only.";
+function isVisibility(v: string | null): v is Visibility {
+  return (VISIBILITIES as readonly string[]).includes(v ?? "");
+}
 
-  const create = useMutation({
-    mutationFn: () =>
-      api.tenants.createTree(tenant, { name, description: description.trim(), visibility, default_branch: defaultBranch.trim() || "main" }),
-    onSuccess: async (tree) => {
-      toast.success("Tree created", `${tenant}/${tree.name}`);
-      await queryClient.invalidateQueries({ queryKey: keys.tenantTrees(tenant) });
-      onDone();
-      void navigate(treePath(tenant, tree.name));
-    },
-  });
-
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    setTouched(true);
-    if (!nameError && tenant) create.mutate();
-  };
-
+function Totals({ rows }: { rows: TreeRow[] }) {
+  const sum = (f: (r: TreeRow) => number) => rows.reduce((n, r) => n + f(r), 0);
+  const items = [
+    { label: "Trees", value: rows.length },
+    { label: "Branches", value: sum((r) => r.summary.branch_count) },
+    { label: "Snapshots", value: sum((r) => r.summary.snapshot_count) },
+    { label: "Staged", value: sum((r) => r.summary.staged_count) },
+    { label: "Open MRs", value: sum((r) => r.summary.open_mr_count) },
+  ];
   return (
-    <form onSubmit={onSubmit} aria-label="Create tree" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" noValidate>
-      <SelectField label="Tenant" value={tenant} onChange={(e) => setTenant(e.target.value)}>
-        {tenants.map((t) => (
-          <option key={t.id} value={t.slug}>
-            {t.slug}
-          </option>
-        ))}
-      </SelectField>
-      <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} error={touched ? nameError : undefined} placeholder="backend" autoFocus />
-      <SelectField label="Visibility" value={visibility} onChange={(e) => setVisibility(e.target.value as Visibility)}>
-        {VISIBILITIES.map((v) => (
-          <option key={v} value={v}>
-            {v}
-          </option>
-        ))}
-      </SelectField>
-      <TextField label="Default branch" value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} />
-      <TextField
-        label="Description"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        fieldClassName="sm:col-span-2 lg:col-span-3"
-        placeholder="Optional"
-      />
-      <div className="flex items-end gap-2">
-        <Button type="submit" variant="primary" loading={create.isPending}>
-          Create tree
-        </Button>
-        <Button onClick={onDone}>Cancel</Button>
-      </div>
-    </form>
+    <dl aria-label="Totals" className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      {items.map((i) => (
+        <Card key={i.label} className="gap-0 px-4 py-3">
+          <dt className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{i.label}</dt>
+          <dd className="font-mono text-xl font-semibold tabular-nums">{formatNumber(i.value)}</dd>
+        </Card>
+      ))}
+    </dl>
   );
 }
 
 export function TreesPage() {
   const api = useApi();
   const tenants = useTenants();
+  const { roleIn, isAdmin } = useAuth();
   const [params, setParams] = useSearchParams();
-  const filter = params.get("tenant") ?? "";
-  const creating = params.get("new") === "1";
 
-  const visible = (tenants.data ?? []).filter((t) => !filter || t.slug === filter);
-  const results = useQueries({
-    queries: visible.map((t) => ({ queryKey: keys.tenantTrees(t.slug), queryFn: () => api.tenants.trees(t.slug) })),
-  });
+  const tenantFilter = params.get("tenant") ?? "";
+  const visibilityParam = params.get("visibility");
+  const visibility = isVisibility(visibilityParam) ? visibilityParam : "";
+  const query = params.get("q") ?? "";
+  const sortParam = params.get("sort");
+  const sortKey = isTreeSortKey(sortParam) ? sortParam : "name";
+  const dirParam = params.get("dir");
+  const sort: TreeSort = { key: sortKey, dir: dirParam === "asc" || dirParam === "desc" ? dirParam : DEFAULT_DIR[sortKey] };
+  const creating = params.get("new") === "1";
 
   const update = (next: Record<string, string | null>) =>
     setParams(
@@ -104,9 +71,21 @@ export function TreesPage() {
       { replace: true },
     );
 
-  const rows: TreeRow[] = visible.flatMap((t, i) => (results[i]?.data ?? []).map((summary) => ({ tenant: t.slug, summary })));
+  const allTenants = tenants.data ?? [];
+  const scoped = allTenants.filter((t) => !tenantFilter || t.slug === tenantFilter);
+  const results = useQueries({
+    queries: scoped.map((t) => ({ queryKey: keys.tenantTrees(t.slug), queryFn: () => api.tenants.trees(t.slug) })),
+  });
+  const creatable = allTenants.filter((t) => canMaintain(roleIn(t.id), isAdmin));
+
+  const q = query.trim().toLowerCase();
+  const rows: TreeRow[] = scoped
+    .flatMap((t, i) => (results[i]?.data ?? []).map((summary) => ({ tenant: t.slug, summary })))
+    .filter(({ summary: { tree } }) => !visibility || tree.visibility === visibility)
+    .filter(({ tenant, summary: { tree } }) => !q || `${tenant}/${tree.name}`.toLowerCase().includes(q) || tree.description.toLowerCase().includes(q));
   const loading = tenants.isPending || results.some((r) => r.isPending);
   const failed = results.find((r) => r.isError);
+  const filtered = Boolean(tenantFilter || visibility || q);
 
   return (
     <>
@@ -115,48 +94,83 @@ export function TreesPage() {
         breadcrumbs={[{ label: "Trees" }]}
         description="Every tree you can see, across tenants."
         actions={
-          !creating && (
-            <Button variant="primary" onClick={() => update({ new: "1" })} disabled={!tenants.data?.length}>
-              New tree
-            </Button>
-          )
+          <Button onClick={() => update({ new: "1" })} disabled={creatable.length === 0}>
+            <Plus aria-hidden="true" />
+            New tree
+          </Button>
         }
       />
-      <div className="flex flex-col gap-5">
-        {creating && tenants.data && (
-          <Section title="New tree">
-            <CreateTreeForm tenants={tenants.data} initialTenant={filter} onDone={() => update({ new: null })} />
-          </Section>
-        )}
-        <Section
-          title="Trees"
-          flush
-          actions={
-            <SelectField label="Filter by tenant" hideLabel value={filter} onChange={(e) => update({ tenant: e.target.value })} className="w-44">
-              <option value="">All tenants</option>
-              {(tenants.data ?? []).map((t) => (
-                <option key={t.id} value={t.slug}>
-                  {t.slug}
-                </option>
-              ))}
-            </SelectField>
-          }
-        >
+      <div className="flex flex-col gap-4">
+        {!loading && !failed && rows.length > 0 && <Totals rows={rows} />}
+        <Card className="gap-0 overflow-hidden py-0">
+          <div role="search" aria-label="Filter trees" className="flex flex-col gap-2 border-b p-3 sm:flex-row sm:items-center">
+            <SearchInput label="Search trees" placeholder="Search trees…" value={query} onChange={(v) => update({ q: v })} />
+            <Select value={tenantFilter || ALL} onValueChange={(v) => update({ tenant: v === ALL ? null : v })}>
+              <SelectTrigger aria-label="Filter by tenant" className="w-full sm:w-44">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All tenants</SelectItem>
+                {allTenants.map((t) => (
+                  <SelectItem key={t.id} value={t.slug}>
+                    {t.slug}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={visibility || ALL} onValueChange={(v) => update({ visibility: v === ALL ? null : v })}>
+              <SelectTrigger aria-label="Filter by visibility" className="w-full sm:w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>Any visibility</SelectItem>
+                {VISIBILITIES.map((v) => (
+                  <SelectItem key={v} value={v} className="capitalize">
+                    {v}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {filtered && (
+              <Button variant="ghost" size="sm" onClick={() => update({ tenant: null, visibility: null, q: null })}>
+                Clear filters
+              </Button>
+            )}
+          </div>
           {tenants.isError ? (
-            <ErrorState error={tenants.error} onRetry={() => void tenants.refetch()} />
+            <QueryError error={tenants.error} onRetry={() => void tenants.refetch()} title="Could not load tenants" />
           ) : loading ? (
-            <SkeletonRows label="Loading trees" />
+            <TableSkeleton label="Loading trees" columns={5} />
           ) : failed ? (
-            <ErrorState error={failed.error} onRetry={() => void failed.refetch()} />
+            <QueryError error={failed.error} onRetry={() => void failed.refetch()} title="Could not load trees" />
           ) : rows.length === 0 ? (
-            <EmptyState title="No trees yet">
-              Create a tree here, or run <code className="font-mono">wt push</code> from a worktree with a remote configured.
-            </EmptyState>
+            filtered ? (
+              <EmptyState icon={FolderTree} title="No trees match these filters">
+                Try another tenant, visibility or search term.
+              </EmptyState>
+            ) : (
+              <EmptyState icon={FolderTree} title="No trees yet">
+                Create a tree here, or run <code className="font-mono">wt push</code> from a worktree with a remote configured.
+              </EmptyState>
+            )
           ) : (
-            <TreeTable rows={rows} />
+            <TreeTable
+              rows={rows}
+              sort={sort}
+              onSortChange={(s) => update({ sort: s.key === "name" ? null : s.key, dir: s.dir === DEFAULT_DIR[s.key] ? null : s.dir })}
+            />
           )}
-        </Section>
+        </Card>
       </div>
+      {creatable.length > 0 && (
+        <CreateTreeDialog
+          key={tenantFilter}
+          open={creating}
+          onOpenChange={(open) => update({ new: open ? "1" : null })}
+          tenants={creatable}
+          defaultTenant={tenantFilter}
+        />
+      )}
     </>
   );
 }
