@@ -3,1036 +3,682 @@
 ## Table of Contents
 
 - [1. Overview](#1-overview)
-- [2. What the Server Is NOT](#2-what-the-server-is-not)
-- [3. Responsibilities Summary](#3-responsibilities-summary)
-- [4. Tenant Model](#4-tenant-model)
-- [5. Tenant Isolation](#5-tenant-isolation)
-- [6. Worktree Visibility](#6-worktree-visibility)
-- [7. Access Control & IAM](#7-access-control--iam)
-- [8. Cross-Tenant Access Resolution](#8-cross-tenant-access-resolution)
-- [9. License Compliance Engine](#9-license-compliance-engine)
-- [10. Branch Protection Enforcement](#10-branch-protection-enforcement)
-- [11. Merge Request Management](#11-merge-request-management)
-- [12. Staged Snapshot Aggregation](#12-staged-snapshot-aggregation)
-- [13. Canonical History & Branch Storage](#13-canonical-history--branch-storage)
-- [14. Storage Backend](#14-storage-backend)
-- [15. Sync Engine](#15-sync-engine)
-- [16. Tag & Release Storage](#16-tag--release-storage)
-- [17. API Surface](#17-api-surface)
-- [18. Server Configuration](#18-server-configuration)
-- [19. Server Lifecycle](#19-server-lifecycle)
-- [20. Health, Metrics & Audit Logging](#20-health-metrics--audit-logging)
-- [21. Storage Quotas & Rate Limiting](#21-storage-quotas--rate-limiting)
-- [22. Error Model](#22-error-model)
-- [23. Implementation Status](#23-implementation-status)
-- [24. Design Constraints](#24-design-constraints)
+- [2. Architecture](#2-architecture)
+- [3. Transport: one port](#3-transport-one-port)
+- [4. Configuration](#4-configuration)
+- [5. Lifecycle](#5-lifecycle)
+- [6. Data model](#6-data-model)
+- [7. Authentication and authorization](#7-authentication-and-authorization)
+- [8. Enforcement points](#8-enforcement-points)
+- [9. Merge requests, reviews and CI](#9-merge-requests-reviews-and-ci)
+- [10. Staged snapshots](#10-staged-snapshots)
+- [11. Tags, releases, dependencies and TODOs](#11-tags-releases-dependencies-and-todos)
+- [12. Storage and garbage collection](#12-storage-and-garbage-collection)
+- [13. Events and SSE](#13-events-and-sse)
+- [14. Audit log](#14-audit-log)
+- [15. Health and metrics](#15-health-and-metrics)
+- [16. Quotas and rate limiting](#16-quotas-and-rate-limiting)
+- [17. Error model](#17-error-model)
+- [18. REST API catalogue](#18-rest-api-catalogue)
+- [19. Design constraints](#19-design-constraints)
+- [20. Implementation status](#20-implementation-status)
+- [21. Roadmap](#21-roadmap)
+- [22. References](#22-references)
 
 ---
 
 ## 1. Overview
 
-The `worktree-server` is the remote multi-tenant server that hosts worktrees for teams and organizations. It is the **central authority** for canonical history, access control, license compliance, and team collaboration.
+`worktree-server` is the remote multi-tenant W0rkTree server. It is written in
+Go (`services/server-go`, module
+`github.com/seanfilimon/worktree/services/server-go`, pure Go, no cgo) and
+is the **central authority** for:
 
-Every W0rkTree deployment has exactly two runtimes:
+- canonical history;
+- access control and license compliance;
+- branch and tag protection;
+- merge requests, CI status and releases;
+- team visibility of work in progress.
 
-| Runtime | Location | Role |
-|---|---|---|
-| `worktree-bg` | Developer's machine | Watches files, creates snapshots, syncs to server |
-| `worktree-server` | Remote host | Source of truth for history, access, compliance |
+```
+ wt (CLI) / worktree-bg ──► worktree-sdk ── gRPC SyncService (h2c|TLS) ──┐
+ apps/admin (React SPA) ───────────────────── REST /api/v1 + SSE ────────┤
+                                                                          ▼
+                                       worktree-server :7420 (one listener)
+                                          ├── meta.db   (bbolt metadata)
+                                          └── objects/  (BLAKE3 CAS)
+```
 
-The server is the **source of truth**. If a local history diverges from the server, the server wins. The bgprocess syncs with the server but cannot bypass its enforcement. Every operation that crosses a trust boundary — pushing, merging, granting access, exporting — flows through the server.
+The server is the source of truth. When local and server history diverge, the
+server branch wins: clients must fetch and merge, and pushes are
+fast-forward only. Clients are untrusted, and every claim they make (authors,
+taggers, tenants, object hashes, ancestry) is checked or overwritten on the
+server.
 
-This document specifies the server's complete responsibilities, data model, enforcement rules, API surface, configuration, and lifecycle.
+What the server does **not** do:
 
----
+- It never watches files or creates auto-snapshots; that is `worktree-bg`.
+- It never has a working directory and never touches the developer's
+  filesystem.
+- It never performs content merges. Merge requests merge only by fast-forward,
+  and three-way merges happen on the client.
 
-## 2. What the Server Is NOT
+The Rust `crates/worktree-server` crate was removed and superseded by this Go
+service.
 
-The server is **not** the local daemon. The bgprocess (`worktree-bg`) handles everything on the developer's machine. The following are explicit non-responsibilities of the server:
+## 2. Architecture
 
-- **Never watches files** — the server has no access to the developer's filesystem.
-- **Never creates auto-snapshots** — it only stores what the bgprocess sends.
-- **Never touches the working directory** — no reads, no writes, no filesystem events.
-- **Never runs on the developer's machine** — it is always a remote process.
-- **Never performs auto-merge** — merge conflict detection is local. The server enforces merge *rules* (reviews, CI gates) but the bgprocess computes the merge itself.
-- **Never stores `.wt/` or `.wt-tree/` folders as local state** — it stores the *contents* of access and config files as part of snapshot data, but does not maintain a working directory.
+The binary is `main.go` → `config.Load(args)` → `server.Run(ctx, cfg)`. Shared
+types and interfaces live in `internal/domain` (`types.go`, `interfaces.go`,
+`iam.go`, `v05.go`).
 
-If you are looking for the local daemon spec, see the bgprocess specification.
-
----
-
-## 3. Responsibilities Summary
-
-| Responsibility | Description |
+| Package | Role |
 |---|---|
-| **Multi-tenant hosting** | Logical isolation with namespace separation. Physical isolation as enterprise option. |
-| **IAM enforcement** | Tenants, accounts, teams, roles, policies — evaluated on every operation. |
-| **Cross-tenant access** | Enforces sharing rules between tenants with identity resolution and policy evaluation. |
-| **Canonical history** | Stores the authoritative snapshot DAG for every branch. Server history is the truth. |
-| **Staged snapshot storage** | Receives and stores staged snapshots from bgprocess clients for team visibility. |
-| **License compliance** | Per-path SPDX license enforcement on sync, export, fork, copy, and archive. |
-| **Branch protection** | Merge request reviews, required CI checks, signature requirements — all server-side. |
-| **Merge request system** | Built-in create, review, approve, reject, merge workflow with stale review handling. |
-| **Tag & release management** | Immutable tags and releases with artifact storage. Naming and uniqueness enforced. |
-| **Sync engine** | Delta sync, shallow sync, partial tree sync — serves and receives objects efficiently. |
-| **Storage backend** | Content-addressable object store with BLAKE3 hashing, deduplication, and per-tenant namespacing. |
-| **API surface** | gRPC for bgprocess sync, REST for admin panel and SDK, WebSocket for real-time events. |
-| **Quota enforcement** | Storage limits, worktree count limits, and rate limiting per tenant plan. |
-| **Audit logging** | Every access decision logged with full context for compliance and debugging. |
+| `internal/config` | Flags and `WT_*` environment variables; validation. |
+| `internal/server` | Wiring, the single listener (gRPC + HTTP mux), TLS, interceptors, background tickers, graceful shutdown. |
+| `internal/syncsvc` | gRPC `worktree.sync.v1.SyncService` (see [Sync](../sync/Sync.md)). |
+| `internal/httpapi` | REST `/api/v1`, SSE, `/healthz`, `/metrics`, static admin SPA. |
+| `internal/meta` | `MetaStore` + `DocStore` on bbolt (`NewBolt`) or in memory (`NewMemory`); `NewHistory` (ancestry, log, missing). |
+| `internal/objstore` | Content-addressed object store on disk (`objects/<2>/<62>`). |
+| `internal/content` | Reads (chunked) file content out of the object store. |
+| `internal/iam` | Authentication: accounts, passwords, tokens, sessions, MFA, invitations, password resets; gRPC/HTTP auth interceptors. |
+| `internal/authz` | Authorization: roles, teams, grants, service accounts, policies, simulator. |
+| `internal/sso` | OIDC single sign-on. |
+| `internal/review` | Branch protection, merge requests, approvals, reviews, linked groups. |
+| `internal/license` | Per-path SPDX license rules (push and read checks). |
+| `internal/pathacl` | Path-level write denies as a push check. |
+| `internal/signing` | Ed25519 signing keys and snapshot signature verification (push check). |
+| `internal/limits` | Tenant quotas (push check and REST) and request rate limiting. |
+| `internal/staged` | Staged (WIP) snapshots, summaries, overlap detection. |
+| `internal/events` | In-process pub/sub event bus with a recent-events ring. |
+| `internal/audit` | Audit log writer and queries. |
+| `internal/ci` | CI check status per snapshot. |
+| `internal/todo` | Cross-tree dependencies → TODOs. |
+| `internal/release` | Releases and release assets. |
+| `internal/gc` | Object garbage collection; staged and audit retention. |
+| `internal/accesscfg` | Declarative access documents (plan/apply). |
+| `internal/textdiff`, `internal/hash` | Unified diffs; BLAKE3 hash type. |
 
----
+Services depend only on `domain` interfaces, so each package is tested with
+small in-package fakes and `meta.NewMemory()`.
 
-## 4. Tenant Model
+## 3. Transport: one port
 
-A **tenant** is the identity unit in W0rkTree. Every action — creating a snapshot, pushing to a branch, granting access — is performed by a tenant.
+One TCP listener (default `:7420`) serves everything:
 
-### Tenant Properties
+- **gRPC** handles requests with `ProtoMajor == 2` and `Content-Type:
+  application/grpc*` (`SyncService` plus `grpc.health.v1.Health`). The message
+  limit is 64 MiB in both directions. Interceptors handle panic recovery,
+  bearer authentication (`iam.UnaryInterceptor` / `StreamInterceptor`) and
+  rate limiting. Calls without a token run anonymously, and an invalid
+  token fails with `Unauthenticated`.
+- **HTTP** serves everything else: `/healthz`, `/metrics`, `/api/v1/...`
+  (JSON and SSE), and `/admin/` (the static admin SPA from `--admin-dir`, with
+  an `index.html` fallback). `/admin` redirects to `/admin/`, and `/`
+  redirects to `/admin/`.
+- **Protocols.** In cleartext the listener speaks HTTP/1.1 plus HTTP/2 with prior
+  knowledge (h2c, standard library `http.Protocols`), with up to 250 concurrent
+  streams per connection. Server-wide settings are `ReadHeaderTimeout` 10 s,
+  `IdleTimeout` 2 min and 1 MiB maximum headers. There are no read or write
+  timeouts, because uploads, downloads and SSE are long-lived.
+- **TLS.** With `--tls-cert`/`--tls-key` the same port serves HTTPS and gRPC
+  over TLS (ALPN `h2`), and `--tls-client-ca` adds optional client-certificate
+  verification (mTLS). The server logs a warning when it listens in cleartext
+  on a non-loopback address.
+- **CORS.** `http://localhost:5173` (Vite dev server) is always allowed, plus
+  the origins in `--cors-origins` / `WT_CORS_ORIGINS`. `*` allows any origin.
+- **Request bodies.** JSON bodies are limited to 1 MiB (`413
+  payload_too_large`) and must be `application/json` (`415
+  unsupported_media_type`). Release asset uploads accept raw bodies of up to
+  64 MiB.
 
-| Property | Type | Description |
-|---|---|---|
-| `id` | UUID | Immutable, server-generated unique identifier. |
-| `username` | String (slug) | Unique, URL-safe slug. Used in paths, access grants, and API routes. Example: `acme-corp`, `alice`. |
-| `email` | String | Verified email address. Used for notifications, identity verification, and cross-tenant resolution. |
-| `display_name` | String | Human-readable name. Not unique. |
-| `type` | Enum | `personal` (individual developer) or `organization` (team/company with member accounts). |
-| `status` | Enum | `Active`, `Suspended`, `Deactivated`. Suspended tenants cannot push or create but can read. |
-| `plan` | Enum | `Free`, `Pro`, `Enterprise`, `Custom`. Determines resource limits. |
-| `created_at` | Timestamp | When the tenant was registered. |
-| `updated_at` | Timestamp | Last modification to tenant record. |
+There is no separate gRPC port, no WebSocket endpoint and no QUIC listener.
 
-### Tenant Types
+## 4. Configuration
 
-**Personal tenants** are individual developer accounts. They own worktrees directly and can be granted access to other tenants' worktrees.
+Configuration comes from command-line flags and `WT_*` environment variables
+only; there is no configuration file. Precedence is flag > environment
+variable > default.
 
-**Organization tenants** contain member accounts and teams. An organization tenant has:
-
-| Component | Description |
-|---|---|
-| **Accounts** | Individual user accounts within the organization. Each account has its own credentials and identity. |
-| **Teams** | Named groups of accounts. Used as IAM principals (e.g., `team:frontend-devs`). |
-| **Org roles** | Organization-wide roles assigned to accounts (e.g., Org Owner, Org Admin, Org Member). |
-
-### Tenant Status Transitions
-
-```
-Created → Active → Suspended → Active       (reactivation)
-Created → Active → Suspended → Deactivated  (permanent removal)
-Created → Active → Deactivated               (immediate removal)
-```
-
-- `Active` — full access according to plan and policies.
-- `Suspended` — read-only. Cannot push, create snapshots, create branches, or modify access. Existing data is preserved.
-- `Deactivated` — no access. Data retained for a configurable grace period, then purged.
-
----
-
-## 5. Tenant Isolation
-
-### Namespace Isolation (Default)
-
-Every tenant's data is namespaced by their slug:
-
-```
-/<tenant-slug>/<worktree-name>/
-```
-
-All storage paths, object references, and API routes are prefixed with the tenant slug. This provides logical isolation — tenants cannot accidentally (or intentionally) access each other's raw storage.
-
-### Physical Isolation (Enterprise Option)
-
-Enterprise tenants may opt into physical isolation:
-
-| Isolation Level | Storage | Compute | Network |
+| Flag | Env | Default | Meaning |
 |---|---|---|---|
-| **Logical** (default) | Shared object store, namespace-separated | Shared server processes | Shared endpoints |
-| **Physical** (enterprise) | Dedicated storage volume or bucket | Dedicated worker pool (optional) | Dedicated endpoint (optional) |
+| `--addr` | `WT_ADDR` | `:7420` | Listen address for gRPC and HTTP. |
+| `--data` | `WT_DATA` | `./wt-data` | Data directory (`meta.db`, `objects/`). |
+| `--admin-user` | `WT_ADMIN_USER` | `admin` | Server admin username. |
+| `--admin-password` | `WT_ADMIN_PASSWORD` | — | If set, ensures the admin account exists with this password and server-admin rights. |
+| `--admin-dir` | `WT_ADMIN_DIR` | — | Static admin build (`apps/admin/dist`) served at `/admin/`. |
+| `--allow-registration` | `WT_ALLOW_REGISTRATION` | `true` | Self-service `POST /auth/register`. |
+| `--log-level` | `WT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
+| `--log-format` | `WT_LOG_FORMAT` | `text` | `text` or `json` (slog to stderr). |
+| `--cors-origins` | `WT_CORS_ORIGINS` | — | Comma-separated extra origins. |
+| `--shutdown-timeout` | `WT_SHUTDOWN_TIMEOUT` | `15s` | Graceful shutdown bound. |
+| `--public-url` | `WT_PUBLIC_URL` | — | External base URL (default SSO redirect URL). |
+| `--tls-cert`, `--tls-key` | `WT_TLS_CERT`, `WT_TLS_KEY` | — | Serve TLS. |
+| `--tls-client-ca` | `WT_TLS_CLIENT_CA` | — | Optional mTLS client CA bundle. |
+| `--gc-interval` | `WT_GC_INTERVAL` | `24h` | GC ticker; `0` disables it. |
+| `--gc-grace` | `WT_GC_GRACE` | `720h` | Unreachable objects are deleted after this long. |
+| `--staged-retention` | `WT_STAGED_RETENTION` | `168h` | Staged snapshot lifetime; `0` keeps them. |
+| `--audit-retention` | `WT_AUDIT_RETENTION` | `0` | Audit event lifetime; `0` keeps them. |
+| `--rate-limit` | `WT_RATE_LIMIT` | `1200` | Requests per minute per principal or anonymous IP; `0` disables it. |
+| `--default-max-trees` | `WT_DEFAULT_MAX_TREES` | `0` | Default tenant tree quota (`0` = unlimited). |
+| `--default-max-storage` | `WT_DEFAULT_MAX_STORAGE` | `0` | Default tenant storage quota in bytes (`0` = unlimited). |
+| `--version` | — | — | Print the version and exit. |
 
-Physical isolation is configured at the server level by an operator, not by the tenant. It is transparent to the bgprocess — the sync protocol is identical regardless of isolation mode.
+Exit codes are 0 (clean shutdown), 1 (runtime error) and 2 (invalid usage or
+configuration).
 
-### Cross-Tenant Boundary
+## 5. Lifecycle
 
-Any operation that crosses a tenant boundary goes through two checks:
+**Startup** (`server.Run`):
 
-1. **IAM check** — Does the requesting tenant have a policy granting this action on this resource?
-2. **License check** — Does the license for the affected paths allow this action by this tenant?
+1. Create the data directory and open `meta.db`. The file is locked
+   exclusively, so a second process on the same directory fails within 5 s.
+   Open the object store and the history walker.
+2. Build the services: iam, authz, events bus, audit, license, review, staged,
+   and the v0.5 components (todo, release, ci, signing, gc, limits, accesscfg,
+   pathacl).
+3. With `--admin-password`, ensure the admin account (`iam.EnsureAdmin`).
+4. Build the sync service with `PushChecks` (path ACL first, then the quota and signature
+   checkers), then
+   the gRPC server with its health service and the HTTP API.
+5. Listen, start background tasks (GC ticker; the TODO subscriber on
+   `branch.pushed`; tree-deletion subscribers that clean document
+   collections), audit `server.start`, then print `worktree-server listening
+   on <addr>`.
 
-Both must pass. Failure of either results in denial.
+**Shutdown** happens on SIGINT, SIGTERM or context cancellation, within
+`--shutdown-timeout`:
 
----
+1. The gRPC health service reports `NOT_SERVING`.
+2. `http.Server.Shutdown` drains every connection, including the gRPC streams
+   carried through `ServeHTTP` (GOAWAY), and the SSE streams end.
+3. Only after that, `grpc.Server.GracefulStop` runs, because it must not run
+   while `ServeHTTP` streams are active.
+4. If the timeout expires, everything is closed forcibly.
+5. The server audits `server.stop` and closes the metadata store.
 
-## 6. Worktree Visibility
+Every write is one bbolt transaction, so no separate flush step is needed.
 
-Every worktree has a visibility mode set in `.wt/config.toml` under `[worktree] visibility`:
+## 6. Data model
 
-| Mode | Default Access | Description |
+Field names are the `json` tags in `internal/domain` (authoritative). See
+[Tenant Model](../iam/TenantModel.md) and [IAM](../iam/IAM.md) for detail.
+
+| Entity | Key fields |
+|---|---|
+| **Tenant** | `id`, `slug`, `name`, `kind` (`user` for personal tenants, `org`), `plan` (`free`, `pro`, `enterprise`; a label set by a server admin), `status` (`active`, `suspended`: writes denied, `deactivated`: all access denied, server admins excepted), `status_reason`, `limits`. Registering an account creates its personal tenant. |
+| **Account** | `id`, `username`, `email`, `is_admin` (server admin), `disabled`. |
+| **Membership** | tenant + account + role (`owner`, `admin`, `maintainer`, `developer`, `viewer` or a custom role). |
+| **Team, Grant, ServiceAccount, CustomRole, Policy** | IAM (see [IAM](../iam/IAM.md)). |
+| **Tree** | `id`, `tenant_id`, `name` (unique per tenant), `description`, `visibility` (`private`, `internal`, `public`), `default_branch`. Trees created by `ResolveTree` are private with default branch `main`. |
+| **Branch** | `name`, `tip` (snapshot id), `updated_at`. Moves only by fast-forward (CAS). |
+| **Snapshot** | See [Storage](../storage/Storage.md#object-model); the server adds `pushed_by`, `pushed_at`, `verified`. |
+| **Tag** | `name`, `target`, `message`, `tagger`, `created_at`; immutable. |
+| **StagedSnapshot** | One per (tree, account, branch); see §10. |
+| **BranchProtection** | `pattern` (`path.Match` glob), `no_direct_push`, `required_approvals`, `allowed_pushers`, `no_delete`, `require_ci_pass`, `required_checks`, `require_signed`, `require_linear`, `block_on_todos`. |
+| **TagProtection** | `pattern`, `no_delete`, `no_move`, `allowed_taggers`. |
+| **LicenseRule** | `path_glob`, `spdx`, `grant` (`read-only`, `modify`, `redistribute`), `grantee` (tenant slug; `""` = every non-owning tenant), `expires_at`. |
+| **MergeRequest** | `number` (per tree), `title`, `description`, `source_branch`, `target_branch`, `state` (`open`, `merged`, `closed`), `approvals`, `linked_group`. |
+
+## 7. Authentication and authorization
+
+- **Tokens.** `POST /api/v1/auth/login` returns a session token, or `{mfa_required,
+  mfa_token}` followed by `/auth/login/mfa`. API tokens and service-account
+  keys can carry scopes. Tokens are stored as hashes. REST and gRPC both use
+  `Authorization: Bearer <token>`. SSO is OIDC with PKCE, state and nonce.
+- **Authorization** (`internal/authz`):
+  1. A disabled principal is denied.
+  2. A server admin is allowed (token scopes still apply).
+  3. Token scopes are checked.
+  4. Roles are collected from membership, teams, tree grants (users, teams,
+     service accounts, `tenant:` subjects) and visibility (public read for
+     everyone, internal read for any signed-in principal).
+  5. Enabled tenant policies apply: an explicit deny wins and an allow grants.
+  6. Otherwise the request is denied implicitly.
+
+  Policy denies never lock tenant owners out of `iam:*` and `tenant:admin`.
+  Suspended tenants deny writes and deactivated tenants deny everything.
+- Anonymous callers may `Ping` and read public trees. Every 403 answered by the
+  REST API and every gRPC `PermissionDenied` is audited as `access.denied`.
+
+See [IAM](../iam/IAM.md), [Declarative Access](../iam/DeclarativeAccess.md) and
+[Security](../security/Security.md).
+
+## 8. Enforcement points
+
+All enforcement is on the server. The client reads protections and policies
+only to display them.
+
+| Operation | Checks |
+|---|---|
+| **Push** (gRPC) | `tree:write` → `branch:push` (per-branch policies) → branch protection (`no_direct_push`, `allowed_pushers`, `require_linear`) → snapshot records and ancestry → objects present (including chunks) → fast-forward → license `CheckPush` on changed paths → PushChecks (path ACL deny, quotas, signatures / `require_signed`) → CAS. Full pipeline: [Sync § Push](../sync/Sync.md#push). |
+| **Pull / DownloadObjects** | `tree:read`; tree-scoped reachability; restricted paths (license `CheckRead`, `tree:read` path denies) are stubbed, and their content is refused. |
+| **REST content** (`blob`, `files`, `compare`, file history, snapshot file lists, archive) | Same path rules: `403 path_denied`, `451 license_restricted`; listings omit restricted paths and add `restricted_count`. |
+| **Tags** | `PushTag` / REST create need `tree:write`; tag protections `no_move` and `allowed_taggers`; delete needs `tree:admin` and honours `no_delete`. |
+| **Branch create / delete** (REST) | `branch:create`; quotas; delete via `review.CheckDeleteBranch` (not the default branch, not `no_delete`). |
+| **Merge-request merge** | See §9. |
+| **Archive / export** | License-aware: restricted and non-redistributable paths are omitted and a `LICENSES/NOTICE` file is added (audit `tree.export`). |
+
+Every operation that crosses a trust boundary needs both checks: the IAM
+decision **and** the license rule must allow it. A tenant admin still cannot
+read a path whose license rule withholds it from their tenant.
+
+## 9. Merge requests, reviews and CI
+
+- **Lifecycle.** A merge request is `open` → `merged` | `closed`. Numbers are
+  allocated per tree. Creating one needs `mr:create`, and the source and target
+  must be branches of the same tree.
+- **Reviews.** `POST {tree}/merge-requests/{n}/review {decision, body}` takes
+  `approved`, `changes_requested` or `commented` (`commented` needs only
+  `tree:read`). `.../approve` is shorthand for `approved`. Authors cannot
+  approve their own merge request. An approval records `snapshot_id`, the
+  source tip at approval time, and counts only while that is still the source
+  tip; a stale approval does not count. A `changes_requested` review from a
+  principal with `mr:approve` blocks the merge until that principal approves
+  the current tip.
+- **Comments.** `GET|POST {tree}/merge-requests/{n}/comments {body, path?,
+  line?, snapshot_id?}`; `PATCH|DELETE .../comments/{id}` by the author or
+  `tree:admin` (PATCH may set `resolved`).
+- **CI.** `POST {tree}/ci/status {snapshot, context, state, description?,
+  target_url?}` requires `ci:report`, and a newer report for the same context
+  replaces the old one. `GET {tree}/ci/status?snapshot=|branch=` returns the
+  combined state: `failure` if any check is failure or error, else `pending` if
+  any is pending, else `success` (`""` when there are no checks). Each report
+  publishes event `ci.status`.
+- **Merge readiness.** `GET {tree}/merge-requests/{n}/checks` returns
+  `{mergeable, blockers[{kind, message}], approvals{required, current, stale},
+  ci{state, required, missing}, todos{blocking_open}}`. A merge enforces:
+  - the required approvals and changes-requested reviews;
+  - `require_ci_pass`: every context in `required_checks` is `success` on the
+    source tip (an empty list means every reported check);
+  - `block_on_todos`: no open blocking TODO targets the source branch;
+  - `require_linear`.
+
+  A failed check answers `409 merge_blocked`.
+- **Merge execution.** Merging is **fast-forward only**. The target tip moves
+  to the source tip with CAS, and a merge request that cannot fast-forward is
+  refused. A merge publishes `mr.merged` and `branch.pushed` (so watchers
+  fetch) and increments `wt_mr_merges_total`. The server never creates merge
+  snapshots.
+- **Linked groups.** `POST /tenants/{t}/linked-groups {name,
+  members[{tree, number}]}` requires `mr:merge` on every member tree.
+  `POST .../{id}/merge` merges all members atomically: every member must be
+  mergeable, tips move by CAS in order and roll back on failure, and the merge
+  publishes `group.merged`. Merging a member alone answers `409
+  linked_group`.
+
+## 10. Staged snapshots
+
+Staged snapshots give a team visibility into work in progress without touching
+branch history:
+
+- There is one entry per (tree, account, branch), and a newer stage replaces
+  the older one.
+- An entry is cleared when its author pushes the branch, when the author
+  discards it (`Unstage`, or REST `DELETE {tree}/staged?branch=`; `tree:admin`
+  may pass `account=`), or when it is older than `--staged-retention`.
+- REST `GET {tree}/staged?branch=` lists entries, and `GET
+  {tree}/staged/summary` returns per-branch activity with **file overlaps**:
+  the same path staged by two or more accounts, an early conflict warning.
+- Events are `snapshot.staged` and `staged.cleared` (`reason` `pushed` or
+  `expired`).
+
+Protocol details are in [Sync § Staged snapshots](../sync/Sync.md#staged-snapshots)
+and the product view in [Staged Visibility](../visibility/StagedVisibility.md).
+
+## 11. Tags, releases, dependencies and TODOs
+
+- **Tags** are immutable names pointing at a snapshot of the tree. They are
+  created by `PushTag` or `POST {tree}/tags {name, target, message?}` (`target`
+  = a REV: snapshot id or unique prefix of at least 4 characters, a branch or a
+  tag) and deleted by `DELETE {tree}/tags/{name}`. Tag protections apply. Events
+  are `tag.pushed` and `tag.deleted`.
+- **Releases.** `GET|POST {tree}/releases {tag, name, notes, draft, prerelease,
+  snapshot?}` creates the tag at `snapshot` when it does not exist.
+  `GET|PATCH|DELETE {tree}/releases/{tag}` reads, edits and deletes a release.
+  Assets use `PUT|GET|DELETE .../assets/{name}`: the upload is a raw body of at
+  most 64 MiB, stored as a blob in the object store, and the download carries
+  Content-Type and Content-Disposition. Actions are `release:create` and
+  `release:delete`, and events are `release.created` and `release.deleted`.
+- **Dependencies and TODOs.** A snapshot may declare `dependencies` (`wt
+  snapshot --depend TREE[@BRANCH] --todo TITLE ...`). When it is pushed, the
+  TODO service, which subscribes to `branch.pushed`:
+  - resolves each target tree and requires `tree:read` on it for the pusher
+    (otherwise it audits `todo.skipped`);
+  - deduplicates by (source snapshot, target tree, title);
+  - creates a numbered `Todo` in the target tree (event `todo.created`).
+
+  A pushed message line `Completes: #N` or `Completes: tenant/tree#N` marks that
+  TODO `done`. The REST endpoints are `GET|POST {tree}/todos`, `GET|PATCH
+  {tree}/todos/{n}`, `POST .../claim|complete|cancel`, and `GET
+  {tree}/dependencies?branch=` (outgoing and incoming).
+- **Signing keys.** `GET|POST /auth/keys {name, public_key}` (Ed25519),
+  `DELETE /auth/keys/{id}` (revokes the key), and `GET
+  /accounts/{username}/keys` (public keys). Invalid signatures are audited as
+  `snapshot.signature_invalid`.
+
+## 12. Storage and garbage collection
+
+The data directory holds `meta.db` (bbolt, every piece of metadata, with v0.5
+document collections in the `docs` bucket) and `objects/<2 hex>/<62 hex>`
+(a shared BLAKE3 content-addressed store, deduplicated across tenants).
+Isolation is in the reference graph: objects are reachable, and therefore
+readable, only through a tree's branches and tags.
+
+`gc.Collector` marks everything reachable from branch tips, tags, staged
+snapshots, merge-request tips and releases. Unreachable objects are deleted
+after `--gc-grace`. The same run applies staged and audit retention. GC runs
+every `--gc-interval` and on demand: `POST /api/v1/admin/gc?dry_run=` returns a
+`GCReport`, and `GET /api/v1/admin/gc` returns the configuration and the last 20
+runs. Full layout and algorithm: [Storage](../storage/Storage.md).
+
+## 13. Events and SSE
+
+`internal/events.Bus` is an in-process, non-blocking pub/sub bus:
+
+- each subscriber has a buffer of 64 events, and events are dropped for a
+  subscriber whose buffer is full (counted in bus stats);
+- filters match on tenant, tree and types;
+- a ring buffer keeps the 200 most recent events.
+
+An event is `{type, tenant_id, tree_id?, actor?, payload?, at}`.
+
+- **`GET /api/v1/events?tenant=&tree=&types=`** returns `text/event-stream`.
+  The stream starts with `: connected` and `retry: 5000`, then sends one `event:
+  <type>\ndata: <json Event>\n\n` per event and a `: heartbeat` comment every
+  15 s. The scope depends on the parameters:
+  - with `tree`, the caller needs `tree:read`;
+  - with only `tenant`, the caller needs `tenant:read`;
+  - with neither, server admins get every event and other accounts get the
+    events of their member tenants.
+
+  The stream ends when the server shuts down. `wt events [--tenant] [--tree]
+  [--type]...` streams it from the CLI.
+- **`GET /api/v1/events/recent?tenant=&tree=&limit=50`** returns recent events,
+  oldest first, with the same scoping.
+- **gRPC `WatchBranches`** streams branch events to clients
+  ([Sync](../sync/Sync.md#branch-watching)).
+
+| Event | Published when | Payload (main fields) |
 |---|---|---|
-| **Private** (default) | Owner-only | Other tenants must be explicitly granted access via IAM policies or `tenant_access` entries. Nothing is visible to outsiders. |
-| **Shared** | Named tenants | Specific tenants are granted access by username or email. The worktree does not appear in public listings. |
-| **Public** | All tenants read | All authenticated tenants can read, clone, and sync. Write access (push, branch create, merge) still requires explicit grants. License compliance governs what can be copied or redistributed. |
+| `tree.created` | tree created (REST or `ResolveTree`) | `name`, `tenant` |
+| `tree.deleted` | tree deleted | `name` |
+| `branch.pushed` | push accepted or merge request merged | `branch`, `old_tip`, `new_tip`, `count` |
+| `branch.created` | REST branch create | branch |
+| `branch.deleted` | REST branch delete | branch |
+| `tag.pushed` | tag created (gRPC or REST) | `tag`, `target` |
+| `tag.deleted` | tag deleted | tag |
+| `snapshot.staged` | stage | `StagedSnapshot` |
+| `staged.cleared` | push, unstage or expiry | `tree_id`, `account_id`, `author`, `branch_name`, `snapshot_id`, `reason` |
+| `mr.opened` / `mr.approved` / `mr.reviewed` / `mr.commented` / `mr.merged` / `mr.closed` | merge-request activity | merge request summary |
+| `group.merged` | linked group merged | group |
+| `ci.status` | CI report | `CIStatus` |
+| `todo.created` / `todo.updated` | TODO created or changed (in the target tenant) | `Todo` |
+| `release.created` / `release.deleted` | release activity | release |
+| `access.applied` | declarative access document applied | plan |
 
-### Visibility Enforcement
+## 14. Audit log
 
-- **Listing**: `wt list --remote` only returns worktrees the requesting tenant can see.
-- **Clone/sync**: The server checks visibility before serving any objects.
-- **Search**: Public worktrees appear in server-wide search. Private and shared worktrees only appear for authorized tenants.
-- **Forking**: Public worktrees can be forked, but license compliance governs which paths are included. Proprietary-licensed paths are excluded from forks unless explicitly granted.
+Audit events (`{id, tenant_id, actor_id, actor, action, resource_type,
+resource_id, details, remote_addr, at}`) are stored in the bbolt `audit`
+bucket in time order. Actions include:
 
----
-
-## 7. Access Control & IAM
-
-### IAM Components
-
-| Component | Description |
+| Area | Actions |
 |---|---|
-| **Tenants** | Users or organizations. The top-level identity. |
-| **Accounts** | Individual user accounts within an organization tenant. |
-| **Teams** | Named groups of accounts within a tenant. Referenced as `team:<name>` in policies. |
-| **Roles** | Named permission sets. Built-in and custom. |
-| **Policies** | RBAC + ABAC rules binding subjects (principals) to permissions (actions) at specific scopes (resources). |
-| **Scopes** | Hierarchy of resource granularity for policy evaluation. |
+| Authentication | `auth.login`, `auth.login_failed`, `auth.logout`, `auth.register`, `auth.mfa_challenge`, `auth.password_change`, `sso.login` |
+| Sync | `branch.push`, `branch.push_rejected` (with reason), `tag.push`, `tree.create` (`via: grpc`), `license.denied`, `snapshot.signature_invalid` |
+| Management | `tree.*`, `branch.*`, `tag.*`, `protection.*`, `license.*`, `mr.*`, `member.*`, `tenant.*`, `account.*` |
+| IAM | `team.*`, `role.*`, `policy.*`, `grant.*`, `sa.*`, `token.*`, `session.*`, `mfa.*`, `invitation.*`, `password.*`, `access.applied` |
+| Server and access | `access.denied` (every REST 403 and gRPC `PermissionDenied`), `todo.skipped`, `tree.export`, `server.start`, `server.stop` |
 
-### Built-in Roles
+`GET /api/v1/audit?tenant=&action=&resource_type=&resource_id=&since=&until=&limit=`
+queries the log. `action` accepts a prefix such as `iam.*`, and
+`format=ndjson` streams every match as `application/x-ndjson`. Tenant admins
+see their tenants; server admins see everything when no tenant is given. The
+CLI is `wt audit`. Retention is `--audit-retention`.
 
-| Role | Permissions | Description |
+## 15. Health and metrics
+
+- **`GET /healthz`** (no prefix, no auth, never rate limited) returns
+  `{"status": "ok"|"degraded", "version", "uptime_seconds", "checks":
+  {"meta": "ok", "objects": "ok"}}`, with HTTP `503` when a probe fails.
+  `grpc.health.v1.Health` is also served.
+- **`GET /metrics`** (Prometheus text, exempt from rate limits) exposes:
+  - `worktree_http_requests_total{route,code}`,
+    `worktree_http_request_duration_seconds` (histogram by route),
+    `worktree_http_requests_in_flight`;
+  - gauges `worktree_tenants`, `worktree_accounts`, `worktree_trees`,
+    `worktree_branches`, `worktree_snapshots`, `worktree_staged_snapshots`,
+    `worktree_objects`, `worktree_storage_bytes`;
+  - `worktree_build_info{version,goversion}`, `worktree_uptime_seconds`;
+  - `wt_sync_pushes_total{result}`, `wt_sync_pulls_total`,
+    `wt_authz_decisions_total{decision}`, `wt_mr_merges_total`,
+    `wt_gc_runs_total`, `wt_gc_deleted_objects_total`,
+    `wt_rate_limited_total`.
+- **`GET /api/v1/admin/stats`** returns `ServerStats`, and **`GET
+  /api/v1/admin/system`** returns `SystemInfo` (both server admin only).
+
+## 16. Quotas and rate limiting
+
+- **Quotas.** Tenant limits (`max_trees`, `max_storage_bytes`,
+  `max_branches_per_tree`, `max_members`, `requests_per_minute`) override the
+  server defaults (`--default-max-trees`, `--default-max-storage`). They are
+  enforced as follows:
+  - storage and branches by the `limits.Limiter` push check (`QuotaExceeded`);
+  - trees, members and REST branch creation with `409 quota_exceeded`.
+
+  The endpoints are `GET|PUT /api/v1/admin/tenants/{t}/limits` (server admin)
+  and `GET /api/v1/tenants/{t}/usage`. Existing data is never deleted when a
+  tenant is over quota.
+- **Rate limiting.** A token bucket runs per principal (account or service
+  account id), or per remote IP for anonymous calls. The default is
+  `--rate-limit` = 1,200 requests per minute, and a tenant's
+  `requests_per_minute` overrides it.
+  - HTTP answers `429 {"error": {"code": "rate_limited"}}` with `Retry-After`,
+    `X-RateLimit-Limit` and `X-RateLimit-Remaining`.
+  - gRPC answers `ResourceExhausted`.
+
+  `/healthz` and `/metrics` are exempt.
+
+## 17. Error model
+
+**REST** errors use the envelope `{"error": {"code": "...", "message": "..."}}`:
+
+| Code | HTTP | Meaning |
 |---|---|---|
-| **Owner** | `*` | Full control. Can delete the worktree, transfer ownership, manage billing. Only one per worktree. |
-| **Admin** | `*` except ownership transfer | Full access including IAM management, branch protection config, and tenant access grants. |
-| **Maintainer** | `snapshot:*`, `branch:*`, `tag:*`, `merge-request:merge`, `release:*` | Can merge to protected branches, manage tags and releases. Cannot modify access policies. |
-| **Developer** | `snapshot:read`, `snapshot:create`, `branch:list`, `branch:create`, `branch:push` | Can create snapshots and push to non-protected branches. Cannot merge to protected branches. |
-| **Viewer** | `snapshot:read`, `branch:list`, `tree:sync` | Read-only access. Can clone and sync but not modify anything. |
+| `bad_request` | 400 | Invalid input. |
+| `unauthenticated` | 401 | Missing or invalid credentials. |
+| `forbidden` | 403 | Permission denied. |
+| `path_denied` | 403 | A policy denies reading the path. |
+| `branch_protection`, `license_violation`, `access_denied`, `review_required`, `signature_required`, `ci_checks_failed` | 403 | `PushDenied` kinds surfaced by REST operations. |
+| `not_found` | 404 | Unknown resource or API path. |
+| `method_not_allowed` | 405 | With an `Allow` header. |
+| `conflict` | 409 | Already exists, or a concurrent update. |
+| `quota_exceeded`, `merge_blocked`, `linked_group`, `managed_by_config`, `last_owner` | 409 | Specific conflicts. |
+| `payload_too_large` | 413 | Body over the limit. |
+| `unsupported_media_type` | 415 | Body is not JSON. |
+| `rate_limited` | 429 | With `Retry-After`. |
+| `license_restricted` | 451 | License withholds the content. |
+| `internal` | 500 | Logged; no detail is exposed. |
+| `not_implemented` | 501 | The feature's service is not configured. |
 
-Custom roles are defined in `.wt/access/roles.toml` and `.wt-tree/access/roles.toml`.
+**gRPC** uses canonical status codes (`Unauthenticated`, `PermissionDenied`,
+`InvalidArgument`, `NotFound`, `FailedPrecondition`, `ResourceExhausted`,
+`Unimplemented`, `Internal`). Push rejections are response values
+(`PushRejection` oneof), not errors. See [Sync § Errors](../sync/Sync.md#errors).
 
-### Policy Model
+## 18. REST API catalogue
 
-Policies are defined in `.wt/access/policies.toml` and `.wt-tree/access/policies.toml`:
+Every path below is under `/api/v1`, except `/healthz`, `/metrics` and
+`/admin/*`. `{tree}` = `/trees/{tenant}/{tree}`, and `{t}` = `/tenants/{t}`.
+`REV` = a snapshot id (full, or a unique prefix of at least 4 characters), a
+branch or a tag. JSON field names are the Go `json` tags. The admin panel's
+`apps/admin/src/api/*.ts` types mirror them.
 
-```toml
-[[policy]]
-name = "policy-unique-name"
-description = "Human-readable description"
-effect = "allow"                    # "allow" or "deny"
-principals = ["tenant:alice", "team:backend"]  # Who
-actions = ["branch:push", "snapshot:create"]   # What
-resources = ["tree:api-service/*"]             # Where
-conditions = {}                                # Optional ABAC conditions
+**Health and server administration**
+
+```
+GET  /healthz | /metrics
+GET  /admin/stats | /admin/system
+GET  /admin/accounts | POST /admin/accounts | PATCH /admin/accounts/{username}
+POST /admin/accounts/{username}/password | /admin/accounts/{username}/reset-code
+GET|PUT /admin/sso
+POST /admin/gc?dry_run= | GET /admin/gc
+GET|PUT /admin/tenants/{t}/limits | PATCH /admin/tenants/{t} {status, status_reason}
+GET  /search?q=&limit=20
 ```
 
-### Scope Hierarchy
-
-Scopes form a hierarchy from broadest to most specific:
+**Authentication and the caller's account**
 
 ```
-Global → Tenant → Tree → Branch → RegisteredPath
+POST /auth/register | /auth/login | /auth/login/mfa | /auth/logout | /auth/password | /auth/password-reset
+GET  /auth/me | /auth/providers | /auth/sso/start | /auth/sso/callback
+GET|POST /auth/tokens | DELETE /auth/tokens/{id}
+GET  /auth/sessions | DELETE /auth/sessions/{id} | POST /auth/sessions/revoke-others
+GET  /auth/mfa | POST /auth/mfa/totp/enroll | /auth/mfa/totp/confirm | /auth/mfa/recovery-codes | DELETE /auth/mfa/totp
+GET|POST /auth/keys | DELETE /auth/keys/{id} | GET /accounts/{username}/keys
+GET  /invitations/{code} | POST /invitations/{code}/accept
 ```
 
-**Resolution rules:**
+**Tenants and IAM** (details in [IAM](../iam/IAM.md))
 
-1. Deny always beats Allow at the same scope level.
-2. More specific scope overrides broader scope.
-3. If no policy matches, the default is Deny (closed by default).
-4. Tree-level policies ADD to root-level policies (strictest combination wins — the ceiling model).
+```
+GET|POST /tenants | GET|PATCH {t} | GET {t}/usage
+GET {t}/members | PUT|DELETE {t}/members/{username}
+GET|POST {t}/trees
+{t}/teams[/{team}[/members/{username}]] | {t}/roles[/{name}] | {t}/policies[/{id}] | POST {t}/policies/validate
+{t}/service-accounts[/{name}[/keys[/{id}]]] | {t}/invitations[/{id}]
+GET {t}/access-config | POST {t}/access-config/plan | /apply
+GET|POST {t}/linked-groups | GET|DELETE {t}/linked-groups/{id} | POST {t}/linked-groups/{id}/merge
+GET /iam/actions | POST /iam/simulate | GET /iam/effective
+```
 
-### Policy Storage and Sync
+**Trees and content**
 
-Access files (`.wt/access/roles.toml`, `.wt/access/policies.toml`, and their `.wt-tree/` counterparts) are version-controlled and synced like any other file. However:
+```
+GET|PATCH|DELETE {tree}
+GET  {tree}/branches | POST {tree}/branches {name, from?} | DELETE {tree}/branches/{name...}
+GET  {tree}/snapshots?branch=&limit= | GET {tree}/snapshots/{id}
+GET  {tree}/blob/{snapshot}/{path...}            raw bytes (chunked files reassembled)
+GET  {tree}/compare?to=&from=&context= | {tree}/history?path=&branch=&limit= | {tree}/stats?branch=&days=
+GET  {tree}/archive/{snapshot}?format=tar.gz|zip
+GET  {tree}/tags | POST {tree}/tags | DELETE {tree}/tags/{name...}
+GET|PUT|DELETE {tree}/protections (?pattern=) | {tree}/tag-protections (?pattern=)
+GET|PUT|DELETE {tree}/licenses (?path_glob=) | {tree}/grants (?subject_type=&subject=)
+GET  {tree}/access-config | POST {tree}/access-config/plan | /apply
+```
 
-- Changes to access files are themselves access-controlled. Modifying policies requires `policy:manage` permission or the `Admin`/`Owner` role.
-- The server parses and validates policy files on every push. Invalid policies are rejected with a descriptive error.
-- The server maintains a compiled policy cache for fast evaluation. The cache is invalidated when access files change.
+**Collaboration**
 
-### Permission Actions
+```
+GET  {tree}/staged?branch= | DELETE {tree}/staged?branch=&account= | GET {tree}/staged/summary
+GET|POST {tree}/merge-requests?state= | GET {tree}/merge-requests/{n}
+POST {tree}/merge-requests/{n}/approve | /review | /merge | /close | GET .../checks
+GET|POST {tree}/merge-requests/{n}/comments | PATCH|DELETE .../comments/{id}
+POST {tree}/ci/status | GET {tree}/ci/status?snapshot=|branch=
+GET|POST {tree}/todos | GET|PATCH {tree}/todos/{n} | POST {tree}/todos/{n}/claim|complete|cancel
+GET  {tree}/dependencies?branch=
+GET|POST {tree}/releases | GET|PATCH|DELETE {tree}/releases/{tag}
+PUT|GET|DELETE {tree}/releases/{tag}/assets/{name}
+```
 
-| Action | Description |
+**Activity**
+
+```
+GET /events?tenant=&tree=&types= (SSE) | GET /events/recent
+GET /audit?tenant=&action=&resource_type=&resource_id=&since=&until=&limit=&format=ndjson
+```
+
+Unknown `/api/` paths answer with the JSON envelope (`404 not_found`, or `405
+method_not_allowed` with `Allow`).
+
+## 19. Design constraints
+
+1. **The server is the source of truth.** Branch tips move only on the server,
+   fast-forward only, with compare-and-swap.
+2. **Append-only history.** There is no force push, rebase or rewrite of pushed
+   snapshots.
+3. **The server never touches working directories.** It stores snapshots and
+   objects that clients upload.
+4. **The client is untrusted.** Hashes, ancestry and ownership are verified, and
+   identity fields are set from the token.
+5. **Deny by default.** No role and no allowing policy means denied, and an
+   explicit deny beats every allow.
+6. **Dual enforcement.** IAM and license rules must both allow access to
+   content.
+7. **Tree rules only restrict.** Tree-level declarative documents may contain
+   only deny statements.
+8. **Logical tenant isolation.** Storage is a shared, deduplicated object store,
+   and access is mediated by the reference graph and IAM.
+9. **Structured errors.** Every refusal carries a machine-readable code (REST
+   envelope code, gRPC status, or `PushRejection` variant) and a
+   human-readable message.
+10. **One port, one binary, embedded storage.** There are no external
+    dependencies to run a server.
+
+## 20. Implementation status
+
+| Area | Status |
 |---|---|
-| `snapshot:read` | Read snapshot content and metadata |
-| `snapshot:create` | Create new snapshots |
-| `branch:list` | List branches |
-| `branch:create` | Create new branches |
-| `branch:push` | Push to a branch (non-protected) |
-| `branch:merge` | Merge into a branch (protected or not) |
-| `branch:delete` | Delete a branch |
-| `tag:create` | Create tags |
-| `tag:delete` | Delete tags |
-| `release:create` | Create releases |
-| `release:delete` | Delete releases |
-| `tree:sync` | Sync (clone/pull) tree content |
-| `tree:create` | Create new trees |
-| `tree:delete` | Delete trees |
-| `merge-request:create` | Create merge requests |
-| `merge-request:review` | Approve or request changes |
-| `merge-request:merge` | Merge a merge request |
-| `policy:manage` | Create, modify, or delete access policies |
-| `policy:view` | Read access policies |
-| `config:manage` | Modify worktree or tree configuration |
-| `file:read` | Read file content (used in license grants) |
-| `file:modify` | Modify file content (used in license grants) |
-| `file:redistribute` | Include file in exports/forks (used in license grants) |
-| `*` | Wildcard — all actions |
-
----
-
-## 8. Cross-Tenant Access Resolution
-
-When a policy references an external tenant, the server resolves the identity:
-
-### Resolution Flow
-
-1. Policy contains a principal like `{ tenant = "alice-dev" }` or `{ tenant = "bob@company.com" }`.
-2. Server resolves the username or email to an internal `TenantId` (UUID).
-3. If the tenant does not exist on this server, the policy is rejected on config sync with error `UnknownTenant`.
-4. The resolved `TenantId` is stored in the compiled policy cache.
-5. On access check, the server evaluates all policies where the subject matches the requesting tenant's `TenantId`.
-
-### Cross-Tenant Operation Flow
-
-```
-bgprocess (tenant: bob) → server: "push to alice/my-project/main"
-                           │
-                           ├─ 1. Authenticate bob (TLS client cert / token)
-                           ├─ 2. Resolve target: tenant=alice, worktree=my-project, branch=main
-                           ├─ 3. IAM check: evaluate policies for bob on alice/my-project/main
-                           │     └─ Find matching policies, check effect (allow/deny)
-                           ├─ 4. License check: evaluate license grants for affected paths
-                           │     └─ For each path in the push, check license allows bob's action
-                           ├─ 5. Branch protection check: is main protected? Are rules satisfied?
-                           │     └─ If no_direct_push: reject (must use merge request)
-                           └─ 6. If all checks pass: accept push, update branch DAG
-```
-
----
-
-## 9. License Compliance Engine
-
-The server enforces file-level license compliance on every operation that moves data across trust boundaries.
-
-### License Storage
-
-Licenses are assigned per-path in `.wt/config.toml` and `.wt-tree/config.toml` using SPDX identifiers:
-
-```toml
-[licenses]
-default = "MIT"
-
-[licenses.paths]
-"src/core/**" = "MIT"
-"src/enterprise/**" = "LicenseRef-Proprietary"
-"vendor/openssl/**" = "Apache-2.0"
-```
-
-The server indexes license assignments per worktree and keeps them current as snapshots are pushed.
-
-### License Grant Levels
-
-| Grant | Description |
-|---|---|
-| **Read-only** | Tenant can view the file content but cannot modify or include it in exports. |
-| **Modify** | Tenant can view and modify the file within the worktree. |
-| **Redistribute** | Tenant can include the file in exports, forks, archives, and `wt git export`. |
-
-### Enforcement Points
-
-| Operation | Enforcement |
-|---|---|
-| **Sync / Clone** | License grants checked per-path. Paths without read grant are excluded (stub metadata only). |
-| **Export (`wt git export`)** | Proprietary paths excluded unless tenant has redistribute grant. |
-| **Fork** | Cross-tenant forks respect license boundaries. Proprietary paths stripped from fork unless granted. |
-| **Archive (`wt archive`)** | Same as export — redistribute grant required for inclusion. |
-| **Copy between trees** | License compatibility checked. Incompatible licenses block the copy. |
-
-### Dual Enforcement Rule
-
-Both IAM and License must pass for every operation:
-
-```
-IAM check: Does this tenant have permission?  ──┐
-                                                 ├─ BOTH must pass → Operation allowed
-License check: Does the license allow this?    ──┘
-```
-
-A tenant with `Admin` IAM permissions still cannot redistribute a file with a read-only license grant. A tenant with a redistribute license grant still cannot push if they lack `branch:push` IAM permission.
-
----
-
-## 10. Branch Protection Enforcement
-
-The server enforces branch protection rules defined in `.wt/config.toml` and `.wt-tree/config.toml`. The bgprocess **cannot bypass** these rules.
-
-### Protection Rules
-
-| Rule | Description |
-|---|---|
-| `no_direct_push` | Reject direct pushes. Changes must go through a merge request. |
-| `require_merge_review` | At least one approval required before merge. |
-| `required_reviewers` | Minimum number of approving reviewers. |
-| `no_delete` | Branch cannot be deleted. |
-| `no_force` | Force-push is forbidden. History cannot be rewritten. |
-| `require_ci_pass` | All specified CI checks must pass before merge is allowed. |
-| `required_ci_checks` | List of CI check names that must report success. |
-| `require_snapshot_signature` | Snapshots must carry a valid cryptographic signature. |
-
-### Protection Inheritance (Ceiling Model)
-
-Tree-level protections ADD to root-level protections. They cannot relax them:
-
-- Root requires `required_reviewers = 2`. Tree can require 3 but cannot require 1.
-- Root requires `require_ci_pass = true`. Tree cannot set it to `false`.
-- Root requires `no_direct_push = true`. Tree cannot set it to `false`.
-
-The server computes the effective protection by taking the **strictest combination** of root and tree rules.
-
-### Push Rejection Flow
-
-```
-bgprocess → server: "push snapshot X to branch main"
-                     │
-                     ├─ Is main protected with no_direct_push?
-                     │   └─ YES → Reject: "branch main requires a merge request"
-                     │
-                     ├─ Is no_force set and is this a force-push?
-                     │   └─ YES → Reject: "force-push forbidden on branch main"
-                     │
-                     └─ Is require_snapshot_signature set?
-                         └─ YES → Verify signature on snapshot X
-                             └─ INVALID → Reject: "snapshot signature verification failed"
-```
-
----
-
-## 11. Merge Request Management
-
-The server provides a built-in merge request system. No external platform (GitHub, GitLab) is required.
-
-### Merge Request Lifecycle
-
-```
-Created → Open → Approved → Merged
-                    ↓
-               Changes Requested → Open (updated) → Approved → Merged
-                                                        ↓
-                                                      Closed (abandoned)
-```
-
-### Merge Request Properties
-
-| Property | Type | Description |
-|---|---|---|
-| `id` | Integer | Auto-incrementing, unique within the worktree. |
-| `title` | String | Human-readable title. |
-| `description` | String | Markdown description. |
-| `source_branch` | String | Branch to merge from. |
-| `target_branch` | String | Branch to merge into. |
-| `author` | TenantId | Who created the merge request. |
-| `status` | Enum | `Open`, `Approved`, `Merged`, `Closed`. |
-| `created_at` | Timestamp | Creation time. |
-| `updated_at` | Timestamp | Last modification time. |
-| `reviews` | List | Review records with reviewer identity, decision, and timestamp. |
-| `ci_status` | Map | CI check name → status (`pending`, `running`, `passed`, `failed`). |
-
-### Review Tracking
-
-Each review records:
-
-| Field | Description |
-|---|---|
-| `reviewer` | TenantId of the reviewer. |
-| `role` | Role of the reviewer at the time of review (for audit). |
-| `decision` | `approved`, `changes_requested`, or `commented`. |
-| `snapshot_id` | The snapshot hash at the time of the review. |
-| `timestamp` | When the review was submitted. |
-
-### Stale Review Handling
-
-When the source branch is updated after a review:
-
-1. The server compares the current source branch head against `snapshot_id` in each approval.
-2. If the source branch has new snapshots since the approval, the approval is marked **stale**.
-3. Stale approvals do not count toward `required_reviewers`.
-4. The reviewer must re-approve against the new head.
-
-This prevents merging code that was not actually reviewed.
-
-### Merge Execution
-
-When a merge request is merged:
-
-1. Server verifies all branch protection rules are satisfied (reviews, CI, signatures).
-2. Server verifies the source branch is up-to-date with the target (or performs a merge).
-3. Server creates a merge snapshot on the target branch referencing both parent snapshots.
-4. Merge request status is set to `Merged`.
-5. Source branch is optionally deleted (configurable per merge request).
-
-### CI Integration
-
-The server exposes webhook endpoints for CI systems to report check status:
-
-```
-POST /api/v1/ci/status
-{
-  "worktree": "acme/my-project",
-  "merge_request": 42,
-  "check_name": "build",
-  "status": "passed",
-  "details_url": "https://ci.example.com/builds/1234"
-}
-```
-
-The server stores CI status per merge request and evaluates `require_ci_pass` / `required_ci_checks` during merge.
-
----
-
-## 12. Staged Snapshot Aggregation
-
-The server stores staged snapshots from all connected bgprocess clients. Staged snapshots provide **team visibility** into active work before it becomes part of branch history.
-
-### Staged vs. Pushed
-
-| Aspect | Staged Snapshot | Pushed Snapshot |
-|---|---|---|
-| **Visibility** | Visible to team via API and dashboard | Part of branch history |
-| **Persistence** | Temporary, configurable retention | Permanent (append-only DAG) |
-| **Creation** | Auto-uploaded by bgprocess during sync | Explicit `wt push` by developer |
-| **Branch DAG** | Not part of branch DAG | Linked into branch DAG |
-| **Conflict** | Cannot conflict (not on a branch tip) | May conflict with branch tip |
-
-### Staged Snapshot Indexing
-
-Staged snapshots are indexed by:
-
-- **Tenant** — which developer's bgprocess uploaded it
-- **Branch** — which branch the developer is working on
-- **Tree** — which tree the changes are in
-- **Timestamp** — when the staged snapshot was received
-
-### Real-Time Streaming
-
-The server provides a WebSocket endpoint for real-time staged snapshot events:
-
-```
-WS /api/v1/ws/staged/<tenant-slug>/<worktree-name>
-```
-
-Events:
-
-| Event | Description |
-|---|---|
-| `staged.created` | A new staged snapshot was received. Includes snapshot metadata and changed file list. |
-| `staged.updated` | A staged snapshot was replaced by a newer one from the same user/branch. |
-| `staged.promoted` | A staged snapshot was pushed and is now part of branch history. |
-| `staged.expired` | A staged snapshot was removed due to retention policy. |
-
-### Retention Policy
-
-Staged snapshot retention is configurable per tenant plan:
-
-| Plan | Default Retention | Max Retention |
-|---|---|---|
-| Free | 24 hours | 7 days |
-| Pro | 7 days | 30 days |
-| Enterprise | 30 days | Unlimited |
-
-Staged snapshots are automatically purged after retention expires. A push promotes the staged snapshot to permanent history, removing it from the staged index.
-
----
-
-## 13. Canonical History & Branch Storage
-
-The server stores the canonical snapshot DAG — the authoritative history of every branch.
-
-### Branch Data Model
-
-| Property | Description |
-|---|---|
-| `name` | Branch name (e.g., `main`, `feature/auth`). |
-| `head` | Snapshot hash of the current branch tip. |
-| `parent_snapshots` | DAG links from each snapshot to its parent(s). |
-| `created_at` | When the branch was created. |
-| `created_by` | TenantId of the creator. |
-| `protection` | Computed effective protection rules. |
-
-### Append-Only History
-
-Branch history is **append-only**. There is no `rebase`, no `force-push` (unless explicitly allowed by protection rules), and no history rewriting. Every snapshot that becomes part of branch history is permanent.
-
-### Conflict Detection on Push
-
-When a bgprocess pushes to a branch:
-
-1. Server checks if the push is a fast-forward (the pushed snapshot's parent is the current branch tip).
-2. If fast-forward: accept, update branch tip.
-3. If not fast-forward: reject with `ConflictDetected`. The bgprocess must merge locally and retry.
-4. If `no_force` is set: force-push is rejected regardless. If `no_force` is not set and the push is marked as force: accept (overwrites branch tip).
-
----
-
-## 14. Storage Backend
-
-The server uses a content-addressable object store with BLAKE3 hashing.
-
-### Object Types
-
-| Type | Description |
-|---|---|
-| **Blob** | Raw file content. Identified by BLAKE3 hash of content. |
-| **Tree** | Directory listing — maps file names to blob or subtree hashes. |
-| **Snapshot** | Point-in-time record. References a tree hash, parent snapshot(s), author, timestamp, message. |
-| **Manifest** | Lists all objects required to reconstruct a snapshot. Used for sync optimization. |
-| **Delta** | Binary diff between two blobs. Used for efficient transfer, not stored long-term. |
-| **Chunk** | Large file chunk (from FastCDC splitting). Content-addressed, deduplicated. |
-
-### Deduplication
-
-Identical content produces identical BLAKE3 hashes. The server stores each unique object exactly once, regardless of how many tenants, worktrees, or branches reference it.
-
-For large files, content-defined chunking (FastCDC) means that even partial changes to a large file only produce new chunks for the changed regions. Unchanged chunks are deduplicated automatically.
-
-### Per-Tenant Namespacing
-
-Although objects are deduplicated at the storage layer, the **reference graph** is namespaced per tenant. Tenant A cannot enumerate or traverse tenant B's object references, even if they happen to share deduplicated blob content.
-
-### Storage Layout
-
-```
-<storage_root>/
-├── objects/                    # Content-addressable objects (shared, deduplicated)
-│   ├── ab/                     # First two hex chars of hash
-│   │   ├── cd1234...          # Full hash as filename
-│   │   └── ef5678...
-│   └── ...
-├── tenants/
-│   ├── <tenant-slug>/
-│   │   ├── worktrees/
-│   │   │   ├── <worktree-name>/
-│   │   │   │   ├── branches/   # Branch tip pointers
-│   │   │   │   ├── tags/       # Tag references
-│   │   │   │   ├── releases/   # Release metadata
-│   │   │   │   ├── staged/     # Staged snapshot index
-│   │   │   │   └── config/     # Cached parsed config
-│   │   │   └── ...
-│   │   └── account/            # Tenant metadata, plans, quotas
-│   └── ...
-└── server/                     # Server-level config, audit logs
-```
-
----
-
-## 15. Sync Engine
-
-The sync engine handles bidirectional data transfer between bgprocess clients and the server.
-
-### Inbound Operations (bgprocess → server)
-
-| Operation | Description |
-|---|---|
-| **Stage** | Upload staged snapshot. Server indexes it for team visibility. |
-| **Push** | Push snapshot(s) to a branch. Server validates, runs checks, updates branch DAG. |
-| **Config sync** | Upload changes to `.wt/` and `.wt-tree/` config/access files. Server validates and compiles. |
-| **Tag push** | Create or update a tag on the server. |
-
-### Outbound Operations (server → bgprocess)
-
-| Operation | Description |
-|---|---|
-| **Branch update** | Serve new snapshots on a branch since the client's last known head. |
-| **Clone** | Serve all objects needed to reconstruct a worktree at a given snapshot. |
-| **Shallow clone** | Serve objects for a limited depth of history. |
-| **Partial tree sync** | Serve metadata-only stubs for trees the client doesn't need locally. |
-| **Tag pull** | Serve tag references and their target snapshots. |
-
-### Delta Sync Protocol
-
-The sync engine minimizes data transfer:
-
-1. Client sends its known object hashes (have-list).
-2. Server computes the set of objects the client needs (want-list minus have-list).
-3. Server packs the needed objects, optionally computing binary deltas against objects the client already has.
-4. Client applies deltas to reconstruct full objects.
-
-### Shallow Sync
-
-Clients can request a limited depth of history:
-
-```
-SYNC request: branch=main, depth=10
-```
-
-The server serves only the last 10 snapshots on main and their referenced trees/blobs. The client can request deeper history later with incremental fetches.
-
-### Partial Tree Sync
-
-For worktrees with many trees, clients can sync a subset:
-
-```
-SYNC request: branch=main, trees=["frontend", "api-service"]
-```
-
-Trees not in the requested set are served as **stubs** — metadata only (name, latest snapshot hash, size) without file content. Stubs can be hydrated later on demand.
-
----
-
-## 16. Tag & Release Storage
-
-### Tags
-
-Tags are immutable pointers to specific snapshots:
-
-| Property | Description |
-|---|---|
-| `name` | Unique within the worktree. Follows naming rules (no spaces, URL-safe). |
-| `target` | Snapshot hash the tag points to. |
-| `author` | TenantId of the creator. |
-| `message` | Optional annotation message. |
-| `signature` | Optional cryptographic signature. |
-| `created_at` | Creation timestamp. |
-
-Tags are **immutable once created**. To "move" a tag, delete and recreate it (requires `tag:delete` permission). The deletion is logged in the audit trail.
-
-### Releases
-
-Releases are named, publishable milestones associated with a tag:
-
-| Property | Description |
-|---|---|
-| `tag` | The tag this release is associated with. |
-| `name` | Human-readable release name (e.g., "v2.1.0 — Performance Release"). |
-| `notes` | Markdown release notes. |
-| `artifacts` | List of attached files (binaries, archives, documentation). |
-| `created_at` | Creation timestamp. |
-| `created_by` | TenantId of the creator. |
-
-Release artifacts are stored in the content-addressable store and referenced by hash. They are subject to the same deduplication and quota rules as other objects.
-
----
-
-## 17. API Surface
-
-The server exposes three API transports:
-
-### gRPC (Primary Sync Protocol)
-
-- **Transport**: QUIC with HTTP/2 fallback.
-- **Purpose**: All bgprocess ↔ server sync operations.
-- **Authentication**: Mutual TLS (client certificates) or bearer tokens.
-- **Services**:
-  - `SyncService` — push, pull, stage, clone, shallow sync, partial sync.
-  - `BranchService` — create, delete, list, get branch status.
-  - `TagService` — create, delete, list tags.
-  - `MergeRequestService` — create, list, review, merge, close.
-  - `AuthService` — authenticate, refresh tokens, verify identity.
-
-### REST (Admin & Integration)
-
-- **Transport**: HTTPS (TLS 1.3).
-- **Purpose**: Admin panel, web UI, SDK, third-party integrations, CI webhooks.
-- **Authentication**: Bearer tokens (JWT), API keys.
-- **Base path**: `/api/v1/`
-- **Key endpoints**:
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `GET` | `/metrics` | Prometheus metrics |
-| `GET` | `/tenants/:slug` | Get tenant info |
-| `GET` | `/tenants/:slug/worktrees` | List worktrees |
-| `GET` | `/tenants/:slug/worktrees/:name/branches` | List branches |
-| `GET` | `/tenants/:slug/worktrees/:name/merge-requests` | List merge requests |
-| `POST` | `/tenants/:slug/worktrees/:name/merge-requests` | Create merge request |
-| `POST` | `/tenants/:slug/worktrees/:name/merge-requests/:id/review` | Submit review |
-| `POST` | `/tenants/:slug/worktrees/:name/merge-requests/:id/merge` | Merge |
-| `GET` | `/tenants/:slug/worktrees/:name/tags` | List tags |
-| `GET` | `/tenants/:slug/worktrees/:name/releases` | List releases |
-| `POST` | `/ci/status` | CI status webhook |
-| `GET` | `/tenants/:slug/worktrees/:name/staged` | List staged snapshots |
-
-### WebSocket (Real-Time Events)
-
-- **Transport**: WSS (WebSocket over TLS).
-- **Purpose**: Real-time event streaming for staged snapshots, branch updates, merge request activity.
-- **Authentication**: Bearer token in connection handshake.
-- **Endpoints**:
-  - `/api/v1/ws/staged/:slug/:worktree` — staged snapshot events.
-  - `/api/v1/ws/branches/:slug/:worktree` — branch update events.
-  - `/api/v1/ws/merge-requests/:slug/:worktree` — merge request activity events.
-
----
-
-## 18. Server Configuration
-
-Server configuration is in a server-level config file (NOT `.wt/config.toml` — that's worktree config).
-
-```toml
-[server]
-listen_addr = "0.0.0.0:443"       # REST + WebSocket
-grpc_addr = "0.0.0.0:8443"        # gRPC sync protocol
-storage_path = "/var/lib/w0rktree" # Root storage directory
-log_level = "info"                 # trace, debug, info, warn, error
-worker_threads = 0                 # 0 = auto-detect from CPU count
-
-[tls]
-cert_path = "/etc/w0rktree/cert.pem"
-key_path = "/etc/w0rktree/key.pem"
-client_ca_path = "/etc/w0rktree/ca.pem"  # For mTLS client auth
-
-[tenant.defaults]
-default_plan = "free"
-max_worktrees_free = 5
-max_worktrees_pro = 50
-max_worktrees_enterprise = 0      # 0 = unlimited
-max_storage_free_gb = 1
-max_storage_pro_gb = 50
-max_storage_enterprise_gb = 0     # 0 = unlimited
-
-[tenant.defaults.rate_limits]
-requests_per_minute_free = 60
-requests_per_minute_pro = 600
-requests_per_minute_enterprise = 0  # 0 = unlimited
-
-[staged]
-default_retention_hours = 168      # 7 days
-max_retention_hours = 720          # 30 days
-
-[sync]
-max_push_size_mb = 100             # Max single push payload
-max_clone_depth = 0                # 0 = unlimited
-delta_compression = true
-
-[audit]
-enabled = true
-log_path = "/var/log/w0rktree/audit.log"
-retention_days = 365
-```
-
----
-
-## 19. Server Lifecycle
-
-### Startup Sequence
-
-1. **Load configuration** — Read and validate server config file.
-2. **Initialize storage** — Connect to storage backend, verify integrity, run migrations if needed.
-3. **Compile policy cache** — Load and compile all tenant access policies for fast evaluation.
-4. **Start gRPC server** — Bind to `grpc_addr`, begin accepting bgprocess connections.
-5. **Start REST server** — Bind to `listen_addr`, begin accepting HTTP/WebSocket connections.
-6. **Start background tasks** — Staged snapshot expiry, quota recalculation, audit log rotation.
-7. **Report ready** — Log startup complete, expose health check as healthy.
-
-### Runtime
-
-- Handle sync requests on gRPC (push, pull, stage, clone).
-- Handle API requests on REST (admin, merge requests, CI webhooks).
-- Handle WebSocket connections (real-time event streaming).
-- Evaluate access policies on every request.
-- Enforce license compliance on every data-crossing operation.
-- Run periodic background tasks (expiry, quota, audit rotation).
-
-### Graceful Shutdown
-
-1. **Stop accepting new connections** — Close listening sockets.
-2. **Drain active connections** — Wait for in-flight requests to complete (configurable timeout, default 30s).
-3. **Flush pending writes** — Ensure all accepted pushes are persisted to storage.
-4. **Close storage backend** — Flush caches, close file handles.
-5. **Write final audit log entry** — Record shutdown event.
-6. **Exit** — Process terminates with exit code 0.
-
-If the drain timeout expires, forcefully terminate remaining connections and log a warning.
-
----
-
-## 20. Health, Metrics & Audit Logging
-
-### Health Check
-
-```
-GET /health
-```
-
-Response:
-
-```json
-{
-  "status": "healthy",
-  "storage": "ok",
-  "grpc": "listening",
-  "uptime_seconds": 86400
-}
-```
-
-Returns HTTP 200 when healthy, HTTP 503 when degraded. Used by load balancers and orchestrators.
-
-### Metrics
-
-```
-GET /metrics
-```
-
-Prometheus-format metrics:
-
-| Metric | Type | Description |
-|---|---|---|
-| `wt_server_requests_total` | Counter | Total API requests by method, path, status. |
-| `wt_server_request_duration_seconds` | Histogram | Request latency distribution. |
-| `wt_sync_pushes_total` | Counter | Total pushes by tenant, worktree, result. |
-| `wt_sync_pulls_total` | Counter | Total pulls by tenant, worktree. |
-| `wt_sync_bytes_transferred` | Counter | Total bytes transferred (in/out). |
-| `wt_staged_snapshots_active` | Gauge | Currently stored staged snapshots. |
-| `wt_tenants_active` | Gauge | Number of active tenants. |
-| `wt_storage_used_bytes` | Gauge | Storage used per tenant. |
-| `wt_iam_decisions_total` | Counter | Access decisions by result (allow/deny). |
-| `wt_merge_requests_total` | Counter | Merge requests by status. |
-| `wt_websocket_connections` | Gauge | Active WebSocket connections. |
-
-### Audit Logging
-
-Every access decision is logged with full context:
-
-```json
-{
-  "timestamp": "2025-07-14T10:30:00Z",
-  "event": "access_decision",
-  "tenant": "bob",
-  "action": "branch:push",
-  "resource": "alice/my-project/main",
-  "decision": "deny",
-  "reason": "branch_protection: no_direct_push is enabled",
-  "source_ip": "198.51.100.42",
-  "request_id": "req-abc123"
-}
-```
-
-Audit logs are:
-- Written to the configured `audit.log_path`.
-- Rotated daily with configurable retention.
-- Include every IAM decision, license check, branch protection evaluation, and administrative action.
-- Immutable once written (append-only file, no modification).
-
----
-
-## 21. Storage Quotas & Rate Limiting
-
-### Storage Quotas
-
-Each tenant has storage limits based on their plan:
-
-| Plan | Worktree Limit | Storage Limit |
-|---|---|---|
-| Free | 5 | 1 GB |
-| Pro | 50 | 50 GB |
-| Enterprise | Unlimited | Unlimited (or custom) |
-| Custom | Configurable | Configurable |
-
-When a tenant exceeds their storage quota:
-1. New pushes are rejected with `QuotaExceeded` error.
-2. Staged snapshot uploads are rejected.
-3. Existing data is preserved — no automatic deletion.
-4. The tenant can delete data or upgrade their plan to restore push capability.
-
-### Rate Limiting
-
-Rate limits are enforced per tenant per time window:
-
-| Plan | Requests/minute | Concurrent sync connections |
-|---|---|---|
-| Free | 60 | 2 |
-| Pro | 600 | 10 |
-| Enterprise | Unlimited | Unlimited |
-
-Rate limit responses include standard headers:
-
-```
-HTTP 429 Too Many Requests
-X-RateLimit-Limit: 60
-X-RateLimit-Remaining: 0
-X-RateLimit-Reset: 1720958460
-```
-
----
-
-## 22. Error Model
-
-The server uses structured errors with machine-readable codes:
-
-| Code | HTTP Status | Description |
-|---|---|---|
-| `AuthenticationRequired` | 401 | No valid credentials provided. |
-| `AccessDenied` | 403 | IAM policy denies the requested action. |
-| `LicenseDenied` | 403 | License compliance denies the requested action. |
-| `BranchProtectionViolation` | 403 | Branch protection rule prevents the operation. |
-| `TenantNotFound` | 404 | Referenced tenant does not exist. |
-| `WorktreeNotFound` | 404 | Referenced worktree does not exist. |
-| `BranchNotFound` | 404 | Referenced branch does not exist. |
-| `ConflictDetected` | 409 | Push is not a fast-forward. Client must merge and retry. |
-| `QuotaExceeded` | 413 | Tenant has exceeded their storage or worktree quota. |
-| `RateLimitExceeded` | 429 | Too many requests. |
-| `InvalidPolicy` | 422 | Pushed access policy file has syntax or semantic errors. |
-| `InvalidConfig` | 422 | Pushed config file has syntax or semantic errors. |
-| `StaleReview` | 422 | Merge request has stale approvals due to source branch changes. |
-| `CIChecksPending` | 422 | Required CI checks have not all passed. |
-| `UnknownTenant` | 422 | Policy references a tenant that doesn't exist on this server. |
-| `InternalError` | 500 | Unexpected server error. Logged for investigation. |
-
-Error responses include the code, a human-readable message, and an optional `details` field:
-
-```json
-{
-  "error": {
-    "code": "BranchProtectionViolation",
-    "message": "Direct push to 'main' is forbidden. Use a merge request.",
-    "details": {
-      "branch": "main",
-      "rule": "no_direct_push",
-      "worktree": "acme/my-project"
-    }
-  }
-}
-```
-
----
-
-## 23. Implementation Status
-
-| Area | Status | Notes |
-|---|---|---|
-| Routing & basic handlers | **Implemented** | In `worktree-server` crate, but mixed with bgprocess code. |
-| gRPC sync protocol | **Partial** | Basic sync works. Delta sync and shallow sync are TODO. |
-| REST API | **Partial** | Some endpoints exist. Full admin API is TODO. |
-| Tenant management | **TODO** | Tenant CRUD, plan management, org structure. |
-| IAM enforcement | **TODO** | Policy parsing exists but server-side enforcement is not wired. |
-| License compliance | **TODO** | Data model exists in protocol crate but enforcement engine is not implemented. |
-| Merge request system | **TODO** | Data model planned, no implementation. |
-| Staged snapshot storage | **TODO** | bgprocess sends staged snapshots but server doesn't aggregate or index them. |
-| Branch protection | **TODO** | Rules are parsed from config but not enforced on push. |
-| WebSocket streaming | **TODO** | No real-time event system yet. |
-| Storage quotas | **TODO** | No quota tracking or enforcement. |
-| Audit logging | **TODO** | No structured audit logging. |
-| CI integration | **TODO** | No webhook endpoints for CI status. |
-
-### Migration Plan
-
-1. **Extract pure server code** from the mixed bgprocess/server crate into a standalone `worktree-server` binary.
-2. **Implement tenant management** — CRUD, plans, org/team structure.
-3. **Wire IAM enforcement** — policy evaluation on every request.
-4. **Implement staged snapshot aggregation** — storage, indexing, WebSocket streaming.
-5. **Add branch protection enforcement** on push and merge.
-6. **Build merge request system** — full lifecycle with review tracking.
-7. **Implement license compliance engine** — per-path enforcement on all data-crossing operations.
-8. **Add storage quotas and rate limiting**.
-9. **Add audit logging** to all decision points.
-10. **Build admin REST API** for web panel and SDK.
-
----
-
-## 24. Design Constraints
-
-These constraints are **non-negotiable architectural decisions**:
-
-1. **The server is the source of truth.** If local history diverges, the server wins.
-2. **The server never touches the working directory.** It has no filesystem access on the developer's machine.
-3. **The bgprocess never enforces access control.** It reads access config for display only. The server enforces.
-4. **Deny by default.** If no policy explicitly allows an action, it is denied.
-5. **Dual enforcement.** Both IAM and license checks must pass. Neither can be bypassed.
-6. **Append-only history.** Pushed snapshots are permanent. No rebase, no history rewriting.
-7. **Ceiling model.** Tree-level config can only be stricter than root-level, never more permissive.
-8. **Tenant isolation.** One tenant's data is never accessible to another without explicit policy grants.
-9. **All enforcement is server-side.** The bgprocess is untrusted. Every claim is verified.
-10. **Structured errors.** Every rejection includes a machine-readable code and human-readable explanation.
+| Single-port gRPC (h2c or TLS) + REST + SSE + static admin; graceful shutdown | Built |
+| `SyncService` (16 RPCs), push validation pipeline with PushChecks | Built |
+| Tenants, accounts, teams, roles, policies, grants, service accounts, MFA, SSO, invitations | Built ([IAM](../iam/IAM.md)) |
+| Tenant status (suspend / deactivate) | Built |
+| Branch protection (including CI, signed, linear, TODO gates) and tag protection | Built |
+| Per-path license rules (grantee, expiry), path ACLs, stubbed paths, license-aware archives | Built |
+| Merge requests (fast-forward), reviews with stale approvals, comments, CI status, readiness, linked groups | Built |
+| Staged snapshots with summaries and overlap detection | Built |
+| Tags, releases with assets, dependencies → TODOs, signing keys and signature verification | Built |
+| Event bus, SSE, recent events, `WatchBranches` | Built |
+| Audit log with filters, retention and NDJSON export | Built |
+| GC with grace period; quotas; rate limiting | Built |
+| Health probes, Prometheus metrics | Built |
+| `PushRejection.ci_checks_failed` / `review_required.current` | Partial (wire variants defined; denials travel as `access_denied` / `current = 0`) |
+
+## 21. Roadmap
+
+Described in earlier versions of this spec but not built:
+
+- **QUIC transport**, a separate gRPC port, and WebSocket event endpoints (SSE
+  and `WatchBranches` cover real-time needs).
+- **Additional gRPC services** (`BranchService`, `TagService`,
+  `MergeRequestService`, `AuthService`). These are served by REST plus the
+  single `SyncService`.
+- **Server-side merges with conflicts**: creating merge snapshots, three-way
+  content merges, and automatically deleting the source branch after a merge.
+  Merges are fast-forward only.
+- **Force push** with a `no_force` protection and an elevated permission.
+- **Physical tenant isolation**: dedicated storage, workers or endpoints per
+  tenant.
+- **Plan-based limits and retention tiers** (fixed quotas, staged retention or
+  rate limits per plan). Limits are server defaults plus per-tenant overrides.
+- **Forking** across tenants.
+- **Partial tree sync** with on-demand stub hydration, delta and pack transfer.
+  See the [Sync](../sync/Sync.md#roadmap) roadmap.
+- **A server config file** (TOML), `worker_threads`, and file-based audit
+  logs with rotation. Configuration is flags and environment variables, and
+  audit lives in `meta.db`.
+- **Deactivated-tenant data purge** after a grace period.
+- **Request ids** in audit records, and per-tenant or per-tree metric labels.
+- **Pluggable storage backends** (S3, external database) and replication.
+
+## 22. References
+
+- `services/server-go/main.go`, `README.md`
+- `internal/server/server.go`, `internal/config/config.go`
+- `internal/syncsvc/*`, `internal/httpapi/*` (`httpapi.go` routes,
+  `respond.go` errors, `middleware.go` CORS and rate limits, `events.go` SSE,
+  `metrics.go`, `trees.go`, `snapshots.go`, `insights.go`, `manage.go`,
+  `mergerequests.go`, `reviews.go`, `ci.go`, `todos.go`, `releases.go`,
+  `keys.go`, `ops.go`, `access_routes.go`, `exports.go`,
+  `staged_routes.go`, `iam*.go`, `sso.go`, `static.go`)
+- `internal/domain/{types,interfaces,iam,v05}.go`
+- `internal/{meta,objstore,content,iam,authz,sso,review,license,pathacl,signing,limits,staged,events,audit,ci,todo,release,gc,accesscfg}`
+- `crates/worktree-protocol/proto/sync.proto`
+- `docs/ENGINEERING_PLAN.md` §1, §2, §7, §11, §12, §13
+- Related specs: [Sync](../sync/Sync.md), [Storage](../storage/Storage.md),
+  [IAM](../iam/IAM.md), [Tenant Model](../iam/TenantModel.md),
+  [Declarative Access](../iam/DeclarativeAccess.md),
+  [License Compliance](../licensing/LicenseCompliance.md),
+  [Staged Visibility](../visibility/StagedVisibility.md),
+  [Security](../security/Security.md), [BgProcess](../bgprocess/BgProcess.md)
