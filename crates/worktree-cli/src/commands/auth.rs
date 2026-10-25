@@ -1,11 +1,11 @@
-//! `wt login`, `wt logout`, `wt whoami`, `wt register`
+//! `wt login`, `wt logout`, `wt whoami`, `wt register`, `wt password-reset`
 
 use std::io::{BufRead, Write};
 
 use clap::Args;
 use colored::Colorize;
 use serde::Serialize;
-use worktree_sdk::remote::{self, LoginInfo};
+use worktree_sdk::remote::{self, LoginInfo, LoginOutcome, RestClient};
 use worktree_sdk::{Repository, SdkError};
 
 use crate::commands::remote::{normalize_server, remote_name, remote_url};
@@ -25,6 +25,24 @@ pub struct LoginArgs {
     pub username: Option<String>,
 
     /// Read the password from the first line of stdin
+    #[arg(long)]
+    pub password_stdin: bool,
+
+    /// TOTP or recovery code for accounts with two-factor authentication
+    /// (prompted for when needed)
+    #[arg(long, value_name = "CODE", env = "WT_MFA_CODE", hide_env_values = true)]
+    pub mfa_code: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PasswordResetArgs {
+    /// One-time reset code (`wtr_...`) issued by a server administrator
+    pub code: String,
+
+    /// Server URL (default: --server, else the worktree's origin, else the only saved login)
+    pub server: Option<String>,
+
+    /// Read the new password from the first line of stdin
     #[arg(long)]
     pub password_stdin: bool,
 }
@@ -104,8 +122,17 @@ pub fn login(ctx: &Context, args: LoginArgs) -> Result<()> {
         }
         None => prompt_line("Username: ")?,
     };
-    let password = read_password(args.password_stdin, false)?;
-    let info = block_on(remote::login(&server, &username, &password))??;
+    let password = read_password(args.password_stdin, "Password: ", false)?;
+    let info = match block_on(remote::login_start(&server, &username, &password))?? {
+        LoginOutcome::LoggedIn(info) => info,
+        LoginOutcome::MfaRequired(challenge) => {
+            let code = match args.mfa_code.filter(|c| !c.trim().is_empty()) {
+                Some(code) => code,
+                None => prompt_line("Two-factor code (TOTP or recovery code): ")?,
+            };
+            block_on(remote::login_mfa(&challenge, &code))??
+        }
+    };
     ctx.out.emit(&Session::from(&info), |t| {
         t.line(format_args!(
             "Logged in to {} as {}",
@@ -117,7 +144,7 @@ pub fn login(ctx: &Context, args: LoginArgs) -> Result<()> {
 
 pub fn register(ctx: &Context, args: RegisterArgs) -> Result<()> {
     let server = resolve_server(ctx, args.server)?;
-    let password = read_password(args.password_stdin, true)?;
+    let password = read_password(args.password_stdin, "Password: ", true)?;
     let info = block_on(remote::register(
         &server,
         &args.username,
@@ -210,15 +237,50 @@ fn resolve_server(ctx: &Context, explicit: Option<String>) -> Result<String> {
     })
 }
 
+#[derive(Serialize)]
+struct PasswordReset<'a> {
+    server: &'a str,
+    reset: bool,
+}
+
+/// `wt password-reset CODE [SERVER]`: set a new password with an
+/// admin-issued one-time code (public endpoint; no login needed).
+pub fn password_reset(ctx: &Context, args: PasswordResetArgs) -> Result<()> {
+    let server = match args.server {
+        Some(server) => normalize_server(&server),
+        None => ctx
+            .rest()
+            .map_err(|e| e.with_hint("pass the server URL: `wt password-reset CODE <server>`"))?
+            .server()
+            .to_string(),
+    };
+    let password = read_password(args.password_stdin, "New password: ", true)?;
+    let body = serde_json::json!({ "code": args.code.trim(), "new_password": password });
+    let client = RestClient::new(&server, None)?;
+    block_on(client.post::<_, serde_json::Value>("/api/v1/auth/password-reset", &body))??;
+    ctx.out.emit(
+        &PasswordReset {
+            server: &server,
+            reset: true,
+        },
+        |t| {
+            t.line(format_args!(
+                "Password changed on {}; log in with `wt login {server}`",
+                server.bold()
+            ));
+        },
+    )
+}
+
 /// `--password-stdin` → first stdin line; else `$WT_PASSWORD`; else an
-/// interactive prompt without echo (confirmed twice when `confirm`).
-fn read_password(from_stdin: bool, confirm: bool) -> Result<String> {
+/// interactive `prompt` without echo (confirmed twice when `confirm`).
+pub(crate) fn read_password(from_stdin: bool, prompt: &str, confirm: bool) -> Result<String> {
     let password = if from_stdin {
         first_line(std::io::stdin().lock())?
     } else if let Some(password) = std::env::var(PASSWORD_ENV).ok().filter(|p| !p.is_empty()) {
         password
     } else {
-        let password = rpassword::prompt_password("Password: ")?;
+        let password = rpassword::prompt_password(prompt)?;
         if confirm && rpassword::prompt_password("Confirm password: ")? != password {
             return Err(CliError::failure("passwords do not match"));
         }
@@ -230,7 +292,8 @@ fn read_password(from_stdin: bool, confirm: bool) -> Result<String> {
     Ok(password)
 }
 
-fn prompt_line(prompt: &str) -> Result<String> {
+/// Print `prompt` on stderr and read one non-empty line from stdin.
+pub(crate) fn prompt_line(prompt: &str) -> Result<String> {
     let mut stderr = std::io::stderr();
     write!(stderr, "{prompt}")?;
     stderr.flush()?;
@@ -242,7 +305,7 @@ fn prompt_line(prompt: &str) -> Result<String> {
 }
 
 /// First line of `reader` without its line terminator.
-fn first_line(mut reader: impl BufRead) -> Result<String> {
+pub(crate) fn first_line(mut reader: impl BufRead) -> Result<String> {
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let trimmed = line.trim_end_matches(['\r', '\n']);
@@ -266,6 +329,28 @@ mod tests {
             first_line(&b"  spaces kept  \n"[..]).expect("read"),
             "  spaces kept  "
         );
+    }
+
+    #[test]
+    fn parses_mfa_code_and_password_reset() {
+        use crate::cli::Command;
+        use crate::commands::iam_common::parse;
+
+        let Command::Login(a) = parse(&["login", "http://s", "-u", "ada", "--mfa-code", "123456"])
+        else {
+            panic!()
+        };
+        assert_eq!(a.mfa_code.as_deref(), Some("123456"));
+        let Command::PasswordReset(a) = parse(&["password-reset", "wtr_abc", "--password-stdin"])
+        else {
+            panic!()
+        };
+        assert_eq!(a.code, "wtr_abc");
+        assert!(a.password_stdin && a.server.is_none());
+        let Command::PasswordReset(a) = parse(&["password-reset", "wtr_abc", "http://s"]) else {
+            panic!()
+        };
+        assert_eq!(a.server.as_deref(), Some("http://s"));
     }
 
     #[test]
