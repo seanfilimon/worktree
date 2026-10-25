@@ -1,10 +1,10 @@
 import { useMutation } from "@tanstack/react-query";
 import { CircleAlert, Loader2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useNavigate } from "react-router";
+import { Link, Navigate, useLocation, useNavigate } from "react-router";
 import { errorMessage, isApiError } from "@/api/client";
 import { useApi } from "@/api/context";
-import { useAuth } from "@/auth/context";
+import { safeRedirect, useAuth } from "@/auth/context";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { AuthField } from "./AuthField";
@@ -17,6 +17,8 @@ export function RegisterPage() {
   const api = useApi();
   const { token, signIn } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const from = safeRedirect((location.state as { from?: unknown } | null)?.from);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,11 +29,11 @@ export function RegisterPage() {
     meta: { inlineError: true },
     onSuccess: (res) => {
       signIn(res);
-      void navigate("/", { replace: true });
+      void navigate(from, { replace: true });
     },
   });
 
-  if (token && !register.isPending && !register.isSuccess) return <Navigate to="/" replace />;
+  if (token && !register.isPending && !register.isSuccess) return <Navigate to={from} replace />;
 
   const errors = {
     username: USERNAME_RE.test(username)
@@ -57,7 +59,7 @@ export function RegisterPage() {
       footer={
         <p>
           Already registered?{" "}
-          <Link to="/login" className="font-medium text-foreground underline-offset-4 hover:underline">
+          <Link to="/login" state={{ from }} className="font-medium text-foreground underline-offset-4 hover:underline">
             Sign in
           </Link>
         </p>

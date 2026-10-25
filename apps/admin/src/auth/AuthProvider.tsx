@@ -4,11 +4,26 @@ import { useApi } from "@/api/context";
 import { keys } from "@/api/queries";
 import type { AuthResponse } from "@/api/types";
 import { AuthContext, type AuthContextValue } from "./context";
+import { clearSsoHash, readSsoHash } from "./ssoHash";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const api = useApi();
   const queryClient = useQueryClient();
-  const [token, setToken] = useState<string | null>(() => api.client.token);
+  // An SSO round trip lands with `#sso_token=` / `#sso_error=`. Reading is
+  // side-effect free apart from storing the token (idempotent), so it is safe
+  // in a (possibly double-invoked) state initializer; the fragment itself is
+  // stripped in the effect below.
+  const [sso] = useState(() => {
+    const result = readSsoHash();
+    if (result.token) api.client.setToken(result.token);
+    return result;
+  });
+  const [token, setToken] = useState<string | null>(() => sso.token ?? api.client.token);
+  const [ssoError, setSsoError] = useState<string | null>(sso.error);
+
+  useEffect(() => {
+    if (sso.token || sso.error) clearSsoHash();
+  }, [sso]);
 
   // A 401 on any authenticated call means the session is gone.
   useEffect(
@@ -27,6 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       queryClient.clear();
       api.client.setToken(res.token);
       setToken(res.token);
+      setSsoError(null);
     },
     [api, queryClient],
   );
@@ -43,6 +59,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [api, queryClient]);
 
+  const clearSsoError = useCallback(() => setSsoError(null), []);
+
   const value = useMemo<AuthContextValue>(() => {
     const memberships = me.data?.memberships ?? [];
     return {
@@ -53,8 +71,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn,
       signOut,
       roleIn: (tenantId) => memberships.find((m) => m.tenant.id === tenantId)?.role,
+      ssoError,
+      clearSsoError,
     };
-  }, [token, me, signIn, signOut]);
+  }, [token, me, signIn, signOut, ssoError, clearSsoError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

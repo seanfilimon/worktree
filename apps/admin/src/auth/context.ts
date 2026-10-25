@@ -13,6 +13,9 @@ export interface AuthContextValue {
   signOut: () => Promise<void>;
   /** The caller's role in a tenant (by id), if any. */
   roleIn: (tenantId: string) => Role | undefined;
+  /** Message from a failed SSO round trip (`#sso_error=`), until dismissed. */
+  ssoError: string | null;
+  clearSsoError: () => void;
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
@@ -34,4 +37,9 @@ export function canManage(role: Role | undefined, isAdmin: boolean): boolean {
 /** Roles that can administer a tree (protections, licenses, settings). */
 export function canMaintain(role: Role | undefined, isAdmin: boolean): boolean {
   return canManage(role, isAdmin) || role === "maintainer";
+}
+
+/** Only follow same-app relative redirects. */
+export function safeRedirect(from: unknown): string {
+  return typeof from === "string" && from.startsWith("/") && !from.startsWith("//") ? from : "/";
 }
