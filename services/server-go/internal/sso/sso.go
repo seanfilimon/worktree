@@ -318,6 +318,7 @@ func (s *Service) normalizeConfig(c *domain.SSOConfig) (*domain.SSOConfig, error
 		ClientID:      strings.TrimSpace(c.ClientID),
 		RedirectURL:   strings.TrimSpace(c.RedirectURL),
 		AutoCreate:    c.AutoCreate,
+		LinkByEmail:   c.LinkByEmail,
 		UsernameClaim: strings.TrimSpace(c.UsernameClaim),
 	}
 

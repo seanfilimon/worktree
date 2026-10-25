@@ -193,7 +193,7 @@ func (a *api) handlePutMember(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeJSON(w, r, &req); err != nil {
 		return err
 	}
-	if err := validateRole(req.Role); err != nil {
+	if err := a.checkTenantRole(r.Context(), t.ID, req.Role); err != nil {
 		return err
 	}
 	acct, err := a.memberTarget(r)

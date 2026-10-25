@@ -197,18 +197,23 @@ type PasswordReset struct {
 
 // SSOConfig configures OpenID Connect single sign-on (one provider).
 type SSOConfig struct {
-	Enabled        bool      `json:"enabled"`
-	Name           string    `json:"name"` // button label, e.g. "Okta"
-	Issuer         string    `json:"issuer"`
-	ClientID       string    `json:"client_id"`
-	ClientSecret   string    `json:"-"`
-	HasSecret      bool      `json:"has_client_secret"`
-	RedirectURL    string    `json:"redirect_url"` // https://host/api/v1/auth/sso/callback
-	Scopes         []string  `json:"scopes"`       // default openid email profile
-	AllowedDomains []string  `json:"allowed_domains"`
-	AutoCreate     bool      `json:"auto_create"`    // create accounts on first login
-	UsernameClaim  string    `json:"username_claim"` // default preferred_username
-	UpdatedAt      time.Time `json:"updated_at"`
+	Enabled        bool     `json:"enabled"`
+	Name           string   `json:"name"` // button label, e.g. "Okta"
+	Issuer         string   `json:"issuer"`
+	ClientID       string   `json:"client_id"`
+	ClientSecret   string   `json:"-"`
+	HasSecret      bool     `json:"has_client_secret"`
+	RedirectURL    string   `json:"redirect_url"` // https://host/api/v1/auth/sso/callback
+	Scopes         []string `json:"scopes"`       // default openid email profile
+	AllowedDomains []string `json:"allowed_domains"`
+	AutoCreate     bool     `json:"auto_create"` // create accounts on first login
+	// LinkByEmail links a first-time identity to an existing local account
+	// whose email matches the IdP's verified email. Off by default: local
+	// emails are never verified, so anyone who registered with a victim's
+	// address would otherwise receive the victim's first SSO login.
+	LinkByEmail   bool      `json:"link_by_email"`
+	UsernameClaim string    `json:"username_claim"` // default preferred_username
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // SSOIdentity links an external (issuer, subject) to an account.

@@ -64,9 +64,14 @@ fn policies() {
     let alice_api = alice.api();
     let tree = tree_ref("alice");
 
-    // bob reaches the tree through team "contractors" (developer grant).
+    // bob, a tenant viewer, reaches the tree through team "contractors"
+    // (developer grant).
     let bob = env.user("bob");
     bob.register();
+    alice
+        .wt()
+        .args(["tenant", "add-member", "alice", "bob", "--role", "viewer"])
+        .ok();
     alice
         .wt()
         .args([

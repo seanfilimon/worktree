@@ -203,14 +203,6 @@ func validateVisibility(v string) error {
 	return badRequestf("visibility must be one of %q, %q, %q", domain.VisibilityPrivate, domain.VisibilityInternal, domain.VisibilityPublic)
 }
 
-func validateRole(role string) error {
-	switch role {
-	case domain.RoleOwner, domain.RoleAdmin, domain.RoleMaintainer, domain.RoleDeveloper, domain.RoleViewer:
-		return nil
-	}
-	return badRequestf("role must be one of owner, admin, maintainer, developer, viewer")
-}
-
 // validateText bounds a free-text field.
 func validateText(field, s string, max int, required bool) error {
 	if required && strings.TrimSpace(s) == "" {

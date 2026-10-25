@@ -914,3 +914,8 @@ func (o *fakeObjects) Stats(context.Context) (int64, int64, error) {
 	}
 	return int64(len(o.objs)), n, nil
 }
+
+// GetRole: the base fixture defines no custom roles.
+func (s *fakeStore) GetRole(_ context.Context, tenantID, name string) (*domain.CustomRole, error) {
+	return nil, fmt.Errorf("role %s/%s: %w", tenantID, name, domain.ErrNotFound)
+}

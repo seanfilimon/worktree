@@ -248,6 +248,7 @@ type putSSORequest struct {
 	Scopes         []string   `json:"scopes"`
 	AllowedDomains []string   `json:"allowed_domains"`
 	AutoCreate     bool       `json:"auto_create"`
+	LinkByEmail    bool       `json:"link_by_email"`
 	UsernameClaim  string     `json:"username_claim"`
 	HasSecret      *bool      `json:"has_client_secret,omitempty"`
 	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
@@ -274,6 +275,7 @@ func (a *api) handlePutSSOConfig(w http.ResponseWriter, r *http.Request) error {
 		Scopes:         req.Scopes,
 		AllowedDomains: req.AllowedDomains,
 		AutoCreate:     req.AutoCreate,
+		LinkByEmail:    req.LinkByEmail,
 		UsernameClaim:  req.UsernameClaim,
 	}, req.ClientSecret)
 	if err != nil {
@@ -284,6 +286,7 @@ func (a *api) handlePutSSOConfig(w http.ResponseWriter, r *http.Request) error {
 		"issuer":         cfg.Issuer,
 		"client_id":      cfg.ClientID,
 		"auto_create":    strconv.FormatBool(cfg.AutoCreate),
+		"link_by_email":  strconv.FormatBool(cfg.LinkByEmail),
 		"secret_changed": strconv.FormatBool(req.ClientSecret != nil),
 	})
 	writeJSON(w, http.StatusOK, nonNilSSO(cfg))

@@ -433,9 +433,29 @@ func TestDomainRestrictions(t *testing.T) {
 	})
 }
 
+// withLinkByEmail turns on linking first-time identities to existing local
+// accounts by verified email (off by default).
+func withLinkByEmail(c *domain.SSOConfig, _ *Options) { c.LinkByEmail = true }
+
+// By default an email collision is never linked: local emails are unverified.
+func TestEmailCollisionRejectedByDefault(t *testing.T) {
+	h := newHarness(t)
+	h.store.addAccount("alice", "alice@example.com", false)
+	c := h.idp.defaultClaims("idp-alice")
+	c["email"] = "alice@example.com"
+	_, _, _, err := h.login(t, c)
+	wantErr(t, err, domain.ErrConflict, "administrator")
+	if _, err := h.store.GetSSOIdentity(context.Background(), h.idp.URL(), "idp-alice"); err == nil {
+		t.Fatal("identity linked without link_by_email")
+	}
+	if h.store.accountCount() != 1 {
+		t.Fatal("duplicate account created")
+	}
+}
+
 func TestLinkByVerifiedEmail(t *testing.T) {
 	t.Run("links existing account", func(t *testing.T) {
-		h := newHarness(t)
+		h := newHarness(t, withLinkByEmail)
 		alice := h.store.addAccount("alice", "alice@example.com", false)
 		c := h.idp.defaultClaims("idp-alice")
 		c["email"] = "Alice@Example.com"
@@ -451,7 +471,7 @@ func TestLinkByVerifiedEmail(t *testing.T) {
 		}
 	})
 	t.Run("unverified email never links", func(t *testing.T) {
-		h := newHarness(t)
+		h := newHarness(t, withLinkByEmail)
 		h.store.addAccount("alice", "alice@example.com", false)
 		c := h.idp.defaultClaims("idp-alice")
 		c["email"] = "alice@example.com"
@@ -463,7 +483,7 @@ func TestLinkByVerifiedEmail(t *testing.T) {
 		}
 	})
 	t.Run("disabled account", func(t *testing.T) {
-		h := newHarness(t)
+		h := newHarness(t, withLinkByEmail)
 		h.store.addAccount("alice", "alice@example.com", true)
 		c := h.idp.defaultClaims("idp-alice")
 		c["email"] = "alice@example.com"
@@ -471,7 +491,7 @@ func TestLinkByVerifiedEmail(t *testing.T) {
 		wantErr(t, err, domain.ErrForbidden, "disabled")
 	})
 	t.Run("account already linked to another subject", func(t *testing.T) {
-		h := newHarness(t)
+		h := newHarness(t, withLinkByEmail)
 		alice := h.store.addAccount("alice", "alice@example.com", false)
 		_ = h.store.PutSSOIdentity(context.Background(), &domain.SSOIdentity{Issuer: h.idp.URL(), Subject: "first", AccountID: alice.ID})
 		c := h.idp.defaultClaims("second")
@@ -480,7 +500,7 @@ func TestLinkByVerifiedEmail(t *testing.T) {
 		wantErr(t, err, domain.ErrConflict, "different identity")
 	})
 	t.Run("disabled linked account", func(t *testing.T) {
-		h := newHarness(t)
+		h := newHarness(t, withLinkByEmail)
 		_, acct, _, err := h.login(t, h.idp.defaultClaims("dl"))
 		if err != nil {
 			t.Fatal(err)

@@ -1,6 +1,7 @@
-//! Teams and per-tree grants (§12.1 step 4): a user who is not a member of
-//! the tenant gets push access to one tree through a team grant, and loses
-//! it when the grant (or his team membership) goes away.
+//! Teams and per-tree grants (§12.1 step 4): a tenant viewer gets push
+//! access to one tree through a team grant (or a direct user grant), and
+//! loses it when the grant (or his team membership) goes away. Teams hold
+//! tenant members, as in GitHub organizations.
 
 use worktree_e2e::json::{find_objects, pretty};
 use worktree_e2e::{require_e2e, TestEnv};
@@ -28,6 +29,12 @@ fn teams_and_grants() {
         .args(["clone", &env.url(), &tree])
         .arg(bob.dir.join("before-grant"))
         .fails();
+
+    // --- bob joins the tenant as a viewer: read access only
+    alice
+        .wt()
+        .args(["tenant", "add-member", "alice", "bob", "--role", "viewer"])
+        .ok();
 
     // --- team with bob in it
     let team = wt_json(
@@ -62,8 +69,11 @@ fn teams_and_grants() {
         .filter_map(username_of)
         .collect();
     assert_eq!(members, vec!["bob"], "team members:\n{}", pretty(&shown));
-    // Team membership alone grants nothing in the tenant.
-    assert_eq!(rest_member_role(&alice_api, "alice", "bob"), None);
+    // Team membership does not change bob's tenant role.
+    assert_eq!(
+        rest_member_role(&alice_api, "alice", "bob"),
+        Some("viewer".into())
+    );
 
     // --- grant the team developer on the tree
     alice

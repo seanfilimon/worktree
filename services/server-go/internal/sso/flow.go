@@ -343,7 +343,13 @@ func (s *Service) mapAccount(ctx context.Context, cfg *domain.SSOConfig, id *ide
 		}
 	}
 
-	// 2. Link an existing account by verified email.
+	// 2. Link an existing account by verified email, when the administrator
+	// trusts local account emails (cfg.LinkByEmail). Otherwise an email
+	// collision must be resolved by an administrator: local emails are not
+	// verified, so linking would hand the account to whoever registered it.
+	if len(byEmail) > 0 && !cfg.LinkByEmail {
+		return nil, nil, newErr(domain.ErrConflict, "an account with this email address already exists; ask an administrator to link it")
+	}
 	if id.emailVerified && len(byEmail) > 0 {
 		if len(byEmail) > 1 {
 			return nil, nil, newErr(domain.ErrConflict, "several accounts use this email address; ask an administrator to resolve it")
