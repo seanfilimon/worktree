@@ -19,10 +19,14 @@ export const gcDryRun: GCReport = { ...gcRun, dry_run: true, marked: 0, deleted:
 
 export const gcStatus: GCStatus = {
   config: {
-    gc_interval: 24 * 3600 * 1e9,
-    gc_grace: "720h0m0s",
+    // The shape GET /admin/gc returns: readable durations plus seconds.
+    interval: "24h0m0s",
+    interval_seconds: 86400,
+    grace: "720h0m0s",
+    grace_seconds: 2592000,
     staged_retention: 168 * 3600 * 1e9,
-    audit_retention: 0,
+    audit_retention: "0s",
+    audit_retention_seconds: 0,
     rate_limit: 1200,
   },
   runs: [gcRun, gcDryRun],

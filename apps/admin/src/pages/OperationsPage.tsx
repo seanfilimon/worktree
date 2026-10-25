@@ -192,7 +192,11 @@ function GcCard({ status }: { status: GCStatus | undefined }) {
 }
 
 function ConfigCard({ config }: { config: GCConfig }) {
-  const entries = Object.entries(config);
+  // The server sends both "interval" ("24h0m0s") and "interval_seconds"
+  // (86400); show only the readable form when both exist.
+  const entries = Object.entries(config).filter(
+    ([key]) => !(key.endsWith("_seconds") && key.slice(0, -"_seconds".length) in config),
+  );
   return (
     <Card className="gap-0 pb-0">
       <CardHeader className="border-b pb-6">

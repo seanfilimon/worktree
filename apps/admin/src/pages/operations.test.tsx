@@ -22,7 +22,8 @@ describe("OperationsPage", () => {
     renderApp({ route: "/operations", api: opsRoutes });
     const dl = await screen.findByLabelText("Server configuration");
     expect(dl).toHaveTextContent("GC interval");
-    expect(dl).toHaveTextContent("1d 0h");
+    expect(dl).toHaveTextContent("24h0m0s");
+    expect(dl).not.toHaveTextContent(/seconds/i);
     expect(dl).toHaveTextContent("720h0m0s");
     expect(dl).toHaveTextContent("Audit retention");
     expect(dl).toHaveTextContent("keep forever");
