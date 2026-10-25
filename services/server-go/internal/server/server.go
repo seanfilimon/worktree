@@ -108,6 +108,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	auditLog := audit.New(store, log)
 	lic := license.New(store)
 	rev := review.New(store, history, authorizer, bus, auditLog)
+	rev.SetObjects(objects) // server-merge (§14.1): enables merge/squash merge methods
 	stg := staged.New(store, authorizer, bus)
 
 	// v0.5 components (docs/ENGINEERING_PLAN.md §13).

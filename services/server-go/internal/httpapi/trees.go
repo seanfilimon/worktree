@@ -331,6 +331,10 @@ func (a *api) handlePutProtection(w http.ResponseWriter, r *http.Request) error 
 	if err := validateRequiredChecks(&p); err != nil {
 		return err
 	}
+	// server-merge (§14.1): merge_methods (validated in mergerequests.go).
+	if err := validateMergeMethods(&p); err != nil {
+		return err
+	}
 	if err := a.d.Store.PutProtection(r.Context(), &p); err != nil {
 		return err
 	}

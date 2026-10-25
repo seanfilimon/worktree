@@ -46,6 +46,47 @@ type Effective struct {
 	RequireSigned  bool     `json:"require_signed"`
 	RequireLinear  bool     `json:"require_linear"`
 	BlockOnTodos   bool     `json:"block_on_todos"`
+
+	// v0.6 (§14.1). RestrictMethods is set when at least one matching rule
+	// has a non-empty MergeMethods list; MergeMethods then holds the methods
+	// present in every such list, in preference order (fast-forward, merge,
+	// squash). Empty with RestrictMethods = no merge method is allowed.
+	RestrictMethods bool     `json:"restrict_merge_methods,omitempty"`
+	MergeMethods    []string `json:"merge_methods,omitempty"`
+}
+
+// MethodAllowed reports whether the merge-method restriction admits method
+// (it does not consider RequireLinear / RequireSigned).
+func (e Effective) MethodAllowed(method string) bool {
+	return !e.RestrictMethods || slices.Contains(e.MergeMethods, method)
+}
+
+// AllMergeMethods lists the merge methods in preference order: the default
+// method of a merge is the first one that is allowed and possible.
+var AllMergeMethods = []string{domain.MergeFastForward, domain.MergeCommit, domain.MergeSquash}
+
+// ValidMergeMethod reports whether m names a merge method.
+func ValidMergeMethod(m string) bool { return slices.Contains(AllMergeMethods, m) }
+
+// NormalizeMergeMethods validates a BranchProtection.MergeMethods list and
+// returns it deduplicated in preference order (nil for an empty list). It
+// returns an error wrapping domain.ErrInvalid for unknown methods.
+func NormalizeMergeMethods(methods []string) ([]string, error) {
+	seen := map[string]bool{}
+	for _, m := range methods {
+		m = strings.TrimSpace(m)
+		if !ValidMergeMethod(m) {
+			return nil, fmt.Errorf("merge method %q is not one of %s: %w", m, strings.Join(AllMergeMethods, ", "), domain.ErrInvalid)
+		}
+		seen[m] = true
+	}
+	var out []string
+	for _, m := range AllMergeMethods {
+		if seen[m] {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 // Protected reports whether at least one rule matched the branch.
@@ -89,6 +130,15 @@ func Resolve(rules []domain.BranchProtection, branch string) Effective {
 				}
 			}
 		}
+		// v0.6 (§14.1): merge-method lists intersect (unknown names are
+		// ignored; the REST API validates them on write).
+		if ms := knownMethods(r.MergeMethods); len(ms) > 0 {
+			if !eff.RestrictMethods {
+				eff.RestrictMethods, eff.MergeMethods = true, ms
+			} else {
+				eff.MergeMethods = slices.DeleteFunc(eff.MergeMethods, func(m string) bool { return !slices.Contains(ms, m) })
+			}
+		}
 
 		list := pusherSet(r.AllowedPushers)
 		if len(list) == 0 {
@@ -114,6 +164,17 @@ func Resolve(rules []domain.BranchProtection, branch string) Effective {
 	}
 	slices.Sort(eff.RequiredChecks)
 	return eff
+}
+
+// knownMethods returns the valid merge methods of list in preference order.
+func knownMethods(list []string) []string {
+	var out []string
+	for _, m := range AllMergeMethods {
+		if slices.ContainsFunc(list, func(s string) bool { return strings.TrimSpace(s) == m }) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func pusherSet(names []string) map[string]struct{} {

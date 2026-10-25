@@ -219,13 +219,27 @@ func (s *Service) groupTrees(ctx context.Context, p *domain.Principal, g *domain
 	return trees, nil
 }
 
-// MergeGroup merges every member of an open linked group atomically: all
-// must be mergeable (otherwise *BlockedError, code merge_blocked), then the
-// target tips are moved with compare-and-swap in member order; if one move
-// fails the earlier ones are rolled back and the merge fails with
-// domain.ErrConflict. Requires domain.ActMRMerge on every member tree.
+// MergeGroup merges every member of an open linked group with the default
+// merge method of each member; see MergeGroupWith.
 func (s *Service) MergeGroup(ctx context.Context, p *domain.Principal, tenantID, id string) (*domain.LinkedGroup, error) {
+	return s.MergeGroupWith(ctx, p, tenantID, id, "")
+}
+
+// MergeGroupWith merges every member of an open linked group atomically:
+// all must be mergeable with method ("" = each member's default method, see
+// MergeWith), otherwise *BlockedError (code merge_blocked), or
+// *ConflictError (code merge_conflict, conflicts carry their tree) when
+// three-way conflicts are the only problem. Merge and squash snapshots are
+// written first; then the target tips are moved with compare-and-swap in
+// member order; if one move fails the earlier ones are rolled back and the
+// merge fails with domain.ErrConflict. Requires domain.ActMRMerge on every
+// member tree.
+func (s *Service) MergeGroupWith(ctx context.Context, p *domain.Principal, tenantID, id, method string) (*domain.LinkedGroup, error) {
 	if err := requirePrincipalOrAuth(p); err != nil {
+		return nil, err
+	}
+	opts := MergeOptions{Method: method}
+	if err := validateMergeOptions(&opts); err != nil {
 		return nil, err
 	}
 	s.groupMu.Lock()
@@ -252,11 +266,14 @@ func (s *Service) MergeGroup(ctx context.Context, p *domain.Principal, tenantID,
 	unlock := s.lockTrees(ids)
 	defer unlock()
 
-	// 1. Every member must be mergeable.
+	// 1. Every member must be mergeable with the requested method.
 	mrs := make([]*domain.MergeRequest, len(trees))
 	evs := make([]*evaluation, len(trees))
+	methods := make([]string, len(trees))
 	var problems []string
 	var blockers []Blocker
+	var conflicts []Conflict
+	onlyConflicts := true
 	for i, m := range g.Members {
 		tree := trees[i]
 		mr, err := s.getMR(ctx, tree.ID, m.MRNumber)
@@ -265,41 +282,62 @@ func (s *Service) MergeGroup(ctx context.Context, p *domain.Principal, tenantID,
 		}
 		if mr.LinkedGroup != g.ID {
 			problems = append(problems, fmt.Sprintf("%s!%d is no longer linked to the group", tree.Name, mr.Number))
+			onlyConflicts = false
 			continue
 		}
 		ev, err := s.evaluate(ctx, tree, mr, true)
 		if err != nil {
 			return nil, err
 		}
-		if merr := ev.mergeError(); merr != nil {
+		merr := ev.mergeError()
+		if merr == nil {
+			methods[i], merr = ev.selectMethod(opts.Method)
+		}
+		if merr != nil {
 			problems = append(problems, fmt.Sprintf("%s!%d: %v", tree.Name, mr.Number, merr))
 			blockers = append(blockers, ev.checks.Blockers...)
+			var ce *ConflictError
+			if errors.As(merr, &ce) {
+				conflicts = append(conflicts, inTree(ce.Conflicts, s.treeLabel(ctx, tree))...)
+			} else {
+				onlyConflicts = false
+			}
 			continue
 		}
 		mrs[i], evs[i] = mr, ev
 	}
 	if len(problems) > 0 {
-		return nil, &BlockedError{
-			Code:     CodeMergeBlocked,
-			Message:  fmt.Sprintf("linked group %q cannot be merged: %s", g.Name, strings.Join(problems, "; ")),
-			Blockers: blockers,
+		msg := fmt.Sprintf("linked group %q cannot be merged: %s", g.Name, strings.Join(problems, "; "))
+		if onlyConflicts {
+			return nil, &ConflictError{Message: msg, Conflicts: conflicts}
 		}
+		return nil, &BlockedError{Code: CodeMergeBlocked, Message: msg, Blockers: blockers}
 	}
 
-	// 2. Move the tips; roll back on failure.
+	// 2. Write the merge/squash snapshots (no branch moves yet).
+	plans := make([]*mergePlan, len(trees))
+	for i, tree := range trees {
+		plan, err := s.prepareMerge(ctx, p, tree, mrs[i], evs[i], methods[i], "")
+		if err != nil {
+			return nil, fmt.Errorf("linked group %q: %s!%d: %w (no branch was changed)", g.Name, tree.Name, mrs[i].Number, err)
+		}
+		plans[i] = plan
+	}
+
+	// 3. Move the tips; roll back on failure.
 	moved := make([]bool, len(trees))
 	for i, tree := range trees {
-		ok, err := s.moveTarget(ctx, tree, mrs[i], evs[i])
+		ok, err := s.moveTarget(ctx, tree, mrs[i], evs[i], plans[i])
 		if err != nil {
-			s.rollback(ctx, trees, mrs, evs, moved)
+			s.rollback(ctx, trees, mrs, evs, plans, moved)
 			return nil, fmt.Errorf("linked group %q: %s!%d: %w (no branch was changed)", g.Name, tree.Name, mrs[i].Number, err)
 		}
 		moved[i] = ok
 	}
 
-	// 3. Record the result.
+	// 4. Record the result.
 	for i, mr := range mrs {
-		if err := s.markMerged(ctx, mr, evs[i].sourceTip); err != nil {
+		if err := s.markMerged(ctx, mr, plans[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -310,7 +348,7 @@ func (s *Service) MergeGroup(ctx context.Context, p *domain.Principal, tenantID,
 		return nil, fmt.Errorf("review: branches updated but linked group %q could not be saved: %w", g.Name, err)
 	}
 	for i, mr := range mrs {
-		s.announceMerge(ctx, p, trees[i], mr, evs[i], moved[i], map[string]string{"linked_group": g.ID})
+		s.announceMerge(ctx, p, trees[i], mr, evs[i], plans[i], moved[i], map[string]string{"linked_group": g.ID})
 	}
 	if s.bus != nil {
 		s.bus.Publish(domain.Event{
@@ -323,13 +361,13 @@ func (s *Service) MergeGroup(ctx context.Context, p *domain.Principal, tenantID,
 
 // rollback restores the target tips moved so far (best effort: a tip that
 // moved again meanwhile is left alone).
-func (s *Service) rollback(ctx context.Context, trees []*domain.Tree, mrs []*domain.MergeRequest, evs []*evaluation, moved []bool) {
+func (s *Service) rollback(ctx context.Context, trees []*domain.Tree, mrs []*domain.MergeRequest, evs []*evaluation, plans []*mergePlan, moved []bool) {
 	for j := len(trees) - 1; j >= 0; j-- {
 		if !moved[j] {
 			continue
 		}
 		ev := evs[j]
-		if err := s.store.CompareAndSwapBranchTip(context.WithoutCancel(ctx), trees[j].ID, mrs[j].TargetBranch, ev.sourceTip, ev.targetTip); err != nil {
+		if err := s.store.CompareAndSwapBranchTip(context.WithoutCancel(ctx), trees[j].ID, mrs[j].TargetBranch, plans[j].newTip, ev.targetTip); err != nil {
 			s.logger().Error("review: linked group rollback failed",
 				"tree", trees[j].ID, "branch", mrs[j].TargetBranch, "error", err)
 		}
@@ -385,6 +423,25 @@ func (s *Service) CloseGroup(ctx context.Context, p *domain.Principal, tenantID,
 	}
 	s.recordGroup(ctx, "group.close", p, g, nil)
 	return g, nil
+}
+
+// treeLabel names a tree "tenant/tree" (the tree name alone when the tenant
+// cannot be read).
+func (s *Service) treeLabel(ctx context.Context, tree *domain.Tree) string {
+	if t, err := s.store.GetTenant(ctx, tree.TenantID); err == nil && t.Slug != "" {
+		return t.Slug + "/" + tree.Name
+	}
+	return tree.Name
+}
+
+// inTree returns cs with Tree set to label.
+func inTree(cs []Conflict, label string) []Conflict {
+	out := make([]Conflict, len(cs))
+	for i, c := range cs {
+		c.Tree = label
+		out[i] = c
+	}
+	return out
 }
 
 // requirePrincipalOrAuth rejects anonymous callers before any lookup.

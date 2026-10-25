@@ -25,8 +25,8 @@ const (
 	BlockerChangesRequested = "changes_requested" // a reviewer requested changes
 	BlockerCI               = "ci"                // required CI checks are not successful
 	BlockerTodos            = "todos"             // open blocking TODOs target the source branch
-	BlockerLinear           = "linear"            // the source brings merge snapshots
-	BlockerDiverged         = "diverged"          // the target is not an ancestor of the source
+	BlockerLinear           = "linear"            // the source brings merge snapshots (and no other method can merge)
+	BlockerDiverged         = "diverged"          // the target is not an ancestor of the source (and no other method can merge)
 )
 
 // Error codes of *BlockedError.
@@ -69,6 +69,12 @@ type MergeChecks struct {
 	Approvals ApprovalSummary `json:"approvals"`
 	CI        CISummary       `json:"ci"`
 	Todos     TodoSummary     `json:"todos"`
+
+	// v0.6 (§14.1): the merge methods that are allowed and possible, in
+	// preference order (the first is the default), and the conflicts of
+	// the three-way merge when the branches diverged.
+	Methods   []string   `json:"methods"`
+	Conflicts []Conflict `json:"conflicts"`
 }
 
 // BlockedError reports a merge refused by merge readiness checks. It wraps
@@ -96,6 +102,15 @@ type evaluation struct {
 	sourceErr   error // missing/empty source branch
 	divergedErr error // classifyMerge's conflict
 	checks      MergeChecks
+
+	// v0.6 merge methods (merge.go, analyzeMethods).
+	diverged   bool                    // neither tip contains the other
+	linearErr  error                   // RequireLinear refuses the incoming merge snapshots
+	linearMsg  string                  // its blocker message
+	base       string                  // merge base of target and source ("" = none/unknown)
+	conflicts  []Conflict              // three-way conflicts (diverged only)
+	methods    map[string]*methodState // per merge method
+	summaryErr error                   // the error when no method can merge
 }
 
 func (ev *evaluation) block(kind, format string, args ...any) {
@@ -112,9 +127,11 @@ func (ev *evaluation) blockers(kinds ...string) []Blocker {
 	return out
 }
 
-// mergeError converts the blockers into the error Merge returns, nil when
-// the merge request is mergeable. Priority: source branch problems, linked
-// group, approvals (review_required), the merge_blocked kinds, divergence.
+// mergeError converts the method-independent blockers into the error Merge
+// returns (nil when none applies). Priority: source branch problems, state,
+// linked group, approvals (review_required), the merge_blocked kinds.
+// Method-dependent problems (divergence, linear history, conflicts, merge
+// method restrictions) are reported by selectMethod.
 func (ev *evaluation) mergeError() error {
 	if ev.sourceErr != nil {
 		return ev.sourceErr
@@ -129,7 +146,7 @@ func (ev *evaluation) mergeError() error {
 		return &domain.PushDenied{Kind: "review_required", Reason: fmt.Sprintf("%d of %d approvals",
 			ev.checks.Approvals.Current, ev.checks.Approvals.Required)}
 	}
-	if bs := ev.blockers(BlockerChangesRequested, BlockerCI, BlockerTodos, BlockerLinear); len(bs) > 0 {
+	if bs := ev.blockers(BlockerChangesRequested, BlockerCI, BlockerTodos); len(bs) > 0 {
 		msgs := make([]string, len(bs))
 		for i, b := range bs {
 			msgs[i] = b.Message
@@ -140,7 +157,7 @@ func (ev *evaluation) mergeError() error {
 			Blockers: bs,
 		}
 	}
-	return ev.divergedErr
+	return nil
 }
 
 // Checks reports the merge readiness of merge request number. It requires
@@ -173,6 +190,8 @@ func (s *Service) evaluate(ctx context.Context, tree *domain.Tree, mr *domain.Me
 	}
 	ev := &evaluation{mr: mr, eff: eff}
 	ev.checks = MergeChecks{
+		Methods:   []string{},
+		Conflicts: []Conflict{},
 		Blockers:  []Blocker{},
 		Approvals: ApprovalSummary{Required: eff.RequiredApprovals, ChangesRequested: []string{}},
 		CI:        CISummary{Required: slices.Clone(eff.RequiredChecks), Missing: []string{}},
@@ -243,36 +262,18 @@ func (s *Service) evaluate(ctx context.Context, tree *domain.Tree, mr *domain.Me
 	}
 
 	if ev.sourceTip != "" {
-		// Linear history: the snapshots the merge brings must not be merges.
-		if eff.RequireLinear {
-			var haves []string
-			if ev.targetTip != "" {
-				haves = []string{ev.targetTip}
-			}
-			incoming, err := s.hist.Missing(ctx, ev.sourceTip, haves)
-			if err != nil {
-				return nil, fmt.Errorf("review: list incoming snapshots: %w", err)
-			}
-			for _, snap := range incoming {
-				if len(snap.Parents) > 1 {
-					ev.block(BlockerLinear, "branch '%s' requires linear history but snapshot %s is a merge snapshot",
-						mr.TargetBranch, shortID(snap.ID))
-					break
-				}
-			}
-		}
-		// Fast-forward classification.
-		up, err := s.classifyMerge(ctx, mr, ev.sourceTip, ev.targetTip)
-		switch {
-		case errors.Is(err, domain.ErrConflict):
-			ev.divergedErr = err
-			ev.block(BlockerDiverged, "target '%s' has diverged from '%s'; merge the target into the source and push",
-				mr.TargetBranch, mr.SourceBranch)
-		case err != nil:
+		// v0.6 (§14.1): fast-forward classification, linear history,
+		// three-way conflicts and merge methods. Blocks only when no
+		// allowed method can merge.
+		if err := s.analyzeMethods(ctx, tree, ev); err != nil {
 			return nil, err
-		default:
-			ev.upToDate = up
 		}
+		for _, m := range AllMergeMethods {
+			if ev.methods[m].possible {
+				ev.checks.Methods = append(ev.checks.Methods, m)
+			}
+		}
+		ev.checks.Conflicts = nonNilConflicts(ev.conflicts)
 	}
 
 	ev.checks.Mergeable = len(ev.checks.Blockers) == 0
