@@ -26,6 +26,7 @@ pub mod remote;
 pub mod role;
 pub mod sa;
 pub mod search;
+pub mod server_common;
 pub mod session;
 pub mod snapshot;
 pub mod sso;
