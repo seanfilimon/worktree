@@ -18,6 +18,8 @@
 //!   trees/<tree>/reflog.jsonl   ReflogEntry per line (append-only)
 //!   trees/<tree>/shallow        boundary snapshot ids of a shallow history (one per line)
 //!   trees/<tree>/stubbed        paths whose content the server withheld (one per line)
+//!   trees/<tree>/sparse         sparse checkout patterns (§15.4; absent = everything)
+//!   trees/<tree>/partial        remote a sparse fetch skipped content from (§15.4)
 //!   trees/<tree>/MERGE_STATE.json
 //!   trees/<tree>/REWRITE_STATE.json  stopped cherry-pick / rebase (§14.5)
 //!   trees/<tree>/stash.jsonl         StashEntry per line, oldest first (§14.5)
@@ -70,6 +72,9 @@ pub use rewrite::{
     RewrittenSnapshot,
 };
 pub use stash::{AutoStashSwitch, StashApplyOutcome, StashEntry, StashOptions};
+// sparse (§15.4): sparse checkout patterns and partial clones.
+mod sparse;
+pub use sparse::{normalize_sparse_patterns, SparseMatcher, SparseReport, SparseStatus};
 
 pub(crate) use trees::TreeRecord;
 
@@ -171,11 +176,14 @@ impl Repository {
             let wt = dir.join(WT_DIR);
             if wt.is_dir() {
                 let config = WorktreeConfig::load(&wt.join("config.toml"))?;
-                return Ok(Repository {
+                let mut repo = Repository {
                     root: dir.to_path_buf(),
                     config,
                     store: ObjectStore::open(wt.join("objects")),
-                });
+                };
+                // sparse (§15.4): partial clones download missing content on demand.
+                repo.install_lazy_fetcher();
+                return Ok(repo);
             }
             candidate = dir.parent();
         }

@@ -39,6 +39,8 @@ mod stage;
 // daemon workstream (§13.11): WatchBranches + Unstage.
 mod watch;
 pub use watch::{unstage, watch_trees, BranchEvent, BranchEventStream, TreeWatch};
+// sparse (§15.4): the lazy object fetcher of partial clones.
+pub(crate) use fetch::lazy_fetcher;
 
 pub use client::{
     ObjectKind, RemoteBranch, RemoteTree, SyncClient, MAX_MESSAGE_SIZE, TREE_ID_METADATA_KEY,
@@ -265,8 +267,35 @@ pub async fn pull_with_options(
 /// be empty): init, set `[remote.origin]`, set tree id/remote name, fetch,
 /// create local branches for every remote branch, checkout default branch.
 pub async fn clone(server: &str, tenant: &str, tree_name: &str, dest: &Path) -> Result<Repository> {
-    clone::clone(server, tenant, tree_name, dest, FetchOptions::default()).await
+    clone::clone(
+        server,
+        tenant,
+        tree_name,
+        dest,
+        FetchOptions::default(),
+        &[],
+    )
+    .await
 }
+
+// --- sparse (ENGINEERING_PLAN §15.4) ---
+
+/// `wt clone --sparse PATTERN...`: [`clone_with_options`] that enables
+/// sparse checkout with `patterns` before fetching, so only blobs (and
+/// chunks) of sparse paths are downloaded ("partial clone") and only those
+/// files are checked out. Other content is downloaded on demand later.
+pub async fn clone_sparse(
+    server: &str,
+    tenant: &str,
+    tree_name: &str,
+    dest: &Path,
+    opts: FetchOptions,
+    patterns: &[String],
+) -> Result<Repository> {
+    clone::clone(server, tenant, tree_name, dest, opts, patterns).await
+}
+
+// --- end sparse ---
 
 /// [`clone`] with shallow-sync options (`wt clone --depth N`).
 pub async fn clone_with_options(
@@ -276,7 +305,7 @@ pub async fn clone_with_options(
     dest: &Path,
     opts: FetchOptions,
 ) -> Result<Repository> {
-    clone::clone(server, tenant, tree_name, dest, opts).await
+    clone::clone(server, tenant, tree_name, dest, opts, &[]).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -12,8 +12,8 @@ use super::session::{self, Access, RemoteSession};
 use super::{FetchOptions, FetchReport, PullReport};
 use crate::error::{Result, SdkError};
 use crate::model::{MergeOptions, MergeOutcome, ReflogEntry, Snapshot};
-use crate::repo::Repository;
-use crate::store::ObjectHash;
+use crate::repo::{Repository, SparseMatcher};
+use crate::store::{ObjectFetcher, ObjectHash, ObjectStore};
 
 pub(crate) async fn fetch(
     repo: &Repository,
@@ -33,6 +33,11 @@ struct Stubs {
     /// Every path of every manifest processed (the server had the chance to
     /// stub each of them).
     mentioned: BTreeSet<String>,
+    /// sparse (§15.4): the tree's sparse set; entries outside it are not
+    /// downloaded ("partial clone").
+    sparse: Option<SparseMatcher>,
+    /// sparse (§15.4): content outside the sparse set was skipped.
+    skipped: bool,
 }
 
 /// Fetch through an open session. Also returns the server's branch list.
@@ -60,7 +65,10 @@ pub(crate) async fn fetch_with(
     let depth = opts.depth.filter(|d| *d > 0);
     let deepen = opts.deepen.filter(|d| *d > 0);
     let mut fresh_ids: Vec<String> = Vec::new();
-    let mut stubs = Stubs::default();
+    let mut stubs = Stubs {
+        sparse: repo.sparse_matcher(&tree_name)?,
+        ..Stubs::default()
+    };
 
     for branch in &branches {
         let old = repo.remote_tip(&tree_name, remote, &branch.name)?;
@@ -110,6 +118,10 @@ pub(crate) async fn fetch_with(
 
     if !fresh_ids.is_empty() || deepen.is_some() {
         repo.update_shallow_boundary(&tree_name, fresh_ids.iter().map(String::as_str))?;
+    }
+    // sparse (§15.4): remember where skipped content can be fetched from.
+    if stubs.skipped {
+        repo.mark_partial(&tree_name, remote)?;
     }
     if !stubs.mentioned.is_empty() {
         let old = repo.stubbed_paths(&tree_name)?;
@@ -228,7 +240,13 @@ async fn ensure_objects(
     let tree = session.tree.id.clone();
     let mut received = 0;
 
-    let wanted: Vec<ObjectHash> = hinted.iter().filter(|h| !store.has(h)).copied().collect();
+    // sparse (§15.4): the server's hint list covers every path; a sparse
+    // fetch asks for exactly what the sparse set needs instead.
+    let wanted: Vec<ObjectHash> = if stubs.sparse.is_some() {
+        Vec::new()
+    } else {
+        hinted.iter().filter(|h| !store.has(h)).copied().collect()
+    };
     if !wanted.is_empty() {
         received += session
             .client
@@ -259,6 +277,16 @@ async fn ensure_objects(
             if stubbed.contains(&entry.path) {
                 continue;
             }
+            if stubs
+                .sparse
+                .as_ref()
+                .is_some_and(|s| !s.includes(&entry.path))
+            {
+                if !store.has_entry(&entry) {
+                    stubs.skipped = true;
+                }
+                continue;
+            }
             if entry.chunked {
                 chunk_lists.insert(entry.hash);
             }
@@ -279,7 +307,7 @@ async fn ensure_objects(
     // Chunks named by the chunk lists (closure expansion).
     let mut chunks = BTreeSet::new();
     for list in &chunk_lists {
-        for chunk in store.read_chunk_list(list)?.chunks {
+        for chunk in store.read_chunk_list_local(list)?.chunks {
             if !store.has(&chunk.hash) {
                 chunks.insert(chunk.hash);
             }
@@ -374,6 +402,15 @@ pub(crate) async fn pull(
         return Err(SdkError::BranchNotFound(format!("{remote}/{branch}")));
     }
 
+    // sparse (§15.4): a fetch that just made the tree a partial clone needs
+    // the lazy fetcher for the merge (content outside the sparse set).
+    let reopened;
+    let repo = if !repo.store().has_fetcher() && repo.is_partial(&tree_name)? {
+        reopened = Repository::open(repo.root())?;
+        &reopened
+    } else {
+        repo
+    };
     let remote_tip = repo.remote_tip(&tree_name, remote, &branch)?;
     let old = repo.branch_tip(&tree_name, &branch)?;
     let is_current = branch == current;
@@ -430,6 +467,162 @@ pub(crate) async fn pull(
         outcome,
     })
 }
+
+// --- sparse (ENGINEERING_PLAN §15.4): on-demand downloads for partial clones ---
+
+/// One request to the lazy-fetch worker.
+struct LazyJob {
+    store: ObjectStore,
+    hashes: Vec<ObjectHash>,
+    reply: std::sync::mpsc::Sender<Result<usize>>,
+}
+
+/// The [`ObjectFetcher`] of a partial clone: downloads missing objects
+/// from the server trees the clone was fetched from. Requests run on one
+/// background thread with its own runtime and cached connections, so the
+/// synchronous engine (diff, merge, blame, checkout) can call it from any
+/// context, including inside an async CLI command.
+#[derive(Debug)]
+pub(crate) struct LazyFetcher {
+    /// `(server URL, server tree id)` pairs, tried in order.
+    targets: Vec<(String, String)>,
+    worker: std::sync::Mutex<Option<std::sync::mpsc::Sender<LazyJob>>>,
+}
+
+/// A lazy fetcher for `targets` (`(server URL, server tree id)` pairs).
+pub(crate) fn lazy_fetcher(targets: Vec<(String, String)>) -> std::sync::Arc<dyn ObjectFetcher> {
+    std::sync::Arc::new(LazyFetcher {
+        targets,
+        worker: std::sync::Mutex::new(None),
+    })
+}
+
+impl LazyFetcher {
+    fn sender(&self, restart: bool) -> Result<std::sync::mpsc::Sender<LazyJob>> {
+        let mut slot = self.worker.lock().unwrap_or_else(|e| e.into_inner());
+        if restart {
+            *slot = None;
+        }
+        if let Some(tx) = slot.as_ref() {
+            return Ok(tx.clone());
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<LazyJob>();
+        let targets = self.targets.clone();
+        std::thread::Builder::new()
+            .name("wt-lazy-fetch".into())
+            .spawn(move || lazy_worker(targets, rx))
+            .map_err(|e| SdkError::Other(format!("cannot start the download thread: {e}")))?;
+        *slot = Some(tx.clone());
+        Ok(tx)
+    }
+}
+
+impl ObjectFetcher for LazyFetcher {
+    fn fetch(&self, store: &ObjectStore, hashes: &[ObjectHash]) -> Result<usize> {
+        for restart in [false, true] {
+            let (reply, answer) = std::sync::mpsc::channel();
+            let job = LazyJob {
+                store: store.clone(),
+                hashes: hashes.to_vec(),
+                reply,
+            };
+            if self.sender(restart)?.send(job).is_err() {
+                continue;
+            }
+            if let Ok(result) = answer.recv() {
+                return result;
+            }
+        }
+        Err(SdkError::Other("the download thread stopped".into()))
+    }
+}
+
+fn lazy_worker(targets: Vec<(String, String)>, jobs: std::sync::mpsc::Receiver<LazyJob>) {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            for job in jobs {
+                let _ = job
+                    .reply
+                    .send(Err(SdkError::Other(format!("cannot start a runtime: {e}"))));
+            }
+            return;
+        }
+    };
+    let mut clients: std::collections::HashMap<String, super::client::SyncClient> =
+        std::collections::HashMap::new();
+    for job in jobs {
+        let result = runtime.block_on(lazy_download(&targets, &mut clients, &job));
+        let _ = job.reply.send(result);
+    }
+}
+
+async fn lazy_download(
+    targets: &[(String, String)],
+    clients: &mut std::collections::HashMap<String, super::client::SyncClient>,
+    job: &LazyJob,
+) -> Result<usize> {
+    let mut remaining: Vec<ObjectHash> = job
+        .hashes
+        .iter()
+        .filter(|h| !job.store.has(h))
+        .copied()
+        .collect();
+    let mut received = 0;
+    let mut last_err = None;
+    for (server, tree) in targets {
+        if remaining.is_empty() {
+            break;
+        }
+        // A cached connection may have gone stale: retry once on a new one.
+        for attempt in 0..2 {
+            let client = match clients.entry(server.clone()) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let cred = super::credentials::CredentialStore::default_location()
+                        .get(server)
+                        .ok()
+                        .flatten();
+                    match super::client::SyncClient::connect(
+                        server,
+                        cred.as_ref().map(|c| c.token.as_str()),
+                    )
+                    .await
+                    {
+                        Ok(c) => e.insert(c),
+                        Err(err) => {
+                            last_err = Some(err);
+                            break;
+                        }
+                    }
+                }
+            };
+            match client.download_objects(&job.store, tree, &remaining).await {
+                Ok(n) => {
+                    received += n;
+                    break;
+                }
+                Err(err) => {
+                    clients.remove(server);
+                    last_err = Some(err);
+                    if attempt == 1 {
+                        break;
+                    }
+                }
+            }
+        }
+        remaining.retain(|h| !job.store.has(h));
+    }
+    match last_err {
+        Some(err) if received == 0 => Err(err),
+        _ => Ok(received),
+    }
+}
+
+// --- end sparse ---
 
 #[cfg(test)]
 mod tests {

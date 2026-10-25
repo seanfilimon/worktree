@@ -24,6 +24,11 @@
 //! objects in the compressed encoding when that saves space. It holds every
 //! tree's lock while it runs, and refuses to delete anything when a
 //! reachable manifest or chunk list cannot be decoded (run `wt fsck`).
+//!
+//! sparse (§15.4): gc and fsck read objects with `get_local` /
+//! `read_chunk_list_local`, so a partial clone's lazy fetcher never
+//! downloads anything here; content a partial clone has not downloaded is
+//! simply absent (fsck counts it in `restricted_missing`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -146,7 +151,9 @@ pub struct FsckReport {
     pub snapshots_checked: u64,
     pub manifests_checked: u64,
     pub refs_checked: u64,
-    /// Blobs of restricted (stubbed) paths that are absent as expected.
+    /// Blobs of restricted (stubbed) paths that are absent as expected —
+    /// and (sparse, §15.4) blobs, chunk lists and chunks a partial clone
+    /// has not downloaded.
     pub restricted_missing: u64,
     pub errors: Vec<FsckIssue>,
 }
@@ -282,7 +289,7 @@ impl Repository {
         let mut corrupt: HashSet<ObjectHash> = HashSet::new();
         if opts.full {
             for obj in self.store.objects()? {
-                match self.store.get(&obj.hash) {
+                match self.store.get_local(&obj.hash) {
                     Ok(_) => report.objects_checked += 1,
                     Err(SdkError::ObjectNotFound(_)) => {}
                     Err(e) => {
@@ -301,9 +308,15 @@ impl Repository {
         let records = self.tree_records()?;
         let mut shallow: HashSet<SnapshotId> = HashSet::new();
         let mut stubbed: HashMap<String, BTreeSet<String>> = HashMap::new();
+        // sparse (§15.4): ids of partial-clone trees, whose blobs, chunk
+        // lists and chunks may be missing by design (downloaded on demand).
+        let mut partial: HashSet<String> = HashSet::new();
         for rec in &records {
             shallow.extend(self.shallow_boundary(&rec.name)?);
             stubbed.insert(rec.id.clone(), self.stubbed_paths(&rec.name)?);
+            if self.is_partial(&rec.name)? {
+                partial.insert(rec.id.clone());
+            }
         }
 
         // Snapshots, their parents and manifests.
@@ -358,7 +371,7 @@ impl Repository {
             if corrupt.contains(hash) {
                 continue;
             }
-            let data = match self.store.get(hash) {
+            let data = match self.store.get_local(hash) {
                 Ok(d) => d,
                 Err(e) => {
                     report.errors.push(issue(
@@ -381,11 +394,13 @@ impl Repository {
                 }
             };
             let restricted = stubbed.get(tree_id);
+            let is_partial = partial.contains(tree_id);
             for entry in &manifest.entries {
                 self.fsck_entry(
                     entry,
                     snapshot,
                     restricted,
+                    is_partial,
                     opts.full,
                     &corrupt,
                     &mut checked_lists,
@@ -431,6 +446,7 @@ impl Repository {
         entry: &ManifestEntry,
         snapshot: &str,
         restricted: Option<&BTreeSet<String>>,
+        partial: bool,
         full: bool,
         corrupt: &HashSet<ObjectHash>,
         checked_lists: &mut HashSet<ObjectHash>,
@@ -438,7 +454,9 @@ impl Repository {
     ) {
         let hash = entry.hash;
         if !self.store.has(&hash) {
-            if restricted.is_some_and(|r| r.contains(&entry.path)) {
+            // sparse (§15.4): a partial clone lacks content outside the
+            // sparse set by design; counted like restricted paths.
+            if partial || restricted.is_some_and(|r| r.contains(&entry.path)) {
                 report.restricted_missing += 1;
             } else {
                 report.errors.push(issue(
@@ -452,7 +470,7 @@ impl Repository {
         if !entry.chunked || !checked_lists.insert(hash) || corrupt.contains(&hash) {
             return;
         }
-        let data = match self.store.get(&hash) {
+        let data = match self.store.get_local(&hash) {
             Ok(d) => d,
             Err(e) => {
                 // Already reported by the full object pass.
@@ -477,6 +495,10 @@ impl Repository {
         };
         for chunk in &list.chunks {
             if !self.store.has(&chunk.hash) {
+                if partial {
+                    report.restricted_missing += 1;
+                    continue;
+                }
                 report.errors.push(issue(
                     FsckIssueKind::MissingObject,
                     chunk.hash.to_hex(),
@@ -580,7 +602,7 @@ impl Repository {
         if !marked.objects.insert(*hash) {
             return Ok(());
         }
-        let data = match self.store.get(hash) {
+        let data = match self.store.get_local(hash) {
             Ok(d) => d,
             Err(SdkError::ObjectNotFound(_)) => return Ok(()),
             Err(e) if strict => return Err(refuse(hash, &e)),
@@ -595,7 +617,7 @@ impl Repository {
             if !marked.objects.insert(entry.hash) || !entry.chunked {
                 continue;
             }
-            match self.store.read_chunk_list(&entry.hash) {
+            match self.store.read_chunk_list_local(&entry.hash) {
                 Ok(list) => marked.objects.extend(list.chunks.iter().map(|c| c.hash)),
                 Err(SdkError::ObjectNotFound(_)) => {}
                 Err(e) if strict => return Err(refuse(&entry.hash, &e)),

@@ -76,6 +76,7 @@ pub(crate) async fn clone(
     tree_name: &str,
     dest: &Path,
     opts: FetchOptions,
+    sparse: &[String],
 ) -> Result<Repository> {
     let server = normalize_server_url(server)?;
     if tenant.trim().is_empty() || tree_name.trim().is_empty() {
@@ -83,6 +84,8 @@ pub(crate) async fn clone(
             "clone needs <tenant>/<tree>".into(),
         ));
     }
+    // sparse (§15.4): validate patterns before touching anything.
+    let sparse = crate::repo::normalize_sparse_patterns(sparse)?;
     let state = check_destination(dest)?;
 
     let cred = CredentialStore::default_location().get(&server)?;
@@ -95,7 +98,7 @@ pub(crate) async fn clone(
         username: cred.map(|c| c.username),
     };
 
-    match clone_into(session, &server, tenant, dest, opts).await {
+    match clone_into(session, &server, tenant, dest, opts, &sparse).await {
         Ok(repo) => Ok(repo),
         Err(e) => {
             cleanup(dest, state);
@@ -110,6 +113,7 @@ async fn clone_into(
     tenant: &str,
     dest: &Path,
     opts: FetchOptions,
+    sparse: &[String],
 ) -> Result<Repository> {
     let RemoteTree {
         id,
@@ -143,11 +147,17 @@ async fn clone_into(
     let root = repo.root_tree()?.name;
     repo.set_tree_id(&root, &id)?;
     repo.set_tree_remote_name(&root, &name)?;
+    // sparse (§15.4): with patterns, the fetch downloads only sparse paths.
+    if !sparse.is_empty() {
+        repo.init_sparse_patterns(&root, sparse)?;
+    }
 
     let (_, branches) = fetch_with(&repo, &root, ORIGIN, &mut session, opts).await?;
     for branch in &branches {
         repo.set_branch_tip(&root, &branch.name, branch.tip.as_deref())?;
     }
+    // sparse (§15.4): content outside the sparse set is fetched on demand.
+    repo.install_lazy_fetcher();
     let head = repo.current_branch(&root)?;
     if let Some(tip) = repo.branch_tip(&root, &head)? {
         repo.checkout(&root, &tip, true)?;
@@ -210,6 +220,7 @@ mod tests {
             "tree",
             &dir.path().join("x"),
             FetchOptions::default(),
+            &[],
         )
         .await
         .expect_err("clone must fail");
@@ -220,6 +231,7 @@ mod tests {
             "tree",
             &dir.path().join("x"),
             FetchOptions::default(),
+            &[],
         )
         .await
         .expect_err("clone must fail");
@@ -231,6 +243,7 @@ mod tests {
             "tree",
             dir.path(),
             FetchOptions::default(),
+            &[],
         )
         .await
         .expect_err("clone must fail");

@@ -71,6 +71,10 @@ pub struct CloneArgs {
     /// Clone only the newest N snapshots of each branch (shallow clone)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub depth: Option<u32>,
+    /// Sparse clone: check out and download only these paths or patterns
+    /// (other content is downloaded on demand; see `wt sparse --help`)
+    #[arg(long, value_name = "PATTERN", num_args = 1..)]
+    pub sparse: Vec<String>,
     /// Start the background daemon (if needed) and auto-snapshot the clone
     #[arg(long)]
     pub watch: bool,
@@ -226,6 +230,9 @@ struct CloneResult<'a> {
     branch: &'a str,
     shallow: bool,
     restricted: &'a [String],
+    /// sparse (§15.4): sparse checkout state of a `--sparse` clone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sparse: Option<&'a worktree_sdk::repo::SparseStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     watching: Option<&'a str>,
 }
@@ -238,11 +245,18 @@ pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
         depth: args.depth,
         deepen: None,
     };
-    let repo = block_on(remote::clone_with_options(
-        &server, tenant, tree_name, &dest, opts,
+    // sparse (§15.4): `--sparse PATTERN...` makes a partial clone.
+    let repo = block_on(remote::clone_sparse(
+        &server,
+        tenant,
+        tree_name,
+        &dest,
+        opts,
+        &args.sparse,
     ))??;
     let root_tree = repo.root_tree()?;
     let restricted = repo.restricted_paths(&root_tree.name)?;
+    let sparse = repo.sparse_status(&root_tree.name)?;
     let watching = if args.watch {
         Some(crate::commands::daemon::start_and_watch(repo.root())?)
     } else {
@@ -256,6 +270,7 @@ pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
         branch: &root_tree.current_branch,
         shallow: repo.is_shallow(&root_tree.name)?,
         restricted: &restricted,
+        sparse: sparse.as_ref(),
         watching: watching.as_deref(),
     };
     ctx.out.emit(&result, |t| {
@@ -268,6 +283,13 @@ pub fn clone(ctx: &Context, args: CloneArgs) -> Result<()> {
         ));
         if result.shallow {
             t.line("History is shallow; use `wt fetch --deepen N` for more.");
+        }
+        if let Some(s) = &sparse {
+            t.line(format_args!(
+                "Sparse checkout ({}): {}",
+                s.patterns.join(" "),
+                crate::commands::sparse::summary(s)
+            ));
         }
         if !restricted.is_empty() {
             t.line(format_args!(
@@ -394,6 +416,22 @@ mod tests {
         }
         match parse(&["clone", "http://x", "a/b", "--depth", "5"]).expect("parse") {
             Command::Clone(a) => assert_eq!(a.depth, Some(5)),
+            other => panic!("{other:?}"),
+        }
+        // sparse (§15.4)
+        match parse(&[
+            "clone", "http://x", "a/b", "dest", "--sparse", "src", "docs",
+        ])
+        .expect("parse")
+        {
+            Command::Clone(a) => {
+                assert_eq!(a.sparse, vec!["src", "docs"]);
+                assert_eq!(a.dest.as_deref(), Some(Path::new("dest")));
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse(&["clone", "http://x", "a/b"]).expect("parse") {
+            Command::Clone(a) => assert!(a.sparse.is_empty()),
             other => panic!("{other:?}"),
         }
         assert!(parse(&["fetch", "--depth", "1", "--deepen", "1"]).is_err());
