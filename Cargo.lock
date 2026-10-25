@@ -3131,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "worktree-bg"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "blake3",
@@ -3157,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "worktree-cli"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "worktree-e2e"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "reqwest",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "worktree-git"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "git2",
@@ -3211,7 +3211,7 @@ dependencies = [
 
 [[package]]
 name = "worktree-protocol"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -3230,7 +3230,7 @@ dependencies = [
 
 [[package]]
 name = "worktree-sdk"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",

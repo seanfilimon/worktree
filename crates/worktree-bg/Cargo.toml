@@ -1,6 +1,6 @@
 [package]
 name = "worktree-bg"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 description = "W0rkTree local background daemon: watches worktrees and takes auto-snapshots"
 

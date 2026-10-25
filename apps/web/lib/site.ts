@@ -3,7 +3,7 @@
 export const SITE_NAME = "W0rkTree";
 
 /** Version the documentation describes. Bump together with the changelog. */
-export const CURRENT_VERSION = "v0.5.0";
+export const CURRENT_VERSION = "v0.6.0";
 /** Content dated before this (ISO date) predates CURRENT_VERSION's design. */
 export const CURRENT_VERSION_DATE = "2026-01-01";
 
