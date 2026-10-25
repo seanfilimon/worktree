@@ -487,6 +487,19 @@ func (m *Memory) TouchToken(ctx context.Context, id string, at time.Time) error 
 	})
 }
 
+// TouchTokenMeta implements iam.TokenMetaToucher (see Bolt.TouchTokenMeta).
+func (m *Memory) TouchTokenMeta(ctx context.Context, id string, at time.Time, lastIP, userAgent string) error {
+	return m.write(ctx, func() error {
+		t, ok := m.tokens[id]
+		if !ok {
+			return notFound("token", id)
+		}
+		touchTokenMeta(&t, at, lastIP, userAgent)
+		m.tokens[id] = t
+		return nil
+	})
+}
+
 // ---- trees ------------------------------------------------------------
 
 // CreateTree implements domain.MetaStore.

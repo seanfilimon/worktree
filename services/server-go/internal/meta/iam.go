@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 )
@@ -439,4 +440,17 @@ func sortInvitations(is []domain.Invitation) {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+}
+
+// touchTokenMeta records a token use: LastUsedAt plus the client address and
+// user agent when known.
+func touchTokenMeta(t *domain.APIToken, at time.Time, lastIP, userAgent string) {
+	at = utc(at)
+	t.LastUsedAt = &at
+	if lastIP != "" {
+		t.LastIP = lastIP
+	}
+	if userAgent != "" {
+		t.UserAgent = userAgent
+	}
 }

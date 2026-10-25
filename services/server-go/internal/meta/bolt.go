@@ -738,6 +738,20 @@ func (b *Bolt) TouchToken(ctx context.Context, id string, at time.Time) error {
 	})
 }
 
+// TouchTokenMeta implements iam.TokenMetaToucher: like TouchToken, and also
+// records the client address and user agent of the latest use (empty
+// values keep the stored ones).
+func (b *Bolt) TouchTokenMeta(ctx context.Context, id string, at time.Time, lastIP, userAgent string) error {
+	return b.update(ctx, func(tx *bolt.Tx) error {
+		t, err := getTokenTx(tx, id)
+		if err != nil {
+			return err
+		}
+		touchTokenMeta(t, at, lastIP, userAgent)
+		return putTokenTx(tx, *t)
+	})
+}
+
 // ---- trees ------------------------------------------------------------
 
 func getTreeTx(tx *bolt.Tx, id string) (*domain.Tree, error) {
