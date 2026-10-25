@@ -453,12 +453,36 @@ All paths below are under `/trees/{tenant}/{tree}`.
 
 | Method | Path | Response | Permission |
 |---|---|---|---|
-| GET | `/audit?tenant=&action=&limit=` | `[audit_event]` | tenant admin or server admin |
-| GET | `/events?tenant=&tree=` | `text/event-stream` | read access to the filtered scope |
+| GET | `/audit?tenant=&action=&limit=&since=` | `[audit_event]` | tenant admin; unscoped: server admins see all, others the tenants they administer |
+| GET | `/events?tenant=&tree=&types=` | `text/event-stream` | read access to the filtered scope; unscoped: server admins get all, others their member tenants |
+| GET | `/events/recent?tenant=&tree=&limit=` | `[event]` oldest first (in-memory ring buffer) | same as `/events` |
+| GET | `/search?q=&limit=` | `{tenants, trees, branches, accounts}` (accounts for server admins only) | signed in; only readable resources |
 | GET | `/admin/stats` | `ServerStats {tenants, accounts, trees, branches, snapshots, staged, objects, storage_bytes}` | server admin |
+| GET | `/admin/system` | `SystemInfo` (version, runtime, memory, storage, event bus) | server admin |
 | GET | `/admin/accounts` | `[account]` | server admin |
+| POST | `/admin/accounts` | `{username, email, password, is_admin}` → `account` (ignores `allow_registration`) | server admin |
 | PATCH | `/admin/accounts/{username}` | `{is_admin?, disabled?}` → `account` | server admin |
+| POST | `/admin/accounts/{username}/password` | `{password}` → 204; revokes that account's tokens | server admin |
 | GET | `/admin/*` (no `/api/v1` prefix) | Static admin SPA with `index.html` fallback | public |
+
+### Insights and ref management (v0.3)
+
+`REV` is a full snapshot id, a branch name, a tag name or a unique id prefix (≥ 4 characters).
+Paths are relative to `/api/v1/trees/{tenant}/{tree}`.
+
+| Method | Path | Response | Permission |
+|---|---|---|---|
+| GET | `/compare?to=REV&from=REV&context=3` | `{from, to, merge_base?, snapshots, files: [{path, status, additions, deletions, binary, too_large, patch?}], stats}`; `from` defaults to `to`'s first parent | `tree:read` |
+| GET | `/history?path=&branch=&limit=` | `[{snapshot, change}]` snapshots that changed `path` | `tree:read` |
+| GET | `/stats?branch=&days=30` | `{snapshot_count, contributors, activity, file_count, total_bytes, languages}` | `tree:read` |
+| GET | `/staged/summary` | `[{branch, authors, files_changed, latest_at, overlaps}]` | `tree:read` |
+| POST | `/branches` | `{name, from?}` → `branch` | `branch:create` |
+| DELETE | `/branches/{name...}` | 204 (protection `no_delete` and the default branch refuse) | `branch:delete` |
+| POST | `/tags` | `{name, target, message?}` → `tag` | `tree:write` |
+| DELETE | `/tags/{name...}` | 204 | `tree:admin` |
+
+Also new: `PATCH /api/v1/tenants/{tenant}` (`{name?, plan?}`; plan for server admins only) and
+`POST /api/v1/auth/password` (`{current_password, new_password}` → 204; revokes your other tokens).
 
 Example session:
 
