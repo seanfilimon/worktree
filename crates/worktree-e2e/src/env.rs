@@ -117,6 +117,46 @@ impl TestEnv {
     pub fn git(&self) -> Git {
         Git::new(&self.root.join("git-home"), &self.logs.join("git"))
     }
+
+    /// The server admin as a simulated user (own `WT_HOME`, the server's
+    /// admin password; not logged in yet — call [`User::login`]).
+    pub fn admin_user(&self) -> User {
+        let server = self.server();
+        let mut admin = self.user(&server.admin_user);
+        admin.password = server.admin_password.clone();
+        admin.email = format!("{}@localhost", server.admin_user);
+        admin
+    }
+}
+
+/// A TOML basic string literal.
+fn toml_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `scheme://host[:port]` without a trailing slash (the key format of
+/// `credentials.toml`; the e2e server URL is already in this form).
+fn normalize_server_url(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    if url.contains("://") {
+        url.to_ascii_lowercase()
+    } else {
+        format!("http://{}", url.to_ascii_lowercase())
+    }
 }
 
 impl Drop for TestEnv {
@@ -295,6 +335,59 @@ impl User {
 
     pub fn bg_json_path(&self) -> PathBuf {
         self.home.join("bg.json")
+    }
+
+    /// `$WT_HOME/credentials.toml`.
+    pub fn credentials_path(&self) -> PathBuf {
+        self.home.join("credentials.toml")
+    }
+
+    /// Save `token` as this user's credential for the env's server
+    /// (replacing `credentials.toml`), exactly as `wt login` stores it. Used
+    /// to act as a service account or with a scoped API token.
+    #[track_caller]
+    pub fn save_token(&self, username: &str, token: &str) {
+        let server = normalize_server_url(self.server());
+        fsutil::write(
+            &self.credentials_path(),
+            format!(
+                "[servers.{}]\nusername = {}\ntoken = {}\n",
+                toml_string(&server),
+                toml_string(username),
+                toml_string(token)
+            ),
+        );
+    }
+
+    /// The token saved in `credentials.toml` for the env's server, if any.
+    pub fn saved_token(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.credentials_path()).ok()?;
+        let header = format!(
+            "[servers.{}]",
+            toml_string(&normalize_server_url(self.server()))
+        );
+        let mut in_section = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_section = line == header;
+            } else if in_section {
+                if let Some(rest) = line.strip_prefix("token") {
+                    let value = rest.trim_start().strip_prefix('=')?.trim();
+                    return Some(value.trim_matches(|c| c == '"' || c == '\'').to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// `wt login <server> -u <name> --password-stdin <extra...>` (not
+    /// asserted; MFA scenarios check success/failure themselves).
+    pub fn login_with(&self, extra: &[&str]) -> CmdOutput {
+        self.wt()
+            .args(["login", self.server(), "-u", &self.name, "--password-stdin"])
+            .args(extra)
+            .stdin(format!("{}\n", self.password))
+            .run()
     }
 }
 

@@ -9,6 +9,7 @@
 //! `WT_HOME` per simulated user) and safe to run in parallel.
 
 mod common;
+mod iam_common;
 
 mod admin_api;
 mod branch_protection_and_mr;
@@ -18,3 +19,14 @@ mod local_workflow;
 mod push_clone_pull;
 mod secret_scan;
 mod staged_visibility;
+
+// v0.4 IAM (ENGINEERING_PLAN §12).
+mod iam_cli_everything;
+mod iam_custom_roles;
+mod iam_invitations;
+mod iam_mfa_login;
+mod iam_password_reset;
+mod iam_policies;
+mod iam_service_accounts;
+mod iam_sessions_and_tokens;
+mod iam_teams_and_grants;
