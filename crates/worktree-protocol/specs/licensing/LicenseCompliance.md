@@ -1,380 +1,331 @@
 # License Compliance Specification
 
-## Overview
+## Table of Contents
 
-W0rkTree enforces license compliance at the file level as a first-class concept. Git has no
-equivalent — license compliance in Git is a legal/honor-system concern. In W0rkTree, the server
-prevents unauthorized export, copy, fork, or sync of licensed code.
-
-License compliance sits ABOVE IAM in the enforcement stack: both IAM check AND license check
-must pass for an operation to succeed.
-
----
-
-## Why This Exists
-
-- Open-source projects with proprietary modules
-- Multi-tenant collaboration where different paths have different licenses
-- Code theft prevention for contractors/partners
-- Compliance automation (no manual license audits)
-
-In traditional Git workflows, license compliance is entirely the responsibility of the humans
-involved. There is no mechanism in Git itself to prevent someone from copying proprietary code
-into a public repository, stripping license headers, or violating copyleft requirements. The
-only enforcement is legal action after the fact.
-
-W0rkTree changes this by making the server aware of license metadata and enforcing it at the
-protocol level. The server will reject operations that violate license constraints before they
-happen.
+1. [Overview](#1-overview)
+2. [License rules](#2-license-rules)
+3. [Path globs and specificity](#3-path-globs-and-specificity)
+4. [Who is restricted](#4-who-is-restricted)
+5. [Grants, grantees and expiry](#5-grants-grantees-and-expiry)
+6. [SPDX expressions](#6-spdx-expressions)
+7. [Enforcement points](#7-enforcement-points)
+8. [Exports and the NOTICE file](#8-exports-and-the-notice-file)
+9. [License detection](#9-license-detection)
+10. [Errors](#10-errors)
+11. [Audit](#11-audit)
+12. [License compliance in the access stack](#12-license-compliance-in-the-access-stack)
+13. [Implementation status](#13-implementation-status)
+14. [Roadmap](#14-roadmap)
+15. [References](#15-references)
 
 ---
 
-## How Licenses Are Assigned
+## 1. Overview
 
-### Root-Level Configuration
+A tree can assign an SPDX license to paths and state what **other tenants**
+may do with those files. The available rights are read, write (push) and
+export. The server enforces these rules on every read, push and export,
+**in addition to IAM**: an operation must be allowed by IAM **and** by the
+license rule.
 
-In `.wt/config.toml` (root level):
+The rules exist to cover cases like these:
 
-```toml
-[license]
-default = "MIT"
-spdx_strict = true
+- an open-source project with proprietary modules;
+- a partner who may read but not take code;
+- a contractor who may change code but not export it.
 
-[[license.path]]
-path = "services/billing-engine"
-license = "proprietary"
+License metadata lives on the server, per tree, in `meta.db`. It is not
+stored in worktree config files.
 
-[[license.path]]
-path = "vendor/third-party-sdk"
-license = "Apache-2.0"
-attribution_required = true
+## 2. License rules
 
-[[license.path]]
-path = "shared/utils"
-license = "MIT"
-```
+`domain.LicenseRule`:
 
-### Tree-Level Configuration
+| Field | Meaning |
+|---|---|
+| `tree_id` | Tree the rule belongs to |
+| `path_glob` | Tree-relative glob (§3). There is one rule per glob per tree, and `PUT` replaces it. |
+| `spdx` | SPDX license expression (§6) |
+| `grant` | `read-only`, `modify`, `redistribute` or `""` (license default) |
+| `grantee` | Tenant slug the rule applies to. `""` means every non-owning tenant. (v0.5) |
+| `expires_at` | Optional RFC 3339 time; the rule stops applying afterwards (v0.5) |
 
-In `.wt-tree/config.toml` (tree level):
-
-```toml
-[license]
-license = "AGPL-3.0-only"
-```
-
-### Assignment Rules
-
-- SPDX identifiers are the standard (MIT, Apache-2.0, AGPL-3.0-only, GPL-3.0-or-later, etc.)
-- `spdx_strict = true` (default): only valid SPDX identifiers allowed
-- `spdx_strict = false`: allows custom strings for proprietary/internal licenses
-- `"proprietary"` is a special keyword meaning no external access without explicit grant
-- SPDX expressions are supported: `"MIT OR Apache-2.0"`, `"GPL-2.0-only WITH Classpath-exception-2.0"`
-
-### Validation
-
-When `spdx_strict = true`, the server and bgprocess both validate license identifiers against
-the SPDX license list (version 3.21+). Invalid identifiers are rejected at config parse time.
-
-When `spdx_strict = false`, any string is accepted. This is intended for internal/proprietary
-licenses that don't have SPDX identifiers (e.g., `"AcmeCorp-Internal-v2"`).
-
----
-
-## License Grant Model
-
-For proprietary code that a tenant wants to selectively share:
-
-```toml
-[[license.grant]]
-path = "services/billing-engine"
-tenant = "partner-corp"
-grant = "read-only"        # Can read within worktree, cannot copy/export
-
-[[license.grant]]
-path = "services/billing-engine"
-tenant = "contractor@dev.io"
-grant = "modify"           # Can read and modify within worktree, cannot export
-
-[[license.grant]]
-path = "services/billing-engine/src/api.rs"
-tenant = "partner-corp"
-grant = "redistribute"     # Full permission to use, modify, copy, export
-```
-
-### Grant Levels
-
-| Level          | Read | Modify | Export/Copy/Fork |
-|----------------|------|--------|------------------|
-| read-only      | ✓    | ✗      | ✗                |
-| modify         | ✓    | ✓      | ✗                |
-| redistribute   | ✓    | ✓      | ✓                |
-
-### Grant Semantics
-
-- **read-only**: The grantee can view file contents within the W0rkTree platform. They cannot
-  modify the file, and they cannot export, copy, fork, or sync the file to any external
-  system. This is for review/audit purposes.
-
-- **modify**: The grantee can read and modify the file within W0rkTree. Modifications are
-  tracked and attributed. However, the grantee cannot export the file outside the platform.
-  This is for contractors who need to work on code but shouldn't be able to take it with them.
-
-- **redistribute**: Full permission. The grantee can read, modify, export, copy, fork, and
-  redistribute the file. This is equivalent to having no license restriction for that grantee.
-
-### Grant Resolution
-
-- Grants are path-specific. A grant on `services/billing-engine` applies to all files under
-  that path.
-- More specific grants override less specific grants for the same tenant.
-- Grants are additive: if a tenant has `read-only` on `services/` and `modify` on
-  `services/billing-engine`, the `modify` grant applies to `services/billing-engine`.
-- Grants do NOT cascade upward: a grant on a child path does not grant access to the parent.
-
-### Grant Expiration (Planned)
-
-```toml
-[[license.grant]]
-path = "services/billing-engine"
-tenant = "contractor@dev.io"
-grant = "modify"
-expires = "2025-06-30T23:59:59Z"    # Grant expires automatically
-```
-
----
-
-## What the Server Enforces
-
-| Operation                          | License Check                                                                                      |
-|------------------------------------|----------------------------------------------------------------------------------------------------|
-| Tenant reads file                  | Allowed if IAM permits AND license allows read for that tenant                                     |
-| Tenant forks/copies worktree       | Proprietary files excluded. Copyleft carries license. Attribution files include NOTICE.             |
-| `wt git export`                    | License headers injected. Proprietary paths blocked. LICENSE file auto-generated.                   |
-| Tenant syncs tree to own worktree  | Blocked for proprietary unless explicit grant exists                                               |
-| Public worktree browsing           | All can read, but license governs copy/modify/redistribute                                         |
-| `wt archive`                       | Proprietary paths excluded by default                                                              |
-| Cross-tenant staged visibility     | Can see "Alice working on billing-engine/src/pricing.rs" but cannot read file contents if proprietary |
-| `wt git mirror`                    | Proprietary files blocked from mirroring to public Git remotes                                     |
-| Branch merge across tenants        | License checks applied to each file in the merge set                                               |
-
-### Enforcement Details
-
-**Fork/Copy**: When a worktree is forked or copied, the server walks the entire tree and
-evaluates each path against the license configuration. Proprietary paths without a
-`redistribute` grant for the target tenant are excluded from the fork. Copyleft-licensed paths
-are included but the license metadata travels with them. Attribution-required paths trigger
-automatic NOTICE file generation.
-
-**Git Export**: `wt git export` generates a Git repository from the worktree. During export:
-1. Proprietary paths are completely excluded (not even empty files)
-2. Copyleft paths include license headers (injected if not already present)
-3. Attribution-required paths generate entries in a root-level NOTICE file
-4. A LICENSE file is auto-generated at the repo root based on the licenses present
-5. If multiple licenses exist, a composite LICENSE file is generated with sections
-
-**Archive**: `wt archive` creates a downloadable archive. By default, proprietary paths are
-excluded. The `--include-all` flag requires the requesting user to have `redistribute` grants
-for all proprietary paths, otherwise the command fails with a detailed error listing which
-paths blocked it.
-
----
-
-## License Compliance in the Access Stack
+You manage rules through REST or the CLI:
 
 ```
-1. IAM check:     Does this tenant have permission for this action?     → YES/NO
-2. License check: Does this file's license permit this operation?       → YES/NO
-3. Final:         BOTH must pass. IAM YES + License YES = ALLOWED.
+GET    /api/v1/trees/{t}/{tree}/licenses              (tree:read)
+PUT    /api/v1/trees/{t}/{tree}/licenses  LicenseRule (tree:admin; validated)
+DELETE /api/v1/trees/{t}/{tree}/licenses?path_glob=   (tree:admin)
+
+wt license list [TREE]
+wt license set [TREE] GLOB SPDX [--grant read-only|modify|redistribute] [--grantee TENANT] [--expires RFC3339]
+wt license remove [TREE] GLOB
+wt license detect [PATH] [--apply]
 ```
 
-A tenant can have full `tree:read` + `tree:write` IAM permissions but still be blocked from
-exporting proprietary code without a license grant. This is intentional — IAM governs what
-you're allowed to do in the platform, license compliance governs what you're allowed to do
-with the code.
+`wt license set` defaults to `--grant read-only`. The `""` grant, which falls
+back to the license default, is available only through the REST API and the
+admin panel. `license.Validate` checks the glob, the grant value and the SPDX
+syntax, and the v0.5 handlers also check `grantee` and `expires_at`. Errors
+answer `400`.
 
-### Example Scenarios
+A tree with no rules, and every path that no rule matches, is unrestricted.
+IAM alone governs those paths.
 
-**Scenario 1: Contractor with full IAM but no license grant**
-- Alice (contractor) has `tree:read`, `tree:write`, `sync:push`, `sync:pull` on the worktree
-- `services/billing-engine` is licensed as `proprietary`
-- Alice has no `[[license.grant]]` for that path
-- Result: Alice can read and modify files in other paths, but CANNOT read, modify, export,
-  or interact with `services/billing-engine` in any way
+## 3. Path globs and specificity
 
-**Scenario 2: Partner with read-only license grant**
-- Bob (partner) has `tree:read` IAM permission
-- `services/billing-engine` is licensed as `proprietary`
-- Bob has a `read-only` grant for that path
-- Result: Bob can read the files but CANNOT modify, export, fork, or copy them
+Globs are '/'-separated and anchored at the tree root. A `\` is accepted as
+`/`, and a leading `/` or `./` is ignored.
 
-**Scenario 3: Public worktree with mixed licenses**
-- Worktree is public (anyone can browse)
-- `src/` is MIT licensed
-- `vendor/sdk/` is Apache-2.0 with `attribution_required = true`
-- `services/billing-engine` is proprietary
-- Result: Anyone can read `src/` and `vendor/sdk/`. Anyone can fork/export `src/` freely.
-  Forks include NOTICE for `vendor/sdk/`. `services/billing-engine` is completely invisible
-  to external users.
+| Syntax | Matches |
+|---|---|
+| `**` (whole segment) | zero or more segments: `**/*.rs` matches `a.rs` and `src/x/a.rs` |
+| `*` | any run of characters within one segment |
+| `?` | exactly one character within one segment |
+| `[...]` | a character class, as in Go `path.Match` |
+| anything else | itself (there are no escapes) |
 
----
+Globs follow two further rules:
 
-## License Inheritance
+- **Directories cover their contents.** A pattern that matches a directory
+  applies to everything beneath it, so `vendor`, `vendor/` and `vendor/**`
+  are equivalent.
+- **No implicit depth.** A pattern without a slash is not matched at every
+  depth, unlike `.gitignore`: `*.rs` covers top-level files only.
 
-- Root `.wt/config.toml` `license.default` applies to all paths without explicit license
-- Tree `.wt-tree/config.toml` `license.license` overrides root default for that tree
-- `[[license.path]]` overrides both for specific paths
-- Most specific wins: path > tree > root default
+When several rules match a path, **only the most specific one applies**. Rules
+are compared in this order:
 
-### Inheritance Diagram
+1. longest literal prefix (characters before the first wildcard; the `/`
+   before a trailing `**` segment does not count);
+2. fewest wildcards;
+3. most literal characters;
+4. lexically smallest normalized pattern.
 
-```
-Root default: MIT
-├── Tree A (no override): MIT
-│   ├── services/billing-engine: proprietary (path override)
-│   ├── vendor/sdk: Apache-2.0 (path override)
-│   └── src/: MIT (inherited from root)
-├── Tree B (override: AGPL-3.0-only): AGPL-3.0-only
-│   ├── services/billing-engine: proprietary (path override, same as Tree A)
-│   └── src/: AGPL-3.0-only (inherited from tree)
-└── Tree C (no override): MIT
-    └── everything: MIT (inherited from root)
-```
+So an exact file beats its directory, a deeper directory beats a shallower
+one, and `src/*.rs` beats `src/**`. Rules do not add up: the winning rule's
+grant is the whole answer for that path.
 
-### Path Matching
+## 4. Who is restricted
 
-- Paths in `[[license.path]]` are matched as prefixes
-- `path = "services/billing-engine"` matches `services/billing-engine/src/main.rs`
-- More specific paths take priority over less specific ones
-- Exact file paths take priority over directory paths
+Rules **never** restrict:
 
----
+- server admins;
+- principals whose own tenant owns the tree (`Principal.TenantID`, which
+  includes the owning tenant's service accounts);
+- members of the owning tenant, with any role.
 
-## Git Export License Handling
+Everyone else is a **non-member** and receives the rights of the rule that
+governs the path. Non-members include accounts of other tenants, principals
+reaching the tree through grants or `internal` / `public` visibility, and
+anonymous callers.
 
-### `wt git export`
+## 5. Grants, grantees and expiry
 
-When exporting a worktree to a Git repository:
+| `grant` | read | write (push) | export |
+|---|:-:|:-:|:-:|
+| `read-only` | ✓ | | |
+| `modify` | ✓ | ✓ | |
+| `redistribute` | ✓ | ✓ | ✓ |
+| `""` with a proprietary license | | | |
+| `""` with any other license | ✓ | ✓ | ✓ |
+| unknown value (corrupt data) | | | |
 
-1. **Proprietary paths**: Blocked entirely. Not included in the export. If the entire worktree
-   is proprietary, the export fails with an error.
-2. **Copyleft paths** (GPL, AGPL, LGPL, etc.): Included with their license. License headers
-   are injected into source files if not already present. The specific header format depends
-   on the license.
-3. **Attribution-required paths** (Apache-2.0, etc.): Included with a NOTICE file entry.
-4. **Permissive paths** (MIT, BSD, ISC, etc.): Included freely.
-5. **LICENSE file**: Auto-generated at the repo root. If multiple licenses exist, sections
-   are created for each license with the list of paths they apply to.
+The rights mean the following:
 
-### `wt git mirror`
+- **Read** covers pull and clone content, `DownloadObjects`, REST blob and
+  file views, diffs and history.
+- **Write** covers pushing changes to those paths.
+- **Export** covers archives, `wt git export` and other copies out of the
+  platform.
 
-- Proprietary files blocked from mirroring to public Git remotes
-- Copyleft and permissive files mirrored normally
-- Mirror config can specify which remotes are "public" vs "private"
-- Private remotes can receive proprietary files (with appropriate grants)
+A proprietary license is `Proprietary` (any case), `LicenseRef-Proprietary`
+or any `LicenseRef-*proprietary*` (`license.IsProprietary`). Without a grant,
+an open-source license restricts nothing: IAM still decides who may push.
 
-### `wt archive`
-
-- Proprietary paths excluded by default
-- `--include-all` flag requires `redistribute` grants for all proprietary paths
-- `--license-report` flag generates a license report alongside the archive
-- Archive includes a generated LICENSE file and NOTICE file
-
----
-
-## License Types and Categories
-
-### Categories
-
-| Category     | Examples                              | Default Behavior                    |
-|--------------|---------------------------------------|-------------------------------------|
-| Permissive   | MIT, BSD-2-Clause, ISC, Unlicense     | Free to read, modify, redistribute  |
-| Copyleft     | GPL-3.0-only, AGPL-3.0-only, MPL-2.0 | Carries license to derivatives      |
-| Attribution  | Apache-2.0                            | Requires NOTICE file                |
-| Proprietary  | `proprietary`, custom strings         | Blocked unless explicit grant       |
-| Public Domain| CC0-1.0, Unlicense                    | No restrictions                     |
-
-### Copyleft Enforcement
-
-W0rkTree understands copyleft semantics:
-- Files derived from copyleft-licensed code inherit the copyleft license
-- The server tracks derivation through snapshot history
-- `wt git export` ensures copyleft requirements are met in the exported repo
-- Violations are flagged as warnings (not hard blocks, since copyleft interpretation varies)
-
----
-
-## Audit Trail
-
-All license-related operations are logged:
-- License config changes (who changed what, when)
-- Grant additions/removals
-- License check results (pass/fail, which check, which user)
-- Export/archive operations and which paths were included/excluded
-
-The audit trail is accessible via:
-- `wt license audit` CLI command
-- Admin panel license compliance dashboard
-- REST API `/api/repositories/:id/license/audit`
-
----
-
-## Error Messages
-
-License violations produce clear, actionable error messages:
+**Grantee (v0.5).** A rule with `grantee = "partner"` applies only to
+principals of tenant `partner`. When a non-member is checked, the server
+considers only the rules whose grantee is `""` or the caller's tenant, and
+then picks the most specific of those (§3). This lets you write a general
+restriction and widen it for one tenant:
 
 ```
-ERROR: License check failed for operation 'export'
-  Path: services/billing-engine/src/pricing.rs
-  License: proprietary
-  Required grant: redistribute
-  Your grants: read-only
-  
-  To export this file, you need a 'redistribute' grant.
-  Contact the worktree owner to request access.
+PUT {path_glob: "billing/**", spdx: "Proprietary", grant: ""}                      # nobody outside acme
+PUT {path_glob: "billing", spdx: "Proprietary", grant: "modify", grantee: "partner",
+     expires_at: "2026-12-31T23:59:59Z"}                                            # partner may work on it
 ```
 
+Rules are stored keyed by `(tree, path_glob)`, so one glob can carry only one
+rule. A grantee rule therefore needs its own glob, and that glob must be more
+specific than the general rule's. In the example, `billing` (no wildcard)
+beats `billing/**`, which makes `partner` get `modify`. Other tenants skip
+the `partner` rule and fall back to `billing/**`.
+
+**Expiry (v0.5).** Once `expires_at` has passed, the rule is ignored. The path
+then falls back to the next most specific applicable rule, or to unrestricted
+when none is left. To make access lapse into a restriction, always keep a
+general (`grantee: ""`) rule beneath an expiring grantee rule.
+
+## 6. SPDX expressions
+
+`spdx` must be a syntactically valid SPDX 2.3 license expression:
+
 ```
-ERROR: License check failed for operation 'read'
-  Path: services/billing-engine/src/pricing.rs
-  License: proprietary
-  Required grant: read-only (minimum)
-  Your grants: (none)
-  
-  You do not have any license grant for this path.
-  Contact the worktree owner to request access.
+expr     = and-expr *( "OR" and-expr )
+and-expr = with-expr *( "AND" with-expr )
+with     = primary [ "WITH" exception-id ]
+primary  = "(" expr ")" | license-id [ "+" ] | [ "DocumentRef-" id ":" ] "LicenseRef-" id
 ```
 
----
+Validation follows these rules:
 
-## Relationship to Other Specs
+- Operators must be upper case.
+- `Proprietary` is accepted as a keyword.
+- Identifiers are **not** checked against the SPDX license list.
+- An expression is at most 1024 characters, nested at most 32 deep.
 
-- **IAM**: License compliance sits above IAM. Both must pass. See `specs/iam/`.
-- **Sync**: License checks are evaluated during sync operations. See `specs/sync/Sync.md`.
-- **Staged Visibility**: Staged snapshot metadata is visible but file contents respect license
-  restrictions. See `specs/visibility/StagedVisibility.md`.
-- **Storage**: License metadata is stored alongside tree metadata. See `specs/storage/`.
-- **Git Export**: License handling during export is detailed above and in `specs/server/`.
+Examples: `MIT`, `MIT OR Apache-2.0`,
+`GPL-2.0-only WITH Classpath-exception-2.0`, `LicenseRef-Acme-Internal`.
 
----
+## 7. Enforcement points
 
-## Implementation Status
+| Operation | Check | Result for a non-member without the right |
+|---|---|---|
+| gRPC `Push` | `CheckPush` on every path that differs between the server tip and the new tip, after IAM and branch protection | Push rejected: `PushDenied{Kind:"license_violation", Path, License}`, sent to the client as `AccessDenied` with the reason |
+| gRPC `Pull` (v0.5) | `CheckRead` per path of the new tip's manifest | The path is listed in `PullResponse.stubbed_paths` and its blob is left out of `objects_to_fetch`. Audited as `license.denied` once per pull, with details `count` and first path. |
+| gRPC `DownloadObjects` (v0.5) | Blobs of paths the caller may not read are refused | No content leaves the server |
+| SDK checkout (v0.5) | Stubbed paths are not written. They are listed in `.wt/trees/<tree>/stubbed` and shown as "restricted" by `wt status`. | The rest of the tree works normally |
+| REST content: `blob`, `files`, `compare`, file history, snapshot file lists (v0.5) | `CheckRead` per path | Content requests answer `451 {"code":"license_restricted"}`. Listings omit the path and add `restricted_count`. |
+| `GET {tree}/archive/{snapshot}` (v0.5) | Read rights per path | Unreadable paths are omitted and `LICENSES/NOTICE` is added. Audited as `tree.export`. |
+| `wt archive`, `wt git export` (v0.5) | Local, using the tree's rules | See §8 |
 
-- **IMPLEMENTED**: None (new concept)
-- **TODO**: License type definition, LicenseGrant type, LicenseCheck function, license
-  config parsing, SPDX validation
-- **PLANNED**: Full licensing module in protocol crate, server enforcement middleware,
-  audit trail, admin panel dashboard, `wt license` CLI commands
+`staged` metadata lists paths but never content. See
+[Staged Visibility](../visibility/StagedVisibility.md#11-interaction-with-licenses-and-path-policies).
 
-### Implementation Order
+When the rules or the membership cannot be loaded, the checker returns an
+error, and the caller treats that as a denial (fail closed).
 
-1. Define `License`, `LicenseGrant`, `LicenseCheck` types in protocol crate
-2. Implement SPDX identifier validation
-3. Implement license config parsing from `.wt/config.toml` and `.wt-tree/config.toml`
-4. Implement license inheritance resolution
-5. Implement `LicenseCheck` function (path + operation + user → allow/deny)
-6. Integrate license check into server access middleware (after IAM check)
-7. Implement Git export license handling
-8. Implement audit trail
-9. Implement CLI commands (`wt license show`, `wt license audit`, etc.)
-10. Implement admin panel dashboard
+## 8. Exports and the NOTICE file
+
+`wt archive [REV] -o FILE [--format tar.gz|zip]` and `wt git export` consult
+the tree's license rules. When the tree has a remote, the rules are cached
+from the server. The export follows these rules:
+
+- A generated **`LICENSES/NOTICE`** file lists the SPDX expression governing
+  each exported path.
+- Paths whose rule does not allow export (redistribution) are **skipped with
+  a warning**. Pass `--include-restricted` to keep them.
+- `--no-license` skips license processing entirely: no rules are read and no
+  NOTICE is written.
+
+The server archive endpoint (§7) applies the same NOTICE generation, and
+filters by the caller's read rights.
+
+## 9. License detection
+
+`wt license detect [PATH]` runs `scan::detect_license` over the files and
+prints an SPDX guess per file, based on license texts and SPDX headers.
+`--apply` proposes the matching server rules (`PUT {tree}/licenses`) for
+confirmation. Detection reads file content through `ObjectStore::read_entry`,
+so chunked large files work.
+
+## 10. Errors
+
+A denial carries the operation, the path, the license, the rule, and the
+required and granted grants, for example:
+
+```
+license check failed for operation "write": path "billing/src/pricing.rs" is licensed
+"Proprietary" (rule "billing/**"); required grant: modify; granted: read-only
+```
+
+The required grant per operation is `read-only` for read, `modify` for write
+and `redistribute` for export. A missing grant prints as `(none)`.
+
+## 11. Audit
+
+| Action | When |
+|---|---|
+| `license.update` | Rule created or replaced (details: glob, SPDX, grant) |
+| `license.delete` | Rule removed |
+| `license.denied` | Pull with stubbed paths (v0.5) |
+| `tree.export` | Server archive (v0.5) |
+| `branch.push_rejected` | Push refused, including license violations |
+| `access.denied` | Every REST 403 and gRPC `PermissionDenied` |
+
+Query them with `wt audit --action 'license.*'` or `GET /api/v1/audit`.
+
+## 12. License compliance in the access stack
+
+```
+request ─► IAM (authz.Evaluate: roles, grants, visibility, policies) ─► license rule for each path ─► allowed
+```
+
+The two layers answer different questions:
+
+- **IAM** decides what a principal may do in the platform.
+- **The license layer** decides what a non-member may do with particular
+  files.
+
+A partner with `tree:write` through a grant still cannot push to a
+`read-only` path. A reader of a public tree still receives proprietary paths
+only as stubs.
+
+## 13. Implementation status
+
+| Area | Status |
+|---|---|
+| Per-tree rules, glob syntax and specificity, grant semantics, proprietary defaults | Built (`internal/license`) |
+| SPDX expression validation | Built (syntactic) |
+| REST and CLI management; push enforcement | Built |
+| `grantee` and `expires_at` | Built (v0.5) |
+| Read enforcement: stubbed paths, `DownloadObjects` refusal, REST 451 and `restricted_count` | Built (v0.5) |
+| License-aware archives (server and local), `LICENSES/NOTICE`, `wt git export` | Built (v0.5) |
+| `wt license detect [--apply]` | Built (v0.5) |
+| `license.CheckExport` | Built, used by the export tooling |
+
+## 14. Roadmap
+
+The following were described in earlier versions of this spec but are not
+built:
+
+- **License assignment in config files** (`[license]`, `[[license.path]]` and
+  `[[license.grant]]` in `.wt/config.toml` / `.wt-tree/config.toml`), and
+  root → tree → path inheritance of a default license. Rules are server-side
+  per tree.
+- **Strict SPDX-list validation** (`spdx_strict`, SPDX list 3.21+). Validation
+  is syntactic only.
+- **`attribution_required`**, a generated root `LICENSE` file with a section
+  per license, and **license-header injection** into exported source files.
+  Exports carry `LICENSES/NOTICE` only.
+- **Copyleft tracking.** Derivation through history, copyleft carried to
+  derivatives, and warnings on violations. License categories (permissive,
+  copyleft, attribution, public domain) are not modelled: only "proprietary or
+  not" matters.
+- **`wt git mirror`** with public and private remotes, **forks or copies**
+  across tenants, and checks on **cross-tenant merges**.
+- **`wt license audit`**, `wt archive --include-all`, `--license-report`, and
+  a license compliance dashboard. Use `wt audit` and the admin tree Licenses
+  view.
+- **Grantees by email** (`tenant = "bob@contractor.io"`). Grantees are tenant
+  slugs.
+- **Several grants on one glob.** Grants for several tenants on the same path
+  set would need rules keyed by `(glob, grantee)`. Today a grantee rule needs
+  its own, more specific glob (§5).
+- **Export-right filtering on the server archive.** The archive endpoint
+  filters by read rights. Local exports apply the redistribution rule (§8).
+
+## 15. References
+
+- `services/server-go/internal/license/{license.go,glob.go,spdx.go}`
+- `services/server-go/internal/syncsvc/{push.go,pull.go,objects.go}`
+- `services/server-go/internal/httpapi/{trees.go,snapshots.go,insights.go,exports.go}`
+- `services/server-go/internal/domain/types.go` (`LicenseRule`),
+  `domain/interfaces.go` (`LicenseChecker`)
+- `crates/worktree-cli/src/commands/{license,archive,git}.rs`
+- `crates/worktree-sdk/src/scan/license.rs`, `crates/worktree-git/`
+- `docs/ENGINEERING_PLAN.md` §2, §13.1, §13.2, §13.8
+- Related specs: [IAM](../iam/IAM.md), [Tenant Model](../iam/TenantModel.md),
+  [Sync](../sync/Sync.md),
+  [Staged Visibility](../visibility/StagedVisibility.md),
+  [Security](../security/Security.md)

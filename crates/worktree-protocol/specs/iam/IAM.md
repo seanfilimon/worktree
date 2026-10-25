@@ -1,887 +1,695 @@
 # W0rkTree IAM Specification
 
-## Overview
+## Table of Contents
 
-W0rkTree has a native, built-in IAM (Identity and Access Management) system. Unlike Git, where access control is bolted on by hosting platforms (GitHub, GitLab, Bitbucket), W0rkTree's IAM is a **first-class protocol concept** enforced at the server level.
-
-This means:
-- Access control is part of the protocol, not an afterthought
-- Policies are version-controlled alongside your code
-- Permissions are enforced on every sync operation by the server
-- Cross-tenant access is a native concept, not a platform-specific feature
-- The same IAM model works regardless of which W0rkTree server you connect to
-
-## Components
-
-The IAM system is composed of six core components:
-
-1. **Tenants** — Users or organizations with a username + email. The identity unit on the server. (See [TenantModel.md](./TenantModel.md))
-2. **Accounts** — Individual user accounts within an organization tenant
-3. **Teams** — Named groups of accounts for collective policy assignment
-4. **Roles** — Named permission sets (built-in or custom-defined)
-5. **Policies** — RBAC + ABAC rules binding subjects → permissions at scopes
-6. **Scopes** — The hierarchy of resources that permissions apply to: Global → Tenant → Tree → Branch → RegisteredPath
-
-These components work together to provide fine-grained, auditable access control over every operation in W0rkTree.
-
----
-
-## Built-in Roles
-
-W0rkTree ships with five built-in roles that form a strict superset hierarchy:
-
-| Role       | Permissions                                      | Description                                  |
-|------------|--------------------------------------------------|----------------------------------------------|
-| Owner      | All permissions                                  | Full control. Cannot be restricted.          |
-| Admin      | All except owner-transfer                        | Manages tenants, access, config              |
-| Maintainer | Branch merge, tree admin, policy management      | Manages branches and deployments             |
-| Developer  | Read, write, snapshot, branch create             | Standard development work                    |
-| Viewer     | Read-only across all scopes                      | Can see but not modify                       |
-
-### Superset Hierarchy
-
-```
-Owner ⊃ Admin ⊃ Maintainer ⊃ Developer ⊃ Viewer
-```
-
-This means:
-- Every permission a Viewer has, a Developer also has
-- Every permission a Developer has, a Maintainer also has
-- Every permission a Maintainer has, an Admin also has
-- Every permission an Admin has, an Owner also has (plus owner-transfer)
-
-### Role Assignment
-
-Roles can be assigned at any scope level:
-- A user can be a **Developer** at the Tenant scope (all trees)
-- But a **Maintainer** for a specific tree
-- And **Viewer** only on a specific branch of another tree
-
-The most specific role assignment wins when evaluating permissions.
+1. [Overview](#1-overview)
+2. [Identities and principals](#2-identities-and-principals)
+3. [Action catalog](#3-action-catalog)
+4. [Roles](#4-roles)
+5. [Teams](#5-teams)
+6. [Tree grants](#6-tree-grants)
+7. [Tree visibility](#7-tree-visibility)
+8. [Policies](#8-policies)
+9. [Evaluation algorithm](#9-evaluation-algorithm)
+10. [Owner protection and tenant status](#10-owner-protection-and-tenant-status)
+11. [Tokens, scopes and authentication](#11-tokens-scopes-and-authentication)
+12. [Inspecting access: simulator and effective permissions](#12-inspecting-access-simulator-and-effective-permissions)
+13. [Where decisions are enforced](#13-where-decisions-are-enforced)
+14. [REST API](#14-rest-api)
+15. [CLI](#15-cli)
+16. [Audit](#16-audit)
+17. [Design rationale](#17-design-rationale)
+18. [Implementation status](#18-implementation-status)
+19. [Roadmap](#19-roadmap)
+20. [References](#20-references)
 
 ---
 
-## Permission Set
+## 1. Overview
 
-W0rkTree defines a comprehensive set of atomic permissions organized by category. Each permission represents a single, indivisible operation that can be allowed or denied.
+W0rkTree has identity and access management built into the server. You do not
+add it through a hosting platform. Every request made over REST or gRPC is
+authorized by one engine, `internal/authz` in the Go server
+(`services/server-go`). The engine evaluates a triple
+*(principal, action, resource)* and returns a `Decision` that explains its
+reasoning.
 
-### Tree Permissions
+The building blocks are:
 
-| Permission    | Description                                           |
-|---------------|-------------------------------------------------------|
-| `tree:read`   | Read tree contents (files, directories, metadata)     |
-| `tree:write`  | Write to tree contents (create, modify, delete files) |
-| `tree:delete` | Delete an entire tree                                 |
-| `tree:admin`  | Manage tree settings, configuration, and metadata     |
+| Concept | What it is | Stored as |
+|---|---|---|
+| **Account** | A human user with a password, optional TOTP and optional SSO links. | `domain.Account` |
+| **Tenant** | A personal (`user`) or organization (`org`) namespace that owns trees. See [Tenant Model](./TenantModel.md). | `domain.Tenant` |
+| **Membership** | An account's role in a tenant. | `domain.Membership` |
+| **Team** | A named group of accounts inside one tenant. | `domain.Team`, `domain.TeamMember` |
+| **Role** | A built-in role (`owner`, `admin`, `maintainer`, `developer`, `viewer`) or a tenant-defined custom role. | `domain.CustomRole` (custom only) |
+| **Grant** | A role on one tree, given to a user, team, service account or tenant. | `domain.Grant` |
+| **Service account** | A non-human identity owned by a tenant. It authenticates with keys. | `domain.ServiceAccount` |
+| **Policy** | A named, versioned list of allow and deny statements with conditions, scoped to one tenant. | `domain.Policy` |
+| **Token** | A bearer credential: a sign-in session, a personal API token or a service-account key, optionally limited by scopes. | `domain.APIToken` |
 
-### Branch Permissions
+You can manage all of these from the admin panel (`/admin/`), the REST API
+(`/api/v1`) and the `wt` CLI. The user-facing guide is `docs/iam.md`.
 
-| Permission       | Description                                        |
-|------------------|----------------------------------------------------|
-| `branch:read`    | Read branch contents and metadata                  |
-| `branch:create`  | Create new branches                                |
-| `branch:delete`  | Delete branches                                    |
-| `branch:merge`   | Merge branches together                            |
-| `branch:protect` | Modify branch protection rules                     |
+Policies, roles and grants are stored on the server, in `meta.db`. They can be
+edited through the API. They can also be written as TOML files and applied with
+`wt access apply`; see [Declarative Access](./DeclarativeAccess.md).
 
-### Snapshot Permissions
+## 2. Identities and principals
 
-| Permission         | Description                                      |
-|--------------------|--------------------------------------------------|
-| `snapshot:create`  | Create new snapshots (commits)                   |
-| `snapshot:read`    | Read snapshot history and contents               |
-| `snapshot:restore` | Restore a previous snapshot                      |
+Each authenticated request carries a `domain.Principal`, filled in by
+`iam.Service.Authenticate`:
 
-### Sync Permissions
+| Field | Users | Service accounts |
+|---|---|---|
+| `AccountID` | account id | `""` |
+| `Username` | username | `sa:<tenant>/<name>` |
+| `TenantID` | the personal tenant | the owning tenant |
+| `Kind` | `user` (or `""`) | `service_account` |
+| `ServiceAccountID` | `""` | service-account id |
+| `IsAdmin` | `Account.IsAdmin` (server admin) | `false` |
+| `Scopes` | token scopes (empty means unrestricted) | key scopes |
+| `MFA` | whether the session was created after a second factor | `false` |
+| `TokenID` | id of the presented token | id of the key |
 
-| Permission   | Description                                           |
-|--------------|-------------------------------------------------------|
-| `sync:push`  | Push local changes to the server                      |
-| `sync:pull`  | Pull remote changes from the server                   |
+A request with no credential is **anonymous**: its principal is `nil`.
+Anonymous callers may call `Ping` and read public trees, plus anything a
+policy explicitly allows to `anonymous`.
 
-### Management Permissions
+The engine does not trust the principal it receives. It re-reads the account
+or service account from the store on every evaluation, so disabling an
+identity or changing admin status takes effect on the next request. An unknown
+account or service account counts as unauthenticated.
 
-| Permission      | Description                                        |
-|-----------------|----------------------------------------------------|
-| `PolicyManage`  | Create, modify, delete access policies             |
-| `RoleManage`    | Create, modify, delete custom roles                |
-| `TeamManage`    | Create, modify, delete teams and team membership   |
-| `AccountManage` | Create, modify, delete accounts within a tenant    |
+**Server admins** (`Account.IsAdmin`) are created with `--admin-user` /
+`--admin-password` (`iam.EnsureAdmin`) or promoted with
+`PATCH /admin/accounts/{username}`. They are allowed every action, and roles
+and policies are not consulted for them. Token scopes still restrict them.
 
-### Admin Permissions
+**Service accounts** belong to one tenant and act there with their own `Role`.
+That role can be any role except `owner`. A service account also holds any
+tree grants made to it. Outside its tenant, a service account has only what
+grants, visibility and policies give it.
 
-| Permission    | Description                                          |
-|---------------|------------------------------------------------------|
-| `TreeAdmin`   | Full administrative control over a tree              |
-| `TenantAdmin` | Full administrative control over a tenant            |
+## 3. Action catalog
 
-### Tag & Release Permissions
+Every authorization check names one **action** from a fixed catalog
+(`authz.Actions()`, served by `GET /api/v1/iam/actions` and `wt iam actions`).
+An action has the form `<area>:<verb>`. Policies, custom roles and token
+scopes can also use the patterns `<area>:*` and `*`.
 
-| Permission       | Description                                       |
-|------------------|---------------------------------------------------|
-| `tag:create`     | Create tags on snapshots                          |
-| `tag:delete`     | Delete existing tags                              |
-| `release:create` | Create releases from tags or snapshots            |
-| `release:delete` | Delete existing releases                          |
+| Action | Area | Meaning | Lowest built-in role |
+|---|---|---|---|
+| `tenant:read` | tenant | View the tenant, its members and its trees | viewer |
+| `tenant:admin` | tenant | Manage tenant members and settings | admin |
+| `tree:read` | tree | Read a tree: browse, clone, pull, download | viewer |
+| `tree:write` | tree | Write to a tree: push, stage, tag | developer |
+| `tree:create` | tree | Create trees in the tenant | maintainer |
+| `tree:admin` | tree | Administer a tree: settings, protections, licenses, deletion | admin |
+| `branch:create` | branch | Create branches | developer |
+| `branch:delete` | branch | Delete branches | maintainer |
+| `branch:push` | branch | Push to a specific branch (needs `tree:write`; policies may deny it per branch) | developer |
+| `mr:create` | mr | Open merge requests | developer |
+| `mr:approve` | mr | Approve merge requests | maintainer |
+| `mr:merge` | mr | Merge and close merge requests | maintainer |
+| `release:create` | release | Create and edit releases, upload release assets (v0.5) | developer |
+| `release:delete` | release | Delete releases and release assets (v0.5) | maintainer |
+| `ci:report` | ci | Report CI check results for snapshots (v0.5) | developer |
+| `iam:read` | iam | View teams, roles, policies, grants, service accounts | maintainer |
+| `iam:admin` | iam | Manage teams, roles, policies, grants, service accounts, invitations | admin |
+| `server:admin` | server | Administer the server | server admins only |
 
-### Merge Request Permissions
+Several operations have no action of their own and reuse the catalog:
 
-| Permission              | Description                                |
-|-------------------------|--------------------------------------------|
-| `merge_request:create`  | Open a new merge request                   |
-| `merge_request:approve` | Approve a merge request                    |
-| `merge_request:merge`   | Execute the merge of an approved request   |
+- Tags are created with `tree:write` and deleted with `tree:admin`.
+- Branch protection, tag protection and license rules are managed with
+  `tree:admin`.
+- `mr:merge` also covers closing merge requests.
+- Snapshots are created locally. On the server, a snapshot exists only once it
+  has been pushed (`tree:write` and `branch:push`) or staged (`tree:write`).
 
-### Role → Permission Mapping
+**Tree-scoped actions** are the `tree:read`, `tree:write`, `tree:admin`,
+`branch:*`, `mr:*`, `release:*` and `ci:report` actions. Only these can be
+granted by tree grants (§6).
 
-| Permission                | Owner | Admin | Maintainer | Developer | Viewer |
-|---------------------------|:-----:|:-----:|:----------:|:---------:|:------:|
-| `tree:read`               |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `tree:write`              |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `tree:delete`             |   ✓   |   ✓   |            |           |        |
-| `tree:admin`              |   ✓   |   ✓   |     ✓      |           |        |
-| `branch:read`             |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `branch:create`           |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `branch:delete`           |   ✓   |   ✓   |     ✓      |           |        |
-| `branch:merge`            |   ✓   |   ✓   |     ✓      |           |        |
-| `branch:protect`          |   ✓   |   ✓   |     ✓      |           |        |
-| `snapshot:create`         |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `snapshot:read`           |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `snapshot:restore`        |   ✓   |   ✓   |     ✓      |           |        |
-| `sync:push`               |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `sync:pull`               |   ✓   |   ✓   |     ✓      |     ✓     |   ✓    |
-| `PolicyManage`            |   ✓   |   ✓   |     ✓      |           |        |
-| `RoleManage`              |   ✓   |   ✓   |            |           |        |
-| `TeamManage`              |   ✓   |   ✓   |            |           |        |
-| `AccountManage`           |   ✓   |   ✓   |            |           |        |
-| `TreeAdmin`               |   ✓   |   ✓   |     ✓      |           |        |
-| `TenantAdmin`             |   ✓   |   ✓   |            |           |        |
-| `tag:create`              |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `tag:delete`              |   ✓   |   ✓   |     ✓      |           |        |
-| `release:create`          |   ✓   |   ✓   |     ✓      |           |        |
-| `release:delete`          |   ✓   |   ✓   |     ✓      |           |        |
-| `merge_request:create`    |   ✓   |   ✓   |     ✓      |     ✓     |        |
-| `merge_request:approve`   |   ✓   |   ✓   |     ✓      |           |        |
-| `merge_request:merge`     |   ✓   |   ✓   |     ✓      |           |        |
+## 4. Roles
 
----
+### 4.1 Built-in roles
 
-## Scope Hierarchy
+The five built-in roles form a strict superset hierarchy:
+`owner ⊃ admin ⊃ maintainer ⊃ developer ⊃ viewer`. A built-in role grants an
+action when it ranks at or above the action's lowest role, shown in the table
+in §3 (`authz.RoleAllows`):
 
-Scopes define **where** a permission applies. They form a strict hierarchy from broadest to most specific:
+| Action | viewer | developer | maintainer | admin | owner |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `tenant:read`, `tree:read` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `tree:write`, `branch:create`, `branch:push`, `mr:create`, `release:create`, `ci:report` | | ✓ | ✓ | ✓ | ✓ |
+| `branch:delete`, `mr:approve`, `mr:merge`, `tree:create`, `iam:read`, `release:delete` | | | ✓ | ✓ | ✓ |
+| `tree:admin`, `tenant:admin`, `iam:admin` | | | | ✓ | ✓ |
+| `server:admin` | | | | | |
 
-```
-Global                           ← Server-wide (superadmin only)
-  └── Tenant                     ← All trees owned by a tenant
-       └── Tree                  ← An entire worktree
-            └── Branch           ← A specific branch within a tree
-                 └── RegisteredPath  ← A specific file/directory (explicit registration in config.toml)
-```
+`owner` grants the same actions as `admin`. What sets owners apart is
+enforced by the handlers and by the lockout guard (§10):
 
-### Scope Properties
+- Only owners and server admins can assign or revoke the `owner` role,
+  whether through memberships, grants or invitations.
+- A tenant must always keep at least one owner.
+- Owners are exempt from the declarative-access escalation check and may use
+  `?force=true` on resources managed by config (see
+  [Declarative Access](./DeclarativeAccess.md)).
+- Policy denies never take `iam:*` or `tenant:admin` away from an owner.
 
-| Scope          | Identifier             | Who Can Set             | Typical Use Case                     |
-|----------------|------------------------|-------------------------|--------------------------------------|
-| Global         | (implicit)             | Server superadmin       | Platform-wide policies               |
-| Tenant         | Tenant slug or email   | Tenant owner/admin      | Org-wide defaults                    |
-| Tree           | Tree name/ID           | Tree owner/admin        | Per-project access                   |
-| Branch         | Branch name            | Tree maintainer+        | Protected branches                   |
-| RegisteredPath | File/directory path    | Tree maintainer+        | Sensitive file protection            |
+### 4.2 Custom roles
 
-### Scope Resolution Rules
+A tenant may define custom roles (`domain.CustomRole`):
 
-1. **Most specific wins**: A policy at the RegisteredPath scope overrides a policy at the Branch scope
-2. **Deny beats Allow**: At the same scope level, Deny always wins over Allow
-3. **Inheritance**: If no policy exists at a specific scope, the parent scope's policy applies
-4. **Default Deny**: If no policy matches at any scope level, the action is denied
+- **Name**: 2–40 characters from `[a-z0-9-]`, starting with a letter or digit,
+  unique in the tenant, and not the name of a built-in role.
+- **Permissions**: catalog actions or `<area>:*`. A role may not contain `*`
+  and may not grant `server:*` (`authz.ValidatePermissions`).
+- **Assignment**: a custom role is assigned exactly like a built-in one. It
+  can be a membership role, a grant role, a service-account role or an
+  invitation role.
+- **Deletion**: `DELETE /tenants/{t}/roles/{name}` answers `409` while the
+  role is still assigned.
+- **Undefined roles**: a role name that is neither built-in nor defined in
+  the tenant grants nothing, and the decision says so.
+- **Config-managed roles**: roles created by `wt access apply` carry
+  `managed_by: "config"` and are read-only in the REST API (§14).
 
----
+`GET /tenants/{t}/roles` lists the built-in roles first (read-only, with
+their expanded permissions), followed by the custom roles.
 
-## Policy Model
+## 5. Teams
 
-Policies are the core mechanism for binding subjects to permissions at scopes. They are defined as TOML files stored in version-controlled directories.
+A team (`domain.Team`) groups accounts inside one tenant:
 
-### Policy Storage Locations
+- **Slug**: 2–40 characters from `[a-z0-9-]`.
+- **Name and description**: free text.
+- **Member roles**: `maintainer` or `member`. A team maintainer may manage the
+  team's membership without holding `iam:admin`.
 
-| Location                          | Scope              | Description                          |
-|-----------------------------------|--------------------|-----------------------------------------|
-| `.wt/access/policies.toml`       | Worktree-wide      | Root-level policies for the worktree    |
-| `.wt-tree/access/policies.toml`  | Tree-specific      | Policies scoped to a specific tree      |
+A team has **no tenant-wide role**. Its access comes from:
 
-### Policy Structure
+- **Tree grants** made to the team (`subject_type: "team"`, §6).
+- **Policy statements** naming `team:<slug>` (§8).
 
-```toml
-[[policy]]
-name = "policy-name"
-effect = "allow"          # "allow" or "deny"
-subjects = [...]          # Who this policy applies to
-scope = "..."             # Where this policy applies
-permissions = [...]       # What actions are allowed/denied
-conditions = [...]        # Optional: ABAC conditions
-```
+Deleting a team removes its memberships and grants.
 
-### Subject Types
+## 6. Tree grants
 
-Subjects define **who** a policy applies to:
+A grant (`domain.Grant`) gives a subject a role on **one tree**. Each subject
+has at most one grant per tree, and `PUT` replaces it.
 
-```toml
-# A specific account
-subjects = [{ account = "alice" }]
+| `subject_type` | `subject` | Matches |
+|---|---|---|
+| `user` | username (any account on the server) | that account |
+| `team` | team slug in the tree's tenant | every member of the team |
+| `service_account` (alias `sa`) | service-account name in the tree's tenant | that service account |
+| `tenant` (v0.5) | tenant slug | every member of that tenant, and its service accounts |
 
-# A team
-subjects = [{ team = "backend-team" }]
+The role can be built-in or a custom role of the tree's tenant. Only owners
+can grant `owner`.
 
-# A built-in or custom role
-subjects = [{ role = "Developer" }]
+Grants have three properties:
 
-# A tenant (by username)
-subjects = [{ tenant = "partner-corp" }]
+- **Tree-scoped actions only.** A grant covers only the actions listed at the
+  end of §3, so it never gives `tenant:*` or `iam:*` access.
+- **They can raise access.** A grant can lift a subject above its tenant role
+  on one tree. It can also give access to accounts outside the tenant, which
+  is how cross-tenant collaboration works.
+- **They never lower access.** To restrict access, use a policy deny (§8).
 
-# A tenant (by email)
-subjects = [{ tenant = "alice@company.com" }]
+## 7. Tree visibility
 
-# All authenticated users
-subjects = [{ all_authenticated = true }]
+`Tree.Visibility` is one of three values:
 
-# Multiple subjects (OR — any match triggers)
-subjects = [
-    { team = "backend-team" },
-    { account = "bob" },
-    { tenant = "partner-corp" }
-]
-```
+| Visibility | Anonymous | Any signed-in principal | Tenant members |
+|---|---|---|---|
+| `private` (default) | — | — | per role |
+| `internal` | — | `tree:read` | per role |
+| `public` | `tree:read` | `tree:read` | per role |
 
-### Scope Types
+An unknown or empty visibility is treated as `private`.
 
-Scopes define **where** a policy applies:
+Visibility widens `tree:read` and nothing else. It does not grant
+`tenant:read`. A policy deny still overrides it: for example, a policy can
+deny `tree:read` on a public tree to one team, or on one path to everyone.
 
-```toml
-# Entire worktree
-scope = "worktree"
+## 8. Policies
 
-# Entire tree
-scope = "tree"
+### 8.1 Structure
 
-# Specific branch
-scope = { branch = "main" }
+A policy (`domain.Policy`) belongs to one tenant. It has these fields:
 
-# Specific registered path
-scope = { path = "config/production.toml" }
-```
+- `name` and `description`;
+- `enabled`: only enabled policies are evaluated;
+- `version`: incremented on every update;
+- `created_by` and timestamps;
+- `managed_by`: `"config"` when the policy came from `wt access apply`;
+- `statements`: the list described below.
 
-### Comprehensive Policy Examples
+Each statement (`domain.PolicyStatement`) has these fields:
 
-#### Example 1: Team-wide Development Access
-
-```toml
-[[policy]]
-name = "backend-team-dev-access"
-effect = "allow"
-subjects = [{ team = "backend-team" }]
-scope = "worktree"
-permissions = [
-    "tree:read",
-    "tree:write",
-    "branch:read",
-    "branch:create",
-    "snapshot:create",
-    "snapshot:read",
-    "sync:push",
-    "sync:pull",
-    "merge_request:create"
-]
-```
-
-#### Example 2: Cross-Tenant Read Access (by username)
-
-```toml
-[[policy]]
-name = "partner-readonly"
-effect = "allow"
-subjects = [{ tenant = "partner-corp" }]
-scope = "worktree"
-permissions = ["tree:read", "branch:read", "snapshot:read", "sync:pull"]
+```json
+{
+  "sid": "no-contractor-pushes-to-main",
+  "effect": "deny",
+  "actions": ["branch:push"],
+  "resources": ["wt:branch/acme/*/main"],
+  "principals": ["team:contractors", "tenant:partner"],
+  "conditions": { "require_mfa": true, "ip_ranges": ["10.0.0.0/8"] }
+}
 ```
 
-#### Example 3: Cross-Tenant Write Access (by email)
+| Field | Values |
+|---|---|
+| `sid` | Optional statement id, at most 128 characters. Used in decision reasons. |
+| `effect` | `allow` or `deny` |
+| `actions` | Non-empty list of catalog actions, `<area>:*` or `*` |
+| `resources` | Non-empty list of resource patterns (§8.2) |
+| `principals` | Non-empty list of principal patterns (§8.3) |
+| `conditions` | Optional; every condition that is set must hold (§8.4) |
 
-```toml
-[[policy]]
-name = "contractor-write-access"
-effect = "allow"
-subjects = [{ tenant = "bob@contractor.io" }]
-scope = "worktree"
-permissions = [
-    "tree:read",
-    "tree:write",
-    "branch:read",
-    "branch:create",
-    "snapshot:create",
-    "snapshot:read",
-    "sync:push",
-    "sync:pull"
-]
-```
+`authz.ValidateStatements` checks every statement before it is stored. It
+reports each problem with its statement index and field, for example
+`actions[1]` or `conditions.time_window.timezone`.
+`POST /tenants/{t}/policies/validate` and `wt policy validate` expose the same
+check.
 
-#### Example 4: Path-Level Restriction (Lock Production Config)
+### 8.2 Resources
 
-First, register the path in `.wt/config.toml`:
-```toml
-[[registered_path]]
-path = "config/production.toml"
-description = "Production configuration — restricted access"
-```
+| Pattern | Covers |
+|---|---|
+| `*` | everything in the tenant |
+| `wt:tenant/<tenant>` | the tenant and every tree in it |
+| `wt:tree/<tenant>/<tree>` | the tree, its branches and its paths |
+| `wt:branch/<tenant>/<tree>/<branch>` | one branch (branch names may contain `/`) |
+| `wt:path/<tenant>/<tree>/<path>` | one tree-relative file path |
 
-Then deny writes in `.wt/access/policies.toml`:
-```toml
-[[policy]]
-name = "lock-production-config"
-effect = "deny"
-subjects = [{ all_authenticated = true }]
-scope = { path = "config/production.toml" }
-permissions = ["tree:write"]
-```
+Patterns follow these matching rules:
 
-And allow only specific maintainers:
-```toml
-[[policy]]
-name = "allow-infra-team-production"
-effect = "allow"
-subjects = [{ team = "infra-team" }]
-scope = { path = "config/production.toml" }
-permissions = ["tree:read", "tree:write"]
-```
+- **Wildcards.** `*` inside a segment matches any run of characters within
+  that segment. A whole `**` segment matches zero or more segments.
+- **Ancestors.** A statement matches a request when one of its resources
+  covers the request's own resource **or one of its ancestors**. A statement
+  on `wt:tenant/acme` therefore applies to all of acme's trees, and one on
+  `wt:tree/acme/web` applies to every path in `web`.
+- **Path patterns are exact.** A path pattern matches a file path segment by
+  segment. To cover a directory, end the pattern with `/**`:
+  `wt:path/acme/web/secrets/**`.
+- **When paths are evaluated.** Path resources are evaluated only when the
+  caller supplies a path: per-file read checks on pull and REST reads, and
+  per-file write checks on push (§13).
+- **The policy's tenant.** A policy is evaluated only for resources of its own
+  tenant. Its patterns must still spell out the tenant slug.
 
-Since Deny and Allow are at the same scope level here, the Deny would normally win. However, the infra-team members are matched by both policies. The resolution is: the **more specific subject** (team) is evaluated alongside the **broader subject** (all_authenticated). Deny on `all_authenticated` applies to everyone, but the explicit Allow for `infra-team` at the same scope level means the engine must resolve the conflict — and in this case, **Deny wins**. To make this work correctly, the deny should target a narrower subject:
+### 8.3 Principals
 
-```toml
-[[policy]]
-name = "lock-production-config"
-effect = "deny"
-subjects = [{ role = "Developer" }, { role = "Viewer" }]
-scope = { path = "config/production.toml" }
-permissions = ["tree:write"]
+| Pattern | Matches |
+|---|---|
+| `*` | everyone, including anonymous callers |
+| `authenticated` | every signed-in principal (users and service accounts) |
+| `anonymous` | callers without a credential |
+| `user:<username>` | that account |
+| `team:<slug>` | members of that team in the policy's tenant |
+| `role:<role>` | any principal holding that role for this request (tenant role, team or tree grant role, service-account role) |
+| `sa:<name>` | that service account of the policy's tenant |
+| `sa:<tenant>/<name>` | a service account of any tenant |
+| `tenant:<slug>` (v0.5) | every member of that tenant, and its service accounts |
 
-[[policy]]
-name = "allow-infra-team-production"
-effect = "allow"
-subjects = [{ team = "infra-team" }]
-scope = { path = "config/production.toml" }
-permissions = ["tree:read", "tree:write"]
-```
+Names may contain `*`, for example `user:ext-*`.
 
-#### Example 5: Branch-Specific Protection
+### 8.4 Conditions
 
-```toml
-[[policy]]
-name = "protect-main-branch"
-effect = "deny"
-subjects = [{ all_authenticated = true }]
-scope = { branch = "main" }
-permissions = ["sync:push", "branch:delete"]
+| Key | Holds when |
+|---|---|
+| `ip_ranges` | the client IP is inside one of the CIDRs (a bare address means a single host) |
+| `require_mfa` | the principal's session was created after a second factor (`Principal.MFA`) |
+| `not_before` / `not_after` | the request time is inside the RFC 3339 bounds |
+| `time_window` | `{days: ["mon".."sun"], start: "HH:MM", end: "HH:MM", timezone: "<IANA>"}` matches. `end` is exclusive. A window may wrap midnight, and then belongs to the day it starts on. The default timezone is `UTC`, and tzdata is embedded so this works on Windows. |
 
-[[policy]]
-name = "allow-maintainers-main"
-effect = "allow"
-subjects = [{ role = "Maintainer" }]
-scope = { branch = "main" }
-permissions = ["sync:push", "branch:merge"]
-```
+Some conditions cannot be decided. The client IP may be unknown, or a stored
+condition may be corrupt. In those cases an **allow** statement does not apply
+and a **deny** statement does: evaluation fails closed.
 
-#### Example 6: Deny Override for Sensitive Operations
+The client IP is the socket peer address. `X-Forwarded-For` is not
+consulted.
 
-```toml
-# Allow devs to do everything on feature branches
-[[policy]]
-name = "dev-feature-branches"
-effect = "allow"
-subjects = [{ role = "Developer" }]
-scope = "tree"
-permissions = [
-    "tree:read", "tree:write",
-    "branch:read", "branch:create", "branch:delete",
-    "snapshot:create", "snapshot:read",
-    "sync:push", "sync:pull"
-]
+SSO sessions are issued with `MFA = false`. A `require_mfa` statement
+therefore treats them like password sessions without a second factor.
 
-# But deny deletion of release branches
-[[policy]]
-name = "deny-release-branch-delete"
-effect = "deny"
-subjects = [{ all_authenticated = true }]
-scope = { branch = "release/*" }
-permissions = ["branch:delete"]
-```
+## 9. Evaluation algorithm
 
-> **Note**: Branch name patterns like `release/*` are evaluated as prefix matches, not globs. This is different from RegisteredPath which requires exact match via explicit registration.
+`authz.Authorizer.Evaluate(principal, action, resource, env)` runs these steps.
+`Authorize` is the yes/no form that services call: it returns an error wrapping
+`ErrUnauthenticated` for anonymous callers and `ErrForbidden` for everyone
+else.
 
-#### Example 7: Combined Team + Tenant + Role Policy
+0. **Normalize.** A tree that does not belong to the requested tenant is
+   denied. A branch or path resource without a tree is invalid. An unknown
+   action is an implicit deny. `branch:push` is evaluated as `tree:write`
+   (the *target* action), followed by a branch deny pass (step 6).
+1. **Identity.** The principal is re-read from the store. A disabled account
+   or service account is denied (source `disabled`).
+2. **Token scopes.** When `Principal.Scopes` is non-empty, one scope pattern
+   must cover the target action. Otherwise the request is denied (source
+   `token_scope`). This step runs before the admin bypass, so scopes bind
+   server admins too.
+3. **Server admin.** A server admin is allowed (source `server_admin`). No
+   later step runs. `server:admin` is refused for everyone else.
+4. **Tenant status (v0.5).** A `deactivated` tenant denies every action. A
+   `suspended` tenant denies every action other than the read actions
+   (`tenant:read`, `tree:read`, `iam:read`), with reason `tenant_suspended`.
+   Suspension revokes no credentials and changes no stored data.
+5. **Roles.** The engine collects every role the principal holds for the
+   resource:
+   - the tenant membership role (users);
+   - the service account's own role (only in its tenant);
+   - direct tree grants (user or service account);
+   - team grants on the tree, for every team the account is in;
+   - tenant grants on the tree, when the principal belongs to the granted
+     tenant.
 
-```toml
-[[policy]]
-name = "comprehensive-access"
-effect = "allow"
-subjects = [
-    { team = "core-team" },
-    { tenant = "trusted-partner" },
-    { account = "special-contractor" }
-]
-scope = "worktree"
-permissions = [
-    "tree:read", "tree:write",
-    "branch:read", "branch:create",
-    "snapshot:create", "snapshot:read",
-    "sync:push", "sync:pull",
-    "merge_request:create"
-]
-```
+   Grant roles apply only to tree-scoped actions. A built-in role allows the
+   action per §4.1. A custom role allows it when one of its permissions covers
+   it. **Visibility** then adds an allow for `tree:read` (§7).
+6. **Policies.** The engine evaluates every enabled policy of the resource's
+   tenant. A statement matches when all of the following hold:
+   - one of its actions covers the target action;
+   - one of its resources covers the request's resource or an ancestor;
+   - one of its principals matches;
+   - its conditions hold.
 
----
+   A matching **deny** is an explicit deny. It overrides every allow from
+   roles, grants, visibility and policy allows. A matching **allow** grants
+   the action even without a role.
 
-## ABAC (Attribute-Based Access Control)
+   For `branch:push`, a deny-only pass also runs over the branch. The push is
+   refused by any deny statement that matches either:
+   - `branch:push` on the branch, its tree or its tenant; or
+   - `tree:write` on the branch resource itself.
 
-In addition to role-based policies, W0rkTree supports attribute-based conditions on policies. This allows fine-grained access decisions based on runtime context.
+   A policy allow cannot grant `branch:push` without `tree:write`.
 
-### Condition Structure
+   **Lockout guard (v0.5):** a deny statement does not apply to a tenant
+   owner for `iam:*` and `tenant:admin`. The reason is recorded as
+   `owner_protected`.
+7. **Default.** The request is allowed when some role, visibility rule or
+   policy allowed it. Otherwise the result is `implicit_deny`, with a message
+   such as "not a member of the tenant" or "role viewer does not permit it".
 
-```toml
-[[policy]]
-name = "business-hours-only"
-effect = "allow"
-subjects = [{ team = "contractors" }]
-scope = "worktree"
-permissions = ["tree:read", "tree:write", "sync:push", "sync:pull"]
-conditions = [
-    { attribute = "time.hour", operator = "GreaterThan", value = "8" },
-    { attribute = "time.hour", operator = "LessThan", value = "18" }
-]
-```
+A `Decision` has three fields:
 
-### Supported Operators
+- `allowed`;
+- `effect`: `allow`, `deny` (explicit) or `implicit_deny`;
+- `reasons`: an ordered list of `{source, detail, effect}`.
 
-| Operator     | Description                      | Example                                           |
-|--------------|----------------------------------|---------------------------------------------------|
-| `Equals`     | Exact match                      | `{ attribute = "env", operator = "Equals", value = "production" }` |
-| `NotEquals`  | Not equal                        | `{ attribute = "env", operator = "NotEquals", value = "test" }` |
-| `Contains`   | String contains                  | `{ attribute = "email", operator = "Contains", value = "@company.com" }` |
-| `StartsWith` | String prefix match              | `{ attribute = "ip", operator = "StartsWith", value = "10.0." }` |
-| `GreaterThan`| Numeric greater than             | `{ attribute = "time.hour", operator = "GreaterThan", value = "8" }` |
-| `LessThan`   | Numeric less than                | `{ attribute = "time.hour", operator = "LessThan", value = "18" }` |
-| `In`         | Value in list                    | `{ attribute = "department", operator = "In", value = "engineering,security" }` |
-| `NotIn`      | Value not in list                | `{ attribute = "region", operator = "NotIn", value = "restricted-zone" }` |
+Reason sources are `server_admin`, `disabled`, `tenant_role`, `team_role`,
+`tree_grant`, `custom_role`, `service_account`, `visibility`, `token_scope`,
+`policy`, `default` and, in v0.5, `tenant_suspended` and `owner_protected`.
+A reason's effect is `allow`, `deny` or `info`.
 
-### Built-in Attributes
+Store lookups are memoized **per request only** (`authz.WithRequestCache`), so
+IAM changes take effect on the next request. `syncsvc.Push` shares one cache
+across its `tree:write`, `branch:push` and protection checks.
 
-| Attribute        | Type    | Description                                  |
-|------------------|---------|----------------------------------------------|
-| `time.hour`      | Integer | Current hour (0-23) in UTC                   |
-| `time.day`       | String  | Day of week (Monday, Tuesday, ...)           |
-| `time.date`      | String  | ISO 8601 date                                |
-| `ip.address`     | String  | Client IP address                            |
-| `ip.range`       | String  | Client IP CIDR range                         |
-| `tenant.plan`    | String  | Requesting tenant's subscription plan        |
-| `tenant.type`    | String  | personal or organization                     |
-| `tenant.status`  | String  | Active or Suspended                          |
+**Example.** Policy `protect-main` holds the deny statement shown in §8.1, and
+bob is a developer in team `contractors`. `wt iam simulate --principal user:bob
+--action branch:push --tenant acme --tree acme/web --branch main` reports:
 
-### Custom Attributes
+- `tenant_role` allow: developer grants `tree:write`;
+- `policy` deny: `policy "protect-main" statement "no-contractor-pushes-to-main" denies branch:push`;
+- effect `deny`.
 
-Tenants can define custom attributes on their accounts for use in ABAC conditions:
+## 10. Owner protection and tenant status
 
-```toml
-# On the tenant record
-[attributes]
-department = "engineering"
-clearance_level = "3"
-office_location = "building-a"
-```
+- **Last owner.** Removing or demoting the last owner of a tenant fails with
+  `409 {"code":"last_owner"}`. An owner may leave the tenant only while another
+  owner remains.
+- **Owner protection.** Policy denies are ignored for owners on `iam:*` and
+  `tenant:admin`. A badly written policy therefore cannot lock the tenant out
+  of repairing its own IAM.
+- **Tenant status.** Server admins set it with `PATCH /admin/tenants/{t}`
+  `{"status","status_reason"}` or with `wt tenant suspend|resume|deactivate
+  <tenant> [--reason]`. `active` (or `""`) is normal. For `suspended` and
+  `deactivated`, see step 4 of §9. Server admins are never affected.
 
-Then reference in policies:
+## 11. Tokens, scopes and authentication
 
-```toml
-[[policy]]
-name = "engineering-only-access"
-effect = "allow"
-subjects = [{ all_authenticated = true }]
-scope = { path = "src/internal/" }
-permissions = ["tree:read"]
-conditions = [
-    { attribute = "department", operator = "Equals", value = "engineering" }
-]
-```
+This section summarizes authentication. Hashing, token format, lockouts, TLS
+and SSO internals are in [Security](../security/Security.md).
 
-### ABAC Examples
+| Token kind | Issued by | Notes |
+|---|---|---|
+| `session` | Password login (`POST /auth/login`), MFA login (`/auth/login/mfa`), SSO callback | Valid for 30 days by default. Records `last_ip`, `user_agent`, `mfa`. Listed by `GET /auth/sessions` and `wt session list`. |
+| `api` | `POST /auth/tokens {name, ttl_hours, scopes}`, `wt token create` | Personal token, optionally scoped and expiring |
+| `service` | `POST /tenants/{t}/service-accounts/{name}/keys`, `wt sa key-create` | Service-account key. `AccountID` is empty. Optionally scoped. |
 
-#### Time-Based Access
+All tokens are `wt_…` bearer strings, shown once and stored as SHA-256 hashes.
 
-```toml
-[[policy]]
-name = "weekend-readonly"
-effect = "deny"
-subjects = [{ role = "Developer" }]
-scope = "worktree"
-permissions = ["tree:write", "sync:push"]
-conditions = [
-    { attribute = "time.day", operator = "In", value = "Saturday,Sunday" }
-]
-```
+**Scopes** are action patterns such as `tree:read`, `tree:*` or `*`. A scoped
+token can do at most what its scopes cover, and only when the identity is
+allowed the action in the first place. Note that `branch:push` is checked as
+`tree:write` at the scope step, so a push token needs a scope that covers
+`tree:write` (for example `tree:write` or `tree:*`).
 
-#### IP-Based Access
+**Two-factor authentication** (TOTP, RFC 6238) works as follows:
 
-```toml
-[[policy]]
-name = "office-only-admin"
-effect = "allow"
-subjects = [{ role = "Admin" }]
-scope = "worktree"
-permissions = ["TenantAdmin", "PolicyManage", "RoleManage"]
-conditions = [
-    { attribute = "ip.address", operator = "StartsWith", value = "10.0.1." }
-]
-```
+- When TOTP is enabled, `POST /auth/login` returns `{mfa_required: true,
+  mfa_token}`. The `wtm_…` token is valid for 5 minutes and can be used once.
+- `POST /auth/login/mfa {mfa_token, code}` exchanges it, plus a TOTP code or a
+  recovery code, for a session with `mfa = true`.
+- `wt login` prompts for the code, or reads `--mfa-code` / `WT_MFA_CODE`.
 
-#### Combined RBAC + ABAC
+**SSO** uses OpenID Connect with PKCE (S256), state and nonce, and accepts
+RS256 and ES256 ID tokens. Accounts can be auto-created on first login.
+Linking an identity to an existing account by email requires the opt-in
+`link_by_email`. See [Security](../security/Security.md#6-single-sign-on-openid-connect).
 
-```toml
-[[policy]]
-name = "senior-eng-production-access"
-effect = "allow"
-subjects = [{ team = "senior-engineers" }]
-scope = { path = "config/production.toml" }
-permissions = ["tree:read", "tree:write"]
-conditions = [
-    { attribute = "clearance_level", operator = "GreaterThan", value = "2" },
-    { attribute = "ip.address", operator = "StartsWith", value = "10.0." }
-]
-```
+**Invitations** (`wti_…`, 7 days by default) are created by `iam:admin`
+holders:
 
-All conditions are AND-evaluated: every condition must be true for the policy to apply.
+- An invitation adds a membership with the invited role (default `developer`)
+  and, optionally, a team membership.
+- When the invitation names an email or username, the accepting account must
+  match it.
+- Accepting never downgrades an existing role.
 
----
+**Password resets** (`wtr_…`, 1 hour by default) are issued by server admins.
+Redeeming one revokes every token of the account.
 
-## Scope Resolution Algorithm
+## 12. Inspecting access: simulator and effective permissions
 
-When the server evaluates an access request, it follows this deterministic algorithm:
+- **Simulator.** `POST /iam/simulate` takes
+  `{principal:{type:"user"|"service_account", name, tenant?}, action, tenant,
+  tree?, branch?, path?, context:{ip?, mfa?}}` and returns the full
+  `Decision`. In v0.5 it also accepts `"candidate_policies":[Policy]`, which
+  replace the tenant's policies for this one evaluation, so you can dry-run a
+  policy change.
+  - CLI: `wt iam simulate --principal user:U|sa:T/N --action A --tenant T
+    [--tree TREE] [--branch B] [--path P] [--ip IP] [--mfa]`.
+  - For a file: `wt policy simulate --file policy.json …`.
+  - Admin panel: the **Access simulator** page (`/iam/simulator`).
+- **Effective permissions.** `GET /iam/effective?tenant=&tree=&principal=`
+  returns `{role, team_roles:[{team, role}], grants:[grant],
+  permissions:[action]}`, and `wt iam effective` prints it. The default
+  principal is the caller. Time and MFA conditions are evaluated for "now",
+  and statements with IP conditions are skipped because they need a concrete
+  request.
 
-### Input
-- **Subject**: The requesting user (account, tenant, teams, roles)
-- **Permission**: The atomic permission being requested (e.g., `tree:write`)
-- **Resource**: The target resource with its scope (e.g., branch "main", path "config/prod.toml")
+## 13. Where decisions are enforced
 
-### Algorithm
+All enforcement happens on the server. Clients display policies but never
+decide.
+
+| Operation | Checks |
+|---|---|
+| gRPC `Push` | `tree:write` → `branch:push` on the branch → branch protection → license `CheckPush` → PushChecks: `pathacl` (`tree:write` per changed path, any explicit deny rejects with `access_denied`), quotas, signatures |
+| gRPC `Pull` / `DownloadObjects` | `tree:read`. Paths that a `tree:read` policy denies or a license withholds are returned in `stubbed_paths`, and their blobs are refused. |
+| REST content (`blob`, `files`, `compare`, file history, snapshot file lists, archive) | `tree:read`, then per path: policy deny → `403 path_denied`, license → `451 license_restricted`. Listings omit restricted paths and add `restricted_count`. |
+| `Stage`, tags | `tree:write`. Tag deletion needs `tree:admin`. |
+| REST management | The action named in each route (`branch:create`, `mr:*`, `release:*`, `ci:report`, `iam:read`, `iam:admin`, `tenant:admin`, `tree:admin`, `server:admin`) |
+| `SyncAccessConfig` / access-config REST | `iam:admin` plus the escalation check ([Declarative Access](./DeclarativeAccess.md)) |
+
+Every REST `403` and every gRPC `PermissionDenied` is audited as
+`access.denied`. The metric `wt_authz_decisions_total{decision}` counts
+allows and denies.
+
+## 14. REST API
+
+All routes are under `/api/v1` and use the error envelope
+`{"error":{"code","message"}}`. Reads need `iam:read` and changes need
+`iam:admin`, unless stated otherwise.
 
 ```
-function evaluate(subject, permission, resource) -> Allow | Deny:
-    1. Collect ALL policies where:
-       - subject matches any entry in policy.subjects
-       - permission is in policy.permissions
-       - All ABAC conditions (if any) evaluate to true
-
-    2. Filter to policies whose scope COVERS the requested resource:
-       - Global covers everything
-       - Tenant covers all trees in the tenant
-       - Tree covers all branches and paths in the tree
-       - Branch covers the specific branch and paths within it
-       - RegisteredPath covers only that exact path
-
-    3. Group matching policies by scope level (most specific first):
-       Level 5: RegisteredPath
-       Level 4: Branch
-       Level 3: Tree
-       Level 2: Tenant
-       Level 1: Global
-
-    4. Starting from the most specific level that has matching policies:
-       a. If ANY policy at this level has effect = "deny" → return DENY
-       b. If ANY policy at this level has effect = "allow" → return ALLOW
-       c. (This level has no matching policies — continue to next)
-
-    5. Move to the next broader scope level and repeat step 4
-
-    6. If no matching policy found at any level → return DENY (default deny)
+GET    /iam/actions                                         (public)
+GET    /tenants/{t}/teams | POST {slug,name,description}
+GET    /tenants/{t}/teams/{team}                            -> {team, members, grants}
+PATCH  /tenants/{t}/teams/{team} {name?,description?} | DELETE
+PUT    /tenants/{t}/teams/{team}/members/{username} {role}  (team maintainers too) | DELETE
+GET    /tenants/{t}/roles | POST {name,description,permissions}
+GET|PATCH|DELETE /tenants/{t}/roles/{name}                  (DELETE 409 while assigned)
+GET    /tenants/{t}/policies | POST {name,description,enabled,statements}
+POST   /tenants/{t}/policies/validate {statements}          -> {valid, errors:[{statement,field,message}]}
+GET|PUT|DELETE /tenants/{t}/policies/{id}                   (PUT = full replace, version++)
+GET    /trees/{t}/{tree}/grants | PUT {subject_type,subject,role} | DELETE ?subject_type=&subject=
+GET    /tenants/{t}/service-accounts | POST {name,description,role}
+GET|PATCH|DELETE /tenants/{t}/service-accounts/{name}       (PATCH {description?,role?,disabled?})
+POST   /tenants/{t}/service-accounts/{name}/keys {name,ttl_hours,scopes} -> {token, api_token}
+DELETE /tenants/{t}/service-accounts/{name}/keys/{id}
+GET    /tenants/{t}/invitations | POST {email?|username?, role, team?} -> {invitation, code}
+DELETE /tenants/{t}/invitations/{id}
+GET    /invitations/{code} (public preview) | POST /invitations/{code}/accept
+POST   /iam/simulate                                        (tenant iam:read)
+GET    /iam/effective?tenant=&tree=&principal=
+GET    /tenants/{t}/access-config | POST .../access-config/plan | .../apply   (v0.5)
+PATCH  /admin/tenants/{t} {status,status_reason}            (server admin, v0.5)
 ```
 
-### Resolution Examples
+Self-service authentication routes are listed in
+[Security](../security/Security.md).
 
-**Example A**: Developer pushes to `main` branch
+Every mutating IAM call is audited. A policy or role with
+`managed_by: "config"` answers `409 {"code":"managed_by_config"}` to `PUT`,
+`PATCH` and `DELETE`, unless an owner passes `?force=true`.
 
-```
-Policies:
-  P1: Allow Developer tree:write at Tree scope
-  P2: Deny all_authenticated sync:push at Branch("main") scope
+## 15. CLI
 
-Evaluation for sync:push on Branch("main"):
-  Level 4 (Branch): P2 matches → DENY
-  (P1 at Level 3 is never evaluated)
-  Result: DENY
-```
-
-**Example B**: Maintainer pushes to `main` branch
+All IAM commands accept `--server` and `--json`. `TREE` arguments are
+`tenant/tree`.
 
 ```
-Policies:
-  P1: Allow Developer tree:write at Tree scope
-  P2: Deny all_authenticated sync:push at Branch("main") scope
-  P3: Allow Maintainer sync:push at Branch("main") scope
-
-Evaluation for sync:push on Branch("main"):
-  Level 4 (Branch): P2 (deny) and P3 (allow) both match
-  → Deny beats Allow at same level → DENY
-  Result: DENY
+wt team list T | create T SLUG [--name] [--description] | show T SLUG | update T SLUG | delete T SLUG
+wt team add T SLUG USER [--maintainer] | remove T SLUG USER
+wt role list T | create T NAME --permission ACTION... [--description] | show | update | delete
+wt policy list T | show T ID | create T --file F|- | update T ID --file F | delete T ID
+wt policy validate T --file F | enable T ID | disable T ID | simulate --file F ...
+wt grant list TREE | set TREE (--user U|--team SLUG|--sa NAME) --role R | remove TREE (--user U|--team SLUG|--sa NAME)
+                                          (v0.5 adds a tenant subject, see `wt grant set --help`)
+wt sa list T | create T NAME --role R [--description] | show | update [--role] [--disable|--enable] | delete
+wt sa key-create T NAME [--name K] [--ttl-hours N] [--scope S]... | key-delete T NAME KEY_ID
+wt token list | create NAME [--ttl-hours N] [--scope S]... | revoke ID
+wt session list | revoke ID | revoke-others
+wt mfa status | enable | disable [--password-stdin] | recovery-codes
+wt invite list T | create T (--email E|--user U) [--role R] [--team SLUG] | revoke T ID | show CODE | accept CODE
+wt iam actions | effective [--tenant T] [--tree TREE] [--principal ...] | simulate ...
+wt tenant members T | add-member T USER [--role R] | set-role T USER ROLE | remove-member T USER
+wt tenant suspend|resume|deactivate T [--reason]
+wt access validate | plan | apply | pull                    (see Declarative Access)
 ```
 
-> This is by design: to allow Maintainer push on main, you must narrow the deny subject instead of broadening the allow.
+Run `wt <command> --help` for the exact flags.
 
-**Example C**: Path-level override
+## 16. Audit
 
-```
-Policies:
-  P1: Allow backend-team tree:write at Tree scope
-  P2: Deny all_authenticated tree:write at RegisteredPath("config/production.toml")
-  P3: Allow infra-team tree:write at RegisteredPath("config/production.toml")
+IAM changes and sign-ins are written to the audit log
+(`GET /audit`, `wt audit`). The actions include:
 
-Evaluation for tree:write on "config/production.toml" by backend-team member NOT in infra-team:
-  Level 5 (RegisteredPath): P2 matches (deny) → DENY
-  Result: DENY
+- teams: `team.create`, `team.update`, `team.delete`, `team.member.set`,
+  `team.member.remove`;
+- roles: `role.create`, `role.update`, `role.delete`;
+- policies: `policy.create`, `policy.update`, `policy.delete`;
+- grants: `grant.set`, `grant.remove`;
+- service accounts: `sa.create`, `sa.update`, `sa.delete`, `sa.key.create`,
+  `sa.key.delete`;
+- memberships: `member.update`, `member.remove`;
+- invitations: `invitation.create`, `invitation.revoke`, `invitation.accept`;
+- MFA: `mfa.enroll`, `mfa.enable`, `mfa.disable`, `mfa.recovery_codes`;
+- sessions: `session.revoke`, `session.revoke_others`;
+- password resets: `password.reset_code`, `password.reset`;
+- SSO: `sso.login`, `sso.login_failed`, `sso.config.update`;
+- denials: `access.denied`;
+- declarative access: `access.applied`.
 
-Evaluation for tree:write on "config/production.toml" by infra-team member:
-  Level 5 (RegisteredPath): P2 (deny) and P3 (allow) both match
-  → Deny beats Allow at same level → DENY
-  Result: DENY (must restructure policies to avoid this conflict)
-```
+Action filters also accept a `<prefix>.*` form, for example
+`wt audit --action 'policy.*'`. The full list is in
+[Security](../security/Security.md#11-audit-log).
 
----
+## 17. Design rationale
 
-## .wt-tree/ Override Rules
+- **One engine.** REST, gRPC, the simulator and effective permissions all go
+  through `authz.Evaluate`, so what the simulator shows is what is enforced.
+- **Deny overrides, with no scope precedence.** An explicit deny anywhere wins
+  over every allow, and statements on a tenant or tree cover everything
+  beneath them. This order is easier to reason about than "most specific scope
+  wins", and it makes the tree-level declarative documents restrict-only.
+- **Least surprise for grants.** Grants only add access, and only on one tree.
+  Restrictions are always expressed as denies.
+- **Fail closed.** Undecidable conditions keep denies in force and allows
+  inactive. Corrupt statements never match.
+- **No caching across requests.** Revocations, role changes and disabling take
+  effect immediately.
 
-W0rkTree supports a two-level policy hierarchy: root-level policies in `.wt/access/` and tree-level policies in `.wt-tree/access/`. Tree-level policies have strict rules about what they can do relative to root policies.
+## 18. Implementation status
 
-### Core Principle: Restrict Only, Never Expand
+| Area | Status |
+|---|---|
+| Action catalog with v0.5 actions; built-in role matrix | Built (`internal/authz/actions.go`) |
+| Custom roles, teams, tree grants (user, team, service account) | Built |
+| Tenant grants (`subject_type: "tenant"`) and `tenant:<slug>` principals | Built (v0.5, `access` workstream) |
+| Policies: deny-overrides evaluation, wildcards, CIDR / MFA / time conditions, validation | Built |
+| `branch:push` per-branch denies; `wt:path` denies on read (stubbed paths, 403) and write (`pathacl`) | Built |
+| Lockout guard (`owner_protected`, `last_owner`); tenant status | Built (v0.5) |
+| Service accounts and scoped keys; scoped personal tokens; sessions; TOTP; invitations; password resets; OIDC SSO | Built |
+| Simulator (including `candidate_policies`) and effective permissions | Built |
+| Declarative access files (`wt access`) | Built (v0.5), see [Declarative Access](./DeclarativeAccess.md) |
+| Token scopes for the v0.5 actions | Partial: `iam.ValidateScopes` still lists only the v0.4 actions, so `release:*` and `ci:report` scopes are rejected when a token or key is created. A `*` scope works. |
+| Rust `worktree_protocol::iam` (`engine`, `role`, `permission`, `policy`, `scope`) and `access::{tree_access, branch_access}` | Legacy protocol model from v1. The server does not consult it. Its names (`sync:push`, `snapshot:create`, …) survive only as declarative-TOML aliases. |
 
-Tree policies can **restrict** access granted by root policies but can **never expand** access beyond what root policies allow.
+## 19. Roadmap
 
-### Rules
+The following were described in earlier versions of this spec but are not
+built, and are not part of the v0.5 contract:
 
-1. **If root allows `tree:read` + `tree:write` for team-A**:
-   - Tree CAN restrict to `tree:read` only (removing write)
-   - Tree CANNOT add `tree:delete` (not granted by root)
+- **Registered paths.** Explicit `[[registered_path]]` entries in
+  `config.toml` that would make a path eligible for access control. Today,
+  path control uses `wt:path/...` glob resources directly. The Rust config
+  types (`config::RegisteredPath`) exist but nothing reads them.
+- **Scope-precedence resolution.** "Most specific scope wins" across Global →
+  Tenant → Tree → Branch → RegisteredPath, and server-wide (global) policies.
+  Policies are tenant-scoped, and the order is deny-overrides.
+- **Branch-scoped and path-scoped role assignment.** For example, "Maintainer
+  on `main` only". Roles are assigned per tenant (membership) or per tree
+  (grant). Per-branch restrictions are expressed as denies.
+- **Custom ABAC attributes** on tenants or accounts (`department`,
+  `clearance_level`, …) and generic condition operators (`Equals`, `In`,
+  `StartsWith`, `GreaterThan`, …). Only the fixed conditions of §8.4 exist.
+- **Additional fine-grained actions**: `branch:read`, `branch:protect`,
+  `snapshot:create`, `snapshot:read`, `snapshot:restore`, `sync:pull`,
+  `tag:create`, `tag:delete`, `merge_request:*` and the `*Manage` permissions.
+  These are covered by the catalog actions in §3.
+- **Ownership transfer** as a distinct operation and action.
+- **Tenant-wide team roles.** Teams receive access only through tree grants
+  and policies.
+- **Policy history.** Earlier policy versions, diffs and rollback. Only the
+  `version` counter is kept. `wt access plan` shows pending changes.
+- **Trusted proxy headers** (`X-Forwarded-For`) for IP conditions and rate
+  limits.
+- **MFA-asserted SSO sessions.** Reading `amr` / `acr` claims so that IdP MFA
+  satisfies `require_mfa`.
+- **Access files versioned with snapshots**, protected on push, and
+  re-applied automatically by the background process. See
+  [Declarative Access](./DeclarativeAccess.md#roadmap).
 
-2. **If root denies `tree:write` for team-B**:
-   - Tree CANNOT allow `tree:write` for team-B (root deny is absolute)
-   - Tree CAN add additional denies for team-B
+## 20. References
 
-3. **If root has no policy for user-C**:
-   - Tree CANNOT grant access to user-C (no root-level allow to restrict)
-   - Tree CAN explicitly deny user-C (though default deny already applies)
-
-### Evaluation Order
-
-```
-function evaluate_with_tree_override(subject, permission, resource):
-    root_result = evaluate(subject, permission, resource, root_policies)
-    tree_result = evaluate(subject, permission, resource, tree_policies)
-
-    if root_result == DENY:
-        return DENY                    # Root deny is absolute
-    if tree_result == DENY:
-        return DENY                    # Tree can restrict
-    if root_result == ALLOW and tree_result == ALLOW:
-        return ALLOW                   # Both agree
-    if root_result == ALLOW and tree_result == NO_MATCH:
-        return ALLOW                   # Root allows, tree has no opinion
-    if root_result == NO_MATCH:
-        return DENY                    # No root allow = no access
-    return DENY                        # Default
-```
-
-### Example
-
-Root policies (`.wt/access/policies.toml`):
-```toml
-[[policy]]
-name = "team-access"
-effect = "allow"
-subjects = [{ team = "dev-team" }]
-scope = "worktree"
-permissions = ["tree:read", "tree:write", "branch:create", "sync:push", "sync:pull"]
-```
-
-Tree policies (`.wt-tree/access/policies.toml`):
-```toml
-# Restrict dev-team to read-only in this tree
-[[policy]]
-name = "restrict-dev-team"
-effect = "deny"
-subjects = [{ team = "dev-team" }]
-scope = "tree"
-permissions = ["tree:write", "sync:push"]
-```
-
-Result: dev-team has `tree:read`, `branch:create`, `sync:pull` in this tree but NOT `tree:write` or `sync:push`.
-
----
-
-## Access Config as Version-Controlled Files
-
-A key design principle of W0rkTree IAM is that access configuration is treated as code.
-
-### Storage
-
-| File                              | Purpose                            |
-|-----------------------------------|------------------------------------|
-| `.wt/config.toml`                 | Worktree config, path registration |
-| `.wt/access/roles.toml`          | Custom role definitions            |
-| `.wt/access/policies.toml`       | Root-level access policies         |
-| `.wt-tree/config.toml`           | Tree-level config, path registration|
-| `.wt-tree/access/policies.toml`  | Tree-level access policies         |
-
-### Properties
-
-1. **Version-Controlled**: All access files are part of the worktree and are versioned through snapshots
-2. **Synced**: Access files are synced to/from the server like any other file
-3. **Auditable**: Full history of who changed what access when (via snapshot history)
-4. **Protected**: Only users with `PolicyManage` or `TreeAdmin` permissions can modify access files
-5. **Server-Enforced**: The server validates access files on every sync and rejects invalid configurations
-
-### Modification Flow
-
-```
-1. User with PolicyManage edits .wt/access/policies.toml
-2. BGProcess detects the file change
-3. BGProcess validates locally:
-   - TOML syntax check
-   - Permission name validation
-   - Role reference validation
-   - Registered path verification (for path-scoped policies)
-4. BGProcess syncs to server
-5. Server validates:
-   - Tenant resolution (username/email lookup)
-   - Path registration verification
-   - Policy consistency check
-   - Modifier authorization (does user have PolicyManage?)
-6. Server applies policies immediately
-7. Other BGProcess clients sync updated access config
-8. Policies take effect across all connected clients
-```
-
-### Protection of Access Files
-
-Even though access files are "just files," they have special protections:
-
-- Only users with `PolicyManage` or `TreeAdmin` can modify files in `.wt/access/`
-- Only users with `PolicyManage` or `TreeAdmin` can modify files in `.wt-tree/access/`
-- The server rejects sync operations that modify access files from unauthorized users
-- Modifications to access files are logged with additional audit metadata
-
----
-
-## Custom Roles
-
-In addition to the five built-in roles, tenants can define custom roles in `.wt/access/roles.toml`:
-
-```toml
-[[role]]
-name = "code-reviewer"
-description = "Can read code and approve merge requests, but not write directly"
-permissions = [
-    "tree:read",
-    "branch:read",
-    "snapshot:read",
-    "sync:pull",
-    "merge_request:approve"
-]
-
-[[role]]
-name = "release-manager"
-description = "Can manage releases and protected branches"
-permissions = [
-    "tree:read",
-    "branch:read",
-    "branch:merge",
-    "branch:protect",
-    "snapshot:read",
-    "sync:pull",
-    "tag:create",
-    "tag:delete",
-    "release:create",
-    "release:delete"
-]
-
-[[role]]
-name = "ci-bot"
-description = "Automated CI/CD service account"
-permissions = [
-    "tree:read",
-    "branch:read",
-    "snapshot:read",
-    "sync:pull",
-    "sync:push",
-    "tag:create",
-    "release:create"
-]
-```
-
-Custom roles can then be referenced in policies:
-
-```toml
-[[policy]]
-name = "reviewer-access"
-effect = "allow"
-subjects = [{ role = "code-reviewer" }]
-scope = "worktree"
-permissions = [
-    "tree:read",
-    "branch:read",
-    "snapshot:read",
-    "sync:pull",
-    "merge_request:approve"
-]
-```
-
----
-
-## Implementation Status
-
-### Implemented
-
-- **AccessEngine** — Core evaluation engine (871 lines of Rust)
-- **RBAC** — Full role-based access control with 5 built-in roles
-- **ABAC** — Attribute-based conditions with 8 operators
-- **20+ Permissions** — Full set of atomic permissions across all categories
-- **Policy Evaluation** — Scope-based resolution with deny-overrides
-- **Conditions** — Time-based, IP-based, and custom attribute conditions
-
-### TODO
-
-- `Scope::RegisteredPath` variant — Implement path-level scope matching
-- `PolicySubject::Tenant` variant — Implement cross-tenant subject matching
-- Tenant email field — Add email to Tenant struct for email-based resolution
-- Declarative config parsing — Parse `.wt/access/*.toml` and `.wt-tree/access/*.toml`
-- Config validation — Local and server-side validation of policy files
-- Path registration — Parse `[[registered_path]]` from `config.toml`
-
-### Planned
-
-- Cross-tenant access resolution — Full tenant lookup and resolution pipeline
-- License compliance integration — Tie access control to license plan limits
-- Organization accounts — Multi-account tenants with team management
-- Audit logging — Detailed logs of all access decisions and policy changes
-- Policy simulation — Dry-run mode to test policy changes before applying
-
----
-
-## Security Considerations
-
-1. **Default Deny**: Any operation without an explicit Allow policy is denied
-2. **Deny Precedence**: At the same scope level, Deny always beats Allow
-3. **Root Policy Supremacy**: Tree-level policies cannot override root-level denies
-4. **Server Enforcement**: All access checks happen on the server, never trust the client
-5. **Access File Protection**: Only authorized users can modify access configuration
-6. **Audit Trail**: All access decisions are loggable for compliance
-7. **No Implicit Trust**: Cross-tenant access requires explicit grants
-
----
-
-## Related Specifications
-
-- [Declarative Access Control](./DeclarativeAccess.md) — Detailed specification of the declarative config format
-- [Tenant Model](./TenantModel.md) — Tenant identity, types, and cross-tenant access
+- `services/server-go/internal/authz/` (`doc.go`, `actions.go`,
+  `authorizer.go`, `policy.go`, `resource.go`, `validate.go`, `cache.go`)
+- `services/server-go/internal/iam/` (`service.go`, `token.go`, `scopes.go`,
+  `serviceaccount.go`, `sessions.go`, `mfa.go`, `totp.go`, `invitations.go`,
+  `reset.go`, `middleware.go`, `validate.go`)
+- `services/server-go/internal/sso/`, `internal/accesscfg/`,
+  `internal/pathacl/`
+- `services/server-go/internal/domain/{iam,types,v05}.go`
+- `services/server-go/internal/httpapi/{iam*.go,tenants.go,sso.go,access_routes.go}`
+- `services/server-go/internal/syncsvc/{push.go,pull.go,accesscfg.go}`
+- `crates/worktree-cli/src/commands/{team,role,policy,grant,sa,token,session,mfa,invite,iam,sso,tenant,access}.rs`
+- `crates/worktree-protocol/src/iam/` (legacy model)
+- `docs/iam.md`, `docs/ENGINEERING_PLAN.md` §12, §13.1, §13.7
+- Related specs: [Tenant Model](./TenantModel.md),
+  [Declarative Access](./DeclarativeAccess.md),
+  [Staged Visibility](../visibility/StagedVisibility.md),
+  [License Compliance](../licensing/LicenseCompliance.md),
+  [Security](../security/Security.md), [Server](../server/Server.md)
