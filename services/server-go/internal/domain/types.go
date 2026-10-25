@@ -146,7 +146,7 @@ type Snapshot struct {
 	Signature    []byte       `json:"signature,omitempty"`
 	SigningKeyID string       `json:"signing_key_id,omitempty"`
 	// Verified is set by the server when Signature verified against a
-	// registered, unrevoked key of the pusher at push time.
+	// registered, unrevoked key (of any account) at push time.
 	Verified bool `json:"verified,omitempty"`
 }
 

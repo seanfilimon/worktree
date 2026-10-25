@@ -246,6 +246,24 @@ func (l *Limiter) CheckTreeCreate(ctx context.Context, t *domain.Tenant) error {
 	return nil
 }
 
+// CheckBranchCreate returns a *QuotaError when tree already has
+// MaxBranchesPerTree branches (REST branch creation; pushes are checked by
+// CheckPushPlan).
+func (l *Limiter) CheckBranchCreate(ctx context.Context, t *domain.Tenant, tree *domain.Tree) error {
+	max := l.Effective(t).MaxBranchesPerTree
+	if max <= 0 {
+		return nil
+	}
+	bs, err := l.d.Store.ListBranches(ctx, tree.ID)
+	if err != nil {
+		return err
+	}
+	if len(bs) >= max {
+		return &QuotaError{Limit: LimitBranches, Max: int64(max)}
+	}
+	return nil
+}
+
 // CheckMemberAdd returns a *QuotaError when t already has MaxMembers
 // members (call it only when adding a new member, not changing a role).
 func (l *Limiter) CheckMemberAdd(ctx context.Context, t *domain.Tenant) error {

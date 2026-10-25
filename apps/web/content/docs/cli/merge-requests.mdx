@@ -154,20 +154,13 @@ A CI job typically uses a service-account key limited to `ci:report`:
 wt sa create acme ci --role developer --description "CI pipeline"
 wt sa key-create acme ci --name github-actions --scope ci:report
 
-# in the job: the key is a bearer token for the REST API
-curl -s -X POST https://wt.example.com/api/v1/trees/acme/payments/ci/status \
-  -H "Authorization: Bearer $WT_CI_KEY" -H 'Content-Type: application/json' \
-  -d "{\"snapshot\":\"$SNAPSHOT_ID\",\"context\":\"ci/test\",\"state\":\"success\",\"target_url\":\"$JOB_URL\"}"
-```
-
-`wt ci report` uses the credential saved by [`wt login`](/docs/cli/remote#wt-login), so it suits jobs that run as a signed-in account:
-
-```bash
-wt ci report acme/payments --snapshot main --context ci/test \
+# in the job: WT_TOKEN replaces saved logins, WT_SERVER picks the server
+export WT_SERVER=https://wt.example.com WT_TOKEN="$WT_CI_KEY"
+wt ci report acme/payments --snapshot "$SNAPSHOT_ID" --context ci/test \
   --state success --url "$JOB_URL" --description "212 tests passed"
 ```
 
-The CLI has no environment variable for a bearer token; `wt` reads tokens only from `$WT_HOME/credentials.toml`. See [`wt sa`](/docs/cli/iam#wt-sa).
+Without `WT_TOKEN`, `wt` uses the credential saved by [`wt login`](/docs/cli/remote#wt-login) in `$WT_HOME/credentials.toml`. The key is also a plain bearer token for the REST API (`POST /api/v1/trees/{tenant}/{tree}/ci/status`). See [`wt sa`](/docs/cli/iam#wt-sa).
 
 ## `wt protect`
 

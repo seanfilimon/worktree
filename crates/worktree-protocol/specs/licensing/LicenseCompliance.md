@@ -58,14 +58,14 @@ PUT    /api/v1/trees/{t}/{tree}/licenses  LicenseRule (tree:admin; validated)
 DELETE /api/v1/trees/{t}/{tree}/licenses?path_glob=   (tree:admin)
 
 wt license list [TREE]
-wt license set [TREE] GLOB SPDX [--grant read-only|modify|redistribute] [--grantee TENANT] [--expires RFC3339]
+wt license set [TREE] GLOB SPDX [--grant read-only|modify|redistribute|license-default] [--grantee TENANT] [--expires RFC3339]
 wt license remove [TREE] GLOB
 wt license detect [PATH] [--apply]
 ```
 
-`wt license set` defaults to `--grant read-only`. The `""` grant, which falls
-back to the license default, is available only through the REST API and the
-admin panel. `license.Validate` checks the glob, the grant value and the SPDX
+`wt license set` defaults to `--grant read-only`. `--grant license-default`
+sends the `""` grant, which falls back to the license default (also available
+through the REST API and the admin panel). `license.Validate` checks the glob, the grant value and the SPDX
 syntax, and the v0.5 handlers also check `grantee` and `expires_at`. Errors
 answer `400`.
 

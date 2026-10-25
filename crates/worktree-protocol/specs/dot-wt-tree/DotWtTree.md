@@ -136,8 +136,8 @@ Same contract as `.wt/hooks/` ([DotWt.md §8](../dot-wt/DotWt.md#8-hooks)):
 5. <tree>/.wt-tree/hooks/post-snapshot
 ```
 
-Only the hooks of the tree being snapshotted run: a nested tree's snapshot
-does not run its parent tree's `.wt-tree/hooks/`. Environment: `WT_HOOK`,
+Hooks run outermost first: the worktree's `.wt/hooks/`, then each enclosing
+parent tree's `.wt-tree/hooks/`, then the tree's own. Environment: `WT_HOOK`,
 `WT_TREE`, `WT_TREE_PATH`, `WT_BRANCH`, `WT_ROOT`, `WT_SNAPSHOT` (post); the
 working directory is the tree root; timeout from `[hooks] timeout_secs`.
 
@@ -174,7 +174,8 @@ Workflow:
 ```bash
 wt access validate [--dir services/auth]   # local parse + validation
 wt access plan                             # dry run against the server (create/update/delete)
-wt access apply [--yes]                    # applies tenant files and tree files
+wt access apply [--yes]                    # applies the tenant files (.wt/access/)
+wt access apply --tree-doc NAME [--yes]    # applies one tree's .wt-tree/access/ file
 wt access pull                             # writes the server's current documents back to TOML
 ```
 
@@ -204,8 +205,9 @@ services/auth/                    tree "auth"
 
 - Each level is an independent tree with its own branches, history and
   server tree; the parent's snapshots exclude `plugins/oauth/`.
-- Configuration resolves user → worktree → this tree. A parent tree's
-  `.wt-tree/config.toml` does not apply to its nested trees.
+- Configuration resolves user → worktree → each enclosing parent tree →
+  this tree: a parent tree's `.wt-tree/config.toml` applies to its nested
+  trees unless they override the key.
 - Ignore rules: the root level applies everywhere; a parent tree's
   `.wt-tree/ignore` applies to the parent tree's own files only, while
   tracked `.wtignore` files in a directory apply to every path below it.
@@ -272,7 +274,7 @@ Described in earlier drafts, not built and not in v0.5:
 - Policy syntax with `subject`/`not_team`/`unless`/`scope` tables and
   tree-level `allow` statements checked against a computed root ceiling.
 - Hook variables `WT_TREE_NAME`, `WT_CHANGED_FILES`, `WT_USER`,
-  `WT_HOOK_PHASE`; running parent-tree hooks for nested trees.
+  `WT_HOOK_PHASE`.
 - Warnings for attempted negation of root ignore patterns, and automatic
   migration of deprecated keys.
 

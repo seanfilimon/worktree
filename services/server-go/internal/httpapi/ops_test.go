@@ -458,3 +458,28 @@ func TestOpsMetricsExposed(t *testing.T) {
 		}
 	}
 }
+
+func TestBranchQuotaInCreateHandler(t *testing.T) {
+	f := newOpsFixture(t, 0)
+	const path = "/api/v1/trees/acme/web/branches"
+	rec := f.do(t, "GET", path, "alice", nil)
+	var have []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &have); err != nil {
+		var wrapped struct {
+			Branches []map[string]any `json:"branches"`
+		}
+		must(t, json.Unmarshal(rec.Body.Bytes(), &wrapped))
+		have = wrapped.Branches
+	}
+	f.setLimits(t, domain.TenantLimits{MaxBranchesPerTree: len(have)})
+	rec = f.do(t, "POST", path, "alice", map[string]string{"name": "one-too-many"})
+	if rec.Code != 409 || errCode(rec) != "quota_exceeded" || !strings.Contains(rec.Body.String(), "max_branches_per_tree") {
+		t.Fatalf("branch quota: %d %s", rec.Code, rec.Body.String())
+	}
+	f.setLimits(t, domain.TenantLimits{MaxBranchesPerTree: len(have) + 1})
+	// Under the quota the request gets past the check (this fixture's fake
+	// store may still refuse the write for other reasons).
+	if rec := f.do(t, "POST", path, "alice", map[string]string{"name": "one-too-many"}); errCode(rec) == "quota_exceeded" {
+		t.Fatalf("branch under quota refused: %s", rec.Body.String())
+	}
+}

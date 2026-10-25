@@ -35,17 +35,42 @@ struct CredentialsFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialStore {
     path: PathBuf,
+    /// Honour `WT_TOKEN` (only the per-user default store does).
+    env: bool,
+}
+
+/// Environment variable holding a bearer token (an API token or a
+/// service-account key) used for every server instead of saved logins,
+/// e.g. in CI. `WT_TOKEN_USER` optionally names the account for display.
+pub const TOKEN_ENV: &str = "WT_TOKEN";
+
+fn env_credential() -> Option<Credential> {
+    let token = std::env::var(TOKEN_ENV).ok()?.trim().to_string();
+    if token.is_empty() {
+        return None;
+    }
+    let username = std::env::var("WT_TOKEN_USER")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| "token".into());
+    Some(Credential { username, token })
 }
 
 impl CredentialStore {
     /// A store backed by `path` (created on first write).
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            env: false,
+        }
     }
 
-    /// `$WT_HOME/credentials.toml`.
+    /// `$WT_HOME/credentials.toml`; `WT_TOKEN`, when set, overrides it.
     pub fn default_location() -> Self {
-        Self::new(wt_home().join(CREDENTIALS_FILE))
+        Self {
+            path: wt_home().join(CREDENTIALS_FILE),
+            env: true,
+        }
     }
 
     /// Path of the backing file.
@@ -56,6 +81,11 @@ impl CredentialStore {
     /// The credential saved for `server` (any URL form; it is normalized).
     pub fn get(&self, server: &str) -> Result<Option<Credential>> {
         let key = normalize_server_url(server)?;
+        if self.env {
+            if let Some(cred) = env_credential() {
+                return Ok(Some(cred));
+            }
+        }
         Ok(self.read()?.servers.remove(&key))
     }
 

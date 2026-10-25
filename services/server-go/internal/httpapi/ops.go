@@ -221,6 +221,14 @@ func (a *api) checkTreeQuota(ctx context.Context, t *domain.Tenant) error {
 	return quotaErr(a.d.Limits.CheckTreeCreate(ctx, t))
 }
 
+// checkBranchQuota enforces MaxBranchesPerTree before a REST branch create.
+func (a *api) checkBranchQuota(ctx context.Context, t *domain.Tenant, tree *domain.Tree) error {
+	if a.d.Limits == nil {
+		return nil
+	}
+	return quotaErr(a.d.Limits.CheckBranchCreate(ctx, t, tree))
+}
+
 // checkMemberQuota enforces MaxMembers before a new member is added.
 func (a *api) checkMemberQuota(ctx context.Context, t *domain.Tenant) error {
 	if a.d.Limits == nil {

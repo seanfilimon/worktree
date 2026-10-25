@@ -229,7 +229,8 @@ On top of IAM:
 | Tenant quotas: trees, storage, branches per tree, members (v0.5) | Server defaults (unlimited) plus per-tenant overrides | `409 quota_exceeded` / `PushDenied{Kind:"quota_exceeded"}` |
 
 `/healthz` and `/metrics` are exempt from rate limiting. The client IP is the
-socket peer address (§18).
+socket peer address, or — when the peer is a trusted proxy
+(`--trusted-proxies`) — the rightmost untrusted `X-Forwarded-For` entry.
 
 ## 10. API hardening
 
@@ -302,7 +303,8 @@ Snapshot signing is part of v0.5 (§13.6 of the engineering plan).
   account's public keys for any signed-in caller.
 - **Verification on push.** `signing.Service` is a push checker. Every new
   snapshot that carries a signature must verify against an **unrevoked**
-  registered key of the pusher. A valid signature marks the snapshot
+  registered key — of any account, since pushers may push snapshots others
+  signed; the key's owner is recorded with the key id. A valid signature marks the snapshot
   `Verified = true`. An invalid one rejects the push with
   `PushDenied{Kind:"signature_required"}` and is audited as
   `snapshot.signature_invalid`. On branches whose protection sets

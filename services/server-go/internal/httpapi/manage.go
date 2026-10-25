@@ -133,6 +133,9 @@ func (a *api) handleCreateBranch(w http.ResponseWriter, r *http.Request) error {
 	} else if tip, err = a.revisionID(ctx, tree, req.From); err != nil {
 		return err
 	}
+	if err := a.checkBranchQuota(ctx, t, tree); err != nil {
+		return err
+	}
 	if err := a.d.Store.CompareAndSwapBranchTip(ctx, tree.ID, req.Name, "", tip); err != nil {
 		if errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrAlreadyExists) {
 			return conflictf("branch %q already exists", req.Name)

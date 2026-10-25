@@ -67,7 +67,7 @@ pub enum IpcRequest {
     },
     /// Sent by the CLI right before it switches `tree` of the worktree at
     /// `path` to another branch: the daemon snapshots that tree first when
-    /// `auto_snapshot.on_branch_switch` is `"snapshot"` (the default).
+    /// `auto_snapshot.on_branch_switch` is `"snapshot"` (the default is `"refuse"`).
     PrepareSwitch {
         path: PathBuf,
         tree: String,

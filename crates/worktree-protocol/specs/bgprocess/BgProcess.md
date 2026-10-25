@@ -215,8 +215,10 @@ Details:
   when `[signing] auto = true`, the reflog records `auto-snapshot`.
 - **Merges.** A tree with a merge in progress is never auto-snapshotted.
 - **Branch switches.** With `auto_snapshot.on_branch_switch = "snapshot"`,
-  `wt switch` takes an auto-snapshot of a dirty tree before switching (in the
-  CLI process; the daemon is not involved).
+  `wt switch` asks a running daemon (IPC `PrepareSwitch`) to auto-snapshot
+  the dirty tree before switching; without a daemon the switch is refused as
+  with `refuse` (the default). `stash` is accepted but currently behaves like
+  `refuse` (see Roadmap).
 
 ---
 
@@ -462,6 +464,9 @@ WantedBy=default.target
 
 ## Roadmap
 
+- **`on_branch_switch = "stash"`**: set dirty changes aside on switch and
+  restore them when switching back (the value is accepted today and acts like
+  `refuse`).
 Described in earlier drafts, not built and not in v0.5:
 
 - **Virtual filesystem and lazy loading** of large files (FUSE, FUSE-T,

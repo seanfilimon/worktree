@@ -81,6 +81,8 @@ Commands that take `REV` accept:
 |---|---|
 | `WT_HOME` | Per-user state directory (default `~/.wt`): credentials, daemon files. See [configuration](./configuration.md#per-user-state-wt_home). |
 | `WT_PASSWORD` | Password used by `wt login` / `wt register` instead of prompting. |
+| `WT_TOKEN` | Bearer token (API token or service-account key) used for every server instead of saved logins, e.g. in CI. `WT_TOKEN_USER` optionally names the account for display. |
+| `WT_SERVER` | Default server for server commands (same as `--server`). |
 | `NO_COLOR` | Disable colors (same as `--no-color`). Colors are also off when stdout is not a terminal. |
 | `WT_LOG` | Enable diagnostic logging on stderr, e.g. `WT_LOG=debug` or `WT_LOG=worktree_sdk=trace`. |
 

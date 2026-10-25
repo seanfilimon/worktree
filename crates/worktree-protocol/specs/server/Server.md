@@ -295,7 +295,10 @@ read a path whose license rule withholds it from their tenant.
   - `block_on_todos`: no open blocking TODO targets the source branch;
   - `require_linear`.
 
-  A failed check answers `409 merge_blocked`.
+  A failed check answers `409 merge_blocked`, except missing approvals
+  (`403 review_required`, kept for compatibility), a member of an open linked
+  group merged alone (`409 linked_group`) and a target that moved so the
+  merge is no longer a fast-forward (`409 conflict`).
 - **Merge execution.** Merging is **fast-forward only**. The target tip moves
   to the source tip with CAS, and a merge request that cannot fast-forward is
   refused. A merge publishes `mr.merged` and `branch.pushed` (so watchers
@@ -466,7 +469,9 @@ CLI is `wt audit`. Retention is `--audit-retention`.
   server defaults (`--default-max-trees`, `--default-max-storage`). They are
   enforced as follows:
   - storage and branches by the `limits.Limiter` push check (`QuotaExceeded`);
-  - trees, members and REST branch creation with `409 quota_exceeded`.
+  - trees (REST create and a first push that creates the tree), members and
+    REST branch creation with `409 quota_exceeded` (gRPC:
+    `PushDenied{Kind:"quota_exceeded"}`).
 
   The endpoints are `GET|PUT /api/v1/admin/tenants/{t}/limits` (server admin)
   and `GET /api/v1/tenants/{t}/usage`. Existing data is never deleted when a
