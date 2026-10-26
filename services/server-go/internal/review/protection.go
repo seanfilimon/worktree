@@ -53,6 +53,10 @@ type Effective struct {
 	// squash). Empty with RestrictMethods = no merge method is allowed.
 	RestrictMethods bool     `json:"restrict_merge_methods,omitempty"`
 	MergeMethods    []string `json:"merge_methods,omitempty"`
+
+	// v0.7 (§15.7): set when any matching rule requires an approval from
+	// the owners of every changed path (owners.go).
+	RequireOwnerApproval bool `json:"require_owner_approval"`
 }
 
 // MethodAllowed reports whether the merge-method restriction admits method
@@ -123,6 +127,7 @@ func Resolve(rules []domain.BranchProtection, branch string) Effective {
 		eff.RequireSigned = eff.RequireSigned || r.RequireSigned
 		eff.RequireLinear = eff.RequireLinear || r.RequireLinear
 		eff.BlockOnTodos = eff.BlockOnTodos || r.BlockOnTodos
+		eff.RequireOwnerApproval = eff.RequireOwnerApproval || r.RequireOwnerApproval // v0.7 (§15.7)
 		if r.RequireCIPass {
 			for _, c := range r.RequiredChecks {
 				if c = strings.TrimSpace(c); c != "" {

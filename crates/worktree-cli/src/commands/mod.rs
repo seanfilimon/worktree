@@ -35,6 +35,7 @@ pub mod mfa;
 pub mod mirror;
 pub mod mr;
 pub mod open;
+pub mod owners;
 pub mod policy;
 pub mod protect;
 pub mod rebase;
@@ -139,5 +140,6 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Sync(args) => synchronize::run(ctx, args),
         Command::Inbox(args) => inbox::run(ctx, args),
         Command::Mirror(args) => mirror::run(ctx, args),
+        Command::Owners(args) => owners::run(ctx, args),
     }
 }

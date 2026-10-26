@@ -72,6 +72,12 @@ type Service struct {
 	objects objstore.Store
 	newID   func() string
 	merges  mergeCache
+
+	// v0.7 (§15.7, suggest.go): quota checks server-side merge and squash
+	// snapshots (nil = unchecked); pushChecks run for suggestion snapshots
+	// on the source branch (nil = quota only).
+	quota      domain.PushChecker
+	pushChecks []domain.PushChecker
 }
 
 // SetObjects gives the service the object store, enabling the server-side
@@ -269,6 +275,7 @@ func (s *Service) record(ctx context.Context, action string, p *domain.Principal
 func snapshotMR(mr *domain.MergeRequest) domain.MergeRequest {
 	c := *mr
 	c.Approvals = slices.Clone(mr.Approvals)
+	c.Reviewers = slices.Clone(mr.Reviewers) // v0.7 (§15.7)
 	if mr.MergedAt != nil {
 		t := *mr.MergedAt
 		c.MergedAt = &t

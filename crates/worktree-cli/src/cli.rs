@@ -8,9 +8,9 @@ use clap::{Args, Parser, Subcommand};
 use crate::commands::{
     access, admin, api, archive, audit, auth, blame, branch, cherry_pick, ci, completions, config,
     daemon, deps, diff, doctor, events, fsck, gc, git, grant, history, iam, identity, ignore,
-    inbox, init, invite, license, merge, mfa, mirror, mr, open, policy, protect, rebase, release,
-    remote, role, sa, search, session, snapshot, sparse, sso, stash, status, sync, synchronize,
-    tag, team, tenant, todo, token, tree, trees, webhook,
+    inbox, init, invite, license, merge, mfa, mirror, mr, open, owners, policy, protect, rebase,
+    release, remote, role, sa, search, session, snapshot, sparse, sso, stash, status, sync,
+    synchronize, tag, team, tenant, todo, token, tree, trees, webhook,
 };
 
 #[derive(Debug, Parser)]
@@ -202,6 +202,8 @@ pub enum Command {
     Inbox(inbox::InboxArgs),
     /// Live Git mirrors of a server tree: list, add, update, remove, sync now
     Mirror(mirror::MirrorArgs),
+    /// Path owners of a server tree (who reviews which paths): show, set
+    Owners(owners::OwnersArgs),
 }
 
 #[cfg(test)]

@@ -14,6 +14,12 @@ import (
 // that both have snapshots, and no other open merge request for the same
 // source and target (domain.ErrAlreadyExists).
 func (s *Service) Open(ctx context.Context, p *domain.Principal, tree *domain.Tree, title, description, source, target string) (*domain.MergeRequest, error) {
+	return s.open(ctx, p, tree, OpenInput{Title: title, Description: description, Source: source, Target: target})
+}
+
+// open implements Open and OpenWith (v0.7: drafts and review requests).
+func (s *Service) open(ctx context.Context, p *domain.Principal, tree *domain.Tree, in OpenInput) (*domain.MergeRequest, error) {
+	title, description, source, target := in.Title, in.Description, in.Source, in.Target
 	if err := checkTree(tree); err != nil {
 		return nil, err
 	}
@@ -38,6 +44,11 @@ func (s *Service) Open(ctx context.Context, p *domain.Principal, tree *domain.Tr
 		if _, err := s.branchTip(ctx, tree.ID, name); err != nil {
 			return nil, err
 		}
+	}
+	// v0.7 (§15.7): explicit review requests.
+	reviewers, err := s.normalizeReviewers(ctx, tree, p.Username, in.Reviewers)
+	if err != nil {
+		return nil, err
 	}
 
 	unlock := s.lockTree(tree.ID)
@@ -67,12 +78,24 @@ func (s *Service) Open(ctx context.Context, p *domain.Principal, tree *domain.Tr
 		Approvals:    []domain.Approval{},
 		CreatedAt:    now,
 		UpdatedAt:    now,
+		Draft:        in.Draft,
+	}
+	// v0.7 (§15.7): explicit reviewers, plus the owners of the changed
+	// paths unless the merge request is a draft (requested when ready).
+	requested := addReviewers(mr, reviewers)
+	if !mr.Draft {
+		requested = append(requested, addReviewers(mr, s.ownerReviewers(ctx, tree, mr))...)
 	}
 	if err := s.store.CreateMergeRequest(ctx, mr); err != nil {
 		return nil, fmt.Errorf("review: create merge request: %w", err)
 	}
 	s.publish(domain.EventMROpened, p, tree, snapshotMR(mr))
-	s.record(ctx, "mr.open", p, tree, mr, map[string]string{"title": mr.Title})
+	details := map[string]string{"title": mr.Title}
+	if mr.Draft {
+		details["draft"] = "true"
+	}
+	s.record(ctx, "mr.open", p, tree, mr, details)
+	s.publishReviewRequested(ctx, p, tree, mr, requested, p.Username)
 	return mr, nil
 }
 

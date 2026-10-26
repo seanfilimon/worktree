@@ -9,11 +9,9 @@ import {
   isUnavailable,
   useMrComments,
   useTreeV05Api,
-  v05Keys,
-  type CreateCommentRequest,
-  type ReviewComment,
   type ReviewDecision,
 } from "@/api/v05tree";
+import type { ReviewCommentV07 } from "@/api/v07review";
 import { useAuth } from "@/auth/context";
 import { ConfirmDelete } from "@/components/files/ConfirmDelete";
 import { UserAvatar } from "@/components/mr/UserAvatar";
@@ -30,6 +28,8 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/toast/store";
 import { RelativeTime } from "../history/shared";
 import { InlineUnavailable } from "./shared";
+import { SuggestionBlock, type SuggestionContext } from "../v07/Suggestion";
+import { groupThreads, threadLabel, useCommentMutations, type CommentMutations, type Thread } from "./threads";
 
 const DECISIONS: { value: ReviewDecision; label: string; hint: string }[] = [
   { value: "commented", label: "Comment", hint: "General feedback without a verdict." },
@@ -137,64 +137,19 @@ export function ReviewForm({ tenant, tree, mr }: { tenant: string; tree: string;
   );
 }
 
-interface Thread {
-  key: string;
-  path?: string;
-  line?: number;
-  comments: ReviewComment[];
-}
-
-/** General comments first, then file threads by path and line; each thread oldest first. */
-function groupThreads(comments: readonly ReviewComment[]): Thread[] {
-  const map = new Map<string, Thread>();
-  const sorted = [...comments].sort((a, b) => a.created_at.localeCompare(b.created_at));
-  for (const c of sorted) {
-    if (!c.path) {
-      // Every general comment is its own thread.
-      map.set(`general:${c.id}`, { key: `general:${c.id}`, comments: [c] });
-      continue;
-    }
-    const key = `file:${c.path}:${c.line ?? ""}`;
-    const t = map.get(key);
-    if (t) t.comments.push(c);
-    else map.set(key, { key, path: c.path, line: c.line || undefined, comments: [c] });
-  }
-  const threads = [...map.values()];
-  const general = threads.filter((t) => !t.path);
-  const files = threads
-    .filter((t) => t.path)
-    .sort((a, b) => a.path!.localeCompare(b.path!) || (a.line ?? 0) - (b.line ?? 0));
-  return [...general, ...files];
-}
-
-function threadLabel(t: Thread): string {
-  if (!t.path) return "General comment";
-  return t.line ? `${t.path}:${t.line}` : t.path;
-}
-
-function useCommentMutations(tenant: string, tree: string, n: number) {
-  const api = useTreeV05Api();
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: v05Keys.mrComments(tenant, tree, n) });
-  const add = useMutation({
-    mutationFn: (body: CreateCommentRequest) => api.reviews.addComment(tenant, tree, n, body),
-    meta: { inlineError: true },
-    onSuccess: invalidate,
-  });
-  const resolve = useMutation({
-    mutationFn: ({ id, resolved }: { id: string; resolved: boolean }) => api.reviews.updateComment(tenant, tree, n, id, { resolved }),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({
-    mutationFn: (id: string) => api.reviews.removeComment(tenant, tree, n, id),
-    onSuccess: invalidate,
-  });
-  return { add, resolve, remove };
-}
-
-type CommentMutations = ReturnType<typeof useCommentMutations>;
-
-function CommentItem({ c, canModerate, m, sourceTip }: { c: ReviewComment; canModerate: boolean; m: CommentMutations; sourceTip?: string }) {
+function CommentItem({
+  c,
+  canModerate,
+  m,
+  sourceTip,
+  ctx,
+}: {
+  c: ReviewCommentV07;
+  canModerate: boolean;
+  m: CommentMutations;
+  sourceTip?: string;
+  ctx?: SuggestionContext;
+}) {
   const { account } = useAuth();
   const mine = account?.id === c.author_id;
   const outdated = !!(c.path && c.snapshot_id && sourceTip && c.snapshot_id !== sourceTip);
@@ -211,7 +166,8 @@ function CommentItem({ c, canModerate, m, sourceTip }: { c: ReviewComment; canMo
             </Badge>
           )}
         </p>
-        <p className="mt-0.5 text-sm break-words whitespace-pre-wrap">{c.body}</p>
+        {c.body && <p className="mt-0.5 text-sm break-words whitespace-pre-wrap">{c.body}</p>}
+        {c.suggestion && ctx && <SuggestionBlock comment={{ ...c, suggestion: c.suggestion }} ctx={ctx} />}
       </div>
       {(mine || canModerate) && (
         <ConfirmDelete label={`Delete comment by ${c.author}`} title="Delete this comment?" onConfirm={() => m.remove.mutate(c.id)} pending={m.remove.isPending}>
@@ -222,18 +178,21 @@ function CommentItem({ c, canModerate, m, sourceTip }: { c: ReviewComment; canMo
   );
 }
 
-function ThreadView({
+export function ThreadView({
   thread: t,
   sourceTip,
   canModerate,
   canComment,
   m,
+  ctx,
 }: {
   thread: Thread;
   sourceTip?: string;
   canModerate: boolean;
   canComment: boolean;
   m: CommentMutations;
+  /** v0.7: renders suggestions (with Apply). */
+  ctx?: SuggestionContext;
 }) {
   const { account } = useAuth();
   const id = useId();
@@ -293,7 +252,7 @@ function ThreadView({
       </header>
       <ol className={cn("divide-y px-3", resolved && "opacity-70")}>
         {t.comments.map((c) => (
-          <CommentItem key={c.id} c={c} canModerate={canModerate} m={m} sourceTip={sourceTip} />
+          <CommentItem key={c.id} c={c} canModerate={canModerate} m={m} sourceTip={sourceTip} ctx={ctx} />
         ))}
       </ol>
       {replying && (
@@ -324,6 +283,7 @@ export function CommentThreads({
   sourceTip,
   files,
   canModerate,
+  knownLine,
 }: {
   tenant: string;
   tree: string;
@@ -334,8 +294,14 @@ export function CommentThreads({
   files: readonly string[];
   /** tree:admin: may resolve / delete any comment. */
   canModerate: boolean;
+  /** v0.7: source-tip line texts known from the diff (suggestion fallback). */
+  knownLine?: SuggestionContext["knownLine"];
 }) {
   const comments = useMrComments(tenant, tree, mr.number);
+  const ctx = useMemo<SuggestionContext>(
+    () => ({ tenant, tree, mrNumber: mr.number, open: mr.state === "open", knownLine }),
+    [tenant, tree, mr.number, mr.state, knownLine],
+  );
   const m = useCommentMutations(tenant, tree, mr.number);
   const id = useId();
   const [body, setBody] = useState("");
@@ -395,7 +361,7 @@ export function CommentThreads({
             <div aria-label="Comment threads" role="list" className="flex flex-col gap-3">
               {threads.map((t) => (
                 <div role="listitem" key={t.key}>
-                  <ThreadView thread={t} sourceTip={sourceTip} canModerate={canModerate} canComment m={m} />
+                  <ThreadView thread={t} sourceTip={sourceTip} canModerate={canModerate} canComment m={m} ctx={ctx} />
                 </div>
               ))}
             </div>

@@ -27,12 +27,14 @@ const (
 	BlockerTodos            = "todos"             // open blocking TODOs target the source branch
 	BlockerLinear           = "linear"            // the source brings merge snapshots (and no other method can merge)
 	BlockerDiverged         = "diverged"          // the target is not an ancestor of the source (and no other method can merge)
+	BlockerDraft            = "draft"             // v0.7: the merge request is a draft (code CodeDraft)
 )
 
 // Error codes of *BlockedError.
 const (
 	CodeMergeBlocked = "merge_blocked"
 	CodeLinkedGroup  = "linked_group"
+	CodeDraft        = "draft" // v0.7 (§15.7): drafts cannot be merged
 )
 
 // Blocker is one reason a merge request cannot be merged.
@@ -75,6 +77,9 @@ type MergeChecks struct {
 	// the three-way merge when the branches diverged.
 	Methods   []string   `json:"methods"`
 	Conflicts []Conflict `json:"conflicts"`
+
+	// v0.7 (§15.7): owner approval of the changed paths.
+	Owners OwnersSummary `json:"owners"`
 }
 
 // BlockedError reports a merge refused by merge readiness checks. It wraps
@@ -139,6 +144,9 @@ func (ev *evaluation) mergeError() error {
 	if ev.mr.State != domain.MRStateOpen {
 		return requireOpen(ev.mr)
 	}
+	if bs := ev.blockers(BlockerDraft); len(bs) > 0 { // v0.7 (§15.7)
+		return &BlockedError{Code: CodeDraft, Message: bs[0].Message, Blockers: bs}
+	}
 	if bs := ev.blockers(BlockerLinkedGroup); len(bs) > 0 {
 		return &BlockedError{Code: CodeLinkedGroup, Message: bs[0].Message, Blockers: bs}
 	}
@@ -146,7 +154,7 @@ func (ev *evaluation) mergeError() error {
 		return &domain.PushDenied{Kind: "review_required", Reason: fmt.Sprintf("%d of %d approvals",
 			ev.checks.Approvals.Current, ev.checks.Approvals.Required)}
 	}
-	if bs := ev.blockers(BlockerChangesRequested, BlockerCI, BlockerTodos); len(bs) > 0 {
+	if bs := ev.blockers(BlockerChangesRequested, BlockerOwners, BlockerCI, BlockerTodos); len(bs) > 0 {
 		msgs := make([]string, len(bs))
 		for i, b := range bs {
 			msgs[i] = b.Message
@@ -202,6 +210,9 @@ func (s *Service) evaluate(ctx context.Context, tree *domain.Tree, mr *domain.Me
 
 	if mr.State != domain.MRStateOpen {
 		ev.block(BlockerState, "merge request !%d is %s", mr.Number, mr.State)
+	}
+	if mr.Draft && mr.State == domain.MRStateOpen { // v0.7 (§15.7)
+		ev.block(BlockerDraft, "merge request !%d is a draft; mark it ready for review before merging", mr.Number)
 	}
 
 	// Source and target tips.
@@ -274,6 +285,10 @@ func (s *Service) evaluate(ctx context.Context, tree *domain.Tree, mr *domain.Me
 			}
 		}
 		ev.checks.Conflicts = nonNilConflicts(ev.conflicts)
+	}
+	// v0.7 (§15.7): RequireOwnerApproval.
+	if err := s.evaluateOwners(ctx, tree, ev); err != nil {
+		return nil, err
 	}
 
 	ev.checks.Mergeable = len(ev.checks.Blockers) == 0

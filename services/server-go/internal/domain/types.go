@@ -200,6 +200,13 @@ type BranchProtection struct {
 
 	// v0.6 (§14): merge methods allowed into matching branches (empty = all).
 	MergeMethods []string `json:"merge_methods,omitempty"`
+
+	// ---- v0.7 review (§15.7) ----
+
+	// RequireOwnerApproval: every path a merge request changes needs an
+	// approval of the current source tip from one of the path's owners.
+	RequireOwnerApproval bool `json:"require_owner_approval,omitempty"`
+	// ---- end v0.7 review ----
 }
 
 type Approval struct {
@@ -238,7 +245,36 @@ type MergeRequest struct {
 	// v0.6 (§14): the method used to merge (MergeFastForward when empty on
 	// merged requests from before v0.6).
 	MergeMethod string `json:"merge_method,omitempty"`
+
+	// ---- v0.7 review (§15.7) ----
+
+	// Draft merge requests cannot be merged until marked ready.
+	Draft bool `json:"draft,omitempty"`
+	// Reviewers are the requested reviewers: "user:<username>" or
+	// "team:<team slug>" (a team of the tree's tenant).
+	Reviewers []string `json:"reviewers,omitempty"`
+	// ---- end v0.7 review ----
 }
+
+// ---- v0.7 review (§15.7) ----
+
+// Suggestion is a change proposed by a merge request comment: lines
+// StartLine..EndLine (1-based, inclusive) of Path as of SnapshotID are
+// replaced by Replacement. Applying it writes a snapshot on the source
+// branch (AppliedSnapshot).
+type Suggestion struct {
+	Path        string `json:"path"`
+	StartLine   int    `json:"start_line"`
+	EndLine     int    `json:"end_line"`
+	Replacement string `json:"replacement"`
+	SnapshotID  string `json:"snapshot_id"`
+
+	AppliedSnapshot string     `json:"applied_snapshot,omitempty"`
+	AppliedBy       string     `json:"applied_by,omitempty"` // username
+	AppliedAt       *time.Time `json:"applied_at,omitempty"`
+}
+
+// ---- end v0.7 review ----
 
 type AuditEvent struct {
 	ID           string            `json:"id"`

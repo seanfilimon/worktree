@@ -1,5 +1,8 @@
 //! `wt mr` — merge requests: list, open, review, approve, merge, close,
-//! comments, merge readiness checks and linked groups.
+//! comments, merge readiness checks and linked groups; v0.7 (§15.7) drafts,
+//! review requests, path owners and suggested changes.
+
+use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -8,6 +11,7 @@ use serde_json::{json, Value};
 
 use worktree_sdk::remote::rest::seg;
 
+use crate::commands::iam_common::read_input;
 use crate::commands::server_common::{
     cwd_origin_tenant, decode, nullable, render, tenant_path, tree_or_default, when, Api, Cell,
     Table, TreeRef,
@@ -57,7 +61,42 @@ pub enum MrCommand {
         title: String,
         #[arg(long, value_name = "D")]
         description: Option<String>,
+        /// Open it as a draft: it cannot be merged until marked ready
+        /// (`wt mr ready N`), and owners are asked for review only then
+        #[arg(long)]
+        draft: bool,
+        /// Request a review from WHO (repeatable): user:NAME, team:SLUG,
+        /// NAME, @NAME or @TENANT/SLUG
+        #[arg(long = "reviewer", value_name = "WHO")]
+        reviewers: Vec<String>,
     },
+    /// Mark a draft merge request ready for review
+    Ready {
+        number: u32,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+    },
+    /// Show, request or withdraw review requests of a merge request
+    ///
+    /// `wt mr reviewers 3` lists the requested reviewers, `wt mr reviewers 3
+    /// add alice team:core` requests reviews and `wt mr reviewers 3 acme/web
+    /// remove alice` withdraws them. WHO is user:NAME, team:SLUG, NAME,
+    /// @NAME or @TENANT/SLUG.
+    Reviewers(ReviewersArgs),
+    /// Show the owners of every path a merge request changes and whether they approved
+    Owners {
+        number: u32,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+    },
+    /// Suggest a change to lines of a file on the source branch
+    ///
+    /// The replacement (-m TEXT or --file F) replaces lines A-B of --path as
+    /// of the source tip; an empty replacement deletes them. Reviewers or the
+    /// author apply it with `wt mr apply-suggestion N COMMENT_ID`.
+    Suggest(SuggestArgs),
+    /// Apply a suggested change: a new snapshot on the source branch
+    ApplySuggestion(ApplySuggestionArgs),
     /// Approve a merge request
     Approve {
         number: u32,
@@ -202,6 +241,105 @@ impl std::str::FromStr for MemberRef {
     }
 }
 
+// The v0.7 subcommands keep their arguments in their own structs: clap
+// builds each struct's arguments in a separate function, which keeps the
+// stack frame of `MrCommand`'s builder (debug builds, 1 MiB main thread on
+// Windows) small.
+
+/// `wt mr reviewers N [TREE] [add|remove WHO...]`.
+#[derive(Debug, Args)]
+pub struct ReviewersArgs {
+    pub number: u32,
+    #[arg(id = "tree_ref", value_name = "TREE")]
+    pub tree: Option<TreeRef>,
+    #[command(subcommand)]
+    pub action: Option<ReviewersAction>,
+}
+
+/// `wt mr suggest N [TREE] --path P --lines A-B (--file F | -m TEXT)`.
+#[derive(Debug, Args)]
+#[command(group(clap::ArgGroup::new("replacement").required(true)
+    .args(["file", "message"])))]
+pub struct SuggestArgs {
+    pub number: u32,
+    #[arg(id = "tree_ref", value_name = "TREE")]
+    pub tree: Option<TreeRef>,
+    /// File the suggestion changes
+    #[arg(long, value_name = "PATH")]
+    pub path: String,
+    /// Lines to replace: A-B, or A for a single line (1-based, inclusive)
+    #[arg(long, value_name = "A-B", value_parser = parse_lines)]
+    pub lines: LineRange,
+    /// Read the replacement text from F (`-` = stdin)
+    #[arg(long, value_name = "F")]
+    pub file: Option<PathBuf>,
+    /// The replacement text
+    #[arg(short, long, value_name = "TEXT")]
+    pub message: Option<String>,
+    /// Comment text shown with the suggestion
+    #[arg(short, long, value_name = "TEXT")]
+    pub body: Option<String>,
+}
+
+/// `wt mr apply-suggestion N COMMENT_ID [TREE] [-m MSG]`.
+#[derive(Debug, Args)]
+pub struct ApplySuggestionArgs {
+    pub number: u32,
+    /// Id of the comment carrying the suggestion (see `wt mr comments N`)
+    pub comment_id: String,
+    #[arg(id = "tree_ref", value_name = "TREE")]
+    pub tree: Option<TreeRef>,
+    /// Message of the new snapshot (default: chosen by the server)
+    #[arg(short, long, value_name = "MSG")]
+    pub message: Option<String>,
+}
+
+/// `wt mr reviewers N add|remove WHO...`.
+#[derive(Debug, Subcommand)]
+pub enum ReviewersAction {
+    /// Request reviews from users or teams
+    Add {
+        /// user:NAME, team:SLUG, NAME, @NAME or @TENANT/SLUG
+        #[arg(value_name = "WHO", required = true)]
+        who: Vec<String>,
+    },
+    /// Withdraw review requests
+    Remove {
+        /// user:NAME, team:SLUG, NAME, @NAME or @TENANT/SLUG
+        #[arg(value_name = "WHO", required = true)]
+        who: Vec<String>,
+    },
+}
+
+/// The 1-based inclusive line range of a suggestion (`--lines A-B`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Parse `A-B` or `A` (= `A-A`); A >= 1 and B >= A.
+fn parse_lines(spec: &str) -> std::result::Result<LineRange, String> {
+    let line = |s: &str| -> std::result::Result<u32, String> {
+        match s.trim().parse::<u32>() {
+            Ok(0) => Err("lines are numbered from 1".to_string()),
+            Ok(n) => Ok(n),
+            Err(_) => Err(format!("'{spec}' is not a line range of the form A-B or A")),
+        }
+    };
+    let (start, end) = match spec.split_once('-') {
+        Some((a, b)) => (line(a)?, line(b)?),
+        None => {
+            let a = line(spec)?;
+            (a, a)
+        }
+    };
+    if end < start {
+        return Err(format!("the range {start}-{end} ends before it starts"));
+    }
+    Ok(LineRange { start, end })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum StateFilter {
     Open,
@@ -288,6 +426,62 @@ struct MergeRequest {
     merged_snapshot: Option<String>,
     linked_group: Option<String>,
     merge_method: Option<String>,
+    // v0.7 (§15.7).
+    draft: bool,
+    #[serde(deserialize_with = "nullable")]
+    reviewers: Vec<String>,
+}
+
+/// `review.MROwners`: the owners of every path a merge request changes.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct MrOwners {
+    source: String,
+    required: bool,
+    satisfied: bool,
+    #[serde(deserialize_with = "nullable")]
+    paths: Vec<OwnedPath>,
+    #[serde(deserialize_with = "nullable")]
+    missing: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct OwnedPath {
+    path: String,
+    #[serde(deserialize_with = "nullable")]
+    owners: Vec<String>,
+    approved: bool,
+    #[serde(deserialize_with = "nullable")]
+    approved_by: Vec<String>,
+}
+
+/// `domain.Suggestion`: a suggested replacement of lines of a file.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Suggestion {
+    path: String,
+    start_line: u32,
+    end_line: u32,
+    replacement: String,
+    snapshot_id: String,
+    applied_snapshot: Option<String>,
+    applied_by: Option<String>,
+}
+
+/// The response of `POST .../comments/{id}/apply`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Applied {
+    comment: Comment,
+    snapshot: AppliedSnapshot,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AppliedSnapshot {
+    id: String,
+    branch_name: String,
 }
 
 /// `domain.Approval`: a review decision ("" = a pre-v0.5 approval).
@@ -319,6 +513,7 @@ struct Comment {
     snapshot_id: String,
     resolved: bool,
     created_at: String,
+    suggestion: Option<Suggestion>,
 }
 
 /// `review.MergeChecks`.
@@ -331,6 +526,15 @@ struct Checks {
     approvals: ApprovalSummary,
     ci: CiSummary,
     todos: TodoSummary,
+    owners: OwnersSummary,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct OwnersSummary {
+    required: bool,
+    #[serde(deserialize_with = "nullable")]
+    missing: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -418,24 +622,125 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
             target,
             title,
             description,
+            draft,
+            reviewers,
         } => {
             let tree = tree_or_default(ctx, tree)?;
-            let body = json!({
-                "title": title,
-                "description": description.unwrap_or_default(),
-                "source_branch": source,
-                "target_branch": target,
-            });
+            let body = create_body(
+                &title,
+                description.as_deref(),
+                &source,
+                &target,
+                draft,
+                &reviewers,
+            );
             let value = api.post(&mrs_path(&tree), &body)?;
             render(out, &value, |t, mr: MergeRequest| {
                 t.line(format_args!(
-                    "Opened {} {} ({} -> {}) on {tree}",
+                    "Opened {}{} {} ({} -> {}) on {tree}",
+                    if mr.draft { "draft " } else { "" },
                     format!("!{}", mr.number).green().bold(),
                     mr.title,
                     mr.source_branch.green(),
                     mr.target_branch.green()
                 ));
+                reviewer_line(t, &mr);
             })
+        }
+        MrCommand::Ready { number, tree } => action(ctx, &api, tree, number, "ready", |t, mr| {
+            t.line(format_args!(
+                "Marked {} ready for review",
+                format!("!{}", mr.number).bold()
+            ));
+            reviewer_line(t, mr);
+        }),
+        MrCommand::Reviewers(ReviewersArgs {
+            number,
+            tree,
+            action,
+        }) => {
+            let tree = tree_or_default(ctx, tree)?;
+            let path = format!("{}/reviewers", mr_path(&tree, number));
+            let (value, verb) = match action {
+                None => (api.get(&mr_path(&tree, number))?, None),
+                Some(ReviewersAction::Add { who }) => (
+                    api.post(&path, &reviewers_body(&who))?,
+                    Some("Requested reviews on"),
+                ),
+                Some(ReviewersAction::Remove { who }) => {
+                    let query: Vec<(&str, &str)> =
+                        who.iter().map(|w| ("reviewer", w.as_str())).collect();
+                    api.delete(&path, &query)?;
+                    (
+                        api.get(&mr_path(&tree, number))?,
+                        Some("Withdrew review requests on"),
+                    )
+                }
+            };
+            render(out, &value, |t, mr: MergeRequest| {
+                if let Some(verb) = verb {
+                    t.line(format_args!("{verb} {}", format!("!{}", mr.number).bold()));
+                }
+                reviewer_line(t, &mr);
+            })
+        }
+        MrCommand::Owners { number, tree } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let value = api.get(&format!("{}/owners", mr_path(&tree, number)))?;
+            render(out, &value, |t, o: MrOwners| owners(t, number, &o))
+        }
+        MrCommand::Suggest(SuggestArgs {
+            number,
+            tree,
+            path,
+            lines,
+            file,
+            message,
+            body,
+        }) => {
+            let tree = tree_or_default(ctx, tree)?;
+            let replacement = match (message, file) {
+                (Some(text), _) => text,
+                (None, Some(file)) => read_input(&file)?,
+                (None, None) => {
+                    return Err(CliError::usage(
+                        "pass the replacement with -m TEXT or --file F",
+                    ))
+                }
+            };
+            let request = suggestion_body(body.as_deref(), &path, lines, &replacement);
+            let value = api.post(&format!("{}/comments", mr_path(&tree, number)), &request)?;
+            render(out, &value, |t, c: Comment| {
+                t.line(format_args!(
+                    "Suggested a change to {} on {} (comment {})",
+                    line_range(&path, lines.start, lines.end).cyan(),
+                    format!("!{number}").bold(),
+                    c.id
+                ));
+            })
+        }
+        MrCommand::ApplySuggestion(ApplySuggestionArgs {
+            number,
+            comment_id,
+            tree,
+            message,
+        }) => {
+            let tree = tree_or_default(ctx, tree)?;
+            let mut body = json!({});
+            if let Some(message) = message {
+                body["message"] = json!(message);
+            }
+            let value = api
+                .post(
+                    &format!(
+                        "{}/comments/{}/apply",
+                        mr_path(&tree, number),
+                        seg(&comment_id)
+                    ),
+                    &body,
+                )
+                .map_err(|e| apply_error(e, number))?;
+            render(out, &value, |t, a: Applied| applied(t, &comment_id, &a))
         }
         MrCommand::Approve { number, tree } => {
             action(ctx, &api, tree, number, "approve", |t, mr| {
@@ -645,9 +950,171 @@ fn merge_error(err: CliError, number: u32) -> CliError {
         err.with_hint(format!(
             "{target} shows the methods branch protection allows"
         ))
+    } else if text.contains("(draft,") {
+        let ready = if number > 0 {
+            format!("`wt mr ready {number}`")
+        } else {
+            "`wt mr ready N`".to_string()
+        };
+        err.with_hint(format!(
+            "the merge request is a draft: mark it ready with {ready}"
+        ))
+    } else if text.contains("quota_exceeded") {
+        err.with_hint(QUOTA_HINT)
+    } else if text.contains("merge_blocked") && text.to_lowercase().contains("owner") {
+        let owners = if number > 0 {
+            format!("`wt mr owners {number}`")
+        } else {
+            "`wt mr owners N`".to_string()
+        };
+        err.with_hint(format!(
+            "{owners} shows which paths still need an approval from their owners"
+        ))
     } else {
         err
     }
+}
+
+const QUOTA_HINT: &str = "the tenant's storage quota is exhausted: free space (e.g. delete old branches or releases) or ask an administrator to raise the quota";
+
+/// Adds hints to refusals of `wt mr apply-suggestion`.
+fn apply_error(err: CliError, number: u32) -> CliError {
+    let text = err.to_string();
+    if text.contains("suggestion_outdated") {
+        err.with_hint(format!(
+            "the source changed these lines; ask for a new suggestion (`wt mr comments {number}` shows the comment)"
+        ))
+    } else if text.contains("quota_exceeded") {
+        err.with_hint(QUOTA_HINT)
+    } else {
+        err
+    }
+}
+
+/// The body of `POST /merge-requests`.
+fn create_body(
+    title: &str,
+    description: Option<&str>,
+    source: &str,
+    target: &str,
+    draft: bool,
+    reviewers: &[String],
+) -> Value {
+    let mut body = json!({
+        "title": title,
+        "description": description.unwrap_or_default(),
+        "source_branch": source,
+        "target_branch": target,
+    });
+    if draft {
+        body["draft"] = json!(true);
+    }
+    if !reviewers.is_empty() {
+        body["reviewers"] = json!(reviewers);
+    }
+    body
+}
+
+/// The body of `POST .../reviewers`.
+fn reviewers_body(who: &[String]) -> Value {
+    json!({ "reviewers": who })
+}
+
+/// The body of a suggestion comment.
+fn suggestion_body(body: Option<&str>, path: &str, lines: LineRange, replacement: &str) -> Value {
+    json!({
+        "body": body.unwrap_or_default(),
+        "suggestion": {
+            "path": path,
+            "start_line": lines.start,
+            "end_line": lines.end,
+            "replacement": replacement,
+        },
+    })
+}
+
+/// `a.txt:3` or `a.txt:3-4`.
+fn line_range(path: &str, start: u32, end: u32) -> String {
+    if end <= start {
+        format!("{path}:{start}")
+    } else {
+        format!("{path}:{start}-{end}")
+    }
+}
+
+/// `  reviewers: user:alice, team:core` (or a dimmed "none" line).
+fn reviewer_line(t: &mut Text, mr: &MergeRequest) {
+    if mr.reviewers.is_empty() {
+        t.line("  no reviewers requested".dimmed());
+    } else {
+        t.line(format_args!("  reviewers: {}", mr.reviewers.join(", ")));
+    }
+}
+
+fn applied(t: &mut Text, comment_id: &str, a: &Applied) {
+    let id = if a.comment.id.is_empty() {
+        comment_id
+    } else {
+        a.comment.id.as_str()
+    };
+    let mut line = format!(
+        "Applied suggestion #{id} as snapshot {}",
+        short(&a.snapshot.id).yellow()
+    );
+    if !a.snapshot.branch_name.is_empty() {
+        line.push_str(&format!(" on {}", a.snapshot.branch_name.green()));
+    }
+    t.line(line);
+}
+
+fn owners(t: &mut Text, number: u32, o: &MrOwners) {
+    let mut table = Table::new(&["PATH", "OWNERS", "APPROVED"]);
+    for p in &o.paths {
+        let approved = if p.owners.is_empty() {
+            Cell::from("-")
+        } else if p.approved {
+            let by = if p.approved_by.is_empty() {
+                "yes".to_string()
+            } else {
+                format!("yes ({})", p.approved_by.join(", "))
+            };
+            Cell::from(by).green()
+        } else {
+            Cell::from("no").red()
+        };
+        table.row([
+            Cell::from(p.path.as_str()).cyan(),
+            if p.owners.is_empty() {
+                "-".into()
+            } else {
+                p.owners.join(", ").into()
+            },
+            approved,
+        ]);
+    }
+    table.render(t, "No changed paths.");
+    let source = match o.source.as_str() {
+        "" | "none" => "no owners configured".to_string(),
+        "file" => "owners from the OWNERS file".to_string(),
+        "config" => "owners from the server configuration".to_string(),
+        other => format!("owners from {other}"),
+    };
+    let required = if o.required {
+        "required"
+    } else {
+        "not required"
+    };
+    let state = if o.satisfied || o.missing.is_empty() {
+        "satisfied".green().to_string()
+    } else {
+        format!("missing {}", o.missing.join(", "))
+            .red()
+            .to_string()
+    };
+    t.line(format_args!(
+        "{} owner approval {required}: {state} ({source})",
+        format!("!{number}").bold()
+    ));
 }
 
 /// ` (squash)` for merges that did not fast-forward.
@@ -767,14 +1234,36 @@ fn comments(t: &mut Text, cs: &[Comment]) {
             t.blank();
         }
         let mut head = format!("#{} {} {}", c.id, c.author.bold(), when(&c.created_at));
-        if !c.path.is_empty() {
+        if let Some(s) = &c.suggestion {
+            head.push_str(&format!(
+                "  {} {}",
+                "suggestion".bold(),
+                line_range(&s.path, s.start_line, s.end_line).cyan()
+            ));
+        } else if !c.path.is_empty() {
             head.push_str(&format!("  {}", c.path.cyan()));
             if c.line > 0 {
                 head.push_str(&format!(":{}", c.line));
             }
         }
-        if !c.snapshot_id.is_empty() {
-            head.push_str(&format!(" @ {}", short(&c.snapshot_id).yellow()));
+        let at = c
+            .suggestion
+            .as_ref()
+            .map(|s| s.snapshot_id.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&c.snapshot_id);
+        if !at.is_empty() {
+            head.push_str(&format!(" @ {}", short(at).yellow()));
+        }
+        if let Some(s) = &c.suggestion {
+            if let Some(snap) = s.applied_snapshot.as_deref().filter(|s| !s.is_empty()) {
+                let mut mark = format!("[applied as {}", short(snap));
+                if let Some(by) = s.applied_by.as_deref().filter(|b| !b.is_empty()) {
+                    mark.push_str(&format!(" by {by}"));
+                }
+                mark.push(']');
+                head.push_str(&format!("  {}", mark.green()));
+            }
         }
         if c.resolved {
             head.push_str(&format!("  {}", "[resolved]".dimmed()));
@@ -782,6 +1271,14 @@ fn comments(t: &mut Text, cs: &[Comment]) {
         t.line(head);
         for line in c.body.lines() {
             t.line(format_args!("    {line}"));
+        }
+        if let Some(s) = &c.suggestion {
+            if s.replacement.is_empty() {
+                t.line(format_args!("    {}", "(deletes the lines)".dimmed()));
+            }
+            for line in s.replacement.lines() {
+                t.line(format_args!("    {}", format!("+ {line}").green()));
+            }
         }
     }
 }
@@ -818,6 +1315,19 @@ fn checks(t: &mut Text, number: u32, c: &Checks) {
     }
     t.line(format_args!("  ci: {ci}"));
     t.line(format_args!("  blocking todos: {}", c.todos.blocking_open));
+    if c.owners.required || !c.owners.missing.is_empty() {
+        let required = if c.owners.required {
+            "required"
+        } else {
+            "not required"
+        };
+        let state = if c.owners.missing.is_empty() {
+            "satisfied".to_string()
+        } else {
+            format!("missing {}", c.owners.missing.join(", "))
+        };
+        t.line(format_args!("  owner approval: {required}, {state}"));
+    }
     for b in &c.blockers {
         t.line(format_args!("  {} {}: {}", "x".red(), b.kind, b.message));
     }
@@ -879,9 +1389,14 @@ fn list(t: &mut Text, mrs: &[MergeRequest]) {
         "UPDATED",
     ]);
     for mr in mrs {
+        let title = if mr.draft {
+            format!("[draft] {}", mr.title)
+        } else {
+            mr.title.clone()
+        };
         table.row([
             Cell::from(format!("!{}", mr.number)).bold(),
-            mr.title.as_str().into(),
+            title.into(),
             format!("{} -> {}", mr.source_branch, mr.target_branch).into(),
             mr.author.as_str().into(),
             state_cell(&mr.state),
@@ -900,10 +1415,15 @@ fn list(t: &mut Text, mrs: &[MergeRequest]) {
 fn show(t: &mut Text, mr: &MergeRequest) {
     let state = state_cell(&mr.state);
     t.line(format_args!(
-        "{} {}  [{}]",
+        "{} {}  [{}]{}",
         format!("!{}", mr.number).bold(),
         mr.title.bold(),
-        state.colored()
+        state.colored(),
+        if mr.draft {
+            format!(" {}", "[draft]".yellow())
+        } else {
+            String::new()
+        }
     ));
     t.line(format_args!(
         "  {} -> {}, opened by {} {}, updated {}",
@@ -913,6 +1433,9 @@ fn show(t: &mut Text, mr: &MergeRequest) {
         when(&mr.created_at),
         when(&mr.updated_at)
     ));
+    if !mr.reviewers.is_empty() {
+        t.line(format_args!("  reviewers: {}", mr.reviewers.join(", ")));
+    }
     let review = |a: &Approval| {
         let mut s = format!("{} ({}", a.username, when(&a.at));
         if !a.snapshot_id.is_empty() {
@@ -1024,13 +1547,15 @@ mod tests {
             target,
             title,
             description,
+            draft,
+            reviewers,
         } = mr(&[
             "create", "--source", "feat", "--target", "main", "--title", "Add feat",
         ])
         else {
             panic!()
         };
-        assert!(tree.is_none() && description.is_none());
+        assert!(tree.is_none() && description.is_none() && !draft && reviewers.is_empty());
         assert_eq!(
             (source.as_str(), target.as_str(), title.as_str()),
             ("feat", "main", "Add feat")
@@ -1398,5 +1923,345 @@ mod tests {
             t.as_str()
         );
         assert_eq!(approvals(&MergeRequest::default()), "0 approvals");
+    }
+
+    // v0.7 (§15.7): drafts, review requests, owners and suggestions.
+
+    #[test]
+    fn parses_drafts_and_reviewers() {
+        let MrCommand::Create {
+            draft, reviewers, ..
+        } = mr(&[
+            "create",
+            "acme/web",
+            "--source",
+            "feat",
+            "--target",
+            "main",
+            "--title",
+            "T",
+            "--draft",
+            "--reviewer",
+            "alice",
+            "--reviewer",
+            "team:core",
+        ])
+        else {
+            panic!()
+        };
+        assert!(draft);
+        assert_eq!(reviewers, ["alice", "team:core"]);
+        assert_eq!(
+            create_body("T", None, "feat", "main", true, &reviewers),
+            json!({"title": "T", "description": "", "source_branch": "feat",
+                   "target_branch": "main", "draft": true,
+                   "reviewers": ["alice", "team:core"]})
+        );
+        assert_eq!(
+            create_body("T", Some("D"), "feat", "main", false, &[]),
+            json!({"title": "T", "description": "D", "source_branch": "feat",
+                   "target_branch": "main"})
+        );
+
+        assert!(matches!(
+            mr(&["ready", "3"]),
+            MrCommand::Ready {
+                number: 3,
+                tree: None
+            }
+        ));
+        assert!(matches!(
+            mr(&["ready", "3", "acme/web"]),
+            MrCommand::Ready {
+                number: 3,
+                tree: Some(_)
+            }
+        ));
+
+        let reviewers = |args: &[&str]| match mr(args) {
+            MrCommand::Reviewers(a) => a,
+            other => panic!("{other:?}"),
+        };
+        let a = reviewers(&["reviewers", "3", "add", "alice", "team:core"]);
+        assert_eq!((a.number, a.tree), (3, None));
+        let Some(ReviewersAction::Add { who }) = a.action else {
+            panic!("{:?}", a.action)
+        };
+        assert_eq!(who, ["alice", "team:core"]);
+        let a = reviewers(&["reviewers", "3", "acme/web", "remove", "alice"]);
+        assert_eq!(a.tree.map(|t| t.to_string()).as_deref(), Some("acme/web"));
+        assert!(matches!(a.action, Some(ReviewersAction::Remove { who }) if who == ["alice"]));
+        let a = reviewers(&["reviewers", "3"]);
+        assert!(a.tree.is_none() && a.action.is_none());
+        let a = reviewers(&["reviewers", "3", "acme/web"]);
+        assert!(a.tree.is_some() && a.action.is_none());
+        assert_eq!(
+            parse_err(&["mr", "reviewers", "3", "add"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            reviewers_body(&["user:x".to_string(), "team:y".to_string()]),
+            json!({"reviewers": ["user:x", "team:y"]})
+        );
+
+        assert!(matches!(
+            mr(&["owners", "4", "acme/web"]),
+            MrCommand::Owners {
+                number: 4,
+                tree: Some(_)
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_line_ranges() {
+        assert_eq!(parse_lines("3-4"), Ok(LineRange { start: 3, end: 4 }));
+        assert_eq!(parse_lines("7"), Ok(LineRange { start: 7, end: 7 }));
+        assert_eq!(parse_lines("2-2"), Ok(LineRange { start: 2, end: 2 }));
+        for bad in ["0", "0-3", "4-3", "a-b", "", "3-", "-3", "1-2-3", "x"] {
+            assert!(parse_lines(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parses_suggestions() {
+        let MrCommand::Suggest(SuggestArgs {
+            number,
+            tree,
+            path,
+            lines,
+            file,
+            message,
+            body,
+        }) = mr(&[
+            "suggest", "2", "acme/web", "--path", "a.txt", "--lines", "3-4", "-m", "new", "-b",
+            "nit",
+        ])
+        else {
+            panic!()
+        };
+        assert_eq!((number, path.as_str()), (2, "a.txt"));
+        assert!(tree.is_some() && file.is_none());
+        assert_eq!(lines, LineRange { start: 3, end: 4 });
+        assert_eq!(
+            (message.as_deref(), body.as_deref()),
+            (Some("new"), Some("nit"))
+        );
+        let MrCommand::Suggest(SuggestArgs { file, lines, .. }) = mr(&[
+            "suggest", "2", "--path", "a.txt", "--lines", "5", "--file", "fix.txt",
+        ]) else {
+            panic!()
+        };
+        assert_eq!(file, Some(PathBuf::from("fix.txt")));
+        assert_eq!(lines, LineRange { start: 5, end: 5 });
+        assert_eq!(
+            parse_err(&["mr", "suggest", "2", "--path", "a", "--lines", "1"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_err(&[
+                "mr", "suggest", "2", "--path", "a", "--lines", "1", "-m", "x", "--file", "f"
+            ]),
+            ErrorKind::ArgumentConflict
+        );
+        assert_eq!(
+            parse_err(&["mr", "suggest", "2", "--path", "a", "--lines", "4-3", "-m", "x"]),
+            ErrorKind::ValueValidation
+        );
+        assert_eq!(
+            parse_err(&["mr", "suggest", "2", "--lines", "1", "-m", "x"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            suggestion_body(None, "a.txt", LineRange { start: 3, end: 4 }, "x\ny\n"),
+            json!({"body": "", "suggestion": {"path": "a.txt", "start_line": 3,
+                   "end_line": 4, "replacement": "x\ny\n"}})
+        );
+        assert_eq!(
+            suggestion_body(Some("nit"), "a", LineRange { start: 1, end: 1 }, "")["body"],
+            "nit"
+        );
+
+        let MrCommand::ApplySuggestion(ApplySuggestionArgs {
+            number,
+            comment_id,
+            tree,
+            message,
+        }) = mr(&["apply-suggestion", "2", "c7", "acme/web", "-m", "Apply"])
+        else {
+            panic!()
+        };
+        assert_eq!((number, comment_id.as_str()), (2, "c7"));
+        assert!(tree.is_some());
+        assert_eq!(message.as_deref(), Some("Apply"));
+        assert!(matches!(
+            mr(&["apply-suggestion", "2", "c7"]),
+            MrCommand::ApplySuggestion(ApplySuggestionArgs {
+                tree: None,
+                message: None,
+                ..
+            })
+        ));
+        assert_eq!(
+            parse_err(&["mr", "apply-suggestion", "2"]),
+            ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn maps_review_errors_to_hints() {
+        let hint = |e: CliError| {
+            let dbg = format!("{e:?}");
+            (e.exit_code(), dbg)
+        };
+        let (code, dbg) = hint(merge_error(
+            CliError::failure("merge request is a draft (draft, HTTP 409)"),
+            3,
+        ));
+        assert_eq!(code, 1);
+        assert!(dbg.contains("wt mr ready 3"), "{dbg}");
+        let (_, dbg) = hint(merge_error(
+            CliError::failure("storage quota exceeded (quota_exceeded, HTTP 409)"),
+            3,
+        ));
+        assert!(dbg.contains("storage quota"), "{dbg}");
+        let (_, dbg) = hint(merge_error(
+            CliError::failure("owner approval missing for a.txt (merge_blocked, HTTP 409)"),
+            3,
+        ));
+        assert!(dbg.contains("wt mr owners 3"), "{dbg}");
+        let (_, dbg) = hint(apply_error(
+            CliError::failure("lines changed (suggestion_outdated, HTTP 409)"),
+            3,
+        ));
+        assert!(dbg.contains("ask for a new suggestion"), "{dbg}");
+        let (_, dbg) = hint(apply_error(
+            CliError::failure("over quota (quota_exceeded, HTTP 409)"),
+            3,
+        ));
+        assert!(dbg.contains("storage quota"), "{dbg}");
+        assert_eq!(
+            apply_error(CliError::failure("x (conflict, HTTP 409)"), 3),
+            CliError::failure("x (conflict, HTTP 409)")
+        );
+        // "draft" elsewhere in the text is not the draft code.
+        assert_eq!(
+            merge_error(CliError::failure("drafty (forbidden_x, HTTP 400)"), 3),
+            CliError::failure("drafty (forbidden_x, HTTP 400)")
+        );
+    }
+
+    #[test]
+    fn renders_drafts_reviewers_and_owners() {
+        colored::control::set_override(false);
+        let mr: MergeRequest = serde_json::from_value(json!({
+            "number": 9, "title": "WIP", "source_branch": "feat", "target_branch": "main",
+            "author": "ada", "state": "open", "created_at": "", "updated_at": "",
+            "draft": true, "reviewers": ["user:bob", "team:core"]
+        }))
+        .expect("mr");
+        let mut t = Text::default();
+        show(&mut t, &mr);
+        assert_eq!(
+            t.as_str(),
+            "!9 WIP  [open] [draft]\n  feat -> main, opened by ada -, updated -\n  reviewers: user:bob, team:core\n  no approvals yet\n"
+        );
+        let mut t = Text::default();
+        reviewer_line(&mut t, &mr);
+        assert_eq!(t.as_str(), "  reviewers: user:bob, team:core\n");
+        let mut t = Text::default();
+        reviewer_line(&mut t, &MergeRequest::default());
+        assert_eq!(t.as_str(), "  no reviewers requested\n");
+        let mut t = Text::default();
+        list(&mut t, &[mr]);
+        assert!(
+            t.as_str().contains("!9  [draft] WIP  feat -> main"),
+            "{}",
+            t.as_str()
+        );
+        let plain: MergeRequest =
+            serde_json::from_value(json!({"number": 1, "reviewers": null})).expect("mr");
+        assert!(!plain.draft && plain.reviewers.is_empty());
+
+        let o: MrOwners = serde_json::from_value(json!({
+            "source": "config", "required": true, "satisfied": false,
+            "paths": [
+                {"path": "a.txt", "owners": ["user:alice", "team:core"], "approved": true,
+                 "approved_by": ["alice"]},
+                {"path": "b.txt", "owners": ["user:bob"], "approved": false, "approved_by": null},
+                {"path": "c.txt", "owners": [], "approved": false}
+            ],
+            "missing": ["b.txt"]
+        }))
+        .expect("owners");
+        let mut t = Text::default();
+        owners(&mut t, 4, &o);
+        assert_eq!(
+            t.as_str(),
+            "PATH   OWNERS                 APPROVED\na.txt  user:alice, team:core  yes (alice)\nb.txt  user:bob               no\nc.txt  -                      -\n!4 owner approval required: missing b.txt (owners from the server configuration)\n"
+        );
+        let o: MrOwners = serde_json::from_value(json!({
+            "source": "none", "required": false, "satisfied": true, "paths": null, "missing": null
+        }))
+        .expect("owners");
+        let mut t = Text::default();
+        owners(&mut t, 4, &o);
+        assert_eq!(
+            t.as_str(),
+            "No changed paths.\n!4 owner approval not required: satisfied (no owners configured)\n"
+        );
+
+        let c: Checks = serde_json::from_value(json!({
+            "mergeable": false,
+            "blockers": [{"kind": "draft", "message": "the merge request is a draft"}],
+            "approvals": {"required": 0, "current": 0, "stale": 0},
+            "ci": {"state": ""}, "todos": {"blocking_open": 0},
+            "owners": {"required": true, "missing": ["b.txt"]}
+        }))
+        .expect("checks");
+        let mut t = Text::default();
+        checks(&mut t, 4, &c);
+        assert_eq!(
+            t.as_str(),
+            "!4 cannot be merged\n  approvals: 0 of 0 required\n  ci: no checks\n  blocking todos: 0\n  owner approval: required, missing b.txt\n  x draft: the merge request is a draft\n"
+        );
+    }
+
+    #[test]
+    fn renders_suggestions() {
+        colored::control::set_override(false);
+        let cs: Vec<Comment> = serde_json::from_value(json!([
+            {"id": "5", "author": "bob", "body": "use this", "path": "a.txt", "line": 3,
+             "snapshot_id": "fedcba9876543210", "created_at": "",
+             "suggestion": {"path": "a.txt", "start_line": 3, "end_line": 4,
+                            "replacement": "one\ntwo\n", "snapshot_id": "0123456789abcdef"}},
+            {"id": "6", "author": "cy", "body": "", "path": "b.txt", "line": 7,
+             "created_at": "", "resolved": true,
+             "suggestion": {"path": "b.txt", "start_line": 7, "end_line": 7,
+                            "replacement": "", "snapshot_id": "",
+                            "applied_snapshot": "aaaaaaaabbbbbbbb", "applied_by": "ada",
+                            "applied_at": "2026-01-01T00:00:00Z"}}
+        ]))
+        .expect("comments");
+        let mut t = Text::default();
+        comments(&mut t, &cs);
+        assert_eq!(
+            t.as_str(),
+            "#5 bob -  suggestion a.txt:3-4 @ 01234567\n    use this\n    + one\n    + two\n\n#6 cy -  suggestion b.txt:7  [applied as aaaaaaaa by ada]  [resolved]\n    (deletes the lines)\n"
+        );
+        assert_eq!(line_range("a", 3, 3), "a:3");
+        assert_eq!(line_range("a", 3, 9), "a:3-9");
+
+        let a: Applied = serde_json::from_value(json!({
+            "comment": {"id": "5"},
+            "snapshot": {"id": "0123456789abcdef", "branch_name": "feat", "parents": ["x"]}
+        }))
+        .expect("applied");
+        let mut t = Text::default();
+        applied(&mut t, "5", &a);
+        assert_eq!(
+            t.as_str(),
+            "Applied suggestion #5 as snapshot 01234567 on feat\n"
+        );
     }
 }

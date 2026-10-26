@@ -133,6 +133,9 @@ type ReviewComment struct {
 	Resolved   bool      `json:"resolved,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+
+	// v0.7 review (§15.7): a suggested change (Suggestion, types.go).
+	Suggestion *Suggestion `json:"suggestion,omitempty"`
 }
 
 // LinkedGroup ties merge requests of several trees together: they merge

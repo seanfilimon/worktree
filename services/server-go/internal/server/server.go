@@ -157,6 +157,11 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	pathACL := pathacl.New(pathacl.Deps(v5))
 	// review-ci (§13.4): tree.deleted cleanup of tree-scoped documents.
 	rev.SetLogger(log)
+	// ---- review-v07 (§15.7): quota for server-side merge/squash snapshots;
+	// push checks for suggestion snapshots on source branches ----
+	rev.SetQuota(limiter)
+	rev.SetPushChecks(pathACL, limiter, signer)
+	// ---- end review-v07 ----
 	rev.Start(ctx)
 	ciSvc.Start(ctx)
 	// deps-releases (§13.5): bus subscribers creating TODOs from pushed

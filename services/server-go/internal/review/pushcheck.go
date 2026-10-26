@@ -46,7 +46,9 @@ func (s *Service) Start(ctx context.Context) {
 	if s.bus == nil {
 		return
 	}
-	ch, cancel := s.bus.Subscribe(domain.EventFilter{Types: []string{domain.EventTreeDeleted}})
+	// v0.7 (§15.7): branch.pushed requests the owners of the merge
+	// requests whose source moved.
+	ch, cancel := s.bus.Subscribe(domain.EventFilter{Types: []string{domain.EventTreeDeleted, domain.EventBranchPushed}})
 	go func() {
 		defer cancel()
 		for {
@@ -57,7 +59,12 @@ func (s *Service) Start(ctx context.Context) {
 				if !ok {
 					return
 				}
-				s.DeleteTreeDocs(context.WithoutCancel(ctx), e.TreeID)
+				switch e.Type {
+				case domain.EventTreeDeleted:
+					s.DeleteTreeDocs(context.WithoutCancel(ctx), e.TreeID)
+				case domain.EventBranchPushed:
+					s.SourcePushed(context.WithoutCancel(ctx), e.TreeID, eventString(e.Payload, "branch"), e.Actor)
+				}
 			}
 		}
 	}()
@@ -73,5 +80,9 @@ func (s *Service) DeleteTreeDocs(ctx context.Context, treeID string) {
 			s.logger().Warn("review: delete documents of deleted tree",
 				slog.String("collection", coll), slog.String("tree_id", treeID), slog.Any("error", err))
 		}
+	}
+	// v0.7 (§15.7): the owner configuration (key = tree id).
+	if err := s.store.DeleteDoc(ctx, OwnersCollection, treeID); err != nil && !isNotFound(err) {
+		s.logger().Warn("review: delete owners of deleted tree", slog.String("tree_id", treeID), slog.Any("error", err))
 	}
 }

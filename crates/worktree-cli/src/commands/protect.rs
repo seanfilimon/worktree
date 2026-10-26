@@ -62,6 +62,10 @@ pub enum ProtectCommand {
         /// Open blocking TODOs of the source branch block merging
         #[arg(long)]
         block_on_todos: bool,
+        /// Every changed path needs an approval (of the current source tip)
+        /// from one of its owners (see `wt owners show`)
+        #[arg(long)]
+        require_owner_approval: bool,
         /// Merge methods allowed for merge requests into matching branches,
         /// comma-separated (fast-forward, merge, squash; default: all)
         #[arg(long, value_name = "METHODS", value_delimiter = ',')]
@@ -141,6 +145,10 @@ struct Protection {
     block_on_todos: bool,
     #[serde(deserialize_with = "nullable")]
     merge_methods: Vec<String>,
+    // v0.7 (§15.7); omitted when off so servers before v0.7 (which reject
+    // unknown fields) still accept the rule.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    require_owner_approval: bool,
 }
 
 /// `domain.TagProtection` (also the PUT body).
@@ -175,6 +183,7 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
             require_signed,
             require_linear,
             block_on_todos,
+            require_owner_approval,
             merge_methods,
         } => {
             let tree = tree_or_default(ctx, tree)?;
@@ -196,6 +205,7 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
                 require_linear,
                 block_on_todos,
                 merge_methods: methods,
+                require_owner_approval,
             };
             let value = api.put(&path(&tree), &rule)?;
             render(out, &value, |t, rule: Protection| {
@@ -316,6 +326,9 @@ fn merge_checks(rule: &Protection) -> Vec<String> {
     if rule.block_on_todos {
         parts.push("todos".into());
     }
+    if rule.require_owner_approval {
+        parts.push("owners".into());
+    }
     if !rule.merge_methods.is_empty() {
         parts.push(format!("methods {}", rule.merge_methods.join("/")));
     }
@@ -355,6 +368,9 @@ fn describe(rule: &Protection) -> String {
     }
     if rule.block_on_todos {
         parts.push("blocking TODOs block merges".into());
+    }
+    if rule.require_owner_approval {
+        parts.push("owner approval required".into());
     }
     if !rule.merge_methods.is_empty() {
         parts.push(format!("merge methods {}", rule.merge_methods.join(", ")));
@@ -481,6 +497,7 @@ mod tests {
             require_signed,
             require_linear,
             block_on_todos,
+            require_owner_approval,
             merge_methods,
         } = protect(&[
             "set",
@@ -502,6 +519,7 @@ mod tests {
             "--require-signed",
             "--require-linear",
             "--block-on-todos",
+            "--require-owner-approval",
             "--merge-methods",
             "squash,fast-forward",
         ])
@@ -516,6 +534,7 @@ mod tests {
         assert_eq!(pattern, "release/*");
         assert!(no_direct_push && no_delete);
         assert!(require_ci && require_signed && require_linear && block_on_todos);
+        assert!(require_owner_approval);
         assert_eq!(approvals, 2);
         assert_eq!(pushers, ["ada", "bob"]);
         assert_eq!(checks, ["build", "test"]);
@@ -527,6 +546,7 @@ mod tests {
                 no_direct_push: false,
                 require_ci: false,
                 require_linear: false,
+                require_owner_approval: false,
                 ..
             }
         ));
@@ -665,6 +685,26 @@ mod tests {
             serde_json::from_value(json!({"pattern": "main", "merge_methods": null}))
                 .expect("rule");
         assert!(rule.merge_methods.is_empty());
+        assert!(!rule.require_owner_approval);
+        let body = serde_json::to_value(&rule).expect("json");
+        assert!(body.get("require_owner_approval").is_none(), "{body}");
+
+        // v0.7 (§15.7): owner approval.
+        let rule: Protection = serde_json::from_value(json!({
+            "pattern": "main", "require_owner_approval": true, "block_on_todos": true
+        }))
+        .expect("rule");
+        assert_eq!(
+            describe(&rule),
+            "blocking TODOs block merges, owner approval required"
+        );
+        assert_eq!(merge_checks(&rule), ["todos", "owners"]);
+        let body = serde_json::to_value(&rule).expect("json");
+        assert_eq!(body["require_owner_approval"], true);
+        colored::control::set_override(false);
+        let mut t = Text::default();
+        table(&mut t, &[rule]);
+        assert!(t.as_str().contains("todos, owners"), "{}", t.as_str());
     }
 
     #[test]
