@@ -7,7 +7,7 @@ description = "Protocol definitions for the Worktree version control system"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 blake3 = "1"
-bincode = "1"
+bincode = "3"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
