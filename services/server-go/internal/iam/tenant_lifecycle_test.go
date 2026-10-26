@@ -15,11 +15,8 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/meta"
 )
 
-// GetDoc lets the shared fake store answer slug-reservation lookups made
-// by registration (tenant-lifecycle, §16.4): it holds no documents.
-func (f *fakeStore) GetDoc(context.Context, string, string, any) error {
-	return domain.ErrNotFound
-}
+// The shared fake store answers slug-reservation lookups through its
+// in-memory DocStore (fake_docs_test.go), which starts empty.
 
 type sentMail struct{ to, subject, text, html string }
 
