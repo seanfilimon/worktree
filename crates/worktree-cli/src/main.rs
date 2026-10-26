@@ -28,7 +28,26 @@ use crate::cli::Cli;
 use crate::context::Context;
 use crate::error::CliError;
 
+/// Stack size of the thread that runs the CLI. The clap command tree of
+/// ~60 command groups and their async state machines need more than the
+/// 1 MiB default main-thread stack of Windows debug builds.
+const CLI_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    match std::thread::Builder::new()
+        .name("wt".into())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(real_main)
+    {
+        Ok(handle) => handle.join().unwrap_or(ExitCode::FAILURE),
+        Err(e) => {
+            eprintln!("error: could not start wt: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn real_main() -> ExitCode {
     let mut command = help::grouped(Cli::command());
     let args = match alias::expand(std::env::args_os().collect(), &command) {
         Ok(args) => args,

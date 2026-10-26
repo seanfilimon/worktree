@@ -215,8 +215,6 @@ All under `/api/v1/trees/{tenant}/{tree}`.
   allow merge and squash.
 - Deleting the source branch after a merge.
 - Content merges of chunked files.
-- Checking server-written objects against tenant storage quotas at merge
-  time (merges do not consult the quota today).
 
 ## References
 

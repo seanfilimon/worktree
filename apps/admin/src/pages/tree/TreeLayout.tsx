@@ -101,6 +101,10 @@ const INVALIDATE: Record<string, string[]> = {
   "mr.approved": ["mrs", "mr", "mr-checks", "mergeability"],
   "mr.merged": ALL_TREE_DATA,
   "mr.closed": ["mrs", "mr", "mr-checks"],
+  // v0.7 review workflow (§15.7).
+  "mr.ready": ["mrs", "mr", "mr-checks"],
+  "mr.review_requested": ["mrs", "mr"],
+  "mr.suggestion_applied": ALL_TREE_DATA,
   // v0.5 events (§13.4, §13.5)
   "mr.reviewed": ["mrs", "mr", "mr-checks", "mergeability"],
   "mr.commented": ["mr-comments"],

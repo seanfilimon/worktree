@@ -18,6 +18,12 @@ const V05_EVENT_TYPES = [
   "access.applied",
   // notifications (§15.3): delivered only to their account.
   "notification.created",
+  // v0.7 review workflow and mirrors (§15.6, §15.7).
+  "mr.ready",
+  "mr.review_requested",
+  "mr.suggestion_applied",
+  "mirror.synced",
+  "mirror.failed",
 ] as const;
 
 /** The subset of EventSource this client relies on (eases testing). */
