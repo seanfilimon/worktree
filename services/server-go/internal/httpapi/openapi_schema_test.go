@@ -35,6 +35,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
+	"github.com/seanfilimon/worktree/services/server-go/internal/mirror"
 	"github.com/seanfilimon/worktree/services/server-go/internal/policyhist"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
@@ -101,6 +102,15 @@ var openAPITypes = map[string]any{
 	"PolicyVersion":   domain.PolicyVersion{},
 	"CodeSearchHit":   domain.CodeSearchHit{},
 	"BlameLine":       domain.BlameLine{},
+	// mirrors (§15.6): domain/v07.go, internal/mirror, httpapi/mirrors.go
+	"Mirror":              domain.Mirror{},
+	"MirrorList":          mirrorList{},
+	"MirrorSync":          mirrorSync{},
+	"MirrorGitStatus":     mirror.GitStatus{},
+	"MirrorSyncResult":    mirror.SyncResult{},
+	"MirrorRefUpdate":     mirror.RefUpdate{},
+	"CreateMirrorRequest": mirror.CreateInput{},
+	"PatchMirrorRequest":  mirror.Patch{},
 
 	// httpapi request and response types.
 	"Error":                       errorBody{},

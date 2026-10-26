@@ -59,6 +59,7 @@ is authoritative; the spec is a bug.
 | **Deployment and release** | [`server/Deployment.md`](./server/Deployment.md) | Release archives and SHA256SUMS, installers, container images, Compose profiles, Helm chart, systemd/launchd units, proxies, CI and release workflows |
 | **Sparse checkout** | [`tree/SparseCheckout.md`](./tree/SparseCheckout.md) | `wt sparse` patterns, working-tree semantics, partial clones (`wt clone --sparse`), on-demand downloads, gc/fsck |
 | **Storage backends and backups** | [`storage/Backends.md`](./storage/Backends.md) | Disk and S3 object stores (`--object-store`, `--s3-*`), `.wtbak` backups (REST, schedule, keep), offline `worktree-server restore`, `wt admin backup` |
+| **Git mirrors** | [`server/Mirrors.md`](./server/Mirrors.md) | Push mirrors to Git remotes: deterministic fast-import export, incremental re-sync, license filter + NOTICE, `--force-with-lease`, credentials, SSRF guard, `wt mirror` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

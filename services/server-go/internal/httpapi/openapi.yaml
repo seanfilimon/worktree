@@ -6651,6 +6651,242 @@ paths:
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  # ---- mirrors (§15.6) ----
+  /api/v1/trees/{tenant}/{tree}/mirrors:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: listTreeMirrors
+      summary: List Git mirrors
+      description: |
+        v0.7 (§15.6). The Git push mirrors of the tree, oldest first, and
+        whether this server can run them (`git`: the git binary must be on
+        the server's PATH or given with `--git-binary`, version 2.31 or
+        newer). Credentials are never returned (`has_credential` reports
+        one).
+      tags: [Trees]
+      x-wt-action: tree:admin
+      responses:
+        "200":
+          description: The mirrors and the git status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MirrorList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    post:
+      operationId: createTreeMirror
+      summary: Add a Git mirror
+      description: |
+        v0.7 (§15.6). Mirrors the tree to a Git remote: after pushes, branch
+        and tag changes and merges (debounced 5 s) and on demand, the server
+        exports new snapshots into a local bare repository with `git
+        fast-import` (deterministic commits: author and committer from the
+        snapshot, its message, the manifest's files with chunked files
+        reassembled and mode 100755 for executables, merge parents) and runs
+        `git push --force-with-lease` for the mirrored branches (`branches`
+        globs, empty = all) and, unless `tags` is false, the tags. Files
+        whose license rule does not permit redistribution are left out and a
+        `LICENSES/NOTICE` is added. `url` must be https://, http://, ssh://
+        or scp-like; hosts on loopback, link-local or private addresses and
+        file:// URLs are refused unless the server runs with
+        `--mirror-allow-local`. `credential` (http(s) only; a token or
+        `user:password`) reaches git as an HTTP header through the
+        environment, never on a command line. At most 10 mirrors per tree.
+        An active mirror is synced shortly after creation. Audited as
+        `mirror.create`.
+      tags: [Trees]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMirrorRequest"
+      responses:
+        "201":
+          description: The created mirror.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mirror"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the tree already mirrors to this URL or has the maximum number of mirrors (10)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/mirrors/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Mirror id.
+        schema:
+          type: string
+    get:
+      operationId: getTreeMirror
+      summary: Get a Git mirror
+      description: v0.7 (§15.6). The mirror with its last sync status and error.
+      tags: [Trees]
+      x-wt-action: tree:admin
+      responses:
+        "200":
+          description: The mirror.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mirror"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    patch:
+      operationId: patchTreeMirror
+      summary: Update a Git mirror
+      description: |
+        v0.7 (§15.6). Changes the fields present in the body (same rules as
+        on create; `credential` "" removes the credential, `branches` []
+        mirrors every branch). Changing `url` forgets what was pushed to the
+        old remote. An active mirror is synced again shortly. Audited as
+        `mirror.update` (with the changed fields).
+      tags: [Trees]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchMirrorRequest"
+      responses:
+        "200":
+          description: The updated mirror.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mirror"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    delete:
+      operationId: deleteTreeMirror
+      summary: Delete a Git mirror
+      description: v0.7 (§15.6). Deletes the mirror, its export state and its local repository (cancelling a sync in progress). The remote is left as it is. Audited as `mirror.delete`.
+      tags: [Trees]
+      x-wt-action: tree:admin
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/mirrors/{id}/sync:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Mirror id.
+        schema:
+          type: string
+    post:
+      operationId: syncTreeMirror
+      summary: Sync a Git mirror now
+      description: |
+        v0.7 (§15.6). Exports the snapshots the mirror has not seen and
+        pushes the mirrored refs now (waiting for a sync in progress). A
+        failed export or push (for example a remote ref moved by someone
+        else, which the lease refuses to overwrite) is reported in
+        `result.error` and the mirror's `last_status`/`last_error`, not as
+        an error status; `mirror.synced` or `mirror.failed` is published.
+        With `wait=false` the sync runs in the background and the answer is
+        202. Audited as `mirror.sync`.
+      tags: [Trees]
+      x-wt-action: tree:admin
+      parameters:
+        - name: wait
+          in: query
+          required: false
+          description: "false = start the sync and answer 202 at once (default true)."
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: The mirror after the sync and the sync result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MirrorSync"
+        "202":
+          description: The sync was started (`result` is absent).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MirrorSync"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the mirror is inactive, or mirrors are disabled because the git binary is missing or too old."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  # ---- end mirrors ----
 components:
   securitySchemes:
     bearerAuth:
@@ -9985,3 +10221,163 @@ components:
           type: [array, "null"]
           items:
             $ref: "#/components/schemas/Webhook"
+    # ---- mirrors (§15.6) ----
+    Mirror:
+      type: object
+      description: "Mirror pushes a tree's branches and tags to a Git remote (v0.7 §15.6). The credential is never returned."
+      required: [id, tenant_id, tree_id, url, has_credential, tags, active, created_by, created_at]
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        tree_id:
+          type: string
+        url:
+          type: string
+          description: "https://, http://, ssh:// or scp-like (user@host:path) Git remote; file:// only with --mirror-allow-local."
+        has_credential:
+          type: boolean
+        branches:
+          type: array
+          items:
+            type: string
+          description: "Branch glob patterns ('*' within a segment, '**' across segments); empty = every branch."
+        tags:
+          type: boolean
+          description: "Also mirror the tree's tags."
+        active:
+          type: boolean
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_sync_at:
+          type: string
+          format: date-time
+        last_status:
+          type: string
+          description: "\"ok\" | \"error\" | \"running\" | \"disabled\" (no usable git binary); absent before the first sync."
+        last_error:
+          type: string
+          description: "Why the last sync failed (credentials redacted)."
+    MirrorGitStatus:
+      type: object
+      description: "GitStatus reports whether mirrors can run on this server."
+      required: [available]
+      properties:
+        available:
+          type: boolean
+        version:
+          type: string
+          description: "e.g. \"2.45.1\""
+        error:
+          type: string
+          description: "Why mirrors are disabled."
+    MirrorList:
+      type: object
+      description: "mirrorList is the body of GET {tree}/mirrors."
+      required: [mirrors, git]
+      properties:
+        mirrors:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/Mirror"
+        git:
+          $ref: "#/components/schemas/MirrorGitStatus"
+          description: "Git reports whether the server can run mirrors."
+    MirrorRefUpdate:
+      type: object
+      description: "RefUpdate is the push outcome of one ref."
+      required: [ref, status]
+      properties:
+        ref:
+          type: string
+        new:
+          type: string
+          description: "The pushed object id (absent when the ref was deleted)."
+        status:
+          type: string
+          description: "\"created\" | \"updated\" | \"forced\" | \"deleted\" | \"up_to_date\" | \"rejected\" | \"error\""
+        reason:
+          type: string
+    MirrorSync:
+      type: object
+      description: "mirrorSync is the body of POST {tree}/mirrors/{id}/sync."
+      required: [mirror]
+      properties:
+        mirror:
+          $ref: "#/components/schemas/Mirror"
+        result:
+          $ref: "#/components/schemas/MirrorSyncResult"
+    MirrorSyncResult:
+      type: object
+      description: "SyncResult describes one sync of a mirror."
+      required: [commits, refs, pushed, duration_ms]
+      properties:
+        commits:
+          type: integer
+          description: "Commits written to the mirror's local repository (0 when nothing changed)."
+        refs:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/MirrorRefUpdate"
+        pushed:
+          type: boolean
+          description: "git push ran and succeeded."
+        excluded:
+          type: array
+          items:
+            type: string
+          description: "Up to 100 paths left out because their license does not permit redistribution."
+        skipped:
+          type: array
+          items:
+            type: string
+          description: "Up to 100 branches, tags or paths that cannot be represented in Git."
+        error:
+          type: string
+        duration_ms:
+          type: integer
+          format: int64
+    CreateMirrorRequest:
+      type: object
+      description: "CreateInput is the body of POST {tree}/mirrors."
+      properties:
+        url:
+          type: string
+          description: "Git remote (at most 2048 bytes; no password in the URL)."
+        branches:
+          type: array
+          items:
+            type: string
+          description: "Up to 50 branch glob patterns; empty = every branch."
+        tags:
+          type: boolean
+          description: "Default true."
+        credential:
+          type: string
+          description: "For http(s) remotes: a token (sent as x-access-token) or \"user:password\". Never returned."
+        active:
+          type: boolean
+          description: "Default true."
+    PatchMirrorRequest:
+      type: object
+      description: "Patch is the body of PATCH {tree}/mirrors/{id}; absent fields are unchanged."
+      properties:
+        url:
+          type: string
+        branches:
+          type: array
+          items:
+            type: string
+          description: "[] = every branch."
+        tags:
+          type: boolean
+        credential:
+          type: string
+          description: "\"\" removes the credential."
+        active:
+          type: boolean
+    # ---- end mirrors ----
