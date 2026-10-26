@@ -184,6 +184,8 @@ type Config struct {
 	// 1h). Flag --tenant-purge-interval, env WT_TENANT_PURGE_INTERVAL.
 	TenantPurgeInterval time.Duration
 	// ---- end tenant lifecycle ----
+	// pack-delta (§16.1, packs.go): --disable-packs, --max-pack-size.
+	Packs PackConfig
 	// hardening (§15.10)
 
 	// Pprof serves the Go runtime profiles at /debug/pprof (server admins
@@ -372,6 +374,7 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 
 	// ---- code search v2 (§15.9) ----
 	errs = append(errs, codeIndexFromEnv(&cfg, lookup)...)
+	errs = append(errs, packsFromEnv(&cfg, lookup)...) // pack-delta (§16.1)
 	// ---- end code search v2 ----
 	errs = append(errs, tenantsFromEnv(&cfg, lookup)...) // tenant lifecycle (§16.4)
 
@@ -454,6 +457,7 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 	codeIndexFlags(fs, cfg)
 	// Tenant lifecycle (§16.4).
 	tenantFlags(fs, cfg)
+	packFlags(fs, cfg) // pack-delta (§16.1)
 	// hardening (§15.10)
 	fs.BoolVar(&cfg.Pprof, "pprof", cfg.Pprof, "serve Go runtime profiles at /debug/pprof to server admins (env WT_PPROF)")
 
@@ -583,6 +587,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateSMTP()...)      // notifications (§15.3)
 	errs = append(errs, c.validateCodeIndex()...) // code search v2 (§15.9)
 	errs = append(errs, c.validateTenants()...)   // tenant lifecycle (§16.4)
+	errs = append(errs, c.validatePacks()...)     // pack-delta (§16.1)
 	return errors.Join(errs...)
 }
 

@@ -44,7 +44,9 @@ pub async fn push_with_options(
     branch: Option<&str>,
     opts: &PushOptions,
 ) -> Result<PushReport> {
-    super::push::push_with(repo, tree, remote, branch, opts).await
+    Ok(super::push::push_with(repo, tree, remote, branch, opts)
+        .await?
+        .0)
 }
 
 /// Delete tag `name` of `tree` on `remote` (`wt tag delete --remote`); the

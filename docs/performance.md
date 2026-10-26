@@ -11,6 +11,7 @@ hotspots were fixed. Limits and tuning flags are specified in
 - [4. Measurements](#4-measurements)
 - [5. Hotspots fixed](#5-hotspots-fixed)
 - [6. Known hotspots not fixed yet](#6-known-hotspots-not-fixed-yet)
+- [7. v0.8: pack and delta transfer](#7-v08-pack-and-delta-transfer)
 
 ---
 
@@ -45,6 +46,7 @@ the developer's own credentials are never read or written.
 | `push` | Its own tree with `--files` files of `--file-size` bytes. Round 0 writes every file; later rounds rewrite `--changed` files (0 = all). Each round: local snapshot, then push. | `push` (MB/s = file bytes written that round), `snapshot (local)` |
 | `clone` | Clones a seeded tree (`--files` × `--file-size`) `--iterations` times into fresh directories. | `clone` (MB/s = tree bytes) |
 | `search` | One cold search first (builds the code index), then `--iterations` code searches per worker over the bench tenant's trees (`GET /api/v1/search/code?q=…&tenant=…`). Zero hits count as an error. | `search (cold)`, `search` |
+| `edits` (v0.8, §7; not part of `all`) | Its own tree of `--files` source-like text files of `--file-size` bytes, pushed once; every later round inserts one line into `--changed` files (default 10) and pushes. Prints what went over the wire (pack bytes and deltas, or whole objects with `WT_NO_PACK=1`). | `edits: initial push`, `edits: push` (MB/s = bytes sent), `edits: snapshot (local)` |
 
 Other flags: `--workload push,clone,search` (any subset, in order),
 `--concurrency/-c`, `--iterations/-n`, `--policies N` (creates N
@@ -304,3 +306,67 @@ search p50 46.4 → 23.8 ms, throughput 169 → 317 searches/s.
   the metadata store would remove it.
 - **Local snapshotting** (`snapshot (local)` ≈ 1.6 s for 200 files under
   load on this host) is client file-system bound and was not profiled.
+
+## 7. v0.8: pack and delta transfer
+
+ENGINEERING_PLAN §16.1 (workstream `pack-delta`): push, fetch, pull and
+clone move objects as one pack with copy/insert deltas and zstd payloads
+(format and RPCs in
+[`specs/sync/Packs.md`](../crates/worktree-protocol/specs/sync/Packs.md)).
+"Before" is the whole-object path (`UploadObjects`, gzip-compressed gRPC
+messages, four parallel streams), selected with `WT_NO_PACK=1` against the
+same build; "after" is the default.
+
+```sh
+cargo build -p worktree-bench --release
+# after (packs)
+target/release/worktree-bench -c 1 -n 6 --files 500 --file-size 100k --changed 10 --workload edits
+# before (whole objects)
+WT_NO_PACK=1 target/release/worktree-bench -c 1 -n 6 --files 500 --file-size 100k --changed 10 --workload edits
+```
+
+The tree is 500 files × 100 KiB = 51.2 MB of source-like text (random
+words; zstd compresses it about 3×). Round 0 pushes it; rounds 1–5 each
+insert one line into 10 files and push. Same machine and caveats as §4
+(other builds were running; the pairs were run back to back).
+
+**Bytes** (exact; the same objects are transferred either way):
+
+| push | objects | object bytes (whole-object transfer, before gzip) | pack bytes (after) |
+|---|---:|---:|---:|
+| initial (500 files + manifest) | 501 | 51,233,000 | 17,213,841 (zstd, no deltas) |
+| one small-edit push (10 files + manifest) | 11 | 1,057,180 | ~1,630 (11 deltas) |
+| five small-edit pushes | 55 | 5,285,900 | 8,123–8,171 |
+
+A small-edit push sends ~650× fewer bytes: the ten edited 100 KiB files
+and the 33 KB manifest travel as eleven delta entries of ~150 bytes each,
+most of which is the entry header (object and base hash).
+The whole-object path sends the same 1.06 MB per push, reduced only by
+gzip (about the same 3× as zstd for this content).
+
+**Time** (`worktree-bench` latencies; two back-to-back pairs):
+
+| op | before (pair 1 / 2) | after (pair 1 / 2) |
+|---|---:|---:|
+| initial push (51 MB) | 1756 / 2761 ms | 1852 / 3285 ms |
+| small-edit push p50 | 187 / 202 ms | 88 / 149 ms |
+| small-edit push p95 | 206 / 253 ms | 108 / 186 ms |
+
+A third pair, run while other builds saturated the host, measured 3374 vs
+16937 ms (initial) and 217 vs 578 ms (p50) and is not used.
+
+Small-edit pushes are 25–50 % faster on loopback, where bandwidth is not
+the limit; over a real network the ~650× byte reduction dominates. The
+initial push is about as fast as before: an instrumented run spent 0.82 s
+building the pack on the client (reading and recompressing every object on
+one thread) and 1.08 s unpacking on the server (one verification pass plus
+eight parallel store workers — before they were added, unpacking stored
+objects one by one and the initial push took 6.9 s). Known follow-ups:
+build the pack on several threads and stream it while it is written, and
+skip the server's separate verification pass for packs without external
+bases.
+
+Server counters (`GET /metrics`, Packs.md §4) report the same numbers in
+production: `worktree_pack_bytes_total`, `worktree_pack_object_bytes_total`,
+`worktree_pack_bytes_saved_total` and `worktree_pack_deltas_total` per
+direction, and `worktree_pack_upload_resumes_total`.

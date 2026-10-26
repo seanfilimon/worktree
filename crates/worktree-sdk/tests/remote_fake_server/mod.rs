@@ -27,6 +27,9 @@ use tonic::{Request, Response, Status, Streaming};
 use worktree_protocol::proto::sync as wire;
 use worktree_protocol::proto::sync::sync_service_server::{SyncService, SyncServiceServer};
 
+// pack-delta (§16.1): UploadPack / QueryUpload / DownloadPack.
+mod packs;
+
 pub const VERSION: &str = "fake-1.0";
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
@@ -91,6 +94,21 @@ pub struct FakeState {
     pub grpc_encodings: Vec<GrpcEncoding>,
     /// history-v2 (§16.10): (operation_id, force, bypass metadata) of every Push.
     pub push_calls: Vec<(String, bool, bool)>,
+    // ---- pack-delta (§16.1, packs.rs) ----
+    /// Serve UploadPack / QueryUpload / DownloadPack (`start_with_packs`).
+    pub packs: bool,
+    pub pack_upload_calls: usize,
+    pub pack_download_calls: usize,
+    /// Fail the next UploadPack with Unavailable once this many bytes arrived.
+    pub fail_upload_after: Option<usize>,
+    /// upload id -> (username, bytes received).
+    pub pack_spool: HashMap<String, (String, Vec<u8>)>,
+    /// UploadPack streams that continued an upload at a non-zero offset.
+    pub pack_resumes: usize,
+    /// Delta entries of the last pack received / sent.
+    pub last_upload_deltas: usize,
+    pub last_download_deltas: usize,
+    // ---- end pack-delta ----
 }
 
 /// storage workstream (§14.6): message compression seen on one gRPC call.
@@ -1227,36 +1245,31 @@ impl SyncService for Svc {
         }))
     }
 
-    // ---- v0.8 (§16): not served by the fake (clients fall back) ----
+    // ---- v0.8 (§16) ----
 
+    // pack-delta (§16.1): served only by `FakeServer::start_with_packs`
+    // (packs.rs); otherwise Unimplemented, so clients fall back.
     async fn upload_pack(
         &self,
-        _req: Request<Streaming<wire::PackChunk>>,
+        req: Request<Streaming<wire::PackChunk>>,
     ) -> Result<Response<wire::UploadPackResponse>, Status> {
-        Err(Status::unimplemented(
-            "UploadPack is not supported by the fake server",
-        ))
+        packs::upload_pack(self, req).await
     }
 
     async fn query_upload(
         &self,
-        _req: Request<wire::QueryUploadRequest>,
+        req: Request<wire::QueryUploadRequest>,
     ) -> Result<Response<wire::QueryUploadResponse>, Status> {
-        Err(Status::unimplemented(
-            "QueryUpload is not supported by the fake server",
-        ))
+        packs::query_upload(self, req).await
     }
 
-    type DownloadPackStream =
-        tokio_stream::Iter<std::vec::IntoIter<Result<wire::PackChunk, Status>>>;
+    type DownloadPackStream = packs::DownloadPackStream;
 
     async fn download_pack(
         &self,
-        _req: Request<wire::DownloadPackRequest>,
+        req: Request<wire::DownloadPackRequest>,
     ) -> Result<Response<Self::DownloadPackStream>, Status> {
-        Err(Status::unimplemented(
-            "DownloadPack is not supported by the fake server",
-        ))
+        packs::download_pack(self, req).await
     }
 
     async fn delete_tag(

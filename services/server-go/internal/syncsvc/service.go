@@ -91,6 +91,10 @@ type Service struct {
 	d   Deps
 	log *slog.Logger
 	now func() time.Time
+
+	// pack-delta (§16.1): UploadPack / QueryUpload / DownloadPack
+	// (pack_upload.go, pack_download.go), configured by ConfigurePacks.
+	packs packState
 }
 
 var _ syncpb.SyncServiceServer = (*Service)(nil)

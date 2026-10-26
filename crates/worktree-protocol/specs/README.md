@@ -70,6 +70,7 @@ is authoritative; the spec is a bug.
 | **Device authorization** | [`security/DeviceAuth.md`](./security/DeviceAuth.md) | RFC 8628 device flow (`wt login --device`, admin `/device` approval with MFA), 1-hour access tokens with rotating single-use refresh tokens, reuse detection, SDK transparent refresh |
 | **Secret scanning** | [`security/SecretScanning.md`](./security/SecretScanning.md) | Shared client/server rule set and fingerprints, push scanning (`off`/`warn`/`block`, bypass, allowlist), findings, on-demand scans, license audit with strict SPDX check, `wt compliance`, `wt license audit` |
 | **Undo and force push** | [`tree/Undo.md`](./tree/Undo.md) | Local operation log (`.wt/oplog.jsonl`), `wt undo [N]` / `--list` / `wt redo`, `wt push --force` with lease, server reflog, protection bypass, `DeleteTag` and `wt tag delete --remote` |
+| **Packs** | [`sync/Packs.md`](./sync/Packs.md) | Pack format with copy/insert deltas and zstd payloads, resumable `UploadPack` / `QueryUpload`, `DownloadPack`, base selection, fallback, `WT_NO_PACK`, golden vectors |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

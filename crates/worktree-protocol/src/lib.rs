@@ -34,6 +34,8 @@ pub mod proto;
 // compliance (ENGINEERING_PLAN §16.7): secret scanning rules shared with the
 // Go server.
 pub mod scan_rules;
+// pack-delta (ENGINEERING_PLAN §16.1): pack format with binary deltas.
+pub mod pack;
 
 // Re-exports for convenience
 pub use feature::archive;

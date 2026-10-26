@@ -94,8 +94,9 @@ var GRPCEncoding = NewCounter("worktree_grpc_encoding_total",
 
 // All lists every counter in rendering order.
 func All() []*Counter {
-	return []*Counter{SyncPushes, SyncPulls, AuthzDecisions, MRMerges, GCRuns, GCDeletedObjects, RateLimited,
-		GRPCEncoding} // hardening (§15.10)
+	return append([]*Counter{SyncPushes, SyncPulls, AuthzDecisions, MRMerges, GCRuns, GCDeletedObjects, RateLimited,
+		GRPCEncoding}, // hardening (§15.10)
+		packCounters()...) // pack-delta (§16.1)
 }
 
 // CountMerges counts EventMRMerged events from bus until the returned

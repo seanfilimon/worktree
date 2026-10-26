@@ -201,8 +201,9 @@ each absent object once with the first snapshot found referencing it;
 ## Roadmap
 
 - Server-side compaction of objects stored raw before v0.6 (a gc option).
-- Dictionary-trained compression for small objects, and pack files with
-  delta compression.
+- Dictionary-trained compression for small objects, and delta-compressed
+  storage (deltas are used on the wire since v0.8, see
+  [`sync/Packs.md`](../sync/Packs.md); stored objects stay whole).
 - Automatic re-fetch of objects `wt fsck` reports missing or corrupt.
 - Streaming fsck progress and a time budget for very large server stores.
 - Running local gc from the daemon's maintenance task.

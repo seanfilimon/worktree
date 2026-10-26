@@ -3,6 +3,7 @@
 //! throughput (docs/ENGINEERING_PLAN.md §15.10, docs/performance.md).
 
 mod args;
+mod edits; // pack-delta (§16.1)
 mod server;
 mod stats;
 mod workloads;
@@ -93,6 +94,7 @@ fn workload_name(w: Workload) -> &'static str {
         Workload::Push => "push",
         Workload::Clone => "clone",
         Workload::Search => "search",
+        Workload::Edits => "edits",
     }
 }
 
@@ -184,6 +186,7 @@ async fn run(args: &Args, tmp: &Path) -> Result<ExitCode, String> {
             Workload::Push => workloads::push(&plan).await,
             Workload::Clone => workloads::clone(&plan, &seed).await,
             Workload::Search => workloads::search(&plan).await,
+            Workload::Edits => edits::edits(&plan).await,
         };
         rows.extend(ops.iter().map(|op| op.samples.summarize(&op.name, op.wall)));
     }

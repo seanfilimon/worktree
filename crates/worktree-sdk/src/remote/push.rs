@@ -9,6 +9,7 @@ use worktree_protocol::proto::sync::push_rejection::Reason;
 use super::client::{entry_upload_objects, ObjectKind, RemoteBranch};
 use super::convert::{branch_id, snapshot_id, tenant_id, tree_id};
 use super::force::PushOptions;
+use super::pack::{self, TransferStats};
 use super::session::{self, Access, RemoteSession};
 use super::PushReport;
 use crate::error::{Result, SdkError};
@@ -22,18 +23,23 @@ pub(crate) async fn push(
     remote: &str,
     branch: Option<&str>,
 ) -> Result<PushReport> {
-    push_with(repo, tree, remote, branch, &PushOptions::default()).await
+    Ok(
+        push_with(repo, tree, remote, branch, &PushOptions::default())
+            .await?
+            .0,
+    )
 }
 
-/// [`push`] with history-v2 options (§16.10): force (with lease) and the
-/// protection bypass.
+/// [`push`] with history-v2 options (§16.10: force with lease, protection
+/// bypass) that also reports how the objects travelled (pack-delta, §16.1).
 pub(crate) async fn push_with(
     repo: &Repository,
     tree: &str,
     remote: &str,
     branch: Option<&str>,
     opts: &PushOptions,
-) -> Result<PushReport> {
+) -> Result<(PushReport, TransferStats)> {
+    let mut transfer = TransferStats::default();
     let tree_name = repo.tree(tree)?.name;
     let branch = match branch {
         Some(b) => b.to_string(),
@@ -66,7 +72,7 @@ pub(crate) async fn push_with(
         let known = server_known_snapshots(repo, &server_branches)?;
         push_tags(repo, &tree_name, &mut session, &known).await?;
         report.up_to_date = true;
-        return Ok(report);
+        return Ok((report, transfer));
     }
 
     // Refuse early (without uploading anything) when the server has history
@@ -101,10 +107,45 @@ pub(crate) async fn push_with(
         .into_iter()
         .filter(|(h, _)| missing.contains(h))
         .collect();
-    report.objects_sent = session
-        .client
-        .upload_objects(repo.store(), &to_send)
-        .await?;
+    // ---- pack-delta (§16.1): one pack with deltas against the
+    // server-known parent; whole objects when the server has no packs ----
+    let packed = if to_send.is_empty() {
+        None
+    } else {
+        let items = pack::upload_items(repo, &chain, &to_send);
+        // Only objects of server-known snapshots: objects that are merely
+        // stored on the server (a rejected push) are not valid bases.
+        let server_has = pack::server_known_objects(repo, &chain, &known);
+        pack::upload(
+            &mut session.client,
+            repo.store(),
+            &session.tree.id,
+            items,
+            server_has,
+        )
+        .await?
+    };
+    report.objects_sent = match packed {
+        Some(up) => {
+            transfer = up.stats;
+            if !up.retry.is_empty() {
+                session
+                    .client
+                    .upload_objects(repo.store(), &up.retry)
+                    .await?;
+            }
+            transfer.objects
+        }
+        None => {
+            let sent = session
+                .client
+                .upload_objects(repo.store(), &to_send)
+                .await?;
+            transfer.objects = sent;
+            sent
+        }
+    };
+    // ---- end pack-delta ----
 
     let mut req = push_request(&session, &branch, server_tip.as_deref(), &new_tip, &chain);
     req.force = report.forced; // history-v2 (§16.10)
@@ -134,7 +175,7 @@ pub(crate) async fn push_with(
 
     known.extend(chain.into_iter().map(|s| s.id));
     push_tags(repo, &tree_name, &mut session, &known).await?;
-    Ok(report)
+    Ok((report, transfer))
 }
 
 /// Ids of every snapshot reachable from a server branch tip that is also
