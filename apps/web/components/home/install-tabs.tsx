@@ -21,14 +21,14 @@ export const installs = [
     label: "macOS & Linux",
     icon: RiAppleFill,
     command: `curl -fsSL ${RAW}/install.sh | bash`,
-    note: "Installs wt and worktree-bg into ~/.local/bin, checksum-verified. Until a release is published it builds from source, which needs Rust and git.",
+    note: "Downloads the latest release for your OS and CPU, verifies its checksum, and installs wt and worktree-bg into ~/.local/bin.",
   },
   {
     id: "windows",
     label: "Windows",
     icon: RiWindowsFill,
     command: `irm ${RAW}/install.ps1 | iex`,
-    note: "In PowerShell. Installs into %LOCALAPPDATA%\\Programs\\worktree\\bin and adds it to your PATH; builds from source with Rust until a release is published.",
+    note: "In PowerShell. Downloads the latest release, verifies its checksum, installs into %LOCALAPPDATA%\\Programs\\worktree\\bin and adds it to your PATH.",
   },
   {
     id: "cargo",

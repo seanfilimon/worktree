@@ -36,7 +36,7 @@ cargo install --locked --git https://github.com/seanfilimon/worktree worktree-cl
 </Tab>
 </Tabs>
 
-The installers download the latest release and verify its checksum. When no release has been published yet, they build from source instead, which needs [Rust](https://rustup.rs) and `git`. Then check the install and take a first snapshot:
+The installers download the latest release for your OS and CPU and verify its checksum; if no release matches, they build from source, which needs [Rust](https://rustup.rs) and `git`. Then check the install and take a first snapshot:
 
 ```bash
 wt --version
