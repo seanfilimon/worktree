@@ -1,0 +1,14 @@
+[auto_snapshot]
+enabled = true
+inactivity_secs = 30
+max_changed_bytes = "50MB"
+message_format = "auto: {count} files"
+on_branch_switch = "stash"
+
+[secret_scanning]
+block_on_match = true
+exclude = ["fixtures/"]
+patterns = [{ name = "internal-token", regex = "itk_[0-9a-f]{32}" }]
+
+[hooks]
+timeout_secs = 42

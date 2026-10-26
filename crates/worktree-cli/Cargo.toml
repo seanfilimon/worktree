@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 worktree-sdk = { path = "../worktree-sdk" }
 worktree-git = { path = "../worktree-git" }
+# config-as-code (§16.3): .wt-tree validation (config::as_code).
+worktree-protocol = { path = "../worktree-protocol" }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }

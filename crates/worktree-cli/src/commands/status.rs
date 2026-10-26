@@ -44,6 +44,9 @@ struct LocalStatus<'a> {
     /// oldest first (absent when none).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     outbox: Vec<OutboxEntry>,
+    /// config-as-code (§16.3): problems in the tree's .wt-tree files.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    config_problems: Vec<worktree_protocol::config::as_code::Diagnostic>,
 }
 
 pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
@@ -62,6 +65,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
         sparse: repo.sparse_status(&tree.name)?,
         // An absent outbox file reads as empty.
         outbox: repo.outbox(&tree.name)?,
+        config_problems: crate::commands::config_as_code::status_problems(&repo, &tree),
     };
 
     // daemon workstream (§13.11): hint when auto-snapshot is on but the
@@ -136,6 +140,11 @@ fn render(t: &mut Text, local: &LocalStatus<'_>, head_line: &str) {
     if let Some(state) = &report.merge {
         t.blank();
         render_merge(t, state);
+    }
+    if !local.config_problems.is_empty() {
+        t.blank();
+        t.line(".wt-tree configuration problems (see `wt trees config validate`):");
+        crate::commands::config_as_code::render_diagnostics(t, &local.config_problems);
     }
     if !local.restricted.is_empty() {
         t.blank();
@@ -332,6 +341,7 @@ mod tests {
             shallow: false,
             sparse: None,
             outbox: Vec::new(),
+            config_problems: Vec::new(),
         };
         let json = serde_json::to_value(&local).expect("json");
         assert!(json.get("outbox").is_none(), "{json}");

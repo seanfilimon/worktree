@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { GitBranch, GitCompareArrows, History, Lock, Plus, Trash2 } from "lucide-react";
-import { useId, useState, type FormEvent } from "react";
+import { GitBranch, GitCompareArrows, History, Lock, Pencil, Plus, Trash2, UserRound } from "lucide-react";
+import { useId, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { errorMessage, isApiError } from "@/api/client";
 import { useApi } from "@/api/context";
@@ -25,12 +25,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { shortId } from "@/lib/format";
 import { treePath } from "@/lib/paths";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
 import { RevisionSelect } from "./history/RevisionSelect";
 import { EmptyState, LoadingRows, QueryError, RelativeTime } from "./history/shared";
+import { createTreeConfigApi, ownerError, type PatchBranchRequest } from "./treeConfigApi";
 
 /** Client-side check mirroring common ref-name rules; the server has the final word. */
 function branchNameError(name: string): string | null {
@@ -157,6 +159,113 @@ function CreateBranchDialog() {
   );
 }
 
+// ---- config-as-code (§16.3): branch description and owner ----
+
+function EditBranchDialog({ branch }: { branch: Branch }) {
+  const { tenant, tree, canManage } = useTreeContext();
+  const { client } = useApi();
+  const cfgApi = useMemo(() => createTreeConfigApi(client, tenant, tree), [client, tenant, tree]);
+  const toast = useToast();
+  const invalidate = useInvalidateBranches();
+  const descId = useId();
+  const ownerId = useId();
+  const [open, setOpen] = useState(false);
+  const [description, setDescription] = useState("");
+  const [owner, setOwner] = useState("");
+  const ownerProblem = ownerError(owner);
+
+  const save = useMutation({
+    mutationFn: () => {
+      const body: PatchBranchRequest = {};
+      if (description.trim() !== (branch.description ?? "")) body.description = description.trim();
+      if (canManage && owner.trim() !== (branch.owner ?? "")) body.owner = owner.trim();
+      return Object.keys(body).length === 0 ? Promise.resolve(branch) : cfgApi.patchBranch(branch.name, body);
+    },
+    meta: { inlineError: true },
+    onSuccess: () => {
+      invalidate();
+      toast.success("Branch updated", branch.name);
+      setOpen(false);
+    },
+  });
+  const managed = save.error && isApiError(save.error) && save.error.code === "config_managed";
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (ownerProblem) return;
+    save.mutate();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) {
+          setDescription(branch.description ?? "");
+          setOwner(branch.owner ?? "");
+          save.reset();
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="icon-sm" aria-label={`Edit details of ${branch.name}`} title="Description and owner">
+          <Pencil aria-hidden="true" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={submit} aria-label="Edit branch" className="grid gap-4" noValidate>
+          <DialogHeader>
+            <DialogTitle>
+              Branch <span className="font-mono">{branch.name}</span>
+            </DialogTitle>
+            <DialogDescription>
+              Branches declared in <span className="font-mono">.wt-tree/branches.toml</span> are managed by that file.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor={descId}>Description</Label>
+            <Textarea id={descId} rows={3} maxLength={1000} value={description} onChange={(e) => setDescription(e.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={ownerId}>Owner</Label>
+            <Input
+              id={ownerId}
+              value={owner}
+              disabled={!canManage}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="user:alice or team:platform"
+              className="font-mono"
+              aria-invalid={ownerProblem ? true : undefined}
+              aria-describedby={`${ownerId}-help`}
+              onChange={(e) => setOwner(e.target.value)}
+            />
+            <p id={`${ownerId}-help`} className={ownerProblem ? "text-xs font-medium" : "text-xs text-muted-foreground"}>
+              {ownerProblem || (canManage ? "Leave empty to remove the owner." : "Changing the owner needs tree admin rights.")}
+            </p>
+          </div>
+          {save.error && (
+            <Alert>
+              <AlertDescription className="text-foreground">
+                {managed ? "This branch is declared in .wt-tree/branches.toml: change the file and push it instead." : errorMessage(save.error)}
+              </AlertDescription>
+            </Alert>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={save.isPending || Boolean(ownerProblem)}>
+              {save.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function DeleteBranchButton({ branch }: { branch: Branch }) {
   const { tenant, tree } = useTreeContext();
   const api = useApi();
@@ -253,7 +362,14 @@ export function BranchesTab() {
                               protected
                             </Badge>
                           )}
+                          {b.owner && (
+                            <Badge variant="secondary" title="Branch owner" className="font-mono">
+                              <UserRound aria-hidden="true" />
+                              {b.owner}
+                            </Badge>
+                          )}
                         </span>
+                        {b.description && <p className="mt-1 max-w-prose text-xs whitespace-normal text-muted-foreground">{b.description}</p>}
                       </TableCell>
                       <TableCell>
                         {b.tip ? (
@@ -276,6 +392,7 @@ export function BranchesTab() {
                       </TableCell>
                       <TableCell>
                         <span className="flex items-center justify-end gap-1">
+                          <EditBranchDialog branch={b} />
                           <Button variant="ghost" size="icon-sm" asChild>
                             <Link to={historyHref(b.name)} aria-label={`History of ${b.name}`} title="History">
                               <History aria-hidden="true" />

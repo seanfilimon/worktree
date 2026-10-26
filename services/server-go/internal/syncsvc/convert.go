@@ -266,6 +266,8 @@ const (
 
 // IsSharedTreeConfigPath reports whether a tree-relative manifest path is
 // one of the tree's own shared `.wt-tree/` files: `.wt-tree/config.toml`,
+// `.wt-tree/branches.toml`, `.wt-tree/protections.toml` (config-as-code,
+// §16.3),
 // `.wt-tree/ignore`, or a file below `.wt-tree/hooks/` or
 // `.wt-tree/access/`. Everything else in `.wt-tree/` (the local identity
 // file) never leaves the client.
@@ -276,7 +278,8 @@ func IsSharedTreeConfigPath(p string) bool {
 	}
 	dir, sub, nested := strings.Cut(rest, "/")
 	if !nested {
-		return rest == "config.toml" || rest == "ignore"
+		// config-as-code (§16.3): branches.toml and protections.toml too.
+		return rest == "config.toml" || rest == "ignore" || rest == "branches.toml" || rest == "protections.toml"
 	}
 	if (dir != "hooks" && dir != "access") || sub == "" {
 		return false
@@ -301,7 +304,7 @@ func validateReservedComponents(p string) error {
 		case c == treeMarkerDir && i > 0:
 			return fmt.Errorf("path %q is inside a nested tree's %s/ marker", p, treeMarkerDir)
 		case c == treeMarkerDir && !IsSharedTreeConfigPath(p):
-			return fmt.Errorf("path %q: only %s/{config.toml,ignore,hooks/**,access/**} are tracked", p, treeMarkerDir)
+			return fmt.Errorf("path %q: only %s/{config.toml,ignore,branches.toml,protections.toml,hooks/**,access/**} are tracked", p, treeMarkerDir)
 		}
 	}
 	return nil

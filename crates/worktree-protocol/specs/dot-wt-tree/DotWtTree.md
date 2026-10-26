@@ -1,6 +1,6 @@
 # `.wt-tree/` Nested Tree Directory Specification
 
-> **Version:** 0.7 — describes the marker directory as built (`crates/worktree-sdk/src/repo/trees.rs`, `docs/ENGINEERING_PLAN.md` §13.7, §13.9, §15.10).
+> **Version:** 0.8 — describes the marker directory as built (`crates/worktree-sdk/src/repo/trees.rs`, `docs/ENGINEERING_PLAN.md` §13.7, §13.9, §15.10, §16.3).
 > Features described but not built are listed under [Roadmap](#roadmap).
 
 ---
@@ -18,7 +18,10 @@ and holds:
 - tree-level ignore patterns (`ignore`) — **shared**;
 - tree-level snapshot hooks (`hooks/`) — **shared**;
 - tree-scoped declarative access policies (`access/`, deny statements
-  only) — **shared**.
+  only) — **shared**;
+- config-as-code server settings (v0.8): branch descriptions and owners
+  (`branches.toml`) and branch protections (`protections.toml`) —
+  **shared**, applied by the server ([ConfigAsCode.md](./ConfigAsCode.md)).
 
 The root tree of a worktree created with `wt init` has no `.wt-tree/`; its
 equivalents are `.wt/config.toml`, `.wt/ignore`, `.wt/hooks/` and
@@ -32,15 +35,23 @@ Three facts shape everything below:
    id so tools can identify the directory. Copying a directory with a
    `.wt-tree/` into a worktree does not register it.
 2. **The shared files travel with the tree** (v0.7, §15.10).
-   `.wt-tree/config.toml`, `.wt-tree/ignore`, `.wt-tree/hooks/**` and
+   `.wt-tree/config.toml`, `.wt-tree/ignore`, `.wt-tree/branches.toml`,
+   `.wt-tree/protections.toml`, `.wt-tree/hooks/**` and
    `.wt-tree/access/**` of a tree are snapshotted, pushed, fetched and
    cloned like any other file of that tree, so configuration, hooks and
    policies are reviewed and versioned with the code.
 3. **Everything else in `.wt-tree/` stays local** — in particular
    `local.toml`. Manifest paths inside `.wt/`, a `.wt-tree/` path that is
    not one of the shared files, and any `.wt-tree/` below the tree root (a
-   nested tree's marker) are rejected by the SDK and by the server. Applying
-   access policies to the server still needs an explicit `wt access apply`.
+   nested tree's marker) are rejected by the SDK and by the server.
+4. **The default branch configures the server** (v0.8, §16.3). A push or
+   merge that changes `config.toml`, `branches.toml`, `protections.toml` or
+   `access/**` on the tree's default branch is validated by the server
+   (invalid files reject the push with located errors) and then applied:
+   branch metadata, config-managed protections and the tree's access
+   document (`access/` changes need iam:admin). `wt access apply --tree-doc`
+   still works for applying without a push. See
+   [ConfigAsCode.md](./ConfigAsCode.md).
 
 ---
 
@@ -52,6 +63,8 @@ services/auth/
 │   ├── local.toml           marker identity: name + id (local only, required)
 │   ├── config.toml          tree-level overrides (shared, optional)
 │   ├── ignore               tree-level ignore patterns (shared, optional)
+│   ├── branches.toml        branch descriptions/owners (shared, optional; v0.8 config-as-code)
+│   ├── protections.toml     branch protections (shared, optional; v0.8 config-as-code)
 │   ├── hooks/               (shared)
 │   │   ├── pre-snapshot     (optional; also .cmd/.bat/.ps1 on Windows)
 │   │   └── post-snapshot
@@ -328,14 +341,13 @@ snapshot; nothing else changes. Older clients ignore (and never write)
 | `.wt-tree/hooks/` | Built (v0.5 §13.9) |
 | `.wt-tree/access/policies.toml` (deny only) | Built (v0.5 §13.7) |
 | `wt tree validate`, `wt tree init-config` | Built (v0.5 §13.9) |
+| Server-side validation of pushed `config.toml`, `branches.toml`, `protections.toml` and `access/**` (located errors) and their application on the default branch | Built (v0.8 §16.3, [ConfigAsCode.md](./ConfigAsCode.md)) |
+| `branches.toml` (descriptions, owners) and `protections.toml` (config-managed protections) | Built (v0.8 §16.3) |
 
 ## Roadmap
 
 Described in earlier drafts, not built:
 
-- Server-side rejection of invalid tree configuration (unparsable
-  `config.toml`, invalid `access/policies.toml`) during sync, and applying
-  pushed `access/` documents automatically.
 - A multi-tree clone that registers a tree's nested trees.
 - `[tree]` section keys `branch_strategy`, `parent`, `created_by`,
   `description`.
@@ -346,7 +358,10 @@ Described in earlier drafts, not built:
 - `[[registered_path]]` and policy scopes `{ path = ... }` limited to
   registered paths — path rules use glob resources.
 - `[[branch_protection]]` with `[branch_protection.review]` merged additively
-  with root rules — protections are server rules (`wt protect`).
+  with root rules — protections are server rules (`wt protect`) or the
+  tree's own `protections.toml` (v0.8), never merged across trees.
+- `[tree]` keys as config-as-code beyond branch metadata and protections
+  (see [ConfigAsCode.md](./ConfigAsCode.md) §14).
 - Policy syntax with `subject`/`not_team`/`unless`/`scope` tables and
   tree-level `allow` statements checked against a computed root ceiling.
 - Hook variables `WT_TREE_NAME`, `WT_CHANGED_FILES`, `WT_USER`,
@@ -368,3 +383,4 @@ Described in earlier drafts, not built:
 - `crates/worktree-sdk/src/remote/access.rs` — plan/apply/pull
 - `crates/worktree-cli/src/commands/{tree,config,access}.rs`
 - `services/server-go/internal/accesscfg/` — server apply
+- `services/server-go/internal/treeconfig/` and `crates/worktree-protocol/src/config/as_code.rs` — config-as-code ([ConfigAsCode.md](./ConfigAsCode.md))

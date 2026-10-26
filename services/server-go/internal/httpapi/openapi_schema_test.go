@@ -42,6 +42,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
 	"github.com/seanfilimon/worktree/services/server-go/internal/syncsvc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
+	"github.com/seanfilimon/worktree/services/server-go/internal/treeconfig"
 	"github.com/seanfilimon/worktree/services/server-go/internal/webhooks"
 )
 
@@ -124,6 +125,16 @@ var openAPITypes = map[string]any{
 	// history-v2 (§16.10): internal/syncsvc, httpapi/reflog.go
 	"ReflogEntry":    syncsvc.ReflogEntry{},
 	"ReflogResponse": reflogResponse{},
+	// config-as-code (§16.3): internal/treeconfig, httpapi/treeconfig.go
+	"TreeConfigState":           treeconfig.State{},
+	"TreeConfigApplied":         treeconfig.Applied{},
+	"TreeConfigAttempt":         treeconfig.Attempt{},
+	"ConfigDiagnostic":          treeconfig.Diagnostic{},
+	"ConfigFileInfo":            treeconfig.FileInfo{},
+	"BranchDecl":                treeconfig.BranchDecl{},
+	"ConfigValidation":          treeconfig.ValidationResult{},
+	"ValidateTreeConfigRequest": validateTreeConfigRequest{},
+	"PatchBranchRequest":        treeconfig.BranchUpdate{},
 
 	// httpapi request and response types.
 	"Error":                       errorBody{},

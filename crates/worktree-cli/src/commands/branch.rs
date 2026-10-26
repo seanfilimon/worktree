@@ -3,10 +3,12 @@
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde::Serialize;
+use serde_json::json;
 use worktree_sdk::config::OnBranchSwitch;
 use worktree_sdk::repo::{AutoStashSwitch, StashApplyOutcome, StashEntry};
 use worktree_sdk::{BranchInfo, Repository, SwitchOptions};
 
+use crate::commands::config_as_code;
 use crate::context::Context;
 use crate::error::Result;
 use crate::output::format::{plural, short_or, subject};
@@ -41,6 +43,19 @@ pub enum BranchCommand {
     Archive { name: String },
     /// Restore an archived branch
     Restore { name: String },
+    /// Set the description of a branch on the server (origin); "" clears
+    /// it. Branches declared in .wt-tree/branches.toml are changed there.
+    Describe { name: String, text: String },
+    /// Set the owner of a branch on the server (origin): user:NAME or
+    /// team:SLUG (needs tree:admin)
+    Owner {
+        name: String,
+        #[arg(required_unless_present = "clear", value_name = "user:X|team:Y")]
+        owner: Option<String>,
+        /// Remove the owner
+        #[arg(long, conflicts_with = "owner")]
+        clear: bool,
+    },
 }
 
 /// `wt switch NAME [-c] [--force]`
@@ -85,6 +100,22 @@ struct SwitchResult<'a> {
 }
 
 pub fn run(ctx: &Context, args: BranchArgs) -> Result<()> {
+    // config-as-code (§16.3): branch metadata lives on the server.
+    match &args.action {
+        Some(BranchCommand::Describe { name, text }) => {
+            return config_as_code::patch_branch(ctx, name, json!({ "description": text }));
+        }
+        Some(BranchCommand::Owner { name, owner, clear }) => {
+            let owner = if *clear {
+                String::new()
+            } else {
+                owner.clone().unwrap_or_default()
+            };
+            config_as_code::owner_arg(&owner)?;
+            return config_as_code::patch_branch(ctx, name, json!({ "owner": owner }));
+        }
+        _ => {}
+    }
     let (repo, tree) = ctx.open_tree()?;
     match args.action {
         None => list(ctx, &repo, &tree.name, args.all),
@@ -123,6 +154,9 @@ pub fn run(ctx: &Context, args: BranchArgs) -> Result<()> {
             ctx.out.emit(&state, |t| {
                 t.line(format_args!("Restored branch {}", name.green().bold()))
             })
+        }
+        Some(BranchCommand::Describe { .. } | BranchCommand::Owner { .. }) => {
+            unreachable!("handled above")
         }
     }
 }

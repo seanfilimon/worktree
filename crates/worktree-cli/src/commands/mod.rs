@@ -14,6 +14,7 @@ pub mod ci;
 pub mod completions;
 pub mod compliance;
 pub mod config;
+pub mod config_as_code; // config-as-code (§16.3)
 pub mod daemon;
 pub mod deps;
 pub mod diff;

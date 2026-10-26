@@ -1,0 +1,15 @@
+# Branch metadata
+[[branch]]
+name = "main"
+description = "Production; deployed on every push"
+owner = "team:platform"
+
+[[branch]]
+name = "release/1.0"
+owner = "user:alice"
+
+[[branch]]
+name = 'feature/x'
+description = """
+Multi-line
+description"""

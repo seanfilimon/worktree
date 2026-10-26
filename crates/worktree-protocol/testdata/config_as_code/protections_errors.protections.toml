@@ -1,0 +1,17 @@
+[[protection]]
+pattern = "main"
+required_approvals = 101
+merge_methods = ["squash", "octopus"]
+allowed_pushers = ["alice", ""]
+
+[[protection]]
+pattern = "release/**"
+no_direct_push = "yes"
+
+[[protection]]
+pattern = "main"
+
+[[protection]]
+pattern = "a//b"
+require_signed = true
+frobnicate = 1

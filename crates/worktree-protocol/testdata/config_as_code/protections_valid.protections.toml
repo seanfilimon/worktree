@@ -1,0 +1,18 @@
+[[protection]]
+pattern = "main"
+no_direct_push = true
+required_approvals = 2
+allowed_pushers = ["alice", "bob"]
+no_delete = true
+require_ci_pass = true
+required_checks = ["ci/build", "ci/test"]
+require_signed = false
+require_linear = true
+block_on_todos = false
+merge_methods = ["squash", "fast-forward"]
+no_force_push = true
+require_owner_approval = false
+
+[[protection]]
+pattern = "release/**"
+no_delete = true
