@@ -1,0 +1,81 @@
+# Server operations (v0.8): ServiceMonitor, NetworkPolicy with restricted
+# ingress and egress, PodDisruptionBudget, backup CronJob, backups to S3
+# while objects stay on disk, retention and e-mail dead-letter settings.
+# expect: ServiceMonitor/wt-worktree, NetworkPolicy/wt-worktree, PodDisruptionBudget/wt-worktree, CronJob/wt-worktree-backup, StatefulSet/wt-worktree, ConfigMap/wt-worktree
+# expect-text: WT_BACKUP_TARGET: "s3"
+# expect-text: WT_S3_BUCKET: "wt-backups"
+# expect-text: WT_S3_ENDPOINT: "minio.storage.svc:9000"
+# expect-text: WT_BACKUP_S3_PREFIX: "cluster-a/backups/"
+# expect-text: WT_BACKUP_MAX_AGE: "2160h"
+# expect-text: name: WT_S3_ACCESS_KEY
+# expect-text: WT_POLICY_VERSION_RETENTION: "90d,100"
+# expect-text: WT_WEBHOOK_DELIVERY_RETENTION: "168h"
+# expect-text: WT_WEBHOOK_DELIVERY_KEEP: "50"
+# expect-text: WT_EMAIL_DEAD_AFTER: "48h"
+# expect-text: WT_AUDIT_RETENTION: "8760h"
+# expect-text: value: "http://wt-worktree:7420/api/v1/admin/backups"
+# expect-text: value: "{\"note\":\"nightly\"}"
+# expect-text: --fail-with-body --silent --show-error --max-time 3600
+# expect-text: name: wt-backup-token
+# expect-text: schedule: "30 2 * * *"
+# expect-text: automountServiceAccountToken: false
+# expect-text: path: /metrics
+# expect-text: scheme: http
+# expect-text: release: kube-prometheus-stack
+# expect-text: regex: wt-worktree-headless
+# expect-text: kubernetes.io/metadata.name: ingress-nginx
+# expect-text: app.kubernetes.io/part-of: worktree
+# expect-text: cidr: 10.20.0.0/16
+# expect-text: minAvailable: 1
+# expect-not-text: WT_OBJECT_STORE
+# expect-not-text: maxUnavailable
+server:
+  auditRetention: 8760h
+backup:
+  target: s3
+  s3Prefix: cluster-a/backups/
+  maxAge: 2160h
+  cronJob:
+    enabled: true
+    schedule: "30 2 * * *"
+    note: nightly
+    tokenSecret:
+      name: wt-backup-token
+    resources:
+      limits:
+        memory: 32Mi
+s3:
+  endpoint: minio.storage.svc:9000
+  bucket: wt-backups
+  accessKey: minio
+  secretKey: minio-secret
+retention:
+  policyVersions: "90d,100"
+  webhookDeliveries: 168h
+  webhookDeliveryKeep: 50
+smtp:
+  deadAfter: 48h
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+  egress:
+    allowAll: false
+    extra:
+      - to:
+          - ipBlock:
+              cidr: 10.20.0.0/16
+        ports:
+          - port: 9000
+            protocol: TCP
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  maxUnavailable: null

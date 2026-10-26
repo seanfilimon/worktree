@@ -1,0 +1,4 @@
+# expect-error: podDisruptionBudget: set either minAvailable or maxUnavailable, not both
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

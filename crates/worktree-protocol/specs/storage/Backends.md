@@ -8,7 +8,9 @@ can write point-in-time **backups** of everything it stores: the metadata
 database and every object, in one `.wtbak` archive. Backups are created
 over the REST API (`wt admin backup create`, the admin panel's Backups
 page) or on a schedule, and restored offline with
-`worktree-server restore`.
+`worktree-server restore`. Since v0.8 (§16.11) backups can be kept in an
+S3 bucket instead of the data directory (`--backup-target s3`), pruned by
+age as well as count, listed and restored by id from either target.
 
 The metadata database (`<data>/meta.db`, bbolt) always lives in the data
 directory; only objects move to S3. Object ids, the stored encoding
@@ -74,10 +76,38 @@ optional `StatStore`, `ListStore` and `SizeStore`):
 | `--s3-insecure` | `WT_S3_INSECURE` | `false` | Plain HTTP |
 | `--backup-interval` | `WT_BACKUP_INTERVAL` | `0` (off) | Period of scheduled backups (at least `1m`) |
 | `--backup-keep` | `WT_BACKUP_KEEP` | `7` | Scheduled backups kept (0 keeps all) |
+| `--backup-max-age` | `WT_BACKUP_MAX_AGE` | `0` (no limit) | v0.8: scheduled backups older than this are pruned (`720h`, `30d`; at least `1m`) |
+| `--backup-target` | `WT_BACKUP_TARGET` | `disk` | v0.8: where archives are kept: `disk` (`<data>/backups`) or `s3` (the `--s3-*` bucket) |
+| `--backup-s3-prefix` | `WT_BACKUP_S3_PREFIX` | `<s3-prefix>backups/` | v0.8: key prefix of archives in the bucket |
+
+## Backup targets (v0.8)
+
+| `--backup-target` | Archives at |
+|---|---|
+| `disk` (default) | `<data>/backups/<id>.wtbak` |
+| `s3` | `s3://<bucket>/<backup-s3-prefix><id>.wtbak` |
+
+The S3 target reuses the object store's connection settings
+(`--s3-endpoint`, `--s3-bucket`, `--s3-region`, credentials,
+`--s3-insecure`), so it works with `--object-store disk` (objects on the
+volume, backups off-host) as well as `--object-store s3`. When both share a
+bucket, `--backup-s3-prefix` must not lie inside the object store's
+`<s3-prefix>objects/` (startup validation); the default
+`<s3-prefix>backups/` never does. The bucket is checked (and created) at
+startup like the object store's.
+
+Every archive is first written to the local staging file
+`<data>/backups/<id>.wtbak.partial`. The disk target renames it into
+place; the S3 target uploads it (`PutObject` with `Content-MD5`; a single
+PUT up to 64 MiB, multipart with 64 MiB parts above) and deletes the
+staging file. A failed upload leaves neither an object, an index entry nor
+a local file, and the API answers the error. `BackupInfo.path` is the
+file path or `s3://bucket/key`. Downloads from the S3 target are streamed
+whole (no `Range`); `DELETE` removes the object.
 
 ## Backup archives (`.wtbak`)
 
-A backup is one file `<data>/backups/<id>.wtbak`, id
+A backup is one archive `<id>.wtbak` in the backup target, id
 `bk-<yyyymmdd>T<hhmmss>Z-<6 hex>` (UTC creation time + random suffix; also
 safe as a file name). The file is a **zstd-compressed POSIX tar stream**
 (PAX headers) with, in this order:
@@ -114,27 +144,30 @@ unreachable for the whole grace period) is skipped. Unknown members are
 ignored by readers (forward compatibility); a manifest `version` newer
 than the reader supports is refused.
 
-The archive is written to `<id>.wtbak.partial` and renamed when complete,
-then indexed in the document collection `backups` (key = id, value
-`BackupInfo`). One backup runs at a time (`409 backup_running`).
+The archive is written to `<id>.wtbak.partial`, moved into the target when
+complete, then indexed in the document collection `backups` (key = id,
+value `BackupInfo`). One backup runs at a time (`409 backup_running`).
 
 ### Listing and retention
 
-`GET /admin/backups` lists indexed backups whose file still exists plus
-`.wtbak` files in the backup directory without an index entry (archives
-copied in, or written after the snapshot a server was restored from),
-newest first; the index entry's path is re-derived from the configured
-directory. Scheduled backups (`created_by` = `system`) beyond the newest
-`--backup-keep` are deleted after each scheduled run; backups created by
-people are never pruned automatically.
+`GET /admin/backups` lists indexed backups whose archive still exists in
+the target plus archives in the target without an index entry (archives
+copied in, or written after the snapshot a server was restored from; their
+creation time comes from the id), newest first; the index entry's path is
+re-derived from the configured target. Scheduled backups (`created_by` =
+`system`) beyond the newest `--backup-keep` or older than
+`--backup-max-age` are deleted after each scheduled run and by the hourly
+retention pass ([Deployment](../server/Deployment.md) §11; audit reason
+`keep` / `retention`); backups created by people are never pruned
+automatically.
 
 ## REST API (server admins)
 
 | Method and path | Result |
 |---|---|
 | `POST /api/v1/admin/backups` `{"note"?}` (body optional, note ≤ 500 bytes) | `201 BackupInfo` once the archive is complete; continues if the client disconnects; `409 backup_running`; `501` when the stores cannot be backed up |
-| `GET /api/v1/admin/backups` | `BackupStatus` `{config:{dir,interval,interval_seconds,keep}, store:{kind,root?,endpoint?,bucket?,prefix?,region?,secure?,compress}, supported, running, next_run_at?, last_error?, backups:[BackupInfo]}` |
-| `GET /api/v1/admin/backups/{id}/download` | The archive (`application/octet-stream`, `Content-Disposition: attachment`, `Range` supported) |
+| `GET /api/v1/admin/backups` | `BackupStatus` `{config:{dir,target,location,interval,interval_seconds,keep,max_age,max_age_seconds}, store:{kind,root?,endpoint?,bucket?,prefix?,region?,secure?,compress}, supported, running, next_run_at?, last_error?, backups:[BackupInfo]}` |
+| `GET /api/v1/admin/backups/{id}/download` | The archive (`application/octet-stream`, `Content-Disposition: attachment`; `Range` supported for the disk target) |
 | `DELETE /api/v1/admin/backups/{id}` | `204`; `404` for unknown or malformed ids |
 
 `BackupInfo` = `{id, path, size_bytes, objects, created_at, created_by,
@@ -145,13 +178,21 @@ recorded by the `system` actor).
 ## Restore (offline)
 
 ```
-worktree-server restore [--force] --data DIR [--object-store ... --s3-* ...] [--compress-objects] FILE.wtbak
+worktree-server restore [--force] --data DIR [--object-store ... --s3-* ...] [--compress-objects]
+                        [--backup-target disk|s3 --backup-s3-prefix P] FILE.wtbak|BACKUP-ID
+worktree-server restore --list --data DIR [--backup-target disk|s3 --s3-* ... --backup-s3-prefix P]
 ```
 
+`--list` prints the archives in the backup target (id, creation time,
+size), newest first. A positional argument that is not an existing file
+but a backup id is read from the backup target: `<DIR>/backups/<id>.wtbak`
+for `disk`, or streamed straight from the bucket for `s3` (no local copy).
 The server must be stopped (bbolt holds an exclusive lock). Restore:
 
 1. Refuses a data directory that exists and is not empty unless `--force`
-   (exit 1); with `--force`, `meta.db` is replaced and objects are added
+   (exit 1; a `backups/` subdirectory is ignored, so a disk-target archive
+   can be restored by id into an otherwise empty data directory); with
+   `--force`, `meta.db` is replaced and objects are added
    next to existing ones (stale objects are collected by GC).
 2. Streams the archive: `meta.db` goes to `meta.db.restoring`; every
    object is checked against its name (BLAKE3) and written to the selected
@@ -176,8 +217,13 @@ database stay valid. Exit codes: 0 restored, 1 failed, 2 usage.
 - Admin panel `/backups`: backups table (download, delete with
   confirmation), create dialog with an optional note, the object store
   (kind, endpoint/bucket/prefix/region or directory, compression), the
-  schedule and keep count, the last scheduled failure, and the restore
-  command. Server administrators only.
+  backup target and location, the schedule, keep count and maximum age,
+  the last scheduled failure, and the restore commands. Since v0.8 the
+  page also shows the email outbox and the retention settings
+  ([Notifications](../server/Notifications.md) §7,
+  [Deployment](../server/Deployment.md) §11). Server administrators only.
+- `worktree-server fake-s3 [--addr HOST:PORT] [--bucket B]` (testing only)
+  serves the in-memory `objstore.FakeS3` over HTTP for end-to-end tests.
 
 ## Implementation status
 
@@ -192,13 +238,15 @@ database stay valid. Exit codes: 0 restored, 1 failed, 2 usage.
 | Scheduled backups and keep count | Built (v0.7 §15.2) |
 | `worktree-server restore` with hash verification, `--force`, disk or S3 target | Built (v0.7 §15.2) |
 | `wt admin backup`, admin Backups page | Built (v0.7 §15.2) |
-| Uploading backups to S3 / remote targets | Roadmap |
+| S3 backup target (`--backup-target s3`, `--backup-s3-prefix`), listing and restore by id from either target, `restore --list` | Built (v0.8 §16.11) |
+| Backup retention by age (`--backup-max-age`) and count, hourly retention pass | Built (v0.8 §16.11) |
+| `worktree-server fake-s3` for e2e tests | Built (v0.8 §16.11) |
 | Incremental backups | Roadmap |
 
 ## Roadmap
 
-- Write backups to a bucket (or any object store) instead of the data
-  directory, with server-side encryption options.
+- Server-side encryption options for the S3 backup target (SSE-S3 /
+  SSE-KMS headers) and other remote targets (GCS, Azure Blob).
 - Incremental backups (objects since the previous backup's manifest) and
   restore chains.
 - Online verification of an archive (`wt admin backup verify`) without
@@ -209,18 +257,19 @@ database stay valid. Exit codes: 0 restored, 1 failed, 2 usage.
 
 ## References
 
-- Server: `services/server-go/internal/objstore/{s3,s3fake}.go`,
-  `internal/backup/{backup,archive,restore}.go`,
-  `internal/httpapi/backups.go`, `internal/config/backends.go`,
-  `internal/server/objects.go`, `internal/meta/snapshot.go`,
-  `restore.go` (subcommand)
+- Server: `services/server-go/internal/objstore/{s3,s3fake,s3client}.go`,
+  `internal/backup/{backup,archive,restore,target}.go`,
+  `internal/httpapi/backups.go`, `internal/config/{backends,serverops}.go`,
+  `internal/server/{objects,serverops}.go`, `internal/meta/snapshot.go`,
+  `restore.go` (subcommand), `fakes3.go` (testing subcommand)
 - CLI: `crates/worktree-cli/src/commands/admin_backup.rs`
 - Admin: `apps/admin/src/pages/BackupsPage.tsx`, `src/api/backups.ts`
 - Tests: `services/server-go/internal/objstore/s3_test.go`,
-  `internal/backup/backup_test.go`, `internal/httpapi/backups_test.go`,
-  `internal/config/backends_test.go`, `restore_test.go`,
-  `apps/admin/src/pages/backups.test.tsx`,
-  `crates/worktree-e2e/tests/e2e/backups.rs`
-- `docs/ENGINEERING_PLAN.md` §15.2
+  `internal/backup/{backup,target}_test.go`,
+  `internal/httpapi/{backups,outbox}_test.go`,
+  `internal/config/{backends,serverops}_test.go`,
+  `{restore,serverops}_test.go`, `apps/admin/src/pages/backups.test.tsx`,
+  `crates/worktree-e2e/tests/e2e/{backups,server_ops}.rs`
+- `docs/ENGINEERING_PLAN.md` §15.2, §16.11
 - Related specs: [Storage](./Storage.md), [Compression](./Compression.md),
   [Server](../server/Server.md)

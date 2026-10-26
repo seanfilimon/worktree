@@ -1,0 +1,4 @@
+# expect-error: backup.cronJob.enabled requires backup.cronJob.tokenSecret.name
+backup:
+  cronJob:
+    enabled: true

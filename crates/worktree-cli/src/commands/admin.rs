@@ -20,6 +20,13 @@ use crate::output::Text;
 #[path = "admin_backup.rs"]
 mod backup;
 
+// --- server-ops (§16.11): `wt admin outbox ...`, `wt admin retention ...` ---
+#[path = "admin_outbox.rs"]
+mod outbox;
+#[path = "admin_retention.rs"]
+mod retention;
+// --- end server-ops ---
+
 #[derive(Debug, Args)]
 pub struct AdminArgs {
     #[command(subcommand)]
@@ -88,9 +95,17 @@ pub enum AdminCommand {
     // --- end storage ---
     // --- storage-backends (§15.2) ---
     /// Create, list, download and delete server backups (restore offline
-    /// with `worktree-server restore --data DIR FILE`)
+    /// with `worktree-server restore --data DIR <FILE|ID>`)
     Backup(backup::BackupArgs),
     // --- end storage-backends ---
+    // --- server-ops (§16.11) ---
+    /// The durable email outbox: list queued, sent and dead-lettered
+    /// emails; retry or delete them
+    Outbox(outbox::OutboxArgs),
+    /// Show the retention settings (policy versions, audit events, webhook
+    /// deliveries, backups) and the last run; `run` prunes now
+    Retention(retention::RetentionArgs),
+    // --- end server-ops ---
     // --- search-v2 (§15.9) ---
     /// Show the code search index (memory, disk, indexed trees and
     /// branches) or rebuild it (`wt admin code-index rebuild [TENANT/TREE]`)
@@ -515,6 +530,10 @@ pub fn run(ctx: &Context, args: AdminArgs) -> Result<()> {
         }
         // --- end storage ---
         AdminCommand::Backup(args) => backup::run(ctx, &api, args), // storage-backends (§15.2)
+        // --- server-ops (§16.11) ---
+        AdminCommand::Outbox(args) => outbox::run(ctx, &api, args),
+        AdminCommand::Retention(args) => retention::run(ctx, &api, args),
+        // --- end server-ops ---
         // --- search-v2 (§15.9) ---
         AdminCommand::CodeIndex(args) => crate::commands::search::run_code_index(&api, out, args),
         // --- end search-v2 ---
@@ -1236,6 +1255,74 @@ mod tests {
             ErrorKind::InvalidSubcommand
         );
     }
+
+    // --- server-ops (§16.11) ---
+    #[test]
+    fn parses_outbox_and_retention_subcommands() {
+        use outbox::{EmailStatus, OutboxCommand as O};
+        use retention::RetentionCommand as R;
+        let ob = |args: &[&str]| match admin(args) {
+            AdminCommand::Outbox(o) => o.command,
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(
+            ob(&["outbox", "list"]),
+            O::List {
+                status: None,
+                limit: None
+            }
+        ));
+        assert!(matches!(
+            ob(&["outbox", "list", "--status", "dead", "--limit", "5"]),
+            O::List {
+                status: Some(EmailStatus::Dead),
+                limit: Some(5)
+            }
+        ));
+        let O::Retry { id, all } = ob(&["outbox", "retry", "em-1"]) else {
+            panic!()
+        };
+        assert_eq!((id.as_deref(), all), (Some("em-1"), false));
+        assert!(matches!(
+            ob(&["outbox", "retry", "--all"]),
+            O::Retry {
+                id: None,
+                all: true
+            }
+        ));
+        assert!(matches!(
+            ob(&["outbox", "delete", "em-1", "-y"]),
+            O::Delete { yes: true, .. }
+        ));
+        assert_eq!(
+            parse_err(&["admin", "outbox", "retry"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_err(&["admin", "outbox", "retry", "em-1", "--all"]),
+            ErrorKind::ArgumentConflict
+        );
+        assert_eq!(
+            parse_err(&["admin", "outbox", "list", "--status", "lost"]),
+            ErrorKind::InvalidValue
+        );
+        assert_eq!(
+            parse_err(&["admin", "outbox", "delete"]),
+            ErrorKind::MissingRequiredArgument
+        );
+
+        let rt = |args: &[&str]| match admin(args) {
+            AdminCommand::Retention(r) => r.command,
+            other => panic!("{other:?}"),
+        };
+        assert!(rt(&["retention"]).is_none());
+        assert!(matches!(rt(&["retention", "run"]), Some(R::Run)));
+        assert_eq!(
+            parse_err(&["admin", "retention", "prune"]),
+            ErrorKind::InvalidSubcommand
+        );
+    }
+    // --- end server-ops ---
 
     #[test]
     fn uptimes() {

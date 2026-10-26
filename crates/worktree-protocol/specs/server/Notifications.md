@@ -163,9 +163,44 @@ auto-generated` and `X-WT-Notification: <id>`, and — when `--public-url`
 is set — links to `<public-url>/admin<url>` and the Notifications page.
 HTML is escaped by `html/template`.
 
-Emails are queued (256 pending) and sent by a background sender; a failed
-attempt is retried after 30 s, 2 m, 10 m and 30 m, then dropped with a log
-line. The queue is in memory: emails pending at shutdown are lost.
+### 7.1 Durable outbox (v0.8)
+
+Since v0.8 (`docs/ENGINEERING_PLAN.md` §16.11) every email is first written
+to the `outbox` document collection and then sent by a background worker,
+so queued email survives restarts (and backups):
+
+- **Ids and order**: `em-<UTC time, fixed-width nanoseconds>-<8 hex>`; ids
+  sort by queue time (the clock is made strictly increasing per process).
+- **Statuses**: `pending` → `sent`, or `pending` → `dead`. A pending email
+  carries `next_attempt_at`, `attempts`, `last_error` and `deadline_at`
+  (queue time + `--email-dead-after`, env `WT_EMAIL_DEAD_AFTER`, default
+  24 h, at least 1 s).
+- **Retries**: a failed attempt is retried after 30 s, 2 m, 10 m and 30 m,
+  then every 30 m. An attempt that fails at or after `deadline_at`
+  dead-letters the email (`dead_at`, a warning in the log). There is no
+  attempt limit.
+- **Worker**: wakes when an email is queued, when the earliest
+  `next_attempt_at` is due, and at least every 30 s; at startup it picks up
+  every pending email of the store. Delivery is at least once: a crash
+  between the SMTP `DATA` and the status write sends the email again.
+  Without `--smtp-url` nothing is sent and the outbox only records what an
+  operator retries later.
+- **Housekeeping**: sent emails are deleted after 7 days, dead letters
+  after 30 days.
+- **Admin** (server admins, `x-wt-action: server:admin`, audited
+  `outbox.retry` / `outbox.delete`):
+
+  | Method and path | Purpose |
+  |---|---|
+  | `GET /api/v1/admin/outbox?status=pending\|sent\|dead&limit=N` | `{"enabled", "dead_after", "dead_after_seconds", "counts": {"pending","sent","dead"}, "emails": [OutboxEmail newest first]}`; bodies are not returned; `limit` default 100, max 1000 |
+  | `POST /api/v1/admin/outbox/{id}/retry` | A pending or dead email becomes pending with an immediate attempt and a fresh deadline → the email; `409 already_sent` for sent ones |
+  | `POST /api/v1/admin/outbox/retry` | Requeue every dead letter → `{"retried": n}` |
+  | `DELETE /api/v1/admin/outbox/{id}` | Remove an email → 204 |
+
+  CLI: `wt admin outbox list [--status S] [--limit N]`, `wt admin outbox
+  retry ID|--all`, `wt admin outbox delete ID [--yes]`. Admin panel: the
+  "Email outbox" card on the Backups page (counts, status filter, retry,
+  retry all dead, delete).
 
 ## 8. REST API
 
@@ -219,6 +254,7 @@ A GET of a watch scope without a stored setting returns the default
 | `watch_settings` | `DocKey(accountID, tenantID, treeID)` (`treeID` "" for a tenant) | `WatchSetting` |
 | `notification_settings` | `accountID` | `{email, updated_at}` |
 | `notify_state` | `DocKey("todo", treeID, %010d number)` / `DocKey("release", treeID, tag)` | last notified TODO assignee / announced release id |
+| `outbox` (v0.8) | email id (`em-...`) | `OutboxEmail` plus `to_name`, `text`, `html` (§7.1) |
 
 Deduplication state is in memory.
 
@@ -235,11 +271,12 @@ Deduplication state is in memory.
 | SMTP email (STARTTLS / implicit TLS, AUTH PLAIN, text + HTML, retries) | Built |
 | `wt inbox` CLI | Built |
 | Admin bell, Notifications page, tree Watch menu | Built |
-| `mr.review_requested` producers (path owners, reviewer requests) | Workstream `review-v07` |
+| `mr.review_requested` producers (path owners, reviewer requests) | Built (`review-v07`) |
+| Durable email outbox (restart-safe queue, backoff, dead letters after 24 h, admin REST, `wt admin outbox`, admin card) | Built (v0.8 §16.11) |
 
 ## 13. Roadmap
 
-- Persistent email queue and per-account digest emails.
+- Per-account digest emails.
 - Unsubscribe links (`List-Unsubscribe`) with signed tokens.
 - Per-reason preferences (e.g. no emails for `mr_commented`).
 - Notification threads (group by merge request) and "mark thread read".
@@ -248,7 +285,8 @@ Deduplication state is in memory.
 ## 14. References
 
 - `docs/ENGINEERING_PLAN.md` §15.3 — binding contract
-- `services/server-go/internal/notify/` — rules, storage, email sender
+- `services/server-go/internal/notify/` — rules, storage, email sender, `outbox.go` (v0.8 durable outbox)
+- `services/server-go/internal/httpapi/outbox.go` — admin outbox routes (v0.8); `crates/worktree-cli/src/commands/admin_outbox.rs`
 - `services/server-go/internal/httpapi/notifications.go` — REST routes
 - `services/server-go/internal/httpapi/events.go` — SSE filter for `notification.created`
 - `services/server-go/internal/domain/v07.go` — `Notification`, `WatchSetting`, levels, events

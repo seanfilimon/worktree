@@ -52,6 +52,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/pathacl"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
+	"github.com/seanfilimon/worktree/services/server-go/internal/retention" // server-ops (§16.11)
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
 	"github.com/seanfilimon/worktree/services/server-go/internal/scan"
 	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
@@ -167,8 +168,14 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	scanner := scan.New(scan.Deps(v5))
 	treeCfg := treeconfig.New(treeconfig.Deps(v5))
 	// storage-backends (§15.2): backups in <data>/backups, optional schedule.
+	// server-ops (§16.11): --backup-target disk|s3, --backup-max-age.
+	backupTarget, err := OpenBackupTarget(ctx, cfg.BackupTarget, cfg.DataDir, cfg.S3, cfg.BackupS3Prefix)
+	if err != nil {
+		return fmt.Errorf("open backup target: %w", err)
+	}
 	backups.Configure(backup.Options{
-		Dir: filepath.Join(cfg.DataDir, "backups"), Interval: cfg.BackupInterval, Keep: cfg.BackupKeep, Version: cfg.Version,
+		Dir: filepath.Join(cfg.DataDir, "backups"), Target: backupTarget, Interval: cfg.BackupInterval,
+		Keep: cfg.BackupKeep, MaxAge: cfg.BackupMaxAge, Version: cfg.Version,
 	})
 	go accessCfg.Run(ctx) // access workstream: drops access docs of deleted trees (§13.14)
 	pathACL := pathacl.New(pathacl.Deps(v5))
@@ -188,8 +195,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	// webhooks (§14.2): bus-driven deliveries, retries and log retention.
 	// hardening (§15.10): Backoff/PollInterval from the testing-only
 	// --webhook-retry-schedule (nil/0 = the webhooks defaults).
+	// server-ops (§16.11): delivery retention from --webhook-delivery-*.
 	hooks.Configure(webhooks.Options{AllowPrivate: cfg.WebhookAllowPrivate, Version: cfg.Version,
-		Backoff: cfg.WebhookRetrySchedule, PollInterval: cfg.WebhookPollInterval()})
+		Backoff: cfg.WebhookRetrySchedule, PollInterval: cfg.WebhookPollInterval(),
+		Keep: cfg.WebhookDeliveryKeep, Retention: cfg.WebhookDeliveryRetention})
 	hooks.Start(ctx)
 	codeIndex.Start(ctx) // code-search (§14.3): incremental re-index on pushes, drop on tree.deleted
 	// mirrors (§15.6): debounced Git mirror syncs on pushes, cleanup on tree.deleted.
@@ -199,10 +208,21 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	}
 	mirrors.Start(ctx)
 	// notifications (§15.3): bus-driven inbox, watch settings and SMTP email.
-	if err := notifier.Configure(notify.Options{SMTPURL: cfg.SMTPURL, SMTPFrom: cfg.SMTPFrom, PublicURL: cfg.PublicURL}); err != nil {
+	// server-ops (§16.11): durable outbox, dead-lettered after --email-dead-after.
+	if err := notifier.Configure(notify.Options{SMTPURL: cfg.SMTPURL, SMTPFrom: cfg.SMTPFrom, PublicURL: cfg.PublicURL,
+		EmailDeadAfter: cfg.EmailDeadAfter}); err != nil {
 		return err
 	}
 	notifier.Start(ctx)
+	// server-ops (§16.11): background retention of policy versions, audit
+	// events, webhook deliveries and scheduled backups.
+	retainer := retention.New(retention.Deps{Store: store, Bus: bus, Audit: auditLog, Logger: log, Webhooks: hooks, Backups: backups},
+		retention.Config{
+			PolicyVersions:    retention.Rule{MaxAge: cfg.PolicyVersionRetention.MaxAge, Keep: cfg.PolicyVersionRetention.Keep},
+			Audit:             cfg.AuditRetention,
+			WebhookDeliveries: retention.Rule{MaxAge: cfg.WebhookDeliveryRetention, Keep: cfg.WebhookDeliveryKeep},
+			Backups:           retention.Rule{MaxAge: cfg.BackupMaxAge, Keep: cfg.BackupKeep},
+		}, 0)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
@@ -282,6 +302,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Forks:      forks,
 		Scan:       scanner,
 		TreeConfig: treeCfg,
+		Retention:  retainer,  // server-ops (§16.11)
 		Pprof:      cfg.Pprof, // hardening (§15.10): /debug/pprof
 	})
 
@@ -313,8 +334,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	stopGC := collector.Start(ctx)
 	stopUsage := limiter.Start(ctx)
 	stopMerges := opsmetrics.CountMerges(bus)
-	stopBackups := backups.Start(ctx) // storage-backends (§15.2): --backup-interval
-	defer func() { stopBackups(); stopMerges(); stopUsage(); stopGC() }()
+	stopBackups := backups.Start(ctx)    // storage-backends (§15.2): --backup-interval
+	stopRetention := retainer.Start(ctx) // server-ops (§16.11): hourly retention passes
+	defer func() { stopRetention(); stopBackups(); stopMerges(); stopUsage(); stopGC() }()
 
 	scheme := "http"
 	if tlsCfg != nil {

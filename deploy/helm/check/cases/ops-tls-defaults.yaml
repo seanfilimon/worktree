@@ -1,0 +1,34 @@
+# Ops features with their default settings and server-side TLS:
+# HTTPS scrape with tlsConfig in another namespace, allow-all egress,
+# maxUnavailable PDB, HTTPS backup URL; objects stay on disk.
+# expect: ServiceMonitor/wt-worktree, NetworkPolicy/wt-worktree, PodDisruptionBudget/wt-worktree, CronJob/wt-worktree-backup
+# expect-text: namespace: monitoring
+# expect-text: - worktree
+# expect-text: scheme: https
+# expect-text: insecureSkipVerify: true
+# expect-text: maxUnavailable: 1
+# expect-text: - {}
+# expect-text: value: "https://wt-worktree:7420/api/v1/admin/backups"
+# expect-text: --max-time 3600 --insecure
+# expect-text: value: "{\"note\":\"scheduled by CronJob\"}"
+# expect-text: WT_WEBHOOK_DELIVERY_RETENTION: "720h"
+# expect-text: WT_WEBHOOK_DELIVERY_KEEP: "200"
+# expect-text: WT_EMAIL_DEAD_AFTER: "24h"
+server:
+  tls:
+    enabled: true
+    secretName: wt-server-tls
+metrics:
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    tlsInsecureSkipVerify: true
+networkPolicy:
+  enabled: true
+podDisruptionBudget:
+  enabled: true
+backup:
+  cronJob:
+    enabled: true
+    tokenSecret:
+      name: wt-backup-token

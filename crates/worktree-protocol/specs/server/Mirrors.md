@@ -251,16 +251,20 @@ syncing an inactive mirror, mirrors disabled), `501 not_implemented`
 ## 12. CLI
 
 ```
-wt mirror list                       [--tree T/TREE]
-wt mirror add URL [-b GLOB]... [--no-tags] [--token-env VAR] [--inactive] [--tree T/TREE]
-wt mirror show ID                    [--tree T/TREE]
+wt mirror list                       [--in T/TREE]
+wt mirror add URL [-b GLOB]... [--no-tags] [--token-env VAR] [--inactive] [--in T/TREE]
+wt mirror show ID                    [--in T/TREE]
 wt mirror update ID [--url U] [-b GLOB...|--all-branches] [--tags|--no-tags]
-                    [--token-env VAR|--clear-token] [--active|--inactive] [--tree T/TREE]
-wt mirror remove ID [-y]             [--tree T/TREE]
-wt mirror sync ID [--no-wait]        [--tree T/TREE]
+                    [--token-env VAR|--clear-token] [--active|--inactive] [--in T/TREE]
+wt mirror remove ID [-y]             [--in T/TREE]
+wt mirror sync ID [--no-wait]        [--in T/TREE]
 ```
 
-Without `--tree` the commands address the tree of the current worktree.
+Without `--in` the commands address the server tree of the current worktree
+(or of the local tree selected with the global `--tree NAME`). v0.8
+(§16.11) renamed the argument from `--tree TENANT/TREE`, which shadowed the
+global flag; a global `--tree` value of the form `TENANT/TREE` is still
+accepted as the server tree with a deprecation warning.
 `--token-env VAR` reads the credential from the environment variable `VAR`
 so it stays out of shell history and process lists. `list` shows the git
 status when mirrors are disabled and every mirror's last error. `sync`

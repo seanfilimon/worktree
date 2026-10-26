@@ -34,6 +34,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/notify"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
+	"github.com/seanfilimon/worktree/services/server-go/internal/retention" // server-ops (§16.11)
 	"github.com/seanfilimon/worktree/services/server-go/internal/scan"
 	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
 	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
@@ -113,6 +114,8 @@ type Deps struct {
 	Forks      *fork.Service
 	Scan       *scan.Service
 	TreeConfig *treeconfig.Service
+	// server-ops (§16.11): background retention (GET/POST /admin/retention).
+	Retention *retention.Service
 
 	// hardening (§15.10): Pprof serves the Go runtime profiles at
 	// /debug/pprof to server admins; false = those routes answer 404.

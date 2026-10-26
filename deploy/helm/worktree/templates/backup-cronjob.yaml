@@ -1,0 +1,76 @@
+{{- if .Values.backup.cronJob.enabled }}
+{{- $cj := .Values.backup.cronJob }}
+{{- $url := printf "%s://%s:%v/api/v1/admin/backups" (include "worktree.scheme" . | lower) (include "worktree.fullname" .) .Values.service.port }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "worktree.backupCronJobName" . }}
+  labels:
+    {{- include "worktree.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ $cj.schedule | quote }}
+  # Backups are synchronous; never run two at once.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $cj.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $cj.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $cj.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            # Not the server's selector labels: the job pod must not be
+            # selected by the Services or the NetworkPolicy.
+            app.kubernetes.io/name: {{ include "worktree.name" . }}-backup
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: backup
+            app.kubernetes.io/part-of: worktree
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: {{ $cj.image | quote }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                # Server-admin API token (`wt token create`).
+                - name: WT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $cj.tokenSecret.name }}
+                      key: {{ $cj.tokenSecret.key }}
+                - name: WT_BACKUP_URL
+                  value: {{ $url | quote }}
+                - name: WT_BACKUP_BODY
+                  value: {{ dict "note" $cj.note | toJson | quote }}
+              command: ["/bin/sh", "-ec"]
+              # The token goes to curl on stdin (-H @-), not on the command
+              # line. Backups are synchronous: allow up to an hour.
+              args:
+                - >-
+                  printf 'Authorization: Bearer %s\n' "$WT_TOKEN" |
+                  curl --fail-with-body --silent --show-error --max-time 3600
+                  {{- if .Values.server.tls.enabled }} --insecure{{ end }}
+                  -X POST -H @- -H 'Content-Type: application/json'
+                  --data "$WT_BACKUP_BODY" "$WT_BACKUP_URL"
+              {{- with $cj.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+{{- end }}

@@ -26,7 +26,16 @@ const scheduled: BackupInfo = {
 };
 
 const status: BackupStatus = {
-  config: { dir: "/var/lib/worktree/backups", interval: "24h0m0s", interval_seconds: 86400, keep: 7 },
+  config: {
+    dir: "/var/lib/worktree/backups",
+    target: "disk",
+    location: "/var/lib/worktree/backups",
+    interval: "24h0m0s",
+    interval_seconds: 86400,
+    keep: 7,
+    max_age: "0s",
+    max_age_seconds: 0,
+  },
   store: { kind: "s3", endpoint: "minio:9000", bucket: "wt-objects", prefix: "prod/", secure: false, compress: true },
   supported: true,
   running: false,
@@ -86,6 +95,43 @@ describe("BackupsPage", () => {
     expect(config).toHaveTextContent("/data/objects");
     expect(config).toHaveTextContent("Off");
     expect(config).toHaveTextContent("All");
+  });
+
+  it("shows a disk backup target without an age limit", async () => {
+    renderApp({ route: "/backups", api: routes });
+    const config = await screen.findByLabelText("Backup configuration");
+    expect(config).toHaveTextContent("Backup targetDisk · /var/lib/worktree/backups");
+    expect(config).toHaveTextContent("Max ageNone");
+  });
+
+  it("shows an S3 backup target, its max age and S3 archive paths", async () => {
+    const s3Backup: BackupInfo = { ...scheduled, path: `s3://wt/backups/${scheduled.id}.wtbak` };
+    renderApp({
+      route: "/backups",
+      api: {
+        "GET /api/v1/admin/backups": {
+          ...status,
+          config: { ...status.config, target: "s3", location: "s3://wt/backups/", max_age: "720h0m0s", max_age_seconds: 2592000 },
+          backups: [s3Backup],
+        },
+      },
+    });
+    const config = await screen.findByLabelText("Backup configuration");
+    expect(config).toHaveTextContent("Backup targetS3 · s3://wt/backups/");
+    expect(config).toHaveTextContent("Max age720h0m0s");
+    const table = screen.getByRole("table", { name: "Backups" });
+    expect(within(table).getByText(scheduled.id)).toHaveAttribute("title", s3Backup.path);
+    // Restoring by id reads from the backup target.
+    expect(screen.getByText(/worktree-server restore --list/)).toBeInTheDocument();
+    expect(screen.getByText(/an ID restores from the backup target/)).toBeInTheDocument();
+  });
+
+  it("defaults the backup target for older servers", async () => {
+    const v07config = { dir: status.config.dir, interval: "24h0m0s", interval_seconds: 86400, keep: 7 };
+    renderApp({ route: "/backups", api: { "GET /api/v1/admin/backups": { ...status, config: v07config } } });
+    const config = await screen.findByLabelText("Backup configuration");
+    expect(config).toHaveTextContent("Disk · /var/lib/worktree/backups");
+    expect(config).toHaveTextContent("Max ageNone");
   });
 
   it("creates a backup with a note", async () => {

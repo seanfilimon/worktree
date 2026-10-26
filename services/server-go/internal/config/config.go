@@ -151,6 +151,32 @@ type Config struct {
 	BackupKeep int
 
 	// ---- end storage backends ----
+	// ---- server-ops (§16.11, serverops.go) ----
+
+	// BackupTarget is where backups are kept: "disk" (<data>/backups) or
+	// "s3" (the --s3-* bucket). Flag --backup-target, env WT_BACKUP_TARGET.
+	BackupTarget string
+	// BackupS3Prefix is the key prefix of S3 backups ("" =
+	// <s3-prefix>backups/). Flag --backup-s3-prefix, env WT_BACKUP_S3_PREFIX.
+	BackupS3Prefix string
+	// BackupMaxAge prunes scheduled backups older than this (0 = no limit).
+	// Flag --backup-max-age, env WT_BACKUP_MAX_AGE.
+	BackupMaxAge time.Duration
+	// PolicyVersionRetention prunes policy versions by age and/or count per
+	// policy (zero = keep all). Flag --policy-version-retention, env
+	// WT_POLICY_VERSION_RETENTION.
+	PolicyVersionRetention Retention
+	// WebhookDeliveryRetention and WebhookDeliveryKeep bound the webhook
+	// delivery log (default 720h / 200 per webhook). Flags
+	// --webhook-delivery-retention/--webhook-delivery-keep, env
+	// WT_WEBHOOK_DELIVERY_RETENTION/WT_WEBHOOK_DELIVERY_KEEP.
+	WebhookDeliveryRetention time.Duration
+	WebhookDeliveryKeep      int
+	// EmailDeadAfter dead-letters queued emails that still fail after this
+	// long (default 24h). Flag --email-dead-after, env WT_EMAIL_DEAD_AFTER.
+	EmailDeadAfter time.Duration
+
+	// ---- end server-ops ----
 	// ---- notifications (§15.3) ----
 
 	// SMTPURL enables notification emails: smtp://[user:pass@]host[:port]
@@ -351,7 +377,8 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		}
 	}
 	// ---- end storage ----
-	errs = append(errs, backendsFromEnv(&cfg, lookup)...) // storage backends (§15.2)
+	errs = append(errs, backendsFromEnv(&cfg, lookup)...)  // storage backends (§15.2)
+	errs = append(errs, serverOpsFromEnv(&cfg, lookup)...) // server-ops (§16.11)
 
 	// ---- notifications (§15.3) ----
 	str("WT_SMTP_URL", &cfg.SMTPURL)
@@ -432,6 +459,8 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 
 	// Storage backends and backups (§15.2).
 	backendFlags(fs, cfg)
+	// Server operations (§16.11): backup target, retention, email dead-lettering.
+	serverOpsFlags(fs, cfg)
 	// Notifications (§15.3).
 	fs.StringVar(&cfg.SMTPURL, "smtp-url", cfg.SMTPURL, "send notification emails through this SMTP server: smtp://user:pass@host:587 (STARTTLS) or smtps://... (env WT_SMTP_URL; prefer the env var)")
 	fs.StringVar(&cfg.SMTPFrom, "smtp-from", cfg.SMTPFrom, "From `address` of notification emails, e.g. \"W0rkTree <wt@example.com>\" (env WT_SMTP_FROM)")
@@ -565,6 +594,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateBackends()...)  // storage backends (§15.2)
 	errs = append(errs, c.validateSMTP()...)      // notifications (§15.3)
 	errs = append(errs, c.validateCodeIndex()...) // code search v2 (§15.9)
+	errs = append(errs, c.validateServerOps()...) // server-ops (§16.11)
 	return errors.Join(errs...)
 }
 

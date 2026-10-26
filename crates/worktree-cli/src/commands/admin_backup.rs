@@ -1,6 +1,9 @@
-//! `wt admin backup` — server backups (docs/ENGINEERING_PLAN.md §15.2):
-//! create, list, download and delete `.wtbak` archives. Restoring is
-//! offline on the server host: `worktree-server restore --data DIR FILE`.
+//! `wt admin backup` — server backups (docs/ENGINEERING_PLAN.md §15.2,
+//! §16.11): create, list, download and delete `.wtbak` archives in the
+//! server's backup target (`<data>/backups` on disk, or an S3 bucket).
+//! Restoring is offline on the server host:
+//! `worktree-server restore --data DIR <FILE|ID>` (an ID restores from the
+//! backup target; `worktree-server restore --list` lists them).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,8 +41,9 @@ pub struct BackupArgs {
 #[derive(Debug, Subcommand)]
 pub enum BackupCommand {
     /// Back up the server now: a consistent snapshot of the metadata
-    /// database plus every object, written to <data>/backups/<id>.wtbak on
-    /// the server (waits until the backup is complete)
+    /// database plus every object, written as <id>.wtbak to the server's
+    /// backup target: <data>/backups or the S3 bucket (waits until the
+    /// backup is complete)
     Create {
         /// Note stored with the backup, e.g. "before upgrading to 0.8"
         #[arg(long, value_name = "TEXT")]
@@ -99,6 +103,30 @@ struct BackupConfig {
     interval: String,
     interval_seconds: u64,
     keep: u64,
+    // server-ops (§16.11); absent on older servers.
+    /// "disk" or "s3".
+    target: String,
+    /// "/data/backups" or "s3://bucket/prefix/".
+    location: String,
+    max_age: String,
+    max_age_seconds: u64,
+}
+
+/// The two dimmed lines after `wt admin backup create`: where the archive
+/// is stored and how to download / restore it.
+fn created_hints(b: &BackupInfo) -> [String; 2] {
+    let stored = if b.path.starts_with("s3://") {
+        format!("stored in {}", b.path)
+    } else {
+        format!("stored on the server at {}", b.path)
+    };
+    [
+        stored,
+        format!(
+            "download it with `wt admin backup download {id}`; restore offline with `worktree-server restore --data DIR {id}` (or a downloaded FILE)",
+            id = b.id
+        ),
+    ]
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -142,14 +170,9 @@ pub fn run(ctx: &Context, api: &Api, args: BackupArgs) -> Result<()> {
                     b.objects,
                     bytes(b.size_bytes)
                 ));
-                t.line(format!("stored on the server at {}", b.path).dimmed());
-                t.line(
-                    format!(
-                        "download it with `wt admin backup download {}`; restore with `worktree-server restore --data DIR FILE`",
-                        b.id
-                    )
-                    .dimmed(),
-                );
+                for line in created_hints(&b) {
+                    t.line(line.dimmed());
+                }
             })
         }
         BackupCommand::List => {
@@ -367,19 +390,43 @@ fn store_line(s: &StoreInfo) -> String {
     }
 }
 
-fn status(t: &mut Text, s: &BackupStatus) {
-    let c = &s.config;
-    let keep = if c.keep == 0 {
+/// "7 scheduled, max age 720h0m0s", "all".
+fn keep_line(c: &BackupConfig) -> String {
+    let count = if c.keep == 0 {
         "all".to_string()
     } else {
         format!("{} scheduled", c.keep)
     };
+    if c.max_age_seconds == 0 {
+        return count;
+    }
+    let age = if c.max_age.is_empty() {
+        format!("{}s", c.max_age_seconds)
+    } else {
+        c.max_age.clone()
+    };
+    format!("{count}, max age {age}")
+}
+
+fn status(t: &mut Text, s: &BackupStatus) {
+    let c = &s.config;
     let next = timestamp(&s.next_run_at).map_or_else(|| "-".into(), date);
+    // Older servers report only `dir` (always a disk target).
+    let target = if c.target.is_empty() {
+        ("backup dir", or_dash(&c.dir))
+    } else {
+        let location = if c.location.is_empty() {
+            &c.dir
+        } else {
+            &c.location
+        };
+        ("backup target", format!("{} {location}", c.target))
+    };
     let mut rows = vec![
         ("object store", store_line(&s.store)),
-        ("backup dir", or_dash(&c.dir)),
+        target,
         ("schedule", schedule(c)),
-        ("keep", keep),
+        ("keep", keep_line(c)),
         ("next run", next),
         ("running", yes_no(s.running).into()),
     ];
@@ -460,6 +507,77 @@ mod tests {
         assert!(text.contains("  last error    disk full\n"), "{text}");
         assert!(text.contains("no (this server's stores"), "{text}");
         assert!(text.ends_with("No backups yet. Create one with `wt admin backup create`.\n"));
+    }
+
+    // server-ops (§16.11)
+    #[test]
+    fn renders_backup_targets_and_max_age() {
+        colored::control::set_override(false);
+        let s3: BackupStatus = serde_json::from_value(json!({
+            "config": {"dir": "/data/backups", "interval": "24h0m0s", "interval_seconds": 86400,
+                       "keep": 7, "target": "s3", "location": "s3://wt/backups/",
+                       "max_age": "720h0m0s", "max_age_seconds": 2592000},
+            "store": {"kind": "disk", "root": "/data"},
+            "supported": true, "backups": []
+        }))
+        .expect("s3 status");
+        let mut t = Text::default();
+        status(&mut t, &s3);
+        let text = t.as_str();
+        for want in [
+            "  object store   disk /data\n",
+            "  backup target  s3 s3://wt/backups/\n",
+            "  keep           7 scheduled, max age 720h0m0s\n",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        assert!(!text.contains("backup dir"), "{text}");
+
+        let disk: BackupStatus = serde_json::from_value(json!({
+            "config": {"dir": "/data/backups", "keep": 0, "target": "disk",
+                       "location": "/data/backups", "max_age": "0s", "max_age_seconds": 0},
+            "supported": true
+        }))
+        .expect("disk status");
+        let mut t = Text::default();
+        status(&mut t, &disk);
+        let text = t.as_str();
+        assert!(
+            text.contains("  backup target  disk /data/backups\n"),
+            "{text}"
+        );
+        assert!(text.contains("  keep           all\n"), "{text}");
+
+        let aged = BackupConfig {
+            max_age_seconds: 3600,
+            ..BackupConfig::default()
+        };
+        assert_eq!(keep_line(&aged), "all, max age 3600s");
+    }
+
+    #[test]
+    fn create_hints_name_the_target() {
+        let s3 = BackupInfo {
+            id: "bk-1".into(),
+            path: "s3://wt/backups/bk-1.wtbak".into(),
+            ..BackupInfo::default()
+        };
+        let [stored, restore] = created_hints(&s3);
+        assert_eq!(stored, "stored in s3://wt/backups/bk-1.wtbak");
+        assert!(
+            restore.contains("`wt admin backup download bk-1`")
+                && restore.contains("`worktree-server restore --data DIR bk-1`"),
+            "{restore}"
+        );
+        let disk = BackupInfo {
+            id: "bk-2".into(),
+            path: "/data/backups/bk-2.wtbak".into(),
+            ..BackupInfo::default()
+        };
+        assert_eq!(
+            created_hints(&disk)[0],
+            "stored on the server at /data/backups/bk-2.wtbak"
+        );
     }
 
     #[test]

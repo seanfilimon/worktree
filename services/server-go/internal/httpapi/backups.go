@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/backup"
@@ -19,6 +20,8 @@ func (a *api) registerBackupRoutes() {
 	a.handle("GET /api/v1/admin/backups", a.handleListBackups)
 	a.handle("GET /api/v1/admin/backups/{id}/download", a.handleDownloadBackup)
 	a.handle("DELETE /api/v1/admin/backups/{id}", a.handleDeleteBackup)
+	// server-ops (§16.11): email outbox and retention (outbox.go, retention.go).
+	a.registerServerOpsRoutes()
 }
 
 // CreateBackupRequest is the (optional) body of POST /api/v1/admin/backups.
@@ -96,7 +99,8 @@ func (a *api) handleListBackups(w http.ResponseWriter, r *http.Request) error {
 }
 
 // handleDownloadBackup answers GET /api/v1/admin/backups/{id}/download
-// with the .wtbak archive (Range requests supported).
+// with the .wtbak archive (Range requests supported for the disk target;
+// server-ops §16.11: S3-target archives are streamed whole).
 func (a *api) handleDownloadBackup(w http.ResponseWriter, r *http.Request) error {
 	if err := a.requireServerAdmin(r); err != nil {
 		return err
@@ -104,20 +108,30 @@ func (a *api) handleDownloadBackup(w http.ResponseWriter, r *http.Request) error
 	if a.d.Backup == nil {
 		return errNotImplemented("backups")
 	}
-	f, info, err := a.d.Backup.Open(r.Context(), r.PathValue("id"))
+	rc, info, err := a.d.Backup.Open(r.Context(), r.PathValue("id"))
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return err
-	}
+	defer rc.Close()
 	a.audit(r, "backup.download", "", "backup", info.ID, nil)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+info.ID+backup.FileExt+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeContent(w, r, info.ID+backup.FileExt, fi.ModTime(), f)
+	if f, ok := rc.(*os.File); ok {
+		fi, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		http.ServeContent(w, r, info.ID+backup.FileExt, fi.ModTime(), f)
+		return nil
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(info.SizeBytes, 10))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		if _, err := io.Copy(w, rc); err != nil {
+			a.log.WarnContext(r.Context(), "backup download interrupted", "id", info.ID, "err", err)
+		}
+	}
 	return nil
 }
 

@@ -166,7 +166,9 @@ func TestEmailGivesUp(t *testing.T) {
 	e := newEnv(t, func(o *Options) {
 		o.SMTPURL = "smtp://" + smtpd.addr()
 		o.SMTPFrom = "W0rkTree <wt@example.test>"
-		o.EmailBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+		// server-ops (§16.11): emails are dead-lettered by age, not attempts.
+		o.EmailDeadAfter = 20 * time.Millisecond
+		o.EmailBackoff = []time.Duration{5 * time.Millisecond}
 	})
 	ctx, cancel := context.WithCancel(e.ctx)
 	defer cancel()

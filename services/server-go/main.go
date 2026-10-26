@@ -33,6 +33,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "restore" {
 		return runRestore(args[1:], stdout, stderr)
 	}
+	// server-ops (§16.11): in-memory S3 API for end-to-end tests.
+	if len(args) > 0 && args[0] == "fake-s3" {
+		return runFakeS3(args[1:], stdout, stderr)
+	}
 	cfg, err := config.Load(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):

@@ -1,0 +1,44 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- $sm := .Values.metrics.serviceMonitor }}
+{{- $fullname := include "worktree.fullname" . }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fullname }}
+  {{- with $sm.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "worktree.labels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $sm.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if $sm.namespace }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "worktree.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      scheme: {{ include "worktree.scheme" . | lower }}
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+      {{- if .Values.server.tls.enabled }}
+      tlsConfig:
+        insecureSkipVerify: {{ $sm.tlsInsecureSkipVerify }}
+      {{- end }}
+      relabelings:
+        # The headless Service selects the same pod; scrape it once.
+        - sourceLabels: [__meta_kubernetes_service_name]
+          regex: {{ $fullname }}-headless
+          action: drop
+{{- end }}

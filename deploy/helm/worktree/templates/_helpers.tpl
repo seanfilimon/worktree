@@ -56,6 +56,31 @@ app.kubernetes.io/part-of: worktree
 {{- if .Values.server.tls.enabled -}}HTTPS{{- else -}}HTTP{{- end -}}
 {{- end -}}
 
+{{/* "true" when the S3 settings are needed (object store or backups). */}}
+{{- define "worktree.s3Used" -}}
+{{- if or (eq .Values.objectStore "s3") (eq .Values.backup.target "s3") -}}true{{- end -}}
+{{- end -}}
+
+{{/* Name of the backup CronJob (CronJob names are limited to 52 characters). */}}
+{{- define "worktree.backupCronJobName" -}}
+{{- printf "%s-backup" (include "worktree.fullname" . | trunc 45 | trimSuffix "-") -}}
+{{- end -}}
+
+{{/*
+A map entry as a string, "" when the key is absent (a null in the values
+removes the key). Argument: (list MAP KEY).
+*/}}
+{{- define "worktree.optString" -}}
+{{- $m := index . 0 -}}
+{{- $k := index . 1 -}}
+{{- if hasKey $m $k -}}{{- toString (index $m $k) -}}{{- end -}}
+{{- end -}}
+
+{{/* A PodDisruptionBudget bound: integers render bare, percentages quoted. */}}
+{{- define "worktree.pdbValue" -}}
+{{- if contains "%" (toString .) -}}{{ toString . | quote }}{{- else -}}{{ int . }}{{- end -}}
+{{- end -}}
+
 {{/* Validates mutually dependent values; renders nothing. */}}
 {{- define "worktree.validate" -}}
 {{- if and .Values.server.tls.enabled (not .Values.server.tls.secretName) -}}
@@ -72,5 +97,24 @@ app.kubernetes.io/part-of: worktree
 {{- end -}}
 {{- if and .Values.persistence.existingClaim (not .Values.persistence.enabled) -}}
 {{- fail "persistence.existingClaim requires persistence.enabled" -}}
+{{- end -}}
+{{- if not (or (eq .Values.backup.target "disk") (eq .Values.backup.target "s3")) -}}
+{{- fail "backup.target must be \"disk\" or \"s3\"" -}}
+{{- end -}}
+{{- if and (eq .Values.backup.target "s3") (not .Values.s3.bucket) -}}
+{{- fail "backup.target=s3 requires s3.bucket" -}}
+{{- end -}}
+{{- if and .Values.backup.cronJob.enabled (not .Values.backup.cronJob.tokenSecret.name) -}}
+{{- fail "backup.cronJob.enabled requires backup.cronJob.tokenSecret.name (a Secret holding a server-admin API token from `wt token create`)" -}}
+{{- end -}}
+{{- if .Values.podDisruptionBudget.enabled -}}
+{{- $min := include "worktree.optString" (list .Values.podDisruptionBudget "minAvailable") -}}
+{{- $max := include "worktree.optString" (list .Values.podDisruptionBudget "maxUnavailable") -}}
+{{- if and $min $max -}}
+{{- fail "podDisruptionBudget: set either minAvailable or maxUnavailable, not both (set maxUnavailable: null to use minAvailable)" -}}
+{{- end -}}
+{{- if not (or $min $max) -}}
+{{- fail "podDisruptionBudget.enabled requires minAvailable or maxUnavailable" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}

@@ -78,6 +78,43 @@ func TestValidateSchema(t *testing.T) {
 	}
 }
 
+func TestCheckKindCronJob(t *testing.T) {
+	job := func(name, image, restart string) map[string]any {
+		return map[string]any{
+			"metadata": map[string]any{"name": name},
+			"spec": map[string]any{
+				"schedule": "0 3 * * *",
+				"jobTemplate": map[string]any{"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
+					"restartPolicy": restart,
+					"containers":    []any{map[string]any{"name": "c", "image": image}},
+				}}}},
+			},
+		}
+	}
+	tests := []struct {
+		name    string
+		doc     map[string]any
+		wantErr string
+	}{
+		{"valid", job("wt-backup", "curlimages/curl:8.11.1", "Never"), ""},
+		{"registry port is not a tag", job("wt-backup", "registry:5000/curl", "Never"), "no image tag"},
+		{"no tag", job("wt-backup", "curlimages/curl", "Never"), "no image tag"},
+		{"restart always", job("wt-backup", "curl:1", "Always"), "restartPolicy"},
+		{"long name", job(strings.Repeat("a", 53), "curl:1", "Never"), "longer than 52"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkKind("CronJob/x", "CronJob", tt.doc)
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Fatalf("want error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestSprigSemantics(t *testing.T) {
 	f := sprigSubset()
 	def := f["default"].(func(any, ...any) any)
