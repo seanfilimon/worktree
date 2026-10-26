@@ -167,6 +167,11 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	hooks.Configure(webhooks.Options{AllowPrivate: cfg.WebhookAllowPrivate, Version: cfg.Version})
 	hooks.Start(ctx)
 	codeIndex.Start(ctx) // code-search (§14.3): incremental re-index on pushes, drop on tree.deleted
+	// notifications (§15.3): bus-driven inbox, watch settings and SMTP email.
+	if err := notifier.Configure(notify.Options{SMTPURL: cfg.SMTPURL, SMTPFrom: cfg.SMTPFrom, PublicURL: cfg.PublicURL}); err != nil {
+		return err
+	}
+	notifier.Start(ctx)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,

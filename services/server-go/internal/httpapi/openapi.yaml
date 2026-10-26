@@ -76,6 +76,8 @@ tags:
     description: Global search and code search.
   - name: Webhooks
     description: Tenant and tree webhooks and their delivery log.
+  - name: Notifications
+    description: Your notification inbox, settings and watch levels.
   - name: Admin
     description: Server administration (server administrators only).
 paths:
@@ -1669,7 +1671,9 @@ paths:
         `tree:read` on it; with only `tenant`, `tenant:read`; with neither,
         server admins get every event and other signed-in accounts the
         events of their member tenants. Browsers may pass the token as
-        `?access_token=`.
+        `?access_token=`. `notification.created` events (§15.3) carry a
+        `Notification` and are delivered only to its account, on streams
+        without `tenant`/`tree`.
       tags: [Events]
       x-wt-action: ['tree:read', 'tenant:read', authenticated]
       security:
@@ -6532,6 +6536,324 @@ paths:
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  # ---- notifications (§15.3) ----
+  /api/v1/notifications:
+    get:
+      operationId: listNotifications
+      summary: List your notifications
+      description: |
+        v0.7 (§15.3). The caller's notifications, newest first, and the
+        number of unread ones. Notifications are created from server
+        events: review requests (teams expanded), `@username` mentions in
+        merge request descriptions, comments and reviews, CI failures on the
+        source tip of an open merge request you authored or pushed, TODOs
+        assigned to you, your merge requests being merged, approved,
+        reviewed or commented on, and — for trees you watch — every merge
+        request event, CI failure and published release. The actor is never
+        notified, recipients need `tree:read` when the notification is
+        created, duplicates within a minute are dropped, and each account
+        keeps at most 1000 notifications for 90 days. Service accounts have
+        no inbox (403).
+      tags: [Notifications]
+      x-wt-action: self
+      parameters:
+        - name: unread
+          in: query
+          required: false
+          description: "`true` lists only unread notifications."
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of notifications (default 50, at most 1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: The notifications and the unread count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/notifications/read-all:
+    post:
+      operationId: readAllNotifications
+      summary: Mark every notification read
+      description: v0.7 (§15.3). Marks every unread notification of the caller read.
+      tags: [Notifications]
+      x-wt-action: self
+      responses:
+        "200":
+          description: How many notifications were marked read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadAllResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/notifications/{id}/read:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Notification id.
+        schema:
+          type: string
+    post:
+      operationId: readNotification
+      summary: Mark a notification read
+      description: v0.7 (§15.3). Marks one of the caller's notifications read (idempotent).
+      tags: [Notifications]
+      x-wt-action: self
+      responses:
+        "200":
+          description: The notification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/notifications/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Notification id.
+        schema:
+          type: string
+    delete:
+      operationId: deleteNotification
+      summary: Delete a notification
+      description: v0.7 (§15.3). Removes one of the caller's notifications ("done").
+      tags: [Notifications]
+      x-wt-action: self
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/notifications/settings:
+    get:
+      operationId: getNotificationSettings
+      summary: Your notification settings
+      description: |
+        v0.7 (§15.3). `email` (default `true`) emails participating
+        notifications when the server has SMTP configured
+        (`email_configured`) and the account has an email address.
+        Watching notifications are emailed per watch setting (`email`).
+      tags: [Notifications]
+      x-wt-action: self
+      responses:
+        "200":
+          description: The settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    put:
+      operationId: putNotificationSettings
+      summary: Change your notification settings
+      description: v0.7 (§15.3). Sets the given fields; omitted ones are unchanged.
+      tags: [Notifications]
+      x-wt-action: self
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationSettingsRequest"
+      responses:
+        "200":
+          description: The new settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSettings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/notifications/watches:
+    get:
+      operationId: listWatches
+      summary: Your watch settings
+      description: v0.7 (§15.3). Every tenant and tree watch setting the caller stored, with tenant slugs and tree names.
+      tags: [Notifications]
+      x-wt-action: self
+      responses:
+        "200":
+          description: The watch settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/watch:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    get:
+      operationId: getTenantWatch
+      summary: Your watch setting for a tenant
+      description: |
+        v0.7 (§15.3). The caller's watch level for every tree of the tenant
+        (a tree's own setting overrides it). Without a stored setting the
+        default is returned: `participating`, no email.
+      tags: [Notifications]
+      x-wt-action: tenant:read
+      responses:
+        "200":
+          description: The watch setting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchSetting"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    put:
+      operationId: putTenantWatch
+      summary: Watch, participate in or ignore a tenant
+      description: |
+        v0.7 (§15.3). `level`: `participating` (only what involves you),
+        `watching` (every merge request event, CI failure and release of
+        every tree) or `ignoring` (nothing). `email` also emails watching
+        notifications; omitted, it is unchanged.
+      tags: [Notifications]
+      x-wt-action: tenant:read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WatchRequest"
+      responses:
+        "200":
+          description: The stored watch setting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchSetting"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/watch:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getTreeWatch
+      summary: Your watch setting for a tree
+      description: |
+        v0.7 (§15.3). The caller's stored watch setting for the tree, or the
+        default (`participating`, no email; the tenant's setting, if any,
+        applies then).
+      tags: [Notifications]
+      x-wt-action: tree:read
+      responses:
+        "200":
+          description: The watch setting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchSetting"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    put:
+      operationId: putTreeWatch
+      summary: Watch, participate in or ignore a tree
+      description: |
+        v0.7 (§15.3). `level`: `participating` (only what involves you),
+        `watching` (every merge request event, CI failure and release) or
+        `ignoring` (nothing from this tree). Overrides the tenant's setting.
+        `email` also emails watching notifications; omitted, it is
+        unchanged.
+      tags: [Notifications]
+      x-wt-action: tree:read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WatchRequest"
+      responses:
+        "200":
+          description: The stored watch setting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchSetting"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  # ---- end notifications ----
 components:
   securitySchemes:
     bearerAuth:
@@ -9751,3 +10073,136 @@ components:
           type: [array, "null"]
           items:
             $ref: "#/components/schemas/Webhook"
+    # ---- notifications (§15.3) ----
+    Notification:
+      type: object
+      description: "Notification is one item of an account's inbox."
+      required: [id, account_id, reason, event, tenant_id, title, created_at]
+      properties:
+        id:
+          type: string
+        account_id:
+          type: string
+        reason:
+          type: string
+          description: "Reason: \"review_requested\" | \"mentioned\" | \"ci_failed\" | \"todo_assigned\" | \"mr_merged\" | \"mr_commented\" | \"release\" | \"watching\"."
+        event:
+          type: string
+          description: "bus event type that caused it"
+        tenant_id:
+          type: string
+        tree_id:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        url:
+          type: string
+          description: "URL is an admin-panel path, e.g. /trees/acme/web/merge-requests/3."
+        actor:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        read_at:
+          type: string
+          format: date-time
+    WatchSetting:
+      type: object
+      description: "WatchSetting is an account's subscription level for a tree (or a whole tenant when TreeID is \"\")."
+      required: [account_id, tenant_id, level, email, updated_at]
+      properties:
+        account_id:
+          type: string
+        tenant_id:
+          type: string
+        tree_id:
+          type: string
+        level:
+          type: string
+          description: "Level: \"participating\" (default: only what involves you) | \"watching\" (every merge request, release and CI failure) | \"ignoring\"."
+        email:
+          type: boolean
+          description: "also send emails (when SMTP is configured)"
+        updated_at:
+          type: string
+          format: date-time
+    NotificationList:
+      type: object
+      description: "ListResult is the answer of List."
+      required: [notifications, unread_count]
+      properties:
+        notifications:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/Notification"
+        unread_count:
+          type: integer
+    NotificationSettings:
+      type: object
+      description: "Settings are an account's notification preferences."
+      required: [email, email_configured]
+      properties:
+        email:
+          type: boolean
+          description: "Email sends participating notifications (review requests, mentions, CI failures, TODO assignments, your merge requests) by email when the server has SMTP configured and the account an email address."
+        email_configured:
+          type: boolean
+          description: "EmailConfigured reports whether the server can send email (read-only)."
+        updated_at:
+          type: string
+          format: date-time
+    NotificationSettingsRequest:
+      type: object
+      description: "SettingsPatch is the body of PUT /notifications/settings."
+      properties:
+        email:
+          type: [boolean, "null"]
+    WatchRequest:
+      type: object
+      description: "WatchPatch is the body of PUT .../watch."
+      properties:
+        level:
+          type: string
+        email:
+          type: boolean
+    WatchView:
+      type: object
+      description: "watchView is a WatchSetting plus the names of its tenant and tree."
+      required: [account_id, tenant_id, level, email, updated_at, tenant]
+      properties:
+        account_id:
+          type: string
+        tenant_id:
+          type: string
+        tree_id:
+          type: string
+        level:
+          type: string
+          description: "Level: \"participating\" (default: only what involves you) | \"watching\" (every merge request, release and CI failure) | \"ignoring\"."
+        email:
+          type: boolean
+          description: "also send emails (when SMTP is configured)"
+        updated_at:
+          type: string
+          format: date-time
+        tenant:
+          type: string
+        tree:
+          type: string
+    WatchList:
+      type: object
+      required: [watches]
+      properties:
+        watches:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/WatchView"
+    ReadAllResult:
+      type: object
+      required: [updated]
+      properties:
+        updated:
+          type: integer
+    # ---- end notifications ----

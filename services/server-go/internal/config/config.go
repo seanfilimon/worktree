@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/mail"
 	"net/netip"
 	"net/url"
 	"os"
@@ -121,6 +122,17 @@ type Config struct {
 	// saves at least 10 %; existing objects are read either way. Flag
 	// --compress-objects, env WT_COMPRESS_OBJECTS (default true).
 	CompressObjects bool
+
+	// ---- notifications (§15.3) ----
+
+	// SMTPURL enables notification emails: smtp://[user:pass@]host[:port]
+	// (STARTTLS when offered) or smtps://... (implicit TLS). Flag
+	// --smtp-url, env WT_SMTP_URL (prefer the env var: it holds a password).
+	SMTPURL string
+	// SMTPFrom is the From address of notification emails. Flag
+	// --smtp-from, env WT_SMTP_FROM.
+	SMTPFrom string
+	// ---- end notifications ----
 
 	// The fields below are set programmatically, not from flags.
 
@@ -273,6 +285,11 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		}
 	}
 	// ---- end storage ----
+
+	// ---- notifications (§15.3) ----
+	str("WT_SMTP_URL", &cfg.SMTPURL)
+	str("WT_SMTP_FROM", &cfg.SMTPFrom)
+	// ---- end notifications ----
 	return cfg, errors.Join(errs...)
 }
 
@@ -318,6 +335,10 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 
 	// Storage (§14.6).
 	fs.BoolVar(&cfg.CompressObjects, "compress-objects", cfg.CompressObjects, "store new objects zstd-compressed when that saves at least 10% (env WT_COMPRESS_OBJECTS)")
+
+	// Notifications (§15.3).
+	fs.StringVar(&cfg.SMTPURL, "smtp-url", cfg.SMTPURL, "send notification emails through this SMTP server: smtp://user:pass@host:587 (STARTTLS) or smtps://... (env WT_SMTP_URL; prefer the env var)")
+	fs.StringVar(&cfg.SMTPFrom, "smtp-from", cfg.SMTPFrom, "From `address` of notification emails, e.g. \"W0rkTree <wt@example.com>\" (env WT_SMTP_FROM)")
 	return fs
 }
 
@@ -383,6 +404,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, c.validateOps()...)
+	errs = append(errs, c.validateSMTP()...) // notifications (§15.3)
 	return errors.Join(errs...)
 }
 
@@ -414,6 +436,31 @@ func (c *Config) validateOps() []error {
 	}
 	return errs
 }
+
+// ---- notifications (§15.3) ----
+
+// validateSMTP checks --smtp-url and --smtp-from.
+func (c *Config) validateSMTP() []error {
+	var errs []error
+	if c.SMTPURL != "" {
+		u, err := url.Parse(c.SMTPURL)
+		if err != nil || (u.Scheme != "smtp" && u.Scheme != "smtps") || u.Hostname() == "" || (u.Path != "" && u.Path != "/") {
+			// Never echo the URL: it may contain a password.
+			errs = append(errs, errors.New("smtp-url: want smtp://[user:pass@]host[:port] or smtps://[user:pass@]host[:port]"))
+		}
+	}
+	if c.SMTPFrom != "" {
+		if _, err := mail.ParseAddress(c.SMTPFrom); err != nil {
+			errs = append(errs, fmt.Errorf("smtp-from %q: %v", c.SMTPFrom, err))
+		}
+	}
+	if c.SMTPFrom != "" && c.SMTPURL == "" {
+		errs = append(errs, errors.New("smtp-from requires smtp-url"))
+	}
+	return errs
+}
+
+// ---- end notifications ----
 
 // TLSEnabled reports whether the server serves TLS.
 func (c *Config) TLSEnabled() bool { return c.TLSCert != "" && c.TLSKey != "" }

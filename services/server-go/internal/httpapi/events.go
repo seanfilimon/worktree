@@ -149,7 +149,33 @@ func (a *api) eventScope(r *http.Request) (f domain.EventFilter, allow func(doma
 			}
 		}
 	}
+	// ---- notifications (§15.3) ----
+	// notification.created events (published with an empty TenantID, so
+	// tenant- or tree-scoped streams never match them) are delivered only
+	// to the account they belong to — not even to server admins' firehose.
+	inner := allow
+	allow = func(e domain.Event) bool {
+		if e.Type == domain.EventNotification {
+			return p != nil && p.AccountID != "" && notificationAccount(e.Payload) == p.AccountID
+		}
+		return inner == nil || inner(e)
+	}
+	// ---- end notifications ----
 	return f, allow, nil
+}
+
+// notificationAccount is the AccountID of a notification.created payload
+// (notifications section, §15.3).
+func notificationAccount(payload any) string {
+	switch n := payload.(type) {
+	case domain.Notification:
+		return n.AccountID
+	case *domain.Notification:
+		if n != nil {
+			return n.AccountID
+		}
+	}
+	return ""
 }
 
 // memberTenantIDs is the set of tenants p belongs to (including the
