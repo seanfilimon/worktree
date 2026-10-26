@@ -6,6 +6,46 @@ description: Install wt and worktree-bg with the checksum-verifying installers o
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
+## Quick install
+
+One line installs `wt` and `worktree-bg`:
+
+<Tabs items={['macOS and Linux', 'Windows', 'Cargo']}>
+<Tab value="macOS and Linux">
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.sh | bash
+```
+
+</Tab>
+<Tab value="Windows">
+
+```powershell
+irm https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.ps1 | iex
+```
+
+Run it in PowerShell. Piped this way the installer also adds its directory to your user `PATH`.
+
+</Tab>
+<Tab value="Cargo">
+
+```bash
+cargo install --locked --git https://github.com/seanfilimon/worktree worktree-cli worktree-bg
+```
+
+</Tab>
+</Tabs>
+
+The installers download the latest release and verify its checksum. When no release has been published yet, they build from source instead, which needs [Rust](https://rustup.rs) and `git`. Then check the install and take a first snapshot:
+
+```bash
+wt --version
+wt init my-project && cd my-project
+wt snapshot -m "first snapshot"
+```
+
+## Everything you can install
+
 W0rkTree ships three programs and a static web application: `wt` (the CLI) and `worktree-bg` (the background daemon) for developer machines, `worktree-server` (the Go server) and the admin panel it serves. There are three ways to get them:
 
 | Way | What you get | Section |
@@ -42,7 +82,7 @@ bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.8.0
 By default the installers download from the project's GitHub releases. A `--base-url` (`-BaseUrl`) can instead name an internal mirror, a `file://` URL or a plain directory, for example the `dist/` directory written by `scripts/release.sh`, which builds the same archives (`worktree-<version>-<target>.tar.gz` or `.zip` with `wt`, `worktree-bg` and `worktree-server`, the admin panel archive and `SHA256SUMS`) on your machine. `--from-source` (`-FromSource`) builds with Cargo instead of downloading. All options are listed in [Deployment](/docs/server/deployment#installing-the-clients).
 
 <Callout type="info" title="Release availability">
-  Release archives and images are produced by `scripts/release.sh` and the release workflow for each `v<version>` tag. If no release has been published for the version you need, build the archives locally (`bash scripts/release.sh`, then `install.sh --base-url ./dist`) or build from source. Package-manager installs (Homebrew, winget, crates.io) are on the [roadmap](/roadmap).
+  Release archives and images are produced by `scripts/release.sh` and the release workflow for each `v<version>` tag. If no release has been published for the version you ask for, the installers build from source when Rust is installed; you can also build the archives locally (`bash scripts/release.sh`, then `install.sh --base-url ./dist`) or build from source. Package-manager installs (Homebrew, winget, crates.io) are on the [roadmap](/roadmap).
 </Callout>
 
 ## Container images

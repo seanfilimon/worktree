@@ -2,6 +2,9 @@
 # Install W0rkTree (wt + worktree-bg, optionally worktree-server).
 #
 #   curl -fsSL https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.sh | bash
+#
+# Installs the latest release; when none is published it builds from source
+# instead (needs Rust from https://rustup.rs and git).
 #   bash scripts/install.sh --version v0.8.0 --with-server
 #   bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.8.0
 #   bash scripts/install.sh --base-url ./dist          # archives from scripts/release.sh
@@ -137,7 +140,30 @@ sha256_of() {
   else die "need sha256sum, shasum or openssl to verify downloads"; fi
 }
 
+# A running background daemon keeps executing the old binary after an
+# upgrade (and Windows refuses to overwrite a running .exe): stop it right
+# before the first binary is replaced and start the new one at the end.
+DAEMON_WAS_RUNNING=0
+DAEMON_STOP_TRIED=0
+# Only the wt this installer manages: another "wt" on PATH may be a different
+# program (on Windows, wt.exe is Windows Terminal).
+installed_wt() {
+  if [ -x "$INSTALL_DIR/wt$ext" ]; then printf '%s' "$INSTALL_DIR/wt$ext"; fi
+}
+stop_daemon_once() {
+  [ "$DAEMON_STOP_TRIED" = 1 ] && return 0
+  DAEMON_STOP_TRIED=1
+  wt_old="$(installed_wt)"
+  [ -n "$wt_old" ] || return 0
+  if "$wt_old" daemon status >/dev/null 2>&1; then
+    say "  stopping the running background daemon (it is restarted after the install)"
+    "$wt_old" daemon stop >/dev/null 2>&1 && DAEMON_WAS_RUNNING=1
+  fi
+  return 0
+}
+
 install_bin() { # SRC NAME
+  case "$2" in wt*|worktree-bg*) stop_daemon_once ;; esac
   mkdir -p "$INSTALL_DIR"
   if need install; then install -m 0755 "$1" "$INSTALL_DIR/$2"
   else cp "$1" "$INSTALL_DIR/$2" && chmod 0755 "$INSTALL_DIR/$2"; fi
@@ -145,6 +171,18 @@ install_bin() { # SRC NAME
 }
 
 # ------------------------------------------------------------ install
+# No published release at $1 (none has been tagged yet, or not for this
+# version): build from source when a Rust toolchain is there.
+no_release() {
+  [ -z "$BASE_URL" ] || die "could not fetch $1/SHA256SUMS"
+  if need cargo; then
+    say "No published release found at $1; building from source instead."
+    install_source
+  else
+    die "no published release found at $1. Install Rust (https://rustup.rs) and run this again to build from source, or pass --base-url with archives from scripts/release.sh."
+  fi
+}
+
 install_release() {
   local base
   if [ -n "$BASE_URL" ]; then
@@ -178,10 +216,9 @@ install_release() {
     [ -n "$archive" ] || die "no $TARGET archive$([ "$VERSION" != latest ] && printf ' for %s' "$VERSION") listed in $base/SHA256SUMS"
   else
     # Older releases publish only per-archive .sha256 files.
-    [ "$VERSION" != latest ] || die "could not fetch $base/SHA256SUMS (pass --version to use per-archive checksums)"
+    [ "$VERSION" != latest ] || { no_release "$base"; return; }
     archive="worktree-${VERSION#v}-$TARGET.$archive_ext"
-    fetch "$base/$archive.sha256" "$TMP/$archive.sha256" ||
-      die "could not fetch $base/SHA256SUMS or $base/$archive.sha256"
+    fetch "$base/$archive.sha256" "$TMP/$archive.sha256" || { no_release "$base"; return; }
     expected="$(awk '{print $1; exit}' "$TMP/$archive.sha256" | tr '[:upper:]' '[:lower:]')"
   fi
 
@@ -246,6 +283,14 @@ install_source() {
 }
 
 if [ "$FROM_SOURCE" = 1 ]; then install_source; else install_release; fi
+
+if [ "$DAEMON_WAS_RUNNING" = 1 ]; then
+  if "$INSTALL_DIR/wt$ext" daemon start >/dev/null 2>&1; then
+    say "  restarted the background daemon on the new release"
+  else
+    say "  could not restart the background daemon; run: wt daemon start"
+  fi
+fi
 
 # ------------------------------------------------------------ PATH hint
 path_dir="$INSTALL_DIR"

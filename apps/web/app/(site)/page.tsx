@@ -16,15 +16,22 @@ import { ChapterNav } from "@/components/home/chapter-nav";
 import { CodeTourView, type TourStep } from "@/components/home/code-tour-view";
 import { HeroGrid } from "@/components/home/hero-grid";
 import { HeroScenes, type Scene } from "@/components/home/hero-scenes";
-import { InstallCommand } from "@/components/home/install-command";
+import { AccessDemo } from "@/components/home/access-demo";
+import { CountUp } from "@/components/home/count-up";
+import { InstallTabs } from "@/components/home/install-tabs";
+import { PushPipeline } from "@/components/home/push-pipeline";
+import { TeamActivity } from "@/components/home/team-activity";
 import { Reveal } from "@/components/home/motion";
-import { SplitExplainer, StackedExplainer } from "@/components/home/section";
+import {
+  Points,
+  SplitExplainer,
+  StackedExplainer,
+} from "@/components/home/section";
 import {
   CompareTable,
   FaqList,
   withCode,
   ServerStack,
-  TeamStatus,
   TreeDiagram,
   type Comparison,
   type Question,
@@ -45,7 +52,9 @@ import { cx } from "@/utils/cx";
 const chapters = [
   { id: "model", label: "Model" },
   { id: "workflow", label: "Workflow" },
+  { id: "push", label: "Push" },
   { id: "team", label: "Team" },
+  { id: "access", label: "Access" },
   { id: "server", label: "Server" },
   { id: "governance", label: "Governance" },
   { id: "internals", label: "Internals" },
@@ -280,6 +289,33 @@ const faqs: Question[] = [
   },
 ];
 
+const pushSource = `wt snapshot -m "auth: token check"  # hash, scan, record
+wt push                             # send what is missing
+wt push --force                     # rewind, with a lease`;
+
+const stats: { value: number; label: string; body: string }[] = [
+  {
+    value: 79,
+    label: "wt commands",
+    body: "One verb each, every one with --json output.",
+  },
+  {
+    value: 275,
+    label: "REST operations",
+    body: "Described by the server's OpenAPI 3.1 document.",
+  },
+  {
+    value: 60,
+    label: "End-to-end scenarios",
+    body: "Real CLI, daemon and server processes, every change.",
+  },
+  {
+    value: 40,
+    label: "Protocol specifications",
+    body: "Kept in step with the code they describe.",
+  },
+];
+
 async function highlightAll<T extends { source: string }>(
   items: T[],
   lang: string,
@@ -310,6 +346,12 @@ export default async function HomePage() {
       raw: source,
     }),
   );
+
+  const pushCode = await highlight(pushSource, {
+    lang: "bash",
+    themes: codeThemes,
+    defaultColor: false,
+  });
 
   return (
     <>
@@ -358,7 +400,9 @@ export default async function HomePage() {
                 >
                   Get started
                 </ActionLink>
-                <InstallCommand />
+                <ActionLink href="#install" variant="secondary">
+                  Install
+                </ActionLink>
                 <ActionLink
                   href={REPO_URL}
                   variant="ghost"
@@ -378,6 +422,95 @@ export default async function HomePage() {
         <div className={cx("relative pb-10 md:pb-14", gutter)}>
           <HeroScenes scenes={heroScenes} />
         </div>
+      </Band>
+
+      <Band id="install" frameClassName="bg-surface-sunken">
+        <div
+          className={cx(
+            "grid gap-10 py-14 md:py-16 lg:grid-cols-12 lg:items-center",
+            gutter,
+          )}
+        >
+          <div className="flex flex-col gap-6 lg:col-span-5">
+            <SectionHeading
+              eyebrow="Install"
+              title="One command, then your first snapshot"
+            >
+              {withCode(
+                "Pick your platform and paste one line. You get `wt` and the `worktree-bg` daemon; the server is a separate binary or container image.",
+              )}
+            </SectionHeading>
+            <ol className="flex flex-col gap-2.5">
+              {[
+                ["wt init my-project && cd my-project", "Start a worktree"],
+                ['wt snapshot -m "first snapshot"', "Record the working tree"],
+                [
+                  "wt daemon start && wt daemon watch",
+                  "Let changes track themselves",
+                ],
+              ].map(([command, label], index) => (
+                <li key={command} className="flex items-start gap-3">
+                  <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-border-button-default bg-surface-raised font-mono text-caption-2-regular text-text-primary tabular-nums">
+                    {index + 1}
+                  </span>
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-body-2-regular text-text-secondary">
+                      {label}
+                    </span>
+                    <code className="truncate font-mono text-[0.8125rem] text-text-primary">
+                      {command}
+                    </code>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </div>
+          <div className="flex min-w-0 flex-col gap-4 lg:col-span-7">
+            <InstallTabs />
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+              <TextLink
+                href="/docs/installation"
+                trailingIcon={RiArrowRightLine}
+              >
+                All install options
+              </TextLink>
+              <TextLink
+                href="/docs/server/installation"
+                trailingIcon={RiArrowRightLine}
+              >
+                Run the server
+              </TextLink>
+              <TextLink
+                href="/guides/quick-start"
+                trailingIcon={RiArrowRightLine}
+              >
+                Quick start guide
+              </TextLink>
+            </div>
+          </div>
+        </div>
+      </Band>
+
+      <Band>
+        <ul className="grid grid-cols-2 gap-px bg-separator-border lg:grid-cols-4">
+          {stats.map((stat) => (
+            <li
+              key={stat.label}
+              className="flex flex-col gap-1.5 bg-background-full px-6 py-7 sm:px-8"
+            >
+              <CountUp
+                value={stat.value}
+                className="font-mono text-[2.25rem] leading-none font-semibold tracking-[-0.04em] text-text-primary tabular-nums"
+              />
+              <span className="text-body-medium text-text-primary">
+                {stat.label}
+              </span>
+              <span className="text-caption-1-regular leading-5 text-text-secondary">
+                {stat.body}
+              </span>
+            </li>
+          ))}
+        </ul>
       </Band>
 
       <ChapterNav chapters={chapters} />
@@ -475,9 +608,51 @@ export default async function HomePage() {
         sunken
       />
 
+      <Band id="push">
+        <div
+          className={cx("grid gap-10 py-16 md:py-20 lg:grid-cols-12", gutter)}
+        >
+          <SectionHeading
+            index="03"
+            eyebrow="Push"
+            title="What happens when you push"
+            className="lg:col-span-6"
+          >
+            Every push takes the same path: only the missing objects travel, as
+            deltas, and the server checks roles, protections and content before
+            the branch moves.
+          </SectionHeading>
+          <div className="flex flex-col gap-5 lg:col-span-5 lg:col-start-8 lg:pt-10">
+            <Points
+              points={[
+                {
+                  lead: "Nothing travels twice.",
+                  body: "Content the server already has, for any tree, is never uploaded again.",
+                },
+                {
+                  lead: "Nothing skips the checks.",
+                  body: "Pushes, the offline queue and server-side merges run the same checkers.",
+                },
+                {
+                  lead: "Nothing is overwritten.",
+                  body: "The branch moves only from the tip you saw; force pushes need a lease.",
+                },
+              ]}
+            />
+            <TextLink
+              href="/docs/protocol/sync-protocol"
+              trailingIcon={RiArrowRightLine}
+            >
+              Sync protocol
+            </TextLink>
+          </div>
+        </div>
+        <PushPipeline code={pushCode} />
+      </Band>
+
       <SplitExplainer
         id="team"
-        index="03"
+        index="04"
         eyebrow="Team"
         title="See work before it is pushed"
         lede="Staged snapshots upload work in progress without touching branch history, so overlaps show up while they are still cheap to resolve."
@@ -499,13 +674,39 @@ export default async function HomePage() {
         ]}
         href="/guides/staged-visibility"
         linkLabel="Staged visibility guide"
-        visual={<TeamStatus />}
+        visual={<TeamActivity />}
         reverse
       />
 
       <SplitExplainer
+        id="access"
+        index="05"
+        eyebrow="Access"
+        title="Who can do what, and why"
+        lede="Roles set the baseline, grants and policies refine it per tree, and branch protections have the last word. Pick a role and flip the protections."
+        points={[
+          {
+            lead: "Least privilege.",
+            body: "Viewers read and fork, developers push branches, maintainers merge, admins administer.",
+          },
+          {
+            lead: "Protections win.",
+            body: "A protected branch refuses direct and force pushes whatever the role.",
+          },
+          {
+            lead: "Every decision explained.",
+            body: "The simulator shows which role, grant, policy or protection decided.",
+          },
+        ]}
+        href="/docs/server/access-control"
+        linkLabel="Access control"
+        visual={<AccessDemo />}
+        sunken
+      />
+
+      <SplitExplainer
         id="server"
-        index="04"
+        index="06"
         eyebrow="Server"
         title="One server, one port, many tenants"
         lede="The Go server serves sync, the REST API, live events and the admin panel on one port, with tenants, teams, roles and policies enforced on every call."
@@ -526,14 +727,14 @@ export default async function HomePage() {
         href="/docs/server"
         linkLabel="Server documentation"
         visual={<ServerStack />}
-        sunken
+        reverse
       />
 
       <Band id="governance">
         <div className={cx("py-16 md:py-20", gutter)}>
           <div className="grid gap-8 lg:grid-cols-12">
             <SectionHeading
-              index="05"
+              index="07"
               eyebrow="Governance"
               title="Rules the server enforces"
               className="lg:col-span-6"
@@ -599,7 +800,7 @@ export default async function HomePage() {
       <Band id="internals" frameClassName="bg-surface-sunken">
         <div className={cx("py-16 md:py-20", gutter)}>
           <SectionHeading
-            index="06"
+            index="08"
             eyebrow="Internals"
             title="Content-addressed all the way down"
           >
@@ -632,7 +833,7 @@ export default async function HomePage() {
 
       <Band id="compare">
         <div className={cx("py-16 md:py-20", gutter)}>
-          <SectionHeading index="07" eyebrow="Compare" title="Coming from Git">
+          <SectionHeading index="09" eyebrow="Compare" title="Coming from Git">
             What changes when the version control system and the server are
             designed together.
           </SectionHeading>
@@ -647,7 +848,7 @@ export default async function HomePage() {
           className={cx("grid gap-10 py-16 md:py-20 lg:grid-cols-12", gutter)}
         >
           <SectionHeading
-            index="08"
+            index="10"
             eyebrow="FAQ"
             title="Questions"
             className="lg:col-span-4"

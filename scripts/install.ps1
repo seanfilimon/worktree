@@ -13,6 +13,10 @@
   example the dist\ directory written by scripts/release.sh).
 
 .EXAMPLE
+  irm https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.ps1 | iex
+  (installs the latest release, or builds from source when none is published,
+  and adds the install directory to the user PATH)
+.EXAMPLE
   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.ps1))) -WithServer
 .EXAMPLE
   .\scripts\install.ps1 -Version v0.8.0 -WithServer -AddToPath
@@ -30,9 +34,14 @@ param(
     [string]$Repo = $(if ($env:WT_REPO) { $env:WT_REPO } else { 'seanfilimon/worktree' }),
     [switch]$WithServer,
     [switch]$FromSource,
-    # Persistently prepend -InstallDir to the *user* PATH (Windows only, off by default).
+    # Persistently prepend -InstallDir to the *user* PATH (Windows only; off by
+    # default for a saved script, on when piped from irm, see below).
     [switch]$AddToPath
 )
+
+# Piped (`irm ... | iex`) there is no script file and no way to pass switches:
+# finish the job by updating PATH unless -AddToPath was given explicitly.
+if (-not $PSCommandPath -and -not $PSBoundParameters.ContainsKey('AddToPath')) { $AddToPath = $true }
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -108,7 +117,28 @@ function Get-File([string]$Url, [string]$Dest) {
     }
 }
 
+# A running background daemon keeps executing the old binary after an
+# upgrade, and Windows refuses to overwrite a running .exe: stop it right
+# before the first binary is replaced and start the new one at the end.
+$script:DaemonWasRunning = $false
+$script:DaemonStopTried = $false
+function Stop-DaemonOnce {
+    if ($script:DaemonStopTried) { return }
+    $script:DaemonStopTried = $true
+    # Only the wt this installer manages: another "wt" on PATH may be a
+    # different program (wt.exe is also Windows Terminal).
+    $wtOld = Join-Path $InstallDir $(if ($onWindows) { 'wt.exe' } else { 'wt' })
+    if (-not (Test-Path $wtOld)) { return }
+    & $wtOld daemon status *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host '  stopping the running background daemon (it is restarted after the install)'
+        & $wtOld daemon stop *> $null
+        if ($LASTEXITCODE -eq 0) { $script:DaemonWasRunning = $true }
+    }
+}
+
 function Install-Binary([string]$Source, [string]$Name) {
+    if ($Name -like 'wt*' -or $Name -like 'worktree-bg*') { Stop-DaemonOnce }
     New-Item -ItemType Directory -Force $InstallDir | Out-Null
     $dest = Join-Path $InstallDir $Name
     try {
@@ -127,6 +157,21 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ("worktree-install-" + [guid]::NewGu
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
 try {
+    # No published release (none tagged yet, or not for this version): build
+    # from source when a Rust toolchain is there.
+    if (-not $FromSource -and -not $BaseUrl) {
+        $tag = if ($Version.StartsWith('v')) { $Version } else { "v$Version" }
+        $probeBase = if ($Version -eq 'latest') { "https://github.com/$Repo/releases/latest/download" } else { "https://github.com/$Repo/releases/download/$tag" }
+        if (-not (Get-File (Join-Url $probeBase 'SHA256SUMS') (Join-Path $tmp 'release-probe'))) {
+            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+                Write-Host "No published release found at $probeBase; building from source instead."
+                $FromSource = $true
+            } else {
+                throw "no published release found at $probeBase. Install Rust (https://rustup.rs) and run this again to build from source, or pass -BaseUrl with archives from scripts/release.sh."
+            }
+        }
+    }
+
     if (-not $FromSource) {
         if (-not $Target) { $Target = Get-DefaultTarget }
         $archiveExt = if ($Target -like '*-windows-*') { 'zip' } else { 'tar.gz' }
@@ -240,6 +285,13 @@ try {
     }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+}
+
+if ($script:DaemonWasRunning) {
+    $wtNew = Join-Path $InstallDir $(if ($onWindows) { 'wt.exe' } else { 'wt' })
+    & $wtNew daemon start *> $null
+    if ($LASTEXITCODE -eq 0) { Write-Host '  restarted the background daemon on the new release' }
+    else { Write-Host '  could not restart the background daemon; run: wt daemon start' }
 }
 
 # ------------------------------------------------------------------ PATH

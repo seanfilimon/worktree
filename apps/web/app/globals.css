@@ -195,8 +195,11 @@ html > body[data-scroll-locked] {
   transition: opacity 300ms ease;
 }
 
-.pipeline-code[data-focus='credential'] .line:nth-child(n + 4),
-.pipeline-code[data-focus='call'] .line:nth-child(-n + 3) {
+/* The push pipeline's terminal: line 1 snapshots, line 2 pushes, line 3 force-pushes. */
+.pipeline-code[data-focus='snapshot'] .line:nth-child(n + 2),
+.pipeline-code[data-focus='push'] .line:nth-child(1),
+.pipeline-code[data-focus='push'] .line:nth-child(3),
+.pipeline-code[data-focus='force'] .line:nth-child(1) {
   opacity: 0.35;
 }
 
