@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/license"
 )
 
@@ -68,6 +69,11 @@ type Query struct {
 	Limit int
 	// Budget overrides the time budget (0 = Budget).
 	Budget time.Duration
+	// Branch searches this branch instead of the default branch (trees
+	// without it contribute nothing); AllBranches searches every branch
+	// tip (up to Options.MaxBranches per tree, §15.9). At most one is set.
+	Branch      string
+	AllBranches bool
 }
 
 // Target is one tree to search; the caller has checked tree:read.
@@ -133,6 +139,9 @@ func compile(q Query) (*matcher, error) {
 	}
 	if q.Path != "" && !validGlob(q.Path) {
 		return nil, invalidf("path %q is not a valid glob", q.Path)
+	}
+	if err := validBranchScope(q.Branch, q.AllBranches); err != nil {
+		return nil, err
 	}
 	if !q.Regex && q.CaseSensitive {
 		lit := []byte(q.Pattern)
@@ -204,7 +213,9 @@ type fileHits struct {
 // errLimit stops a search once one hit more than the limit was found.
 var errLimit = errors.New("codesearch: limit reached")
 
-// Search runs q over targets. Hits are ordered by tenant, tree, path and
+// Search runs q over targets. Hits are ordered by tenant, tree, branch
+// (default branch first, then by name; a file version already searched on
+// an earlier branch is skipped), path and
 // line. When more than Limit hits exist, or the time budget runs out, the
 // hits found so far are returned with Truncated set.
 func (ix *Index) Search(ctx context.Context, q Query, targets []Target, filter ReadFilter) (*Result, error) {
@@ -237,7 +248,7 @@ func (ix *Index) Search(ctx context.Context, q Query, targets []Target, filter R
 			res.Truncated = true
 			break
 		}
-		idx, err := ix.ensure(ctx, t.Tree)
+		views, err := ix.views(ctx, t.Tree, q.Branch, q.AllBranches)
 		if err != nil {
 			if ctx.Err() != nil {
 				res.Truncated = true
@@ -248,26 +259,117 @@ func (ix *Index) Search(ctx context.Context, q Query, targets []Target, filter R
 			continue
 		}
 		res.SearchedTrees++
-		err = ix.searchTree(ctx, m, q, t, idx, filter, limit, res)
-		switch {
-		case errors.Is(err, errLimit):
-			res.Truncated = true
-			return res, nil
-		case err != nil && ctx.Err() != nil:
-			res.Truncated = true
-			return res, nil
-		case err != nil:
-			return nil, err
+		seen := map[docKey]bool{}
+		for _, v := range views {
+			err = ix.searchView(ctx, m, q, t, v, seen, filter, limit, res)
+			switch {
+			case errors.Is(err, errLimit):
+				res.Truncated = true
+				return res, nil
+			case err != nil && ctx.Err() != nil:
+				res.Truncated = true
+				return res, nil
+			case err != nil:
+				return nil, err
+			}
 		}
 	}
 	return res, nil
 }
 
+// validBranchScope checks the branch selection of a query.
+func validBranchScope(branch string, all bool) error {
+	if branch != "" && all {
+		return invalidf("branch and branches=all are mutually exclusive")
+	}
+	if len(branch) > 255 || strings.ContainsAny(branch, "\x00\r\n") {
+		return invalidf("branch %q is not a valid branch name", branch)
+	}
+	return nil
+}
+
+// views returns the branch tips of tree a query covers, in search order:
+// the default branch (or the named branch), or with all every branch up
+// to MaxBranches — the default branch first, then the most recently
+// updated ones — ordered default first, then by name.
+func (ix *Index) views(ctx context.Context, tree *domain.Tree, branch string, all bool) ([]*view, error) {
+	var names []string
+	switch {
+	case branch != "":
+		names = []string{branch}
+	case !all:
+		names = []string{tree.DefaultBranch}
+	default:
+		bs, err := ix.d.Store.ListBranches(ctx, tree.ID)
+		if err != nil {
+			return nil, err
+		}
+		sort.SliceStable(bs, func(i, j int) bool {
+			if (bs[i].Name == tree.DefaultBranch) != (bs[j].Name == tree.DefaultBranch) {
+				return bs[i].Name == tree.DefaultBranch
+			}
+			if !bs[i].UpdatedAt.Equal(bs[j].UpdatedAt) {
+				return bs[i].UpdatedAt.After(bs[j].UpdatedAt)
+			}
+			return bs[i].Name < bs[j].Name
+		})
+		ix.mu.Lock()
+		maxBranches := ix.opt.MaxBranches
+		ix.mu.Unlock()
+		for _, b := range bs[:min(len(bs), maxBranches)] {
+			names = append(names, b.Name)
+		}
+		if len(names) == 0 {
+			names = []string{tree.DefaultBranch}
+		}
+		sort.SliceStable(names, func(i, j int) bool {
+			if (names[i] == tree.DefaultBranch) != (names[j] == tree.DefaultBranch) {
+				return names[i] == tree.DefaultBranch
+			}
+			return names[i] < names[j]
+		})
+	}
+	var out []*view
+	var firstErr error
+	for _, name := range names {
+		v, err := ix.ensureBranch(ctx, tree, name)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			ix.d.Logger.WarnContext(ctx, "codesearch: indexing a branch failed; branch skipped",
+				"tree", tree.ID, "branch", name, "err", err)
+			continue
+		}
+		if v != nil {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return out, nil
+}
+
+// docKey identifies a file version across the branches of a tree: hits in
+// a file already searched on an earlier branch are not reported again.
+type docKey struct {
+	path string
+	hash hash.Hash
+}
+
 // filterBatch is how many matching files are permission-checked at once.
 const filterBatch = 64
 
-func (ix *Index) searchTree(ctx context.Context, m *matcher, q Query, t Target, idx *treeIndex,
+func (ix *Index) searchView(ctx context.Context, m *matcher, q Query, t Target, v *view, seen map[docKey]bool,
 	filter ReadFilter, limit int, res *Result) error {
+	if v.seg == nil {
+		return nil
+	}
+	idx := v.seg
 	var batch []fileHits
 	flush := func() error {
 		if len(batch) == 0 {
@@ -303,7 +405,12 @@ func (ix *Index) searchTree(ctx context.Context, m *matcher, q Query, t Target, 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		d := idx.docs[id]
+		d := &idx.docs[id]
+		k := docKey{d.path, d.hash}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
 		if !MatchPath(q.Path, d.path) || !m.mayMatchFile(d.content) {
 			continue
 		}
@@ -313,7 +420,7 @@ func (ix *Index) searchTree(ctx context.Context, m *matcher, q Query, t Target, 
 		}
 		for i := range hits {
 			hits[i].TenantSlug, hits[i].Tree = t.TenantSlug, t.Tree.Name
-			hits[i].Branch, hits[i].SnapshotID = idx.branch, idx.snapshotID
+			hits[i].Branch, hits[i].SnapshotID = v.branch, v.snapshotID
 		}
 		batch = append(batch, fileHits{path: d.path, hits: hits})
 		pending += len(hits)
@@ -329,7 +436,7 @@ func (ix *Index) searchTree(ctx context.Context, m *matcher, q Query, t Target, 
 
 // scanDoc returns up to limit hits of d (limit < 1 still returns one, so
 // that a limit overflow is detected).
-func scanDoc(m *matcher, d *doc, ctxLines, limit int) []domain.CodeSearchHit {
+func scanDoc(m *matcher, d *segDoc, ctxLines, limit int) []domain.CodeSearchHit {
 	limit = max(limit, 1)
 	lines := splitLines(d.content)
 	var out []domain.CodeSearchHit

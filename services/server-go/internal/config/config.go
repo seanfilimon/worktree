@@ -122,6 +122,19 @@ type Config struct {
 	// --compress-objects, env WT_COMPRESS_OBJECTS (default true).
 	CompressObjects bool
 
+	// ---- code search v2 (§15.9) ----
+
+	// CodeIndexMemory caps the decoded code search index segments kept in
+	// memory (bytes; 0 = unlimited); the index itself lives under
+	// <data>/codeindex. Flag --code-index-memory (e.g. 256MiB, 1G), env
+	// WT_CODE_INDEX_MEMORY (default 256 MiB).
+	CodeIndexMemory int64
+	// CodeIndexBranches is the most branches indexed per tree for
+	// branches=all searches. Flag --code-index-branches, env
+	// WT_CODE_INDEX_BRANCHES (default 10).
+	CodeIndexBranches int
+	// ---- end code search v2 ----
+
 	// The fields below are set programmatically, not from flags.
 
 	// Version is the server version reported by /healthz, Ping and logs.
@@ -273,6 +286,10 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		}
 	}
 	// ---- end storage ----
+
+	// ---- code search v2 (§15.9) ----
+	errs = append(errs, codeIndexFromEnv(&cfg, lookup)...)
+	// ---- end code search v2 ----
 	return cfg, errors.Join(errs...)
 }
 
@@ -318,6 +335,9 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 
 	// Storage (§14.6).
 	fs.BoolVar(&cfg.CompressObjects, "compress-objects", cfg.CompressObjects, "store new objects zstd-compressed when that saves at least 10% (env WT_COMPRESS_OBJECTS)")
+
+	// Code search v2 (§15.9).
+	codeIndexFlags(fs, cfg)
 	return fs
 }
 
@@ -383,6 +403,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, c.validateOps()...)
+	errs = append(errs, c.validateCodeIndex()...) // code search v2 (§15.9)
 	return errors.Join(errs...)
 }
 

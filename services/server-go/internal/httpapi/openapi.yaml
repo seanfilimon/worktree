@@ -2372,7 +2372,9 @@ paths:
         v0.6 (§14.3). Searches the text files at the default-branch tip of
         the trees in scope through a trigram index (built lazily, rebuilt
         when stale), line by line; binary and chunked files are not
-        indexed. The scope is one
+        indexed. Since v0.7 (§15.9) the index is persistent (kept on disk
+        across restarts, loaded lazily under a memory cap) and `branch` /
+        `branches=all` select other branch tips. The scope is one
         tree (`tree=TENANT/TREE`, or `tenant=T&tree=TREE`), the trees of
         one tenant (`tenant=T`) or every tree on the server; within it only
         trees the caller may read (`tree:read`) are searched, so anonymous
@@ -2447,6 +2449,8 @@ paths:
             minimum: 1
             maximum: 1000
             default: 50
+        - $ref: "#/components/parameters/CodeSearchBranch"
+        - $ref: "#/components/parameters/CodeSearchBranches"
       responses:
         "200":
           description: The hits.
@@ -2454,6 +2458,149 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CodeSearchResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/search/symbols:
+    get:
+      operationId: searchSymbols
+      summary: Symbol search
+      description: |
+        v0.7 (§15.9). Finds definitions (functions, methods, classes,
+        structs, interfaces, traits, enums, types and constants) extracted
+        from Go, Rust, TypeScript/JavaScript, Python, Java and C/C++ files
+        at the branch tips in scope (same scope, branch selection and
+        permission filtering as `searchCode`). Names match
+        case-insensitively; results are ranked exact > prefix > substring
+        (an exact match in the query's case first, then shorter names),
+        then ordered by name, tenant, tree, branch, path and line.
+        Restricted paths never count towards `limit`.
+      tags: [Search]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Symbol name or part of one (at most 200 bytes).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+        - name: kind
+          in: query
+          required: false
+          description: "Comma-separated kinds to return: function, method, class, struct, interface, trait, enum, type, const (default all)."
+          schema:
+            type: string
+        - name: tenant
+          in: query
+          required: false
+          description: Tenant slug (or id) to search in.
+          schema:
+            type: string
+        - name: tree
+          in: query
+          required: false
+          description: "`TENANT/TREE`, or a tree name together with `tenant`."
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: false
+          description: Path glob restricting the files searched (as for `searchCode`).
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of symbols (clamped to 1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+        - $ref: "#/components/parameters/CodeSearchBranch"
+        - $ref: "#/components/parameters/CodeSearchBranches"
+      responses:
+        "200":
+          description: The ranked symbols.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SymbolSearchResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/code-index:
+    get:
+      operationId: getCodeIndexStatus
+      summary: Code index status
+      description: |
+        v0.7 (§15.9). Server admins only. The persistent code search index:
+        format version, memory use against `--code-index-memory`, segments
+        loaded, builds and disk loads since the server started, and per
+        indexed tree its default-branch counts (files, bytes, symbols),
+        `built_at`, branch count, distinct segments, memory and disk bytes
+        and each indexed branch (tip, manifest, loaded, building, error).
+        Indexes of trees deleted while the server was down are dropped.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: The index status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeIndexStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/code-index/rebuild:
+    post:
+      operationId: rebuildCodeIndex
+      summary: Rebuild the code index
+      description: |
+        v0.7 (§15.9). Server admins only. Discards the index of one tree
+        (`tree=TENANT/TREE`) or of every indexed tree (no `tree`) in memory
+        and on disk, and rebuilds the branches that were indexed (the
+        default branch when none was) from the object store before
+        answering. Audited as `code_index.rebuild`.
+      tags: [Admin]
+      x-wt-action: server:admin
+      parameters:
+        - name: tree
+          in: query
+          required: false
+          description: "`TENANT/TREE` to rebuild; omit to rebuild every indexed tree."
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The rebuilt trees.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeIndexRebuildResult"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -6544,6 +6691,22 @@ components:
       name: access_token
       description: The bearer token as a query parameter; accepted on GET requests only (for `EventSource`).
   parameters:
+    CodeSearchBranch:
+      name: branch
+      in: query
+      required: false
+      description: "v0.7 (§15.9). Search this branch instead of the default branch (trees without it contribute nothing). Not combinable with `branches=all`."
+      schema:
+        type: string
+    CodeSearchBranches:
+      name: branches
+      in: query
+      required: false
+      description: "v0.7 (§15.9). `all` searches every branch tip (the default branch and the most recently updated others, up to `--code-index-branches` per tree, default 10), default branch first; a file version already searched on an earlier branch is reported once."
+      schema:
+        type: string
+        enum: [default, all]
+        default: default
     Tenant:
       name: tenant
       in: path
@@ -7024,6 +7187,137 @@ components:
         current_password:
           type: string
         new_password:
+          type: string
+    CodeIndexBranch:
+      type: object
+      description: "CodeIndexBranch is the index status of one branch of a tree."
+      required: [branch, snapshot_id, manifest, files, bytes, symbols, reused, built_at, build_ms, loaded, building]
+      properties:
+        branch:
+          type: string
+        snapshot_id:
+          type: string
+        manifest:
+          type: string
+        files:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+        symbols:
+          type: integer
+        reused:
+          type: integer
+        built_at:
+          type: string
+          format: date-time
+        build_ms:
+          type: integer
+          format: int64
+        loaded:
+          type: boolean
+          description: "segment in memory"
+        building:
+          type: boolean
+        error:
+          type: string
+    CodeIndexRebuildResult:
+      type: object
+      description: "RebuildResult is the answer to a rebuild."
+      required: [rebuilt, trees]
+      properties:
+        rebuilt:
+          type: integer
+        trees:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/CodeIndexTree"
+    CodeIndexStatus:
+      type: object
+      description: "IndexStatus describes the whole code index."
+      required: [format_version, persistent, memory_bytes, memory_limit, loaded_segments, evictions, disk_bytes, max_branches, builds, disk_loads, trees]
+      properties:
+        format_version:
+          type: integer
+        persistent:
+          type: boolean
+          description: "Persistent reports whether indexes are kept on disk."
+        memory_bytes:
+          type: integer
+          format: int64
+          description: "MemoryBytes is the size of the decoded segments in memory; MemoryLimit their cap (0 = unlimited)."
+        memory_limit:
+          type: integer
+          format: int64
+        loaded_segments:
+          type: integer
+        evictions:
+          type: integer
+          format: int64
+          description: "Evictions counts segments dropped from memory since the start."
+        disk_bytes:
+          type: integer
+          format: int64
+        max_branches:
+          type: integer
+          description: "MaxBranches is the most branches indexed per tree."
+        builds:
+          type: integer
+          format: int64
+          description: "Builds counts segments built since the server started; DiskLoads segments loaded from disk."
+        disk_loads:
+          type: integer
+          format: int64
+        trees:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/CodeIndexTree"
+    CodeIndexTree:
+      type: object
+      description: "CodeIndexTree is the index status of one tree."
+      required: [tree_id, tenant, tree, default_branch, state, files, bytes, symbols, trigrams, built_at, branch_count, segments, memory_bytes, disk_bytes, branches]
+      properties:
+        tree_id:
+          type: string
+        tenant:
+          type: string
+        tree:
+          type: string
+        default_branch:
+          type: string
+        state:
+          type: string
+          description: "State is \"ready\", \"building\" or \"error\"."
+        files:
+          type: integer
+          description: "Files, Bytes, Symbols and Trigrams describe the default branch."
+        bytes:
+          type: integer
+          format: int64
+        symbols:
+          type: integer
+        trigrams:
+          type: integer
+        built_at:
+          type: string
+          format: date-time
+          description: "default branch; zero when not built yet"
+        branch_count:
+          type: integer
+        segments:
+          type: integer
+          description: "Segments counts distinct manifests (branches with identical tips share one)."
+        memory_bytes:
+          type: integer
+          format: int64
+        disk_bytes:
+          type: integer
+          format: int64
+        branches:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/CodeIndexBranch"
+        error:
           type: string
     CodeSearchHit:
       type: object
@@ -9163,6 +9457,57 @@ components:
         manifest_hash:
           type: string
           description: "v0.5: hex BLAKE3 of the staged working manifest (\"\" when the client sent none). It keeps the staged content alive and downloadable."
+    SymbolHit:
+      type: object
+      description: "SymbolHit is one symbol found by a symbol search."
+      required: [tenant, tree, branch, snapshot_id, path, line, name, kind, signature, language, match]
+      properties:
+        tenant:
+          type: string
+        tree:
+          type: string
+        branch:
+          type: string
+        snapshot_id:
+          type: string
+        path:
+          type: string
+        line:
+          type: integer
+          description: "1-based"
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [function, method, class, struct, interface, trait, enum, type, const]
+          description: "function, method, class, struct, interface, trait, enum, type or const"
+        container:
+          type: string
+          description: "Container is the enclosing type of a method (or nested declaration)."
+        signature:
+          type: string
+          description: "Signature is the defining line, trimmed (at most 200 bytes)."
+        language:
+          type: string
+          description: "go, rust, typescript, javascript, python, java, c or cpp"
+        match:
+          type: string
+          enum: [exact, prefix, substring]
+          description: "Match is how the name matched the query: exact, prefix or substring."
+    SymbolSearchResult:
+      type: object
+      description: "SymbolResult is the answer to a symbol search. Symbols are ranked (exact, prefix, substring; then shorter names first) and then ordered by name, tenant, tree, branch, path and line."
+      required: [symbols, truncated, searched_trees]
+      properties:
+        symbols:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/SymbolHit"
+        truncated:
+          type: boolean
+          description: "Truncated reports that more than limit symbols matched, or the time budget ran out."
+        searched_trees:
+          type: integer
     SystemInfo:
       type: object
       required: [version, go_version, os, arch, started_at, uptime_seconds, allow_registration, data_dir, num_cpu, num_goroutine, memory, storage, event_bus]

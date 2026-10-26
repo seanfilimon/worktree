@@ -242,6 +242,14 @@ var openAPITypes = map[string]any{
 	"PolicyDiff":            policyhist.DiffResult{},
 	"PolicyStatementChange": policyhist.StatementChange{},
 	"PolicyFieldChange":     policyhist.FieldChange{},
+	// v0.7 search-v2 (§15.9)
+	"SymbolSearchResult":     codesearch.SymbolResult{},
+	"SymbolHit":              codesearch.SymbolHit{},
+	"CodeIndexStatus":        codesearch.IndexStatus{},
+	"CodeIndexTree":          codesearch.CodeIndexTree{},
+	"CodeIndexBranch":        codesearch.CodeIndexBranch{},
+	"CodeIndexRebuildResult": codesearch.RebuildResult{},
+	// end search-v2
 }
 
 // openAPICommentDirs are the package directories whose doc comments feed
