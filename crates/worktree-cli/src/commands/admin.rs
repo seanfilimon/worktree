@@ -82,6 +82,11 @@ pub enum AdminCommand {
     /// blobs and chunks (exits 1 on problems)
     Fsck,
     // --- end storage ---
+    // --- search-v2 (§15.9) ---
+    /// Show the code search index (memory, disk, indexed trees and
+    /// branches) or rebuild it (`wt admin code-index rebuild [TENANT/TREE]`)
+    CodeIndex(crate::commands::search::CodeIndexArgs),
+    // --- end search-v2 ---
     /// Show or change a tenant's quotas (unset limits use the server
     /// defaults; 0 unsets a limit)
     Limits {
@@ -500,6 +505,9 @@ pub fn run(ctx: &Context, args: AdminArgs) -> Result<()> {
             }
         }
         // --- end storage ---
+        // --- search-v2 (§15.9) ---
+        AdminCommand::CodeIndex(args) => crate::commands::search::run_code_index(&api, out, args),
+        // --- end search-v2 ---
         AdminCommand::Limits {
             tenant,
             max_trees,
