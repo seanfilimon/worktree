@@ -11,7 +11,7 @@
 #   bash scripts/deploy-docs.sh deploy --no-check
 #
 # Railway builds apps/web/Dockerfile from the repository root, configured by
-# apps/web/railway.json (see docs/deploy-docs-site.md).
+# the root railway.json (see docs/deploy-docs-site.md).
 #
 # Env: RAILWAY_DOCS_SERVICE (default "docs"), RAILWAY_ENVIRONMENT (default:
 #      the linked environment, or the one a project token belongs to),
@@ -90,7 +90,7 @@ setup() {
 Finish in the Railway dashboard (service '$SERVICE' > Settings):
   Source:                                connect seanfilimon/worktree, branch main
   Source > Root Directory:               leave empty (the repository root)
-  Config-as-code > Railway Config File:  /apps/web/railway.json
+  Config-as-code > Railway Config File:  leave empty (root railway.json)
   Wait for CI:                           on, once the CI workflow is green
 Railway then deploys every push to main that changes the site.
 EOF

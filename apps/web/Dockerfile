@@ -5,7 +5,7 @@
 #
 #   docker build -f apps/web/Dockerfile -t worktree-web .
 #
-# Railway builds this file through apps/web/railway.json; see
+# Railway builds this file through the root railway.json; see
 # docs/deploy-docs-site.md.
 
 ARG NODE_VERSION=24

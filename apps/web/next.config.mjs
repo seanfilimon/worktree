@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { createMDX } from "fumadocs-mdx/next";
 import { legacyDocRedirects } from "./redirects.mjs";
 
@@ -6,6 +7,9 @@ const withMDX = createMDX();
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  // Trace from the npm workspace root so the standalone server is always at
+  // .next/standalone/apps/web/server.js (the path apps/web/Dockerfile runs).
+  outputFileTracingRoot: fileURLToPath(new URL("../..", import.meta.url)),
   reactStrictMode: true,
   poweredByHeader: false,
 

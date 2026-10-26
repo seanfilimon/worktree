@@ -11,7 +11,7 @@ The W0rkTree server is deployed separately; see [Deployment](./deploy.md).
 | Piece | Role |
 |---|---|
 | [`apps/web/Dockerfile`](../apps/web/Dockerfile) | Multi-stage build from the repository root (npm workspaces): installs the `apps/web` workspace, runs `npm run build`, ships the Next.js standalone server on `node:24-alpine` as a non-root user. Listens on `PORT` (default 8080). |
-| [`apps/web/railway.json`](../apps/web/railway.json) | Railway config-as-code: Dockerfile builder, watch patterns (`apps/web/**`, root `package.json`, `package-lock.json`, `.npmrc`; other commits do not redeploy), health check on `/`, restart on failure. |
+| [`railway.json`](../railway.json) (repository root) | Railway config-as-code, read automatically from the root (no dashboard setting needed). Without it Railway auto-detects the repo as Rust and builds `worktree-bg`. Contents: Dockerfile builder, watch patterns (`apps/web/**`, root `package.json`, `package-lock.json`, `.npmrc`; other commits do not redeploy), health check on `/`, restart on failure. |
 | Railway GitHub integration | Deploys every push to `main` that matches the watch patterns. With **Wait for CI**, it first waits for the GitHub checks on the commit. |
 | [`.github/workflows/docs-site-checks.yml`](../.github/workflows/docs-site-checks.yml) | **Docs site checks (does not deploy).** Lint, link check and production build on pushes to `main` and pull requests that touch the site. The check Railway waits for. |
 | [`scripts/deploy-docs.sh`](../scripts/deploy-docs.sh) | `setup` (service, variables, domain), `check` (the same checks locally), `deploy` (manual `railway up --ci`, for emergencies only). |
@@ -39,7 +39,7 @@ root `package-lock.json`); only the config file lives under `apps/web`.
 4. In the Railway dashboard, open the service > **Settings**:
    - **Source**: connect the GitHub repository `seanfilimon/worktree`, branch
      `main`, and leave **Root Directory** empty (repository root).
-   - **Config-as-code > Railway Config File**: `/apps/web/railway.json`
+   - **Config-as-code > Railway Config File**: leave empty (the root `railway.json` is used). If you set `/apps/web/railway.json` earlier, clear it: that file no longer exists.
    - **Wait for CI**: on (see the caveat below).
 5. Optional custom domain: `railway domain docs.example.com --service docs --port 8080`,
    then add the DNS records it prints.
@@ -87,9 +87,10 @@ Railway's proxy reached the service but nothing answered on the domain's port.
    regardless of the `HOSTNAME` Railway injects; images built before this fix
    listened on the container name only. Redeploy to pick it up. `WEB_BIND_HOST`
    overrides the address if you ever need to.
-3. **Config file.** If the dashboard does not show the health check on `/`,
-   the service is not reading `/apps/web/railway.json` (Settings >
-   Config-as-code), so a broken build can go live. Set it and redeploy.
+3. **Config file.** The build log must start with the Dockerfile builder. If it
+   shows Railpack ("Detected Rust", `cargo build ... worktree-bg`), the service
+   is not reading the root `railway.json`: check that Root Directory is empty and
+   that no other Railway Config File path is set, then redeploy.
 4. **Crash on start.** `railway logs --service docs` shows the runtime log;
    a missing `- Network:` line means the server never started.
 
