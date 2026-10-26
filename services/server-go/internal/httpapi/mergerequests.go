@@ -44,6 +44,9 @@ var _ merger = (*review.Service)(nil)
 type mergeMRRequest struct {
 	Method  string `json:"method"`
 	Message string `json:"message"`
+	// v0.8 (§16.10): merge past the review gates of the target's protection
+	// (needs branch:bypass_protection; audited).
+	Bypass bool `json:"bypass,omitempty"`
 }
 
 func (req *mergeMRRequest) validate() error {
@@ -268,7 +271,7 @@ func (a *api) mrAction(action string) handlerFunc {
 				return err
 			}
 			if m, ok := a.d.Review.(merger); ok {
-				mr, err = m.MergeWith(ctx, p, tree, n, review.MergeOptions{Method: req.Method, Message: req.Message})
+				mr, err = m.MergeWith(ctx, p, tree, n, review.MergeOptions{Method: req.Method, Message: req.Message, Bypass: req.Bypass})
 			} else if req.Method == "" || req.Method == domain.MergeFastForward {
 				mr, err = a.d.Review.Merge(ctx, p, tree, n)
 			} else {

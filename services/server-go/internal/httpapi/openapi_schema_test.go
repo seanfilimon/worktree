@@ -39,6 +39,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/policyhist"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
+	"github.com/seanfilimon/worktree/services/server-go/internal/syncsvc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
 	"github.com/seanfilimon/worktree/services/server-go/internal/webhooks"
 )
@@ -111,6 +112,10 @@ var openAPITypes = map[string]any{
 	"MirrorRefUpdate":     mirror.RefUpdate{},
 	"CreateMirrorRequest": mirror.CreateInput{},
 	"PatchMirrorRequest":  mirror.Patch{},
+
+	// history-v2 (§16.10): internal/syncsvc, httpapi/reflog.go
+	"ReflogEntry":    syncsvc.ReflogEntry{},
+	"ReflogResponse": reflogResponse{},
 
 	// httpapi request and response types.
 	"Error":                       errorBody{},

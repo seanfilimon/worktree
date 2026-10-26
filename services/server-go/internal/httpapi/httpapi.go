@@ -280,6 +280,9 @@ func (a *api) routes() {
 	a.registerDeviceRoutes()
 	a.registerComplianceRoutes(tree)
 	a.registerResolveRoutes(tree)
+	// history-v2 (§16.10): GET {tree}/reflog.
+	a.registerReflogRoutes(tree)
+
 	a.registerPprofRoutes()   // hardening (§15.10): GET /debug/pprof[/{profile}]
 	a.registerOpenAPIRoutes() // openapi (§14.10): GET /api/v1/openapi.yaml
 

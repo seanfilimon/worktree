@@ -7,9 +7,11 @@
 
 ## Overview
 
-W0rkTree history is append-only once shared: the server never accepts a
-branch update that drops snapshots it already has. Locally, before
-pushing, three tools reshape work in progress:
+W0rkTree history is append-only once shared: the server accepts a branch
+update that drops snapshots it already has only as an explicit, audited
+force push. That needs `branch:force_push`, honours `no_force_push`
+protections and uses lease semantics (v0.8, [Undo.md](./Undo.md) §3).
+Locally, before pushing, three tools reshape work in progress:
 
 - **Cherry-pick** copies the change of existing snapshots onto the current
   branch as new snapshots.
@@ -216,6 +218,22 @@ dirty switch, `snapshot` asks the daemon to snapshot first (BgProcess.md).
 
 ---
 
+## 7. Undoing a Rewrite (v0.8)
+
+Cherry-pick, rebase (including `--continue`, `--skip` and `--abort`) and
+every stash operation that changes the stash run under the tree lock, so
+they are recorded in the operation log `.wt/oplog.jsonl` with the
+before/after value of each ref they moved ([Undo.md](./Undo.md)). `wt undo`
+puts the branch back where it was before the rebase or cherry-pick and
+checks it out. The replaced snapshots are not deleted, so `wt redo` brings
+the rewritten branch back. Undoing `wt stash push` gives the stashed
+changes back to the working tree, and undoing `wt stash pop` or `drop` puts
+the entry back. A rewritten branch that was already pushed reaches the
+server only with `wt push --force` (lease: the server tip must be the last
+fetched tip).
+
+---
+
 ## Implementation Status
 
 | Feature | Status |
@@ -231,6 +249,8 @@ dirty switch, `snapshot` asks the daemon to snapshot first (BgProcess.md).
 | Three-way stash apply onto a dirty tree / moved head | Built (v0.6 §14.5) |
 | `on_branch_switch = "stash"` in `wt switch` | Built (v0.6 §14.5) |
 | `stash_roots()` / `rewrite_roots()` for local GC | Built (v0.6 §14.5) |
+| Cherry-pick, rebase and stash recorded in the oplog; `wt undo` / `wt redo` | Built (v0.8 §16.10) |
+| Publishing rewritten history with `wt push --force` (lease) | Built (v0.8 §16.10) |
 
 ## Roadmap
 
@@ -250,6 +270,7 @@ dirty switch, `snapshot` asks the daemon to snapshot first (BgProcess.md).
 
 - `crates/worktree-sdk/src/repo/rewrite.rs` — cherry-pick, rebase, `RewriteState`, `rewrite_roots`
 - `crates/worktree-sdk/src/repo/stash.rs` — stash, `StashEntry`, `stash_roots`, `switch_branch_autostash`
+- `crates/worktree-sdk/src/repo/oplog.rs` — operation log, `undo`, `redo` (v0.8, [Undo.md](./Undo.md))
 - `crates/worktree-sdk/src/repo/merging.rs` — `three_way`, conflict state, refusal hooks
 - `crates/worktree-sdk/src/repo/snapshotting.rs` — `snapshot` refusal during a stopped step
 - `crates/worktree-sdk/src/merge/mod.rs` — `merge_manifests`, `merge_text_with`

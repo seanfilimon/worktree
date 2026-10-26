@@ -89,6 +89,8 @@ pub struct FakeState {
     pub offline: bool,
     /// storage workstream (§14.6): every gRPC exchange's compression, in order.
     pub grpc_encodings: Vec<GrpcEncoding>,
+    /// history-v2 (§16.10): (operation_id, force, bypass metadata) of every Push.
+    pub push_calls: Vec<(String, bool, bool)>,
 }
 
 /// storage workstream (§14.6): message compression seen on one gRPC call.
@@ -655,10 +657,16 @@ impl SyncService for Svc {
     ) -> Result<Response<wire::PushResponse>, Status> {
         use wire::push_rejection::{ConflictDetected, Reason};
         let caller = self.require(&req)?;
+        let bypass = req
+            .metadata()
+            .get("x-wt-bypass-protection")
+            .is_some_and(|v| v == "true");
         let r = req.into_inner();
         let tree_id = tree_of(&r.tree_id);
         let mut st = lock(&self.state);
         st.tree(&tree_id)?;
+        st.push_calls
+            .push((r.operation_id.clone(), r.force, bypass));
         if let Some(rej) = st.push_rejection.clone() {
             return Ok(Response::new(wire::PushResponse {
                 accepted: false,
@@ -718,7 +726,8 @@ impl SyncService for Svc {
         }
 
         if let Some(cur) = &current {
-            if *cur != new_tip && !st.ancestry(&new_tip, &incoming).contains(cur) {
+            // history-v2 (§16.10): force pushes skip the ancestry check (old_tip below is the lease).
+            if *cur != new_tip && !r.force && !st.ancestry(&new_tip, &incoming).contains(cur) {
                 let reason = Reason::ConflictDetected(ConflictDetected {
                     server_tip: Some(sid(cur)),
                 });
@@ -1251,11 +1260,22 @@ impl SyncService for Svc {
 
     async fn delete_tag(
         &self,
-        _req: Request<wire::DeleteTagRequest>,
+        req: Request<wire::DeleteTagRequest>,
     ) -> Result<Response<wire::DeleteTagResponse>, Status> {
-        Err(Status::unimplemented(
-            "DeleteTag is not supported by the fake server",
-        ))
+        // history-v2 (§16.10).
+        self.require(&req)?;
+        let r = req.into_inner();
+        let tree_id = tree_of(&r.tree_id);
+        let mut st = lock(&self.state);
+        st.tree(&tree_id)?;
+        let tags = st.tags.entry(tree_id).or_default();
+        let before = tags.len();
+        tags.retain(|t| t.name != r.name);
+        let deleted = tags.len() < before;
+        Ok(Response::new(wire::DeleteTagResponse {
+            deleted,
+            error: (!deleted).then(|| format!("tag {} not found", r.name)),
+        }))
     }
 }
 

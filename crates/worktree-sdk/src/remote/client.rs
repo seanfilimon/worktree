@@ -139,6 +139,10 @@ impl From<ObjectKind> for wire::ObjectKind {
 /// gRPC metadata key scoping `DownloadObjects` to one tree.
 pub const TREE_ID_METADATA_KEY: &str = "x-wt-tree-id";
 
+/// gRPC metadata key with which a push asks to bypass branch protection
+/// (history-v2, §16.10).
+pub const BYPASS_METADATA_KEY: &str = "x-wt-bypass-protection";
+
 /// The objects to upload for one manifest entry: its chunks (blobs) and
 /// chunk list, or its blob. A chunked entry whose chunk list is not stored
 /// locally (restricted content) contributes only the list hash.
@@ -465,6 +469,55 @@ impl SyncClient {
             .map_err(|s| self.status(s))?
             .into_inner())
     }
+
+    // ---- history-v2 (§16.10) ----
+
+    /// Raw `Push`, asking the server to bypass branch protection with
+    /// [`BYPASS_METADATA_KEY`] when `bypass` (needs
+    /// `branch:bypass_protection`; audited).
+    pub async fn push_with_bypass(
+        &mut self,
+        req: wire::PushRequest,
+        bypass: bool,
+    ) -> Result<wire::PushResponse> {
+        let mut request = tonic::Request::new(req);
+        if bypass {
+            request.metadata_mut().insert(
+                BYPASS_METADATA_KEY,
+                tonic::metadata::MetadataValue::from_static("true"),
+            );
+        }
+        Ok(self
+            .inner
+            .push(request)
+            .await
+            .map_err(|s| self.status(s))?
+            .into_inner())
+    }
+
+    /// Delete a tag on the server; `Remote` with the server's reason if it
+    /// refuses (no such tag, tag protection).
+    pub async fn delete_tag(&mut self, tree: &str, name: &str) -> Result<()> {
+        let resp = self
+            .inner
+            .delete_tag(wire::DeleteTagRequest {
+                tree_id: Some(tree_id(tree)),
+                name: name.to_string(),
+            })
+            .await
+            .map_err(|s| self.status(s))?
+            .into_inner();
+        if resp.deleted {
+            Ok(())
+        } else {
+            Err(SdkError::Remote(format!(
+                "tag '{name}' not deleted: {}",
+                resp.error.unwrap_or_else(|| "no reason given".into())
+            )))
+        }
+    }
+
+    // ---- end history-v2 ----
 
     // --- access workstream (§13.7): raw access-config RPCs used by
     // `remote::access` ---

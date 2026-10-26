@@ -2,6 +2,7 @@ import { GitCompareArrows, History, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useSnapshots } from "@/api/queries";
+import { useForcePushes, type ReflogEntry } from "@/api/historyV2";
 import type { Snapshot } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +11,7 @@ import { firstLine, shortId } from "@/lib/format";
 import { treePath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { useTreeContext } from "./context";
+import { ForcePushBadge, ForcePushHistory } from "./history/ForcePushes";
 import { BranchPicker } from "./history/RevisionSelect";
 import { AuthorAvatar, EmptyState, LoadingRows, QueryError, RelativeTime, SnapshotBadges } from "./history/shared";
 
@@ -40,6 +42,7 @@ export function HistoryTab() {
   const [params, setParams] = useSearchParams();
   const branch = params.get("branch") || summary.tree.default_branch;
   const snapshots = useSnapshots(tenant, tree, branch);
+  const forced = useForcePushes(tenant, tree, branch); // history-v2 (§16.10)
   const [selected, setSelected] = useState<string[]>([]);
 
   const groups = useMemo(() => groupByDay(snapshots.data ?? []), [snapshots.data]);
@@ -106,6 +109,7 @@ export function HistoryTab() {
           </EmptyState>
         ) : (
           <section aria-label={`Snapshots on ${branch}`} className="flex flex-col gap-5">
+            <ForcePushHistory tenant={tenant} tree={tree} branch={branch} entries={forced.list} />
             {groups.map((g) => (
               <section key={g.key} aria-label={g.label}>
                 <h3 className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -120,6 +124,7 @@ export function HistoryTab() {
                       href={treePath(tenant, tree, `snapshots/${encodeURIComponent(s.id)}`)}
                       selected={selected.includes(s.id)}
                       onSelect={(on) => toggle(s.id, on)}
+                      forced={forced.byTip.get(s.id)}
                     />
                   ))}
                 </ol>
@@ -132,7 +137,19 @@ export function HistoryTab() {
   );
 }
 
-function SnapshotRow({ snapshot: s, href, selected, onSelect }: { snapshot: Snapshot; href: string; selected: boolean; onSelect: (on: boolean) => void }) {
+function SnapshotRow({
+  snapshot: s,
+  href,
+  selected,
+  onSelect,
+  forced,
+}: {
+  snapshot: Snapshot;
+  href: string;
+  selected: boolean;
+  onSelect: (on: boolean) => void;
+  forced?: ReflogEntry;
+}) {
   const message = firstLine(s.message);
   return (
     <li className={cn("relative flex items-start gap-3 px-3 py-2.5 hover:bg-accent/60", selected && "bg-accent")}>
@@ -152,6 +169,7 @@ function SnapshotRow({ snapshot: s, href, selected, onSelect }: { snapshot: Snap
             {message || <span className="text-muted-foreground italic">no message</span>}
           </Link>
           <SnapshotBadges snapshot={s} />
+          {forced && <ForcePushBadge entry={forced} />}
         </p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{s.author}</span> snapshotted <RelativeTime value={s.created_at} />

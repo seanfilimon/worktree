@@ -6093,6 +6093,53 @@ paths:
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/reflog:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getReflog
+      summary: Server reflog of branch moves
+      description: |
+        v0.8 (§16.10). Every accepted push that moved a branch, newest first
+        (kept 90 days). Force pushes have `kind: force_push`, `forced: true`
+        and keep the rewound tip in `old_tip`; pushes that bypassed branch
+        protection have `bypass: true` and list the lifted refusals in
+        `bypassed`.
+      tags: [Trees]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: branch
+          in: query
+          required: false
+          description: Only this branch (default every branch).
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of entries (default 50, at most 500).
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: The reflog entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReflogResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/trees/{tenant}/{tree}/owners:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -8434,6 +8481,54 @@ components:
         require_owner_approval:
           type: boolean
           description: "v0.7 (§15.7): every path a merge request changes needs an approval of the current source tip from one of the path's owners (`GET .../owners`); missing approvals answer `409 merge_blocked` (blocker kind `owners`)."
+    # ---- history-v2 (§16.10) ----
+    ReflogEntry:
+      type: object
+      description: "One branch move in the server reflog (syncsvc.ReflogEntry, collection branch_reflog)."
+      required: [tree_id, branch, old_tip, new_tip, kind, forced, bypass, bypassed, actor, actor_id, count, at]
+      properties:
+        tree_id:
+          type: string
+        branch:
+          type: string
+        old_tip:
+          type: string
+          description: "Tip before the push (empty = the branch was created)."
+        new_tip:
+          type: string
+        kind:
+          type: string
+          enum: [push, force_push]
+        forced:
+          type: boolean
+          description: "A force push: old_tip is no longer an ancestor of new_tip."
+        bypass:
+          type: boolean
+          description: "Branch protection was bypassed (branch:bypass_protection)."
+        bypassed:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "The protection refusals that were bypassed."
+        actor:
+          type: string
+        actor_id:
+          type: string
+        count:
+          type: integer
+          description: "Snapshots added by the push."
+        at:
+          type: string
+          format: date-time
+    ReflogResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/ReflogEntry"
+    # ---- end history-v2 ----
     CICombinedStatus:
       type: object
       description: "Combined CI view of one snapshot (ci.Status). state is failure if any check failed or errored, else pending if any is pending, else success; \"\" when no check was reported."
@@ -9785,6 +9880,9 @@ components:
         message:
           type: string
           description: "Snapshot message of a merge or squash (at most 64 KiB of UTF-8; default \"Merge branch '<source>' into <target> (!N)\" for merge, the merge request title for squash). Ignored by fast-forward."
+        bypass:
+          type: boolean
+          description: "v0.8 (§16.10): merge past the review gates of the target's protection (approvals, change requests, owners, CI, blocking TODOs). Needs branch:bypass_protection (owners); audited as mr.merge with bypass=true and branch.protection_bypassed."
     MergeRequest:
       type: object
       properties:

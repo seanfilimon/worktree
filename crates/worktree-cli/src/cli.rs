@@ -208,6 +208,8 @@ pub enum Command {
     Fork(fork::ForkArgs),
     /// Undo the last local operations (snapshot, merge, rebase, branch moves) from the operation log
     Undo(undo::UndoArgs),
+    /// Re-apply operations undone with `wt undo`
+    Redo(undo::RedoArgs),
     /// ABAC attributes of tenants, accounts and trees: show, set, unset
     Attr(attr::AttrArgs),
     /// Secret scanning and license compliance: scan, findings, license audit
@@ -524,7 +526,7 @@ mod tests {
         let Command::Tag(a) = parse(&["tag", "delete", "v1"]).command else {
             panic!()
         };
-        assert!(matches!(a.action, Some(tag::TagCommand::Delete { name }) if name == "v1"));
+        assert!(matches!(a.action, Some(tag::TagCommand::Delete { name, .. }) if name == "v1"));
     }
 
     #[test]

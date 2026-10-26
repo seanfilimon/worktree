@@ -220,17 +220,24 @@ objects.
 2. If the server tip equals the local tip, push tags only and report up to
    date.
 3. If the server tip is unknown locally or is not an ancestor of the local tip,
-   refuse locally before uploading anything ("fetch and merge first").
+   refuse locally before uploading anything ("fetch and merge first"). With
+   `--force` (v0.8), the push goes ahead only when the server tip is the last
+   known remote-tracking tip (the lease). The request then carries
+   `force = true` and that tip as `old_tip` ([Undo.md](../tree/Undo.md) §3).
 4. Collect the chain: the ancestry of the new tip minus every snapshot reachable
    from any server branch tip that is known locally. Collect the objects of the
    chain: manifests, blobs, and for chunked entries the chunk list plus every
    chunk.
 5. `Negotiate`, then `UploadObjects` for the missing objects.
 6. `Push{tree_id, branch_id = branch, branch_name, old_tip, new_tip,
-   snapshot_chain, snapshots}`, where `snapshots` holds full records, oldest
-   first.
-7. On acceptance, set `refs/remotes/<remote>/<branch>`, append a `push` reflog
-   entry, and push tags whose targets the server now knows.
+   snapshot_chain, snapshots, force, operation_id}`, where `snapshots` holds
+   full records, oldest first, and `operation_id` is a fresh UUID. If the
+   connection fails, the push is retried once with the same id, and the
+   server answers the retry with the first result. `--bypass-protection`
+   adds the metadata `x-wt-bypass-protection: true`.
+7. On acceptance, set `refs/remotes/<remote>/<branch>`, append a `push` (or
+   `force-push`) reflog entry, and push tags whose targets the server now
+   knows.
 
 **Server validation pipeline** (`syncsvc/push.go`, in order; the first failure
 wins):
@@ -243,7 +250,10 @@ wins):
    A refusal returns `AccessDenied`. One memoized IAM read serves every check
    of the push.
 3. **Branch protection** (`review.CheckPush`). `no_direct_push` and
-   `allowed_pushers` refusals return `BranchProtection{rule}`.
+   `allowed_pushers` refusals return `BranchProtection{rule}`. A caller with
+   `branch:bypass_protection` who sent `x-wt-bypass-protection: true` passes
+   these refusals and the `require_linear` push check. Every bypass is
+   audited (v0.8, [Undo.md](../tree/Undo.md) §5).
 4. **Snapshot records.** Each record is well formed (valid ids, 32-byte
    manifest hash, no self-parent or duplicate parents) and carries this tree's
    `tree_id`. A record listed twice fails. A record that already exists on the
@@ -259,9 +269,13 @@ wins):
 6. **Fast-forward.** `new_tip` must descend from the server's current tip. The
    ancestry is resolved through the stored snapshots the new ones build on. If
    it does not descend, the push is rejected with
-   `ConflictDetected{server_tip}`. Re-pushing the current tip is an idempotent
-   success. The client's `old_tip` is advisory: the server always compares
-   against its own tip.
+   `ConflictDetected{server_tip}`, unless it is an allowed **force push**
+   (v0.8): `force` is set, `old_tip` (when given) equals the server tip,
+   the caller holds `branch:force_push`, no matching rule sets
+   `no_force_push`, and `require_linear` / required approvals are bypassed
+   ([Undo.md](../tree/Undo.md) §3.2). Re-pushing the current tip is an
+   idempotent success. For ordinary pushes the client's `old_tip` is
+   advisory: the server always compares against its own tip.
 7. **License.** `License.CheckPush` on the paths that differ (added, removed,
    or changed in content or mode) between the server tip's manifest and the new
    tip's manifest. A refusal returns `LicenseViolation{path, license}`.
@@ -293,9 +307,13 @@ reason `pushed`), `branch.pushed` is published with `{branch, old_tip, new_tip,
 count}`, and `branch.push` is audited. Each rejection is audited as
 `branch.push_rejected` with the rejection kind.
 
-There is **no force push**. History on the server is append-only, and the only
-ways to move a tip are fast-forward pushes, fast-forward merge-request merges and
-the REST branch create and delete endpoints.
+v0.8 (§16.10): an accepted push that moved the branch is recorded in the
+server reflog (`branch_reflog`, `GET {tree}/reflog`). A force push also
+publishes `branch.force_pushed`, sets `forced: true` in the `branch.pushed`
+payload and `forced = true` in the audit record, and keeps the rewound tip as
+the reflog entry's `old_tip`. A push with an `operation_id` that the same
+account already used within 24 hours returns the stored first response
+(`push_ops`). Snapshots are never deleted: a force push only moves the tip.
 
 **Rejections** are not gRPC errors. `Push` returns `accepted = false` with a
 `PushRejection` oneof:
@@ -458,9 +476,12 @@ it retries with exponential backoff from 1 s to 5 min, and it fetches every
   publishes `tag.pushed` and audits `tag.push`.
 - `wt push` pushes local tags whose target the server knows. `wt fetch`
   downloads server tags (`ListTags`).
-- Tag deletion has no RPC. It is the REST call `DELETE {tree}/tags/{name}`
-  (`tree:admin`, honouring `no_delete` tag protections), which publishes
-  `tag.deleted`. A local `wt tag delete` is not propagated.
+- `DeleteTag{tree_id, name}` (v0.8) deletes a server tag. It needs
+  `tree:write`, and tag protections (`no_delete`, `allowed_taggers`) apply.
+  Refusals come back as `deleted = false, error`. It publishes `tag.deleted`
+  and audits `tag.delete`. `wt tag delete NAME --remote` calls it and then
+  deletes the local tag. The REST call `DELETE {tree}/tags/{name}`
+  (`tree:admin`) remains. A plain local `wt tag delete` is not propagated.
 
 ### Access config sync
 
@@ -562,6 +583,9 @@ settings.
 | Staged snapshots (stage, list, summary with overlaps, unstage, clear on push, retention) | Built |
 | `WatchBranches` and daemon auto-fetch | Built |
 | Tags (`PushTag` / `ListTags`, REST delete) | Built |
+| Force push with lease, `no_force_push`, protection bypass, server reflog (v0.8 §16.10) | Built |
+| `operation_id` push idempotency (`push_ops`, 24 h) (v0.8 §16.10) | Built |
+| `DeleteTag` RPC and `wt tag delete --remote` (v0.8 §16.10) | Built |
 | Declarative access sync (`SyncAccessConfig` plan/apply, `GetAccessConfig`) | Built |
 | `PushRejection.ci_checks_failed` / `review_required.current` | Partial: defined on the wire, not produced as described |
 | Legacy `SyncEnvelope` / `feature::wire` framing | Kept for parity only; unused |
@@ -588,10 +612,8 @@ Described in earlier versions of this spec but not built:
   lazily hydrated stubs. Only the authorization-driven stubbed paths exist.
 - **Server-pushed access-config propagation** to other clients, and local
   revert on rejection.
-- **Force push** with elevated permission.
-- **Tag deletion over gRPC** and propagation of local tag deletes.
-- **Operation ids** for server-side deduplication of side effects (not needed
-  while every operation is idempotent).
+- **Operation ids** on RPCs other than `Push` (stage, tag push), and
+  automatic propagation of plain local tag deletes.
 
 ## References
 

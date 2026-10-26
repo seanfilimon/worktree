@@ -618,6 +618,7 @@ mod tests {
             snapshots_sent: 1,
             objects_sent: 1,
             up_to_date: false,
+            forced: false,
         });
         assert_eq!(settle(&r4), SyncStatus::Synced);
         let json = serde_json::to_value(&r4).unwrap();

@@ -506,6 +506,66 @@ impl Repository {
         Ok(())
     }
 
+    // ---- history-v2 (§16.10): ref restoration for `wt undo` / `wt redo` ----
+
+    /// Set a branch ref (tip and archived flag) or, with `None`, remove the
+    /// branch. Does not touch the working tree or the reflog.
+    pub(crate) fn restore_branch_ref(
+        &self,
+        tree: &str,
+        name: &str,
+        state: Option<&super::oplog::BranchRef>,
+    ) -> Result<()> {
+        match state {
+            Some(b) => {
+                self.write_tip(tree, name, b.tip.as_deref())?;
+                if self
+                    .branch_meta(tree)?
+                    .get(name)
+                    .is_some_and(|m| m.archived)
+                    != b.archived
+                {
+                    self.set_archived(tree, name, b.archived)?;
+                }
+                Ok(())
+            }
+            None => {
+                let path = self.branch_ref_path(tree, name)?;
+                fsutil::remove_file_if_exists(&path)?;
+                if let Some(parent) = path.parent() {
+                    fsutil::prune_empty_dirs(parent, &self.branches_dir(tree));
+                }
+                let mut meta = self.branch_meta(tree)?;
+                if meta.remove(name).is_some() {
+                    fsutil::write_json(&self.branch_meta_path(tree), &meta)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Write a tag record or, with `None`, remove the tag.
+    pub(crate) fn restore_tag_ref(
+        &self,
+        tree: &str,
+        name: &str,
+        tag: Option<&TagInfo>,
+    ) -> Result<()> {
+        let path = self.tag_path(tree, name)?;
+        match tag {
+            Some(t) => fsutil::write_json(&path, t),
+            None => {
+                fsutil::remove_file_if_exists(&path)?;
+                if let Some(parent) = path.parent() {
+                    fsutil::prune_empty_dirs(parent, &self.tags_dir(tree));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    // ---- end history-v2 ----
+
     pub(crate) fn create_branch_unlocked(
         &self,
         tree: &str,

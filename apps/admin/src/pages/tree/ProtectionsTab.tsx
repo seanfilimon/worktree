@@ -1,9 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, BadgeCheck, CircleCheck, GitCommitHorizontal, GitMerge, Info, ListTodo, Lock, Pencil, Plus, ShieldCheck, UserCheck } from "lucide-react";
+import { Ban, BadgeCheck, CircleCheck, FastForward, GitCommitHorizontal, GitMerge, Info, ListTodo, Lock, Pencil, Plus, ShieldCheck, UserCheck } from "lucide-react";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { useApi } from "@/api/context";
 import { keys, useBranches, useProtections } from "@/api/queries";
-import type { BranchProtectionV07 } from "@/api/v07review";
+import type { BranchProtectionV08 } from "@/api/historyV2";
 import { isMergeMethod, MERGE_METHOD_LABEL, MERGE_METHODS, type MergeMethod } from "@/api/v06";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChipsInput } from "@/components/files/ChipsInput";
@@ -39,6 +39,8 @@ interface FormState {
   merge_methods: MergeMethod[];
   // v0.7 (§15.7)
   require_owner_approval: boolean;
+  // v0.8 history-v2 (§16.10)
+  no_force_push: boolean;
 }
 
 const NEW_RULE: FormState = {
@@ -54,14 +56,15 @@ const NEW_RULE: FormState = {
   block_on_todos: false,
   merge_methods: [],
   require_owner_approval: false,
+  no_force_push: false,
 };
 
 /** Allowed merge methods of a rule (v0.6 field, absent before). */
-function ruleMethods(p: BranchProtectionV07): MergeMethod[] {
-  return ((p as BranchProtectionV07 & { merge_methods?: string[] | null }).merge_methods ?? []).filter(isMergeMethod);
+function ruleMethods(p: BranchProtectionV08): MergeMethod[] {
+  return ((p as BranchProtectionV08 & { merge_methods?: string[] | null }).merge_methods ?? []).filter(isMergeMethod);
 }
 
-function toForm(p: BranchProtectionV07): FormState {
+function toForm(p: BranchProtectionV08): FormState {
   return {
     pattern: p.pattern,
     no_direct_push: p.no_direct_push,
@@ -75,12 +78,13 @@ function toForm(p: BranchProtectionV07): FormState {
     block_on_todos: p.block_on_todos ?? false,
     merge_methods: ruleMethods(p),
     require_owner_approval: p.require_owner_approval ?? false,
+    no_force_push: p.no_force_push ?? false,
   };
 }
 
 /** The PUT body; v0.5 fields are `omitempty` on the server, so false / empty ones are left out. */
-function toBody(treeId: string, pattern: string, approvals: number, f: FormState): BranchProtectionV07 {
-  const body: BranchProtectionV07 = {
+function toBody(treeId: string, pattern: string, approvals: number, f: FormState): BranchProtectionV08 {
+  const body: BranchProtectionV08 = {
     tree_id: treeId,
     pattern,
     no_direct_push: f.no_direct_push,
@@ -96,9 +100,10 @@ function toBody(treeId: string, pattern: string, approvals: number, f: FormState
   if (f.require_linear) body.require_linear = true;
   if (f.block_on_todos) body.block_on_todos = true;
   if (f.require_owner_approval) body.require_owner_approval = true;
+  if (f.no_force_push) body.no_force_push = true;
   // Every method selected is the same as none: "all".
   if (f.merge_methods.length > 0 && f.merge_methods.length < MERGE_METHODS.length) {
-    (body as BranchProtectionV07 & { merge_methods?: MergeMethod[] }).merge_methods = MERGE_METHODS.filter((m) => f.merge_methods.includes(m));
+    (body as BranchProtectionV08 & { merge_methods?: MergeMethod[] }).merge_methods = MERGE_METHODS.filter((m) => f.merge_methods.includes(m));
   }
   return body;
 }
@@ -184,7 +189,7 @@ function ProtectionDialog({
   const replaces = !editing && existing.includes(pattern);
 
   const save = useMutation({
-    mutationFn: (body: BranchProtectionV07) => api.trees.putProtection(tenant, tree, body),
+    mutationFn: (body: BranchProtectionV08) => api.trees.putProtection(tenant, tree, body),
     onSuccess: async (p) => {
       toast.success(editing ? "Protection updated" : "Protection added", p.pattern);
       onClose();
@@ -293,6 +298,13 @@ function ProtectionDialog({
           description="Matching branches cannot be deleted."
           checked={form.no_delete}
           onChange={(v) => set("no_delete", v)}
+        />
+        <SwitchField
+          id={`${id}-force`}
+          label="Prevent force pushes"
+          description="Nobody can rewind matching branches with wt push --force, not even owners bypassing protection."
+          checked={form.no_force_push}
+          onChange={(v) => set("no_force_push", v)}
         />
         <fieldset className="grid gap-3">
           <legend className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">Merge and push requirements</legend>
@@ -407,7 +419,9 @@ function Explanation() {
           <span className="font-semibold text-foreground">No direct push</span> forces changes through merge requests, which then need the{" "}
           <span className="font-semibold text-foreground">required approvals</span>.{" "}
           <span className="font-semibold text-foreground">Allowed pushers</span> restricts who may push at all;{" "}
-          <span className="font-semibold text-foreground">prevent deletion</span> blocks removing the branch.
+          <span className="font-semibold text-foreground">prevent deletion</span> blocks removing the branch and{" "}
+          <span className="font-semibold text-foreground">prevent force pushes</span> blocks rewinding it. Owners may push or merge
+          past the other rules with an explicit, audited bypass.
         </p>
         <p>
           <span className="font-semibold text-foreground">Require CI</span>,{" "}
@@ -423,18 +437,19 @@ function Explanation() {
   );
 }
 
-function hasV05Rule(p: BranchProtectionV07): boolean {
+function hasV05Rule(p: BranchProtectionV08): boolean {
   return !!(
     p.require_ci_pass ||
     p.require_signed ||
     p.require_linear ||
     p.block_on_todos ||
     p.require_owner_approval ||
+    p.no_force_push ||
     ruleMethods(p).length > 0
   );
 }
 
-function V05RuleBadges({ rule: p }: { rule: BranchProtectionV07 }) {
+function V05RuleBadges({ rule: p }: { rule: BranchProtectionV08 }) {
   const checks = p.required_checks ?? [];
   const methods = ruleMethods(p);
   return (
@@ -475,6 +490,12 @@ function V05RuleBadges({ rule: p }: { rule: BranchProtectionV07 }) {
           owner approval
         </Badge>
       )}
+      {p.no_force_push && (
+        <Badge variant="outline" title="Force pushes are refused">
+          <FastForward aria-hidden="true" />
+          no force push
+        </Badge>
+      )}
     </>
   );
 }
@@ -499,7 +520,7 @@ export function ProtectionsTab() {
     },
   });
 
-  const rules: BranchProtectionV07[] = protections.data ?? [];
+  const rules: BranchProtectionV08[] = protections.data ?? [];
   const names = (branches.data ?? []).map((b) => b.name);
 
   return (
