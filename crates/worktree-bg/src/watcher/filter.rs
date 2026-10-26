@@ -40,7 +40,16 @@ pub fn classify(root: &Path, path: &Path) -> Option<PathClass> {
         let reload = matches!(parts.as_slice(), [_, f] if f == "config.toml" || f == "ignore");
         return Some(PathClass::Internal { reload });
     }
-    if parts.iter().any(|p| p == TREE_MARKER_DIR) {
+    if let Some(i) = parts.iter().position(|p| p == TREE_MARKER_DIR) {
+        // hardening (§15.10): a tree's shared `.wt-tree/` files (config,
+        // ignore, hooks, access) are tracked content as well as config.
+        let tail = parts[i..].join("/");
+        if worktree_sdk::model::is_shared_tree_config_path(&tail) {
+            return Some(PathClass::Change {
+                rel: parts.join("/"),
+                reload: true,
+            });
+        }
         return Some(PathClass::Internal { reload: true });
     }
     let reload = parts.last().is_some_and(|p| p == IGNORE_FILE);
@@ -149,10 +158,36 @@ mod tests {
             .join("libs")
             .join("core")
             .join(".wt-tree")
-            .join("config.toml");
+            .join("local.toml");
         assert_eq!(
             classify(&r, &marker),
             Some(PathClass::Internal { reload: true })
+        );
+    }
+
+    #[test]
+    fn shared_tree_files_are_changes_that_reload() {
+        // hardening (§15.10): shared `.wt-tree/` files are tracked.
+        let r = root();
+        let config = r
+            .join("libs")
+            .join("core")
+            .join(".wt-tree")
+            .join("config.toml");
+        assert_eq!(
+            classify(&r, &config),
+            Some(PathClass::Change {
+                rel: "libs/core/.wt-tree/config.toml".into(),
+                reload: true
+            })
+        );
+        let hook = r.join(".wt-tree").join("hooks").join("pre-snapshot");
+        assert_eq!(
+            classify(&r, &hook),
+            Some(PathClass::Change {
+                rel: ".wt-tree/hooks/pre-snapshot".into(),
+                reload: true
+            })
         );
     }
 

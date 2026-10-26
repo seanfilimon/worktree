@@ -25,12 +25,24 @@ pub(crate) struct TreeRecord {
     pub(crate) remote_name: String,
 }
 
-/// Contents of `<tree dir>/.wt-tree/config.toml`.
+/// Contents of `<tree dir>/.wt-tree/local.toml` (the local-only identity
+/// marker; before v0.7 these keys lived in `.wt-tree/config.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MarkerConfig {
     name: String,
     id: String,
 }
+
+/// hardening (§15.10): the local-only identity file inside `.wt-tree/`.
+/// Everything else the tree shares (`config.toml`, `ignore`, `hooks/`,
+/// `access/`) is tracked; this file never is.
+pub const TREE_IDENTITY_FILE: &str = "local.toml";
+
+/// Header of a written identity file.
+const IDENTITY_HEADER: &str = "\
+# Local identity of this nested tree (written by wt; never snapshotted).
+# Shared tree settings live in config.toml next to this file.
+";
 
 impl Repository {
     // ----------------------------------------------------------------
@@ -298,22 +310,159 @@ impl Repository {
     }
 }
 
+/// Write the identity marker `<dir>/.wt-tree/local.toml` (hardening
+/// §15.10: no longer `config.toml`, which is now shared). Legacy identity
+/// lines in `config.toml` are migrated out first.
 fn write_marker(dir: &Path, marker: &MarkerConfig) -> Result<()> {
-    let path = dir.join(TREE_MARKER_DIR).join("config.toml");
-    // local-config (§13.9): the marker file also holds tree-level config
-    // sections; keep everything except the identity keys rewritten here.
-    let existing = fsutil::read_string_opt(&path)?
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .filter(|t| !t.is_empty());
-    let text = match existing {
-        Some(mut table) => {
-            table.insert("name".into(), toml::Value::String(marker.name.clone()));
-            table.insert("id".into(), toml::Value::String(marker.id.clone()));
-            toml::to_string_pretty(&table)?
-        }
-        None => toml::to_string_pretty(marker)?,
-    };
+    migrate_identity_lines(dir)?;
+    let path = dir.join(TREE_MARKER_DIR).join(TREE_IDENTITY_FILE);
+    let text = format!("{IDENTITY_HEADER}{}", toml::to_string_pretty(marker)?);
+    if fsutil::read_string_opt(&path)?.as_deref() == Some(text.as_str()) {
+        return Ok(());
+    }
     fsutil::write_atomic(&path, text.as_bytes())
+}
+
+// ---- hardening (ENGINEERING_PLAN §15.10): shared `.wt-tree/` migration ----
+
+/// Read the identity of the tree marked by `<dir>/.wt-tree/`: `local.toml`
+/// first, then legacy `name`/`id` keys of `config.toml`.
+pub(crate) fn read_marker_identity(dir: &Path) -> Result<Option<(String, String)>> {
+    let marker = dir.join(TREE_MARKER_DIR);
+    for file in [TREE_IDENTITY_FILE, "config.toml"] {
+        let Some(text) = fsutil::read_string_opt(&marker.join(file))? else {
+            continue;
+        };
+        let Ok(table) = text.parse::<toml::Table>() else {
+            continue;
+        };
+        let get = |k: &str| {
+            table
+                .get(k)
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+        };
+        if let (Some(name), Some(id)) = (get("name"), get("id")) {
+            return Ok(Some((name, id)));
+        }
+    }
+    Ok(None)
+}
+
+/// Move legacy top-level `name`/`id` identity keys out of
+/// `<dir>/.wt-tree/config.toml` (written there before v0.7) into
+/// `local.toml`, so that `config.toml` can be shared. The lines are removed
+/// textually (comments and layout are kept); a file left empty is deleted.
+/// Returns whether anything changed.
+pub(crate) fn migrate_identity_lines(dir: &Path) -> Result<bool> {
+    let marker = dir.join(TREE_MARKER_DIR);
+    let config_path = marker.join("config.toml");
+    let Some(text) = fsutil::read_string_opt(&config_path)? else {
+        return Ok(false);
+    };
+    let Ok(table) = text.parse::<toml::Table>() else {
+        // An unparsable file is reported by `wt tree validate`; leave it.
+        return Ok(false);
+    };
+    let name = table.get("name").and_then(toml::Value::as_str);
+    let id = table.get("id").and_then(toml::Value::as_str);
+    if name.is_none() && id.is_none() {
+        return Ok(false);
+    }
+    let identity_path = marker.join(TREE_IDENTITY_FILE);
+    if let (Some(name), Some(id), None) = (name, id, fsutil::read_string_opt(&identity_path)?) {
+        let marker_cfg = MarkerConfig {
+            name: name.to_string(),
+            id: id.to_string(),
+        };
+        let identity = format!("{IDENTITY_HEADER}{}", toml::to_string_pretty(&marker_cfg)?);
+        fsutil::write_atomic(&identity_path, identity.as_bytes())?;
+    }
+    let stripped = strip_identity_lines(&text);
+    let rest = match stripped.parse::<toml::Table>() {
+        Ok(t) if !t.contains_key("name") && !t.contains_key("id") => stripped,
+        // Unusual layout (e.g. a multi-line value): rewrite from the table.
+        _ => {
+            let mut t = table.clone();
+            t.remove("name");
+            t.remove("id");
+            if t.is_empty() {
+                String::new()
+            } else {
+                toml::to_string_pretty(&t)?
+            }
+        }
+    };
+    if rest.trim().is_empty() {
+        fsutil::remove_file_if_exists(&config_path)?;
+    } else {
+        fsutil::write_atomic(&config_path, rest.as_bytes())?;
+    }
+    Ok(true)
+}
+
+/// Drop top-level `name = ...` / `id = ...` lines (before the first table
+/// header) and the marker comment `wt tree add` used to write above them,
+/// plus the blank lines that leaves at the start.
+fn strip_identity_lines(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut in_root = true;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            in_root = false;
+        }
+        if in_root {
+            let key = trimmed
+                .split_once('=')
+                .map(|(k, _)| k.trim().trim_matches('"'));
+            if matches!(key, Some("name" | "id")) && !trimmed.starts_with('#') {
+                continue;
+            }
+            if trimmed.starts_with("# Marker identity") {
+                continue;
+            }
+        }
+        out.push(line);
+    }
+    while out.first().is_some_and(|l| l.trim().is_empty()) {
+        out.remove(0);
+    }
+    if out.is_empty() {
+        return String::new();
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
+}
+
+impl Repository {
+    /// hardening (§15.10): migrate a tree's legacy `.wt-tree/config.toml`
+    /// identity lines into `.wt-tree/local.toml` (see
+    /// [`migrate_identity_lines`]); runs before every working-directory scan
+    /// so that existing worktrees start tracking the shared files on the
+    /// next snapshot.
+    pub(crate) fn migrate_tree_marker(&self, rec: &TreeRecord) -> Result<()> {
+        let dir = self.tree_dir_of(rec);
+        if !dir.join(TREE_MARKER_DIR).is_dir() {
+            return Ok(());
+        }
+        if migrate_identity_lines(&dir)? {
+            tracing::info!(tree = %rec.name, "moved the .wt-tree/ identity into .wt-tree/local.toml");
+        }
+        // A nested tree's marker must keep its identity file, so that the
+        // directory stays marked even when no shared file exists.
+        if !rec.path.is_empty() && read_marker_identity(&dir)?.is_none() {
+            write_marker(
+                &dir,
+                &MarkerConfig {
+                    name: rec.name.clone(),
+                    id: rec.id.clone(),
+                },
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// '/'-joined string form of a relative path.
@@ -369,6 +518,42 @@ mod tests {
         assert!(relative_tree_path(Path::new("../x")).is_err());
         assert!(relative_tree_path(Path::new(".wt/x")).is_err());
         assert!(relative_tree_path(&std::env::temp_dir()).is_err());
+    }
+
+    #[test]
+    fn identity_lines_are_stripped_textually() {
+        let text = "# Marker identity (written by wt tree add)\nname = \"svc\"\nid = \"1\"\n\n# keep me\n[hooks]\nname = \"not identity\"\ntimeout_secs = 3\n";
+        assert_eq!(
+            strip_identity_lines(text),
+            "# keep me\n[hooks]\nname = \"not identity\"\ntimeout_secs = 3\n"
+        );
+        assert_eq!(strip_identity_lines("name = \"a\"\nid = \"b\"\n"), "");
+        assert_eq!(
+            strip_identity_lines("# name = \"commented\"\nkey = 1\n"),
+            "# name = \"commented\"\nkey = 1\n"
+        );
+    }
+
+    #[test]
+    fn migration_moves_identity_to_local_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(TREE_MARKER_DIR);
+        fs::create_dir_all(&marker).unwrap();
+        fs::write(
+            marker.join("config.toml"),
+            "name = \"svc\"\nid = \"abc\"\n[hooks]\ntimeout_secs = 3\n",
+        )
+        .unwrap();
+        assert!(migrate_identity_lines(dir.path()).unwrap());
+        assert_eq!(
+            fs::read_to_string(marker.join("config.toml")).unwrap(),
+            "[hooks]\ntimeout_secs = 3\n"
+        );
+        assert_eq!(
+            read_marker_identity(dir.path()).unwrap(),
+            Some(("svc".into(), "abc".into()))
+        );
+        assert!(!migrate_identity_lines(dir.path()).unwrap(), "idempotent");
     }
 
     #[test]

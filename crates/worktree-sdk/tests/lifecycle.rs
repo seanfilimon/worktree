@@ -157,7 +157,8 @@ fn nested_trees_registry() {
     let lib = fx.repo.add_tree("lib", Path::new("packages/lib")).unwrap();
     assert_eq!(lib.path, Path::new("packages/lib"));
     assert_eq!(lib.current_branch, "main");
-    assert!(fx.path("packages/lib/.wt-tree/config.toml").is_file());
+    // hardening (§15.10): the marker identity is the local-only local.toml.
+    assert!(fx.path("packages/lib/.wt-tree/local.toml").is_file());
     assert_eq!(fx.repo.tree_dir("lib").unwrap(), fx.path("packages/lib"));
 
     let names: Vec<_> = fx
@@ -199,7 +200,7 @@ fn nested_trees_registry() {
     let lib = fx.repo.tree("lib").unwrap();
     assert_eq!(lib.remote_name, "shared-lib");
     assert_eq!(lib.id, "server-id-1");
-    let marker = fs::read_to_string(fx.path("packages/lib/.wt-tree/config.toml")).unwrap();
+    let marker = fs::read_to_string(fx.path("packages/lib/.wt-tree/local.toml")).unwrap();
     assert!(marker.contains("server-id-1"));
 }
 

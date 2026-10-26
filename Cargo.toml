@@ -7,6 +7,7 @@ members = [
     "crates/worktree-cli",
     "crates/worktree-sdk",
     "crates/worktree-e2e",
+    "crates/worktree-bench",
 ]
 
 [workspace.package]

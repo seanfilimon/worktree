@@ -2,6 +2,7 @@ package syncsvc
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -252,4 +253,55 @@ func treeToPB(t *domain.Tree, tenantSlug string, created bool) *syncpb.TreeInfo 
 		DefaultBranch: t.DefaultBranch,
 		Created:       created,
 	}
+}
+
+// ---- hardening (docs/ENGINEERING_PLAN.md §15.10): reserved path components ----
+
+// Reserved directory names of the local repository layout.
+const (
+	wtDir         = ".wt"
+	treeMarkerDir = ".wt-tree"
+)
+
+// IsSharedTreeConfigPath reports whether a tree-relative manifest path is
+// one of the tree's own shared `.wt-tree/` files: `.wt-tree/config.toml`,
+// `.wt-tree/ignore`, or a file below `.wt-tree/hooks/` or
+// `.wt-tree/access/`. Everything else in `.wt-tree/` (the local identity
+// file) never leaves the client.
+func IsSharedTreeConfigPath(p string) bool {
+	rest, ok := strings.CutPrefix(p, treeMarkerDir+"/")
+	if !ok {
+		return false
+	}
+	dir, sub, nested := strings.Cut(rest, "/")
+	if !nested {
+		return rest == "config.toml" || rest == "ignore"
+	}
+	if (dir != "hooks" && dir != "access") || sub == "" {
+		return false
+	}
+	for _, c := range strings.Split(sub, "/") {
+		if c == wtDir || c == treeMarkerDir {
+			return false
+		}
+	}
+	return true
+}
+
+// validateReservedComponents rejects manifest paths inside `.wt/` (any
+// depth) and `.wt-tree/` other than the tree root's shared files: a
+// `.wt-tree/` deeper in the path is a nested tree's marker, whose contents
+// belong to that tree, never to its parent.
+func validateReservedComponents(p string) error {
+	for i, c := range strings.Split(p, "/") {
+		switch {
+		case c == wtDir:
+			return fmt.Errorf("path %q is inside the reserved %s/ directory", p, wtDir)
+		case c == treeMarkerDir && i > 0:
+			return fmt.Errorf("path %q is inside a nested tree's %s/ marker", p, treeMarkerDir)
+		case c == treeMarkerDir && !IsSharedTreeConfigPath(p):
+			return fmt.Errorf("path %q: only %s/{config.toml,ignore,hooks/**,access/**} are tracked", p, treeMarkerDir)
+		}
+	}
+	return nil
 }

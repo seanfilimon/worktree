@@ -62,3 +62,6 @@ mod code_search_v2;
 mod one_step_sync;
 mod release_integrity;
 mod review_v07; // search-v2 (§15.9)
+                // v0.7 hardening (ENGINEERING_PLAN §15.10).
+mod hardening_gaps;
+mod wt_tree_sharing;

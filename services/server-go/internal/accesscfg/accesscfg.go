@@ -962,7 +962,9 @@ func (s *Service) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if err := s.TreeDeleted(ctx, e.TenantID, e.TreeID); err != nil {
+			// hardening (§15.10): attribute the recorded policy versions to
+			// whoever deleted the tree.
+			if err := s.TreeDeletedBy(ctx, e.TenantID, e.TreeID, e.Actor, eventTreeName(e.Payload)); err != nil {
 				s.d.Logger.WarnContext(ctx, "accesscfg: cleaning up a deleted tree failed",
 					slog.String("tree_id", e.TreeID), slog.Any("error", err))
 			}
@@ -973,14 +975,57 @@ func (s *Service) Run(ctx context.Context) {
 // TreeDeleted removes the tree's access document and the policies applied
 // from it.
 func (s *Service) TreeDeleted(ctx context.Context, tenantID, treeID string) error {
+	return s.TreeDeletedBy(ctx, tenantID, treeID, "", "")
+}
+
+// hardening (§15.10): policy versions on tree deletion.
+//
+// TreeDeletedBy is TreeDeleted that records a "delete" PolicyVersion (and
+// publishes policy.changed) for every config-managed policy it removes,
+// attributed to actor ("system" when empty) with the comment
+// "tree <treeName> deleted" (the tree id when the name is unknown).
+func (s *Service) TreeDeletedBy(ctx context.Context, tenantID, treeID, actor, treeName string) error {
 	if tenantID == "" || treeID == "" {
 		return nil
+	}
+	if actor == "" {
+		actor = "system"
+	}
+	if treeName == "" {
+		treeName = treeID
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.d.Store.DeleteDoc(ctx, Collection, domain.DocKey(tenantID, treeID)); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
+	return policyhist.New(s.d.Store, s.d.Bus, s.d.Logger).Track(ctx, actor, tenantID, "tree "+treeName+" deleted",
+		func() error { return s.deleteTreePolicies(ctx, tenantID, treeID) })
+}
+
+// eventTreeName is the "name" of a tree.deleted payload ("" when absent).
+func eventTreeName(payload any) string {
+	switch p := payload.(type) {
+	case map[string]any:
+		name, _ := p["name"].(string)
+		return name
+	case map[string]string:
+		return p["name"]
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	var v struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(raw, &v)
+	return v.Name
+}
+
+// end hardening (§15.10)
+
+func (s *Service) deleteTreePolicies(ctx context.Context, tenantID, treeID string) error {
 	pols, err := s.d.Store.ListPolicies(ctx, tenantID)
 	if err != nil {
 		return err

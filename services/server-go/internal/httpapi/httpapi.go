@@ -105,6 +105,10 @@ type Deps struct {
 	Notify  *notify.Service
 	Mirrors *mirror.Service
 	Backup  *backup.Service
+
+	// hardening (§15.10): Pprof serves the Go runtime profiles at
+	// /debug/pprof to server admins; false = those routes answer 404.
+	Pprof bool
 }
 
 // defaultCORSOrigin is the Vite dev server of apps/admin.
@@ -259,6 +263,7 @@ func (a *api) routes() {
 	a.registerMirrorRoutes(tree)
 	a.registerBackupRoutes()
 	a.registerOwnerRoutes(tree)
+	a.registerPprofRoutes()   // hardening (§15.10): GET /debug/pprof[/{profile}]
 	a.registerOpenAPIRoutes() // openapi (§14.10): GET /api/v1/openapi.yaml
 
 	// Unknown API paths answer with the JSON envelope (404 or 405).

@@ -59,6 +59,7 @@ func (a *api) handleCodeSearch(w http.ResponseWriter, r *http.Request) error {
 	if err := a.codeSearchEnabled(); err != nil {
 		return err
 	}
+	r = withAuthzRequestCache(r) // hardening (§15.10): one IAM read per search, not per tree
 	q, err := codeSearchQuery(r)
 	if err != nil {
 		return err
@@ -141,6 +142,7 @@ func (a *api) handleSymbolSearch(w http.ResponseWriter, r *http.Request) error {
 	if err := a.codeSearchEnabled(); err != nil {
 		return err
 	}
+	r = withAuthzRequestCache(r) // hardening (§15.10)
 	v := r.URL.Query()
 	q := codesearch.SymbolQuery{Query: v.Get("q"), Path: v.Get("path")}
 	if strings.TrimSpace(q.Query) == "" {

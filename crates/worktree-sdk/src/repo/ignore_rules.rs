@@ -3,7 +3,8 @@
 //! Evaluation order for a root-relative path (docs/ENGINEERING_PLAN.md §13.9):
 //!
 //! 1. **Hard ignores** — `.wt/`, `.wt-tree/` and `.git` are always ignored
-//!    and can never be re-included.
+//!    and can never be re-included. (A tree's own shared `.wt-tree/` files
+//!    are tracked regardless: the scanner visits them directly, §15.10.)
 //! 2. **Root rules** — `.wt/ignore` followed by the root `.wtignore`. They are
 //!    authoritative: a path they ignore stays ignored whatever deeper files
 //!    say. Within these files the last matching pattern wins as usual, so
@@ -170,9 +171,23 @@ impl IgnoreStack {
                 (IGNORE_FILE_NAME, wtignore.as_deref().unwrap_or_default()),
             ],
         )?;
+        // hardening (§15.10): a root `.wt-tree/ignore` (materialized by a
+        // clone of a tree that shares it) is a tree-level, additive file
+        // for the whole worktree.
+        let mut levels = Vec::new();
+        let root_tree_file = root.join(TREE_MARKER_DIR).join(TREE_IGNORE_FILE);
+        if let Some(text) = fsutil::read_string_opt(&root_tree_file)? {
+            let label = format!("{TREE_MARKER_DIR}/{TREE_IGNORE_FILE}");
+            let matcher = compiled(root, root_tree_file, &[(&label, &text)])?;
+            levels.push(DirMatcher {
+                dir: String::new(),
+                kind: LevelKind::Tree,
+                matcher,
+            });
+        }
         Ok(Self {
             root: matcher,
-            levels: Vec::new(),
+            levels,
             frames: Vec::new(),
         })
     }
@@ -237,6 +252,9 @@ impl IgnoreStack {
         let root_whitelisted = m.is_whitelist();
 
         let level_path = |level: &DirMatcher| -> Option<&str> {
+            if level.dir.is_empty() {
+                return Some(rel).filter(|r| !r.is_empty());
+            }
             rel.strip_prefix(level.dir.as_str())
                 .and_then(|r| r.strip_prefix('/'))
                 .filter(|r| !r.is_empty())
@@ -351,15 +369,17 @@ impl Repository {
             );
         }
         for rec in self.tree_records()? {
-            if rec.path.is_empty() {
-                continue;
-            }
             let path = self
                 .tree_dir_of(&rec)
                 .join(TREE_MARKER_DIR)
                 .join(TREE_IGNORE_FILE);
             if let Some(text) = fsutil::read_string_opt(&path)? {
-                let source = format!("{}/{TREE_MARKER_DIR}/{TREE_IGNORE_FILE}", rec.path);
+                // hardening (§15.10): the root may have a shared one too.
+                let source = if rec.path.is_empty() {
+                    format!("{TREE_MARKER_DIR}/{TREE_IGNORE_FILE}")
+                } else {
+                    format!("{}/{TREE_MARKER_DIR}/{TREE_IGNORE_FILE}", rec.path)
+                };
                 out.extend(
                     text.lines()
                         .filter_map(|l| root_relative_pattern(&rec.path, l))
@@ -435,6 +455,16 @@ impl Repository {
             return Err(SdkError::InvalidArgument(format!(
                 "path escapes the worktree: {rel_path}"
             )));
+        }
+        // hardening (§15.10): a tree's own shared `.wt-tree/` files are
+        // tracked (ignore rules do not apply to them).
+        if let Some(i) = parts.iter().position(|p| *p == TREE_MARKER_DIR) {
+            let dir = parts[..i].join("/");
+            if crate::model::is_shared_tree_config_path(&parts[i..].join("/"))
+                && self.tree_records()?.iter().any(|r| r.path == dir)
+            {
+                return Ok(false);
+            }
         }
         let mut stack = IgnoreStack::for_root(&self.root)?;
         let mut prefix = String::new();

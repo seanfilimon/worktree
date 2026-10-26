@@ -12,7 +12,7 @@ use super::ignore_rules::{is_reserved_name, IgnoreStack};
 use super::trees::TreeRecord;
 use super::{fsutil, names, Repository, TREE_MARKER_DIR};
 use crate::error::{Result, SdkError};
-use crate::model::{validate_manifest_path, Manifest, ManifestEntry};
+use crate::model::{is_shared_tree_config_path, validate_manifest_path, Manifest, ManifestEntry};
 use crate::scan::SecretFinding;
 use crate::store::{hash_bytes, prepare_file, ObjectHash};
 
@@ -108,6 +108,8 @@ impl Repository {
     /// `skip_marked`, any directory containing a `.wt-tree/` marker.
     /// `visit` receives (root-relative path, absolute path, metadata).
     /// Directory symlinks are not followed; file symlinks are read through.
+    /// With `skip_marked` (a tree scan), the shared files of the tree's own
+    /// `<start>/.wt-tree/` are visited too (hardening §15.10).
     pub(crate) fn walk_files(
         &self,
         start: &str,
@@ -126,6 +128,7 @@ impl Repository {
             root: &self.root,
             skip_dirs,
             skip_marked,
+            marker_root: skip_marked.then_some(start),
         };
         walker.walk_dir(&mut stack, start, visit)
     }
@@ -148,6 +151,9 @@ impl Repository {
             None
         };
         let scan = scanner.is_some();
+        // hardening (§15.10): move legacy identity lines out of the shared
+        // `.wt-tree/config.toml` before it is scanned.
+        self.migrate_tree_marker(rec)?;
         let old_index = self.load_index(&rec.name);
         let nested = self.nested_tree_paths(rec)?;
         // sparse (§15.4): files outside the sparse set are not scanned.
@@ -183,6 +189,12 @@ impl Repository {
                 .map(|e| e.executable)
                 .or(head_entry.map(|e| e.executable))
                 .unwrap_or(false);
+            // hardening (§15.10): without an exec bit (Windows), new shared
+            // hook scripts are recorded executable so they run elsewhere.
+            let fallback_exec = fallback_exec
+                || (!old_index.entries.contains_key(&file.path)
+                    && head_entry.is_none()
+                    && crate::model::is_shared_tree_hook_path(&file.path));
             let executable = file.exec_bit.unwrap_or(fallback_exec);
             let cached = old_index
                 .fresh(&file.path, file.size, file.mtime_ns)
@@ -431,6 +443,9 @@ struct Walker<'a> {
     root: &'a Path,
     skip_dirs: &'a [String],
     skip_marked: bool,
+    /// Root-relative directory whose own `.wt-tree/` shared files are
+    /// visited (hardening §15.10); `None` = `.wt-tree/` is never entered.
+    marker_root: Option<&'a str>,
 }
 
 impl Walker<'_> {
@@ -474,6 +489,18 @@ impl Walker<'_> {
                 tracing::warn!(path = %entry.path().display(), "skipping unrepresentable file name");
                 continue;
             };
+            // hardening (§15.10): the tree's own `.wt-tree/` is shared.
+            if name == TREE_MARKER_DIR && self.marker_root == Some(dir_rel) {
+                if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                    let rel = if dir_rel.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{dir_rel}/{name}")
+                    };
+                    self.walk_marker(&rel, "", &entry.path(), visit)?;
+                }
+                continue;
+            }
             // In-flight temp files from atomic writes are never content.
             if is_reserved_name(name) || name.starts_with(fsutil::TEMP_PREFIX) {
                 continue;
@@ -523,6 +550,67 @@ impl Walker<'_> {
                 };
                 visit(&rel, &path, &meta)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Visit the shared files below a tree's `.wt-tree/` directory
+    /// (`marker_rel`, root-relative): `config.toml`, `ignore` and every
+    /// regular file below `hooks/` and `access/`
+    /// ([`is_shared_tree_config_path`]). `sub` is the path of `abs` below
+    /// `.wt-tree/` ("" for the marker itself). Ignore rules do not apply
+    /// here; directory symlinks are not followed.
+    fn walk_marker(
+        &self,
+        marker_rel: &str,
+        sub: &str,
+        abs: &Path,
+        visit: &mut dyn FnMut(&str, &Path, &fs::Metadata) -> Result<()>,
+    ) -> Result<()> {
+        let read = match fs::read_dir(abs) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut entries = read.collect::<io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str().filter(|n| !n.contains('\\')) else {
+                continue;
+            };
+            if is_reserved_name(name) || name.starts_with(fsutil::TEMP_PREFIX) {
+                continue;
+            }
+            let child = if sub.is_empty() {
+                name.to_string()
+            } else {
+                format!("{sub}/{name}")
+            };
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let path = entry.path();
+            if ft.is_dir() {
+                // Only hooks/ and access/ hold shared content below them.
+                let top = child.split('/').next().unwrap_or_default();
+                if top == "hooks" || top == "access" {
+                    self.walk_marker(marker_rel, &child, &path, visit)?;
+                }
+                continue;
+            }
+            if !is_shared_tree_config_path(&format!("{TREE_MARKER_DIR}/{child}")) {
+                continue;
+            }
+            let meta = match fs::metadata(&path) {
+                Ok(m) if m.is_file() => m,
+                Ok(_) => continue,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            visit(&format!("{marker_rel}/{child}"), &path, &meta)?;
         }
         Ok(())
     }

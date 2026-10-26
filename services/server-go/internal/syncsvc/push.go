@@ -416,6 +416,7 @@ func (s *Service) checkObjects(ctx context.Context, pl *pushPlan) error {
 		}
 	}
 	checked := make(map[hash.Hash]struct{})
+	trusted := s.trustedBlobs(ctx, pl) // hardening (§15.10)
 	for _, snap := range pl.newSnaps {
 		mh := snap.ManifestHash
 		if _, ok := pl.manifests[mh]; ok {
@@ -442,6 +443,9 @@ func (s *Service) checkObjects(ctx context.Context, pl *pushPlan) error {
 				continue
 			}
 			checked[bh] = struct{}{}
+			if _, ok := trusted[bh]; ok && !e.GetChunked() {
+				continue // hardening (§15.10): stored, see trustedBlobs
+			}
 			ok, err := s.d.Objects.Has(ctx, bh)
 			if err != nil {
 				return s.toStatus(ctx, err, "object store")
@@ -484,6 +488,53 @@ func (s *Service) checkObjects(ctx context.Context, pl *pushPlan) error {
 	}
 	return nil
 }
+
+// ---- hardening (§15.10): incremental object checks ----
+
+// trustedBlobs returns the blobs (non-chunked entries) of the manifests of
+// the push's frontier snapshots that are the current tip of a branch of the
+// tree. Those snapshots were accepted with every referenced object present,
+// and objects reachable from a branch tip are never garbage-collected, so
+// checkObjects need not stat them again: an incremental push of a large
+// tree checks only the files it changed instead of every file. Any lookup
+// failure simply yields fewer trusted blobs (the full checks then run).
+// The decoded manifests are cached in pl.manifests for changedPaths.
+func (s *Service) trustedBlobs(ctx context.Context, pl *pushPlan) map[hash.Hash]struct{} {
+	if len(pl.frontier) == 0 || pl.tree == nil {
+		return nil
+	}
+	branches, err := s.d.Store.ListBranches(ctx, pl.tree.ID)
+	if err != nil {
+		return nil
+	}
+	tips := make(map[string]bool, len(branches))
+	for _, b := range branches {
+		if b.Tip != "" {
+			tips[b.Tip] = true
+		}
+	}
+	var trusted map[hash.Hash]struct{}
+	for _, id := range pl.frontier {
+		if !tips[id] {
+			continue
+		}
+		m, err := s.manifestOf(ctx, pl, id)
+		if err != nil {
+			continue
+		}
+		if trusted == nil {
+			trusted = make(map[hash.Hash]struct{}, len(m.GetEntries()))
+		}
+		for _, e := range m.GetEntries() {
+			if !e.GetChunked() {
+				trusted[hash.Hash(e.GetBlobHash().GetValue())] = struct{}{}
+			}
+		}
+	}
+	return trusted
+}
+
+// ---- end hardening ----
 
 // pushPlanFor builds the domain view of a validated push for PushCheckers.
 func (s *Service) pushPlanFor(pl *pushPlan, branch, serverTip string, changed []string) *domain.PushPlan {

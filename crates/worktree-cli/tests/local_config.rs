@@ -242,7 +242,10 @@ fn tree_validate_and_init_config() {
         .collect();
     assert_eq!(
         created,
+        // hardening (§15.10): `wt tree add` writes only the local
+        // identity file, so init-config also scaffolds config.toml.
         vec![
+            "apps/web/.wt-tree/config.toml",
             "apps/web/.wt-tree/ignore",
             "apps/web/.wt-tree/hooks",
             "apps/web/.wt-tree/access"

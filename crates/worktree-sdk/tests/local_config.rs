@@ -91,9 +91,13 @@ fn tree_config_overrides_worktree_with_origins() {
         .iter()
         .any(|e| e.key == "auto_snapshot.inactivity_secs" && e.value == "5"));
 
-    // The tree file keeps its marker identity and stores the canonical key.
+    // The tree file stores the canonical key; hardening (§15.10): the
+    // marker identity stays in the local-only local.toml.
     let text = std::fs::read_to_string(fx.path("services/svc/.wt-tree/config.toml")).unwrap();
-    assert!(text.contains("name = \"svc\""), "{text}");
+    assert!(!text.contains("name = \"svc\""), "{text}");
+    assert!(fx
+        .read("services/svc/.wt-tree/local.toml")
+        .contains("name = \"svc\""));
     assert!(text.contains("inactivity_secs = 5"), "{text}");
     assert!(!text.contains("inactivity_timeout_secs"), "{text}");
 
@@ -239,7 +243,8 @@ fn tree_ignore_file_is_additive_and_soft_defaults_apply() {
     fx.write("services/svc/main.rs", "fn main() {}");
     let status = fx.repo.status("svc").unwrap();
     let paths: Vec<_> = status.changes.iter().map(|c| c.path.as_str()).collect();
-    assert_eq!(paths, vec!["main.rs"]);
+    // hardening (§15.10): the tree's own ignore file is shared (tracked).
+    assert_eq!(paths, vec![".wt-tree/ignore", "main.rs"]);
 
     // Root rules may re-include a soft default.
     fx.repo.add_ignore_pattern("!dist/").unwrap();
@@ -266,8 +271,15 @@ fn tree_config_survives_set_tree_id() {
         .set_config_value(&ConfigScope::Tree("svc".into()), "hooks.enabled", "false")
         .unwrap();
     fx.repo.set_tree_id("svc", "new-id").unwrap();
+    // hardening (§15.10): the identity lives in the local-only local.toml;
+    // the shared config.toml keeps only settings.
+    let identity = std::fs::read_to_string(fx.path("services/svc/.wt-tree/local.toml")).unwrap();
+    assert!(identity.contains("new-id"), "{identity}");
     let text = std::fs::read_to_string(fx.path("services/svc/.wt-tree/config.toml")).unwrap();
-    assert!(text.contains("new-id"), "{text}");
+    assert!(
+        !text.contains("new-id") && !text.contains("name ="),
+        "{text}"
+    );
     assert!(!fx.repo.effective_config(Some("svc")).unwrap().hooks.enabled);
 }
 
@@ -498,11 +510,8 @@ fn validate_and_init_tree_config() {
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(
-        names,
-        vec!["ignore", "hooks", "access"],
-        "config.toml exists already"
-    );
+    // hardening (§15.10): `add_tree` writes only the local identity file.
+    assert_eq!(names, vec!["config.toml", "ignore", "hooks", "access"]);
     assert!(
         fx.repo.init_tree_config("svc").unwrap().is_empty(),
         "idempotent"
@@ -516,6 +525,10 @@ fn validate_and_init_tree_config() {
         "services/svc/.wt-tree/config.toml",
         "name = \"other\"\nid = \"x\"\n[user]\nname = \"n\"\n",
     );
+    fx.write(
+        "services/svc/.wt-tree/local.toml",
+        "name = \"other\"\nid = \"x\"\n",
+    );
     let problems = fx.repo.validate_tree("svc").unwrap();
     let text: Vec<String> = problems
         .iter()
@@ -524,6 +537,10 @@ fn validate_and_init_tree_config() {
     assert!(text.iter().any(|t| t.contains("line 2")), "{text:?}");
     assert!(text.iter().any(|t| t.contains("vendored/.wt")), "{text:?}");
     assert!(text.iter().any(|t| t.contains("registered as")), "{text:?}");
+    assert!(
+        text.iter().any(|t| t.contains("legacy identity keys")),
+        "{text:?}"
+    );
     assert!(
         text.iter().any(|t| t.contains("[user] is not read")),
         "{text:?}"
@@ -537,8 +554,10 @@ fn validate_and_init_tree_config() {
     assert_eq!(created.len(), 4);
     let text = fx.read("services/svc/.wt-tree/config.toml");
     assert!(
-        text.contains("name = \"svc\"") && text.contains("# [auto_snapshot]"),
+        !text.contains("name = \"svc\"") && text.contains("# [auto_snapshot]"),
         "{text}"
     );
+    let identity = fx.read("services/svc/.wt-tree/local.toml");
+    assert!(identity.contains("name = \"svc\""), "{identity}");
     assert!(fx.repo.effective_config(Some("svc")).is_ok());
 }
