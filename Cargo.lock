@@ -3130,6 +3130,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "worktree-bench"
+version = "0.6.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "worktree-sdk",
+]
+
+[[package]]
 name = "worktree-bg"
 version = "0.6.0"
 dependencies = [

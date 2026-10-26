@@ -70,7 +70,7 @@ pub(crate) async fn push(
         .filter(|s| !known.contains(&s.id))
         .collect();
 
-    let objects = objects_for(repo, &chain)?;
+    let objects = objects_for(repo, &chain, &known)?;
     let hashes: Vec<ObjectHash> = objects.iter().map(|(h, _)| *h).collect();
     let missing: HashSet<ObjectHash> = session
         .client
@@ -131,10 +131,37 @@ fn server_known_snapshots(repo: &Repository, branches: &[RemoteBranch]) -> Resul
 }
 
 /// Blobs (including the chunks of large files), chunk lists, then
-/// manifests referenced by `chain`, each once.
-fn objects_for(repo: &Repository, chain: &[Snapshot]) -> Result<Vec<(ObjectHash, ObjectKind)>> {
+/// manifests referenced by `chain`, each once — except those of the
+/// server-known (`known`) snapshots the chain builds on.
+fn objects_for(
+    repo: &Repository,
+    chain: &[Snapshot],
+    known: &HashSet<String>,
+) -> Result<Vec<(ObjectHash, ObjectKind)>> {
     let manifests: BTreeSet<ObjectHash> = chain.iter().map(|s| s.manifest).collect();
     let mut seen = HashSet::new();
+    // hardening (§15.10): the server stores every object of the snapshots
+    // reachable from its branch tips (a push is only accepted once they
+    // are all present), so the entries of a known parent's manifest are
+    // neither negotiated nor uploaded again. For an incremental push of a
+    // large tree this shrinks the Negotiate request from every file of the
+    // tree to the changed files.
+    let parents: BTreeSet<&str> = chain
+        .iter()
+        .flat_map(|s| s.parents.iter())
+        .filter(|p| known.contains(p.as_str()))
+        .map(String::as_str)
+        .collect();
+    for parent in parents {
+        let Ok(snap) = repo.get_snapshot(parent) else {
+            continue;
+        };
+        let Ok(manifest) = repo.read_manifest(&snap.manifest) else {
+            continue;
+        };
+        seen.insert(snap.manifest);
+        seen.extend(manifest.entries.iter().map(|e| e.hash));
+    }
     let mut objects = Vec::new();
     for hash in &manifests {
         for entry in repo.read_manifest(hash)?.entries {

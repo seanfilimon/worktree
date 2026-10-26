@@ -54,6 +54,9 @@ type Options struct {
 type Authorizer struct {
 	store domain.MetaStore
 	now   func() time.Time
+
+	// hardening (§15.10): compiled policies per tenant (policycache.go).
+	pcache policyCache
 }
 
 var (
@@ -713,7 +716,7 @@ func (a *Authorizer) policies(ctx context.Context, c *requestCache, tenantID str
 		if err != nil {
 			return nil, err
 		}
-		return compilePolicies(ps), nil
+		return a.pcache.compile(tenantID, ps), nil // hardening (§15.10)
 	})
 	if errors.Is(err, domain.ErrNotFound) {
 		return nil, nil

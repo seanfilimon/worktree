@@ -484,7 +484,13 @@ async fn remote_objects_stream_up_and_down_in_batches() {
             .unwrap(),
         1500
     );
-    assert_eq!(server.state().download_tree_ids, vec![tree_id]);
+    // hardening (§15.10): the download is spread over parallel streams,
+    // each scoped to the tree.
+    let ids = server.state().download_tree_ids.clone();
+    assert!(
+        ids.len() >= 2 && ids.iter().all(|id| *id == tree_id),
+        "{ids:?}"
+    );
     assert!(hashes.iter().all(|h| dst.has(h)));
     assert_eq!(dst.get(&hashes[7]).unwrap(), b"object number 7");
 }

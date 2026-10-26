@@ -122,6 +122,21 @@ type Config struct {
 	// --compress-objects, env WT_COMPRESS_OBJECTS (default true).
 	CompressObjects bool
 
+	// hardening (§15.10)
+
+	// Pprof serves the Go runtime profiles at /debug/pprof (server admins
+	// only; 404 when off). Flag --pprof, env WT_PPROF (default false).
+	Pprof bool
+
+	// hardening (§15.10): for tests
+	//
+	// WebhookRetrySchedule replaces the webhook retry delays (1m, 5m, 30m,
+	// 2h) so e2e tests can observe retries; nil = the defaults. Hidden
+	// testing flag --webhook-retry-schedule, env WT_WEBHOOK_RETRY_SCHEDULE
+	// (comma-separated durations, e.g. "1s,2s").
+	WebhookRetrySchedule []time.Duration
+	// end hardening (§15.10): for tests
+
 	// The fields below are set programmatically, not from flags.
 
 	// Version is the server version reported by /healthz, Ping and logs.
@@ -273,6 +288,25 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		}
 	}
 	// ---- end storage ----
+
+	// hardening (§15.10)
+	if v, ok := lookup("WT_PPROF"); ok && v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("WT_PPROF: invalid boolean %q", v))
+		}
+		cfg.Pprof = b
+	}
+
+	// hardening (§15.10): for tests
+	if v, ok := lookup("WT_WEBHOOK_RETRY_SCHEDULE"); ok && v != "" {
+		s, err := ParseRetrySchedule(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("WT_WEBHOOK_RETRY_SCHEDULE: %w", err))
+		}
+		cfg.WebhookRetrySchedule = s
+	}
+	// end hardening (§15.10): for tests
 	return cfg, errors.Join(errs...)
 }
 
@@ -318,8 +352,68 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 
 	// Storage (§14.6).
 	fs.BoolVar(&cfg.CompressObjects, "compress-objects", cfg.CompressObjects, "store new objects zstd-compressed when that saves at least 10% (env WT_COMPRESS_OBJECTS)")
+
+	// hardening (§15.10)
+	fs.BoolVar(&cfg.Pprof, "pprof", cfg.Pprof, "serve Go runtime profiles at /debug/pprof to server admins (env WT_PPROF)")
+
+	// hardening (§15.10): for tests. The flag set has no hidden-flag
+	// mechanism, so the help text says it is for testing only.
+	fs.Func("webhook-retry-schedule", "(testing only) comma-separated webhook retry `delays`, e.g. 1s,2s, replacing 1m,5m,30m,2h (env WT_WEBHOOK_RETRY_SCHEDULE)", func(v string) error {
+		s, err := ParseRetrySchedule(v)
+		if err != nil {
+			return err
+		}
+		cfg.WebhookRetrySchedule = s
+		return nil
+	})
+	// end hardening (§15.10): for tests
 	return fs
 }
+
+// hardening (§15.10): for tests
+
+// MaxRetrySchedule bounds the number of entries of --webhook-retry-schedule.
+const MaxRetrySchedule = 10
+
+// ParseRetrySchedule parses a comma-separated list of positive Go
+// durations of at most 24h each (at most MaxRetrySchedule entries).
+func ParseRetrySchedule(v string) ([]time.Duration, error) {
+	parts := splitList(v)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("retry schedule %q: want comma-separated durations such as 1s,2s", v)
+	}
+	if len(parts) > MaxRetrySchedule {
+		return nil, fmt.Errorf("retry schedule %q: at most %d delays are allowed", v, MaxRetrySchedule)
+	}
+	out := make([]time.Duration, 0, len(parts))
+	for _, p := range parts {
+		d, err := time.ParseDuration(p)
+		if err != nil {
+			return nil, fmt.Errorf("retry schedule %q: invalid duration %q", v, p)
+		}
+		if d <= 0 || d > 24*time.Hour {
+			return nil, fmt.Errorf("retry schedule %q: delay %s must be positive and at most 24h", v, d)
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// WebhookPollInterval is the webhook retry poll interval that suits
+// WebhookRetrySchedule: a quarter of its shortest delay, at least 50ms and
+// at most webhooks' default 5s; 0 (the default) when no schedule is set.
+func (c *Config) WebhookPollInterval() time.Duration {
+	if len(c.WebhookRetrySchedule) == 0 {
+		return 0
+	}
+	short := c.WebhookRetrySchedule[0]
+	for _, d := range c.WebhookRetrySchedule[1:] {
+		short = min(short, d)
+	}
+	return min(max(short/4, 50*time.Millisecond), 5*time.Second)
+}
+
+// end hardening (§15.10): for tests
 
 // Usage writes the flag documentation to w.
 func Usage(w io.Writer) {

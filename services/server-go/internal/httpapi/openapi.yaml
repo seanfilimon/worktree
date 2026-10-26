@@ -119,6 +119,92 @@ paths:
             text/plain:
               schema:
                 type: string
+  # hardening (§15.10): runtime profiling behind --pprof.
+  /debug/pprof:
+    get:
+      operationId: pprofIndex
+      summary: List runtime profiles
+      description: |
+        v0.7 (§15.10). An HTML page listing the Go runtime profiles with
+        absolute links to `/debug/pprof/{profile}` and their current sample
+        counts. Not under `/api/v1`. Only served when the server runs with
+        `--pprof` (env `WT_PPROF`); otherwise answers 404 `not_found` like
+        an unknown path. Server admins only. `Cache-Control: no-store`.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: The profile index.
+          content:
+            text/html:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /debug/pprof/{profile}:
+    parameters:
+      - name: profile
+        in: path
+        required: true
+        description: Profile name.
+        schema:
+          type: string
+          enum: [allocs, block, cmdline, goroutine, heap, mutex, profile, symbol, threadcreate, trace]
+    get:
+      operationId: pprofProfile
+      summary: Fetch a runtime profile
+      description: |
+        v0.7 (§15.10). Serves one profile through Go's `net/http/pprof`
+        handlers: `heap`, `allocs`, `goroutine`, `block`, `mutex` and
+        `threadcreate` as gzipped protobuf (`?debug=1` for text), `profile`
+        (CPU, `?seconds=N`, default 30) and `trace` (`?seconds=N`, default 1)
+        as binary streams, `cmdline` and `symbol` as text. Use with
+        `go tool pprof -http=: <file>` after downloading with a bearer token.
+        Only served with `--pprof`; otherwise (and for an unknown profile)
+        answers 404 `not_found`. Server admins only.
+      tags: [Admin]
+      x-wt-action: server:admin
+      parameters:
+        - name: seconds
+          in: query
+          required: false
+          description: Duration of the `profile` and `trace` captures.
+          schema:
+            type: integer
+            minimum: 1
+        - name: debug
+          in: query
+          required: false
+          description: Non-zero renders the sampled profiles as text instead of protobuf.
+          schema:
+            type: integer
+        - name: gc
+          in: query
+          required: false
+          description: "`1` runs a garbage collection before taking the `heap` profile."
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The profile data.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/auth/register:
     post:
       operationId: register

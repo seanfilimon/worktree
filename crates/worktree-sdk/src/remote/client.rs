@@ -46,6 +46,16 @@ pub(crate) const UPLOAD_BATCH_OBJECTS: usize = 1024;
 pub(crate) const UPLOAD_BATCH_BYTES: u64 = 128 * 1024 * 1024;
 /// Objects buffered between the disk reader and the upload stream.
 const UPLOAD_CHANNEL_CAPACITY: usize = 8;
+// --- hardening (ENGINEERING_PLAN §15.10): parallel object transfer ---
+/// Object-transfer streams (`UploadObjects` / `DownloadObjects` calls) run
+/// concurrently by one upload or download. The server handles each stream
+/// sequentially and storing or reading an object is dominated by file
+/// system latency, so a few streams cut transfer time several-fold.
+pub(crate) const TRANSFER_STREAMS: usize = 4;
+/// Smallest number of objects worth a stream of its own when a transfer is
+/// split across streams.
+pub(crate) const MIN_OBJECTS_PER_STREAM: usize = 32;
+// --- end hardening
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -518,7 +528,8 @@ impl SyncClient {
     }
 
     /// Upload `objects` from `store`, streaming them from disk in bounded
-    /// batches. Returns the number of objects sent.
+    /// batches, up to [`TRANSFER_STREAMS`] batches at a time. Returns the
+    /// number of objects sent.
     pub async fn upload_objects(
         &mut self,
         store: &ObjectStore,
@@ -533,10 +544,33 @@ impl SyncClient {
                 (hash, kind, size)
             })
             .collect();
+        let batches = spread_batches(
+            batch_by_size(sized, |o| o.2, UPLOAD_BATCH_OBJECTS, UPLOAD_BATCH_BYTES),
+            TRANSFER_STREAMS,
+            MIN_OBJECTS_PER_STREAM,
+        );
+        // hardening (§15.10): concurrent streams, each on a clone of this
+        // client (same HTTP/2 connection).
         let mut sent = 0;
-        for batch in batch_by_size(sized, |o| o.2, UPLOAD_BATCH_OBJECTS, UPLOAD_BATCH_BYTES) {
-            let batch: Vec<_> = batch.into_iter().map(|(h, k, _)| (h, k)).collect();
-            sent += self.upload_batch(store.clone(), batch).await?;
+        let mut pending = batches.into_iter();
+        let mut running = tokio::task::JoinSet::new();
+        loop {
+            while running.len() < TRANSFER_STREAMS {
+                let Some(batch) = pending.next() else { break };
+                let batch: Vec<_> = batch.into_iter().map(|(h, k, _)| (h, k)).collect();
+                let (mut client, store) = (self.clone(), store.clone());
+                running.spawn(async move {
+                    let res = client.upload_batch(store, batch).await;
+                    (res, client.compress)
+                });
+            }
+            let Some(joined) = running.join_next().await else {
+                break;
+            };
+            let (res, compress) =
+                joined.map_err(|e| SdkError::Other(format!("object upload task failed: {e}")))?;
+            self.compress &= compress;
+            sent += res?;
         }
         Ok(sent)
     }
@@ -628,20 +662,55 @@ impl SyncClient {
             SdkError::InvalidArgument(format!("tree id {tree:?} cannot be sent as metadata"))
         })?;
         let unique = dedup(wanted);
+        let chunks = spread_batches(
+            unique.chunks(HASH_BATCH).map(<[_]>::to_vec).collect(),
+            TRANSFER_STREAMS,
+            MIN_OBJECTS_PER_STREAM,
+        );
+        // hardening (§15.10): up to TRANSFER_STREAMS concurrent streams.
         let mut received = 0;
-        for chunk in unique.chunks(HASH_BATCH) {
-            received += match self.download_batch(store, &tree_header, chunk).await? {
-                Ok(n) => n,
-                // storage (§14.6): retry uncompressed on a server without
-                // gzip (the failure comes before any object is sent).
-                Err(s) if self.fall_back_from_compression(&s) => self
-                    .download_batch(store, &tree_header, chunk)
-                    .await?
-                    .map_err(|s| self.status(s))?,
-                Err(s) => return Err(self.status(s)),
+        let mut pending = chunks.into_iter();
+        let mut running = tokio::task::JoinSet::new();
+        loop {
+            while running.len() < TRANSFER_STREAMS {
+                let Some(chunk) = pending.next() else { break };
+                let (mut client, store, header) =
+                    (self.clone(), store.clone(), tree_header.clone());
+                running.spawn(async move {
+                    let res = client.download_chunk(&store, &header, &chunk).await;
+                    (res, client.compress)
+                });
+            }
+            let Some(joined) = running.join_next().await else {
+                break;
             };
+            let (res, compress) =
+                joined.map_err(|e| SdkError::Other(format!("object download task failed: {e}")))?;
+            self.compress &= compress;
+            received += res?;
         }
         Ok(received)
+    }
+
+    /// One download stream with the gzip fallback of [`download_objects`].
+    ///
+    /// [`download_objects`]: SyncClient::download_objects
+    async fn download_chunk(
+        &mut self,
+        store: &ObjectStore,
+        tree_header: &MetadataValue<Ascii>,
+        chunk: &[ObjectHash],
+    ) -> Result<usize> {
+        match self.download_batch(store, tree_header, chunk).await? {
+            Ok(n) => Ok(n),
+            // storage (§14.6): retry uncompressed on a server without
+            // gzip (the failure comes before any object is sent).
+            Err(s) if self.fall_back_from_compression(&s) => self
+                .download_batch(store, tree_header, chunk)
+                .await?
+                .map_err(|s| self.status(s)),
+            Err(s) => Err(self.status(s)),
+        }
     }
 
     /// One `DownloadObjects` call; the inner `Err` is the RPC's status.
@@ -719,6 +788,38 @@ pub(crate) fn batch_by_size<T>(
     batches
 }
 
+// --- hardening (ENGINEERING_PLAN §15.10): parallel object transfer ---
+
+/// Split the largest batches in half (keeping item order within each
+/// part) until there are `streams` batches or no batch has `2 * min_per`
+/// items, so that a transfer can use several concurrent streams. Batches
+/// are never merged; their size limits stay respected.
+pub(crate) fn spread_batches<T>(
+    mut batches: Vec<Vec<T>>,
+    streams: usize,
+    min_per: usize,
+) -> Vec<Vec<T>> {
+    let min_per = min_per.max(1);
+    while batches.len() < streams {
+        let Some((i, len)) = batches
+            .iter()
+            .map(Vec::len)
+            .enumerate()
+            .max_by_key(|&(i, len)| (len, std::cmp::Reverse(i)))
+        else {
+            break;
+        };
+        if len < 2 * min_per {
+            break;
+        }
+        let tail = batches[i].split_off(len / 2);
+        batches.insert(i + 1, tail);
+    }
+    batches
+}
+
+// --- end hardening
+
 /// Map a gRPC status to an [`SdkError`].
 pub(crate) fn status_to_error(server: &str, status: &Status) -> SdkError {
     let message = status.message();
@@ -790,6 +891,36 @@ mod tests {
         assert_eq!(
             batch_by_size(vec![1, 2], |_| 0, 0, 10),
             vec![vec![1], vec![2]]
+        );
+    }
+
+    // hardening (§15.10)
+    #[test]
+    fn spread_splits_large_batches_for_streams() {
+        // One batch of 100 with at least 10 per stream: 4 parts, in order.
+        let spread = spread_batches(vec![(0..100).collect::<Vec<_>>()], 4, 10);
+        assert_eq!(spread.len(), 4);
+        assert_eq!(spread.concat(), (0..100).collect::<Vec<_>>());
+        assert!(spread.iter().all(|b| b.len() >= 10), "{spread:?}");
+        // Too small to split.
+        assert_eq!(
+            spread_batches(vec![vec![1, 2, 3]], 4, 2),
+            vec![vec![1, 2, 3]]
+        );
+        assert_eq!(
+            spread_batches(vec![(0..7).collect::<Vec<_>>()], 4, 2).len(),
+            3
+        );
+        // Enough batches already: unchanged.
+        let five: Vec<Vec<i32>> = (0..5).map(|i| vec![i; 50]).collect();
+        assert_eq!(spread_batches(five.clone(), 4, 1), five);
+        // Nothing to spread.
+        assert!(spread_batches(Vec::<Vec<u8>>::new(), 4, 1).is_empty());
+        // The largest batch is split first.
+        let out = spread_batches(vec![vec![0; 10], vec![1; 100]], 3, 10);
+        assert_eq!(
+            out.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![10, 50, 50]
         );
     }
 

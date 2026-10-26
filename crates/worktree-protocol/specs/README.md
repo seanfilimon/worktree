@@ -56,6 +56,7 @@ is authoritative; the spec is a bug.
 | **REST API** | [`server/RestApi.md`](./server/RestApi.md) | `/api/v1` conventions: auth, errors, pagination, versioning, the OpenAPI document (`openapi.yaml`) and `wt api` |
 | **Server-side merges** | [`server/Merging.md`](./server/Merging.md) | Merge methods (fast-forward, merge, squash), protection restrictions, three-way merge, mergeability, conflicts |
 | **Compression and integrity** | [`storage/Compression.md`](./storage/Compression.md) | WTZ1 zstd object encoding, gRPC gzip, `wt gc`, `wt fsck`, server fsck |
+| **Performance** | [`server/Performance.md`](./server/Performance.md) | Measurements (`worktree-bench`, Go benchmarks), parallel transfer and incremental push checks, policy caching, hard limits, tuning flags, admin-only `/debug/pprof` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

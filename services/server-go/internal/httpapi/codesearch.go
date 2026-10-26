@@ -35,6 +35,7 @@ func (a *api) handleCodeSearch(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	r = withAuthzRequestCache(r) // hardening (§15.10): one IAM read per search, not per tree
 	ctx := r.Context()
 	p := principal(r)
 	targets, err := a.codeSearchTargets(r)

@@ -51,3 +51,6 @@ mod rewrite;
 mod server_merges;
 mod storage;
 mod webhooks;
+
+// v0.7 hardening (ENGINEERING_PLAN §15.10).
+mod hardening_gaps;

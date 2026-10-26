@@ -164,7 +164,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	todos.Start(ctx)
 	releases.Start(ctx)
 	// webhooks (§14.2): bus-driven deliveries, retries and log retention.
-	hooks.Configure(webhooks.Options{AllowPrivate: cfg.WebhookAllowPrivate, Version: cfg.Version})
+	// hardening (§15.10): Backoff/PollInterval from the testing-only
+	// --webhook-retry-schedule (nil/0 = the webhooks defaults).
+	hooks.Configure(webhooks.Options{AllowPrivate: cfg.WebhookAllowPrivate, Version: cfg.Version,
+		Backoff: cfg.WebhookRetrySchedule, PollInterval: cfg.WebhookPollInterval()})
 	hooks.Start(ctx)
 	codeIndex.Start(ctx) // code-search (§14.3): incremental re-index on pushes, drop on tree.deleted
 
@@ -239,6 +242,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Notify:  notifier,
 		Mirrors: mirrors,
 		Backup:  backups,
+		Pprof:   cfg.Pprof, // hardening (§15.10): /debug/pprof
 	})
 
 	proxies, _ := config.ParseProxies(cfg.TrustedProxies) // validated by Load
@@ -395,7 +399,7 @@ func newHTTPServer(h http.Handler, log *slog.Logger) *http.Server {
 func mux(g *grpc.Server, api http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
-			g.ServeHTTP(w, r)
+			countGRPCEncoding(g).ServeHTTP(w, r) // hardening (§15.10): grpc-encoding counters
 			return
 		}
 		api.ServeHTTP(w, r)

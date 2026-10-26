@@ -87,9 +87,15 @@ var (
 		"Requests rejected by the rate limiter.", "")
 )
 
+// hardening (§15.10): gRPC message-compression negotiation, counted by the
+// server's gRPC handler wrapper (internal/server/grpc_encoding.go).
+var GRPCEncoding = NewCounter("worktree_grpc_encoding_total",
+	"gRPC requests by direction and grpc-encoding (request/gzip, request/identity, response/gzip, response/identity, .../other).", "encoding")
+
 // All lists every counter in rendering order.
 func All() []*Counter {
-	return []*Counter{SyncPushes, SyncPulls, AuthzDecisions, MRMerges, GCRuns, GCDeletedObjects, RateLimited}
+	return []*Counter{SyncPushes, SyncPulls, AuthzDecisions, MRMerges, GCRuns, GCDeletedObjects, RateLimited,
+		GRPCEncoding} // hardening (§15.10)
 }
 
 // CountMerges counts EventMRMerged events from bus until the returned
