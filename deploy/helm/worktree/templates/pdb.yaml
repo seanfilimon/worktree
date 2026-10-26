@@ -1,0 +1,20 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $min := include "worktree.optString" (list .Values.podDisruptionBudget "minAvailable") }}
+{{- $max := include "worktree.optString" (list .Values.podDisruptionBudget "maxUnavailable") }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "worktree.fullname" . }}
+  labels:
+    {{- include "worktree.labels" . | nindent 4 }}
+spec:
+  {{- if $min }}
+  # One replica: minAvailable >= 1 blocks voluntary evictions (node drains).
+  minAvailable: {{ include "worktree.pdbValue" $min }}
+  {{- else }}
+  maxUnavailable: {{ include "worktree.pdbValue" $max }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "worktree.selectorLabels" . | nindent 6 }}
+{{- end }}

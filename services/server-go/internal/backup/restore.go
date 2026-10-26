@@ -33,6 +33,9 @@ var ErrCorruptArchive = errors.New("backup: corrupt archive")
 type RestoreOptions struct {
 	// File is the .wtbak archive.
 	File string
+	// Source, when set, is read instead of File (server-ops §16.11: an
+	// archive streamed from the backup target, e.g. an S3 bucket).
+	Source io.Reader
 	// DataDir receives meta.db.
 	DataDir string
 	// Objects receives every object (a DiskStore rooted at DataDir, or the
@@ -75,12 +78,16 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreReport, error) {
 	if err := os.MkdirAll(o.DataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("backup: create data directory: %w", err)
 	}
-	f, err := os.Open(o.File)
-	if err != nil {
-		return nil, fmt.Errorf("backup: open archive: %w", err)
+	src := o.Source
+	if src == nil {
+		f, err := os.Open(o.File)
+		if err != nil {
+			return nil, fmt.Errorf("backup: open archive: %w", err)
+		}
+		defer f.Close()
+		src = f
 	}
-	defer f.Close()
-	zr, err := zstd.NewReader(f)
+	zr, err := zstd.NewReader(src)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCorruptArchive, err)
 	}
@@ -223,7 +230,10 @@ func writeFileFrom(path string, r io.Reader) (int64, string, error) {
 	return n, hex.EncodeToString(sum.Sum(nil)), nil
 }
 
-// dirEmpty reports whether dir is missing or has no entries.
+// dirEmpty reports whether dir is missing or has no entries. A backups/
+// directory is ignored (server-ops §16.11): restoring by id from the disk
+// target reads <data>/backups/<id>.wtbak of an otherwise empty data
+// directory.
 func dirEmpty(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -232,7 +242,13 @@ func dirEmpty(dir string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("backup: read data directory: %w", err)
 	}
-	return len(entries) == 0, nil
+	for _, e := range entries {
+		if e.IsDir() && e.Name() == "backups" {
+			continue
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 // ReadManifest returns the manifest of the archive at path (it reads the

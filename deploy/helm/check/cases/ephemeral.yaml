@@ -1,6 +1,6 @@
 # No persistence (demo clusters): emptyDir data volume, no claim template.
 # expect: StatefulSet/my-wt, Secret/my-wt, Pod/my-wt-test-healthz
-# expect-not: Ingress/my-wt
+# expect-not: Ingress/my-wt, ServiceMonitor/my-wt, NetworkPolicy/my-wt, PodDisruptionBudget/my-wt, CronJob/my-wt-backup
 # expect-text: emptyDir: {}
 # expect-text: http://my-wt:8080/healthz
 fullnameOverride: my-wt

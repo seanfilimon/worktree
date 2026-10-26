@@ -12,10 +12,11 @@
 - [8. Helm chart](#8-helm-chart)
 - [9. Service manager units](#9-service-manager-units)
 - [10. Proxies, client addresses and TLS](#10-proxies-client-addresses-and-tls)
-- [11. Continuous integration](#11-continuous-integration)
-- [12. Implementation status](#12-implementation-status)
-- [13. Roadmap](#13-roadmap)
-- [14. References](#14-references)
+- [11. Server operations](#11-server-operations)
+- [12. Continuous integration](#12-continuous-integration)
+- [13. Implementation status](#13-implementation-status)
+- [14. Roadmap](#14-roadmap)
+- [15. References](#15-references)
 
 ---
 
@@ -64,6 +65,11 @@ Targets (Rust triple → Go platform):
 | `aarch64-apple-darwin` | `darwin/arm64` | tar.gz |
 | `x86_64-pc-windows-msvc` | `windows/amd64` | zip |
 | `aarch64-pc-windows-msvc` | `windows/arm64` | zip |
+| `x86_64-unknown-linux-musl` (v0.8) | `linux/amd64` | tar.gz |
+| `aarch64-unknown-linux-musl` (v0.8) | `linux/arm64` | tar.gz |
+
+The musl archives hold statically linked `wt` / `worktree-bg` for Alpine and other non-glibc
+systems; their `worktree-server` is the same static `CGO_ENABLED=0` Linux binary.
 
 Image tags: `<version>` always; `<major>.<minor>` and `latest` only for releases without a
 pre-release suffix. Per-architecture tags `<version>-amd64` / `<version>-arm64` are the manifest
@@ -92,6 +98,12 @@ scripts/release.sh [--target TRIPLE]... [--all] [--out DIR] [--version VER]
    `GOOS`/`GOARCH` into `<target-dir>/go/<goos>-<goarch>/`. A target whose Rust standard library
    is not installed, or whose cargo build fails (typically a missing cross linker), is skipped with
    a warning; `--strict` turns both into errors (the release workflow uses `--strict`).
+   musl targets (v0.8) additionally need a musl C toolchain for the crates with C code, tried in
+   this order: `<arch>-linux-musl-gcc` (exported as `CC_<target>`,
+   `CARGO_TARGET_<TARGET>_LINKER` and, when present, `AR_<target>`), `musl-gcc` for x86_64 on an
+   x86_64 Linux host, or `cargo zigbuild` (cargo-zigbuild installed); a musl target that is the
+   host's own uses the native compiler. Without one the target is skipped (an error with
+   `--strict`).
 4. Stages the archive directory under `<target-dir>/release-stage/` and packs it. tar.gz archives
    are written with explicit modes (GNU tar `--mode`) so archives built on Windows still carry
    executable bits; zip archives use `zip`, `7z`, Windows `tar.exe -a` or `Compress-Archive`,
@@ -198,8 +210,33 @@ and take effect with `WT_OBJECT_STORE=s3`, SMTP with `WT_SMTP_URL`. Optional dep
   TLS). Optional `Ingress` for `/`; with `ingress.grpc.enabled` a second Ingress for
   `/worktree.sync.v1.SyncService` carrying `ingress.grpc.annotations` (merged over the shared
   annotations, default nginx `backend-protocol: GRPC`).
+- **Server operations** (v0.8): `backup.target` / `backup.s3Prefix` / `backup.maxAge`,
+  `retention.policyVersions` / `retention.webhookDeliveries` / `retention.webhookDeliveryKeep` and
+  `smtp.deadAfter` map to the §11 flags (`WT_BACKUP_TARGET`, `WT_BACKUP_S3_PREFIX`,
+  `WT_BACKUP_MAX_AGE`, `WT_POLICY_VERSION_RETENTION`, `WT_WEBHOOK_DELIVERY_RETENTION`,
+  `WT_WEBHOOK_DELIVERY_KEEP`, `WT_EMAIL_DEAD_AFTER`). The `s3` values and credentials are rendered
+  when `objectStore=s3` or `backup.target=s3` (`WT_OBJECT_STORE` only for the former).
+- **Optional resources** (v0.8, all off by default):
+  - `metrics.serviceMonitor.enabled`: a Prometheus Operator `ServiceMonitor` scraping `/metrics`
+    on port `http` of the main Service (HTTPS with server TLS, optional
+    `tlsInsecureSkipVerify`; `interval`, `scrapeTimeout`, `labels`, `namespace`).
+  - `networkPolicy.enabled`: a `NetworkPolicy` for the server pods. Ingress to the server port from
+    `ingressFrom` peers (empty = anyone; when restricted, this release's own pods — the backup
+    CronJob and the test pod — stay allowed). Egress `allowAll: true` by default (S3, SMTP,
+    webhooks, SSO, mirrors keep working under a default-deny namespace); `allowAll: false` allows
+    DNS, the server pods and `egress.extra` rules only.
+  - `podDisruptionBudget.enabled`: a `PodDisruptionBudget` with exactly one of `minAvailable` /
+    `maxUnavailable` (default `maxUnavailable: 1`; with one replica `minAvailable: 1` blocks
+    voluntary evictions such as node drains).
+  - `backup.cronJob.enabled`: an example `CronJob` (`schedule`, default `0 3 * * *`,
+    `concurrencyPolicy: Forbid`) whose curl pod calls `POST /api/v1/admin/backups` with a server
+    admin token from `backup.cronJob.tokenSecret` (required; passed on stdin, never on the command
+    line) and a note; the request is synchronous, so the job's status is the backup's. Combined
+    with `backup.target: s3` this exports backups to object storage on a Kubernetes schedule. The
+    pod runs non-root with a read-only root filesystem and no service-account token.
 - **Validation**: `values.schema.json` (types, enums, ranges, patterns) plus render-time `fail`s
-  for inconsistent combinations (§ docs/deploy.md).
+  for inconsistent combinations (§ docs/deploy.md; v0.8: `backup.target=s3` without `s3.bucket`,
+  an enabled CronJob without `tokenSecret.name`, a PDB with both or neither bound).
 - **Tests**: a `helm test` pod running `curl /healthz` through the Service.
 
 `deploy/helm/check` is a Helm-free renderer (Go `text/template`, the Sprig subset the chart uses,
@@ -229,7 +266,41 @@ the Kubernetes basics, and checks per-case `# expect:` / `# expect-not:` / `# ex
 - TLS terminates either at the proxy/ingress (default) or at the server (`--tls-cert`,
   `--tls-key`, optional `--tls-client-ca`).
 
-## 11. Continuous integration
+## 11. Server operations
+
+v0.8 (`docs/ENGINEERING_PLAN.md` §16.11). Every setting is a flag and a `WT_*` variable; ages
+accept Go durations (`720h`) or whole days (`30d`).
+
+**Backups to object storage.** `--backup-target disk|s3` (`WT_BACKUP_TARGET`, default `disk`)
+keeps archives in `<data>/backups` or in the `--s3-*` bucket under `--backup-s3-prefix`
+(`WT_BACKUP_S3_PREFIX`, default `<s3-prefix>backups/`), independently of `--object-store`.
+Scheduled backups are pruned by count (`--backup-keep`) and age (`--backup-max-age`,
+`WT_BACKUP_MAX_AGE`). `worktree-server restore --list` lists either target and
+`worktree-server restore --data DIR ID` restores a backup id from it (streamed from S3). See
+[Backends](../storage/Backends.md).
+
+**Durable email outbox.** Notification email is written to the `outbox` document collection
+before it is sent and survives restarts; failed attempts are retried with backoff (30 s, 2 m,
+10 m, 30 m, then every 30 m) and dead-lettered after `--email-dead-after` (`WT_EMAIL_DEAD_AFTER`,
+default 24 h). Server admins list, retry and delete queued email (`GET /api/v1/admin/outbox`,
+`POST .../outbox/{id}/retry`, `POST .../outbox/retry` for every dead letter,
+`DELETE .../outbox/{id}`; `wt admin outbox list|retry|delete`; the admin Backups page). See
+[Notifications](./Notifications.md) §7.
+
+**Retention.** A background pass runs at startup and hourly (and on demand:
+`POST /api/v1/admin/retention/run`, `wt admin retention run`; settings and the last pass:
+`GET /api/v1/admin/retention`, `wt admin retention`, admin Backups page):
+
+| Data | Flag (env) | Default | Rule |
+|---|---|---|---|
+| Policy versions | `--policy-version-retention` (`WT_POLICY_VERSION_RETENTION`) | keep all | `AGE`, `COUNT` or `AGE,COUNT` per policy; the latest version of every policy is always kept |
+| Audit events | `--audit-retention` (`WT_AUDIT_RETENTION`) | keep all | Older than the age (also applied by garbage collection) |
+| Webhook deliveries | `--webhook-delivery-retention` / `--webhook-delivery-keep` (`WT_WEBHOOK_DELIVERY_RETENTION` / `WT_WEBHOOK_DELIVERY_KEEP`) | `720h` / `200` | Older than the age or beyond the newest N per webhook |
+| Scheduled backups | `--backup-max-age` / `--backup-keep` | none / `7` | Older than the age or beyond the newest N; manual backups are kept |
+
+A pass that deleted anything is audited (`retention.run`, actor `system`, counts in the details).
+
+## 12. Continuous integration
 
 `.github/workflows/ci.yml` (push to `main`, pull requests):
 
@@ -251,7 +322,7 @@ archives (native runners, `release.sh --strict`) + admin archive + Helm chart �
 GitHub release (pre-release for `-` versions) ; per-architecture images built natively and merged
 into multi-arch manifests.
 
-## 12. Implementation status
+## 13. Implementation status
 
 | Item | Status |
 |---|---|
@@ -264,26 +335,29 @@ into multi-arch manifests.
 | `scripts/release.sh` (cross targets, admin archive, SHA256SUMS) | Built |
 | `install.sh` / `install.ps1` with base URL, `SHA256SUMS`, legacy `.sha256` fallback | Built |
 | CI packaging, image and release smoke jobs; release workflow with chart and multi-arch images | Built |
-| S3 / SMTP / backup settings consumed by the server | Depends on workstreams `storage-backends` and `notifications` (v0.7) |
+| S3 / SMTP / backup settings consumed by the server | Built (v0.7 `storage-backends`, `notifications`) |
+| musl release targets when a musl toolchain exists | Built (v0.8 §16.11) |
+| Chart `ServiceMonitor`, `NetworkPolicy`, `PodDisruptionBudget`, backup `CronJob` (off by default), v0.8 server settings, check cases | Built (v0.8 §16.11) |
+| Backups to S3, durable email outbox, retention service (§11) | Built (v0.8 §16.11) |
 
-## 13. Roadmap
+## 14. Roadmap
 
 - Signed release artifacts (Sigstore/cosign signatures for archives and images, SLSA provenance)
   and signature verification in the installers.
 - Native packages: Homebrew tap, Scoop/winget manifests, `.deb`/`.rpm`.
-- musl (`*-unknown-linux-musl`) release archives for Alpine and static Linux installs.
+- musl targets in the release workflow (needs musl cross toolchains on the CI runners).
 - Distroless server image variant (needs a `git`-free mirror implementation).
-- Chart: `ServiceMonitor`, `NetworkPolicy`, `PodDisruptionBudget`, backup `CronJob` exporting to
-  object storage.
 - Rolling upgrades without downtime (requires a multi-replica metadata store).
 
-## 14. References
+## 15. References
 
-- `docs/ENGINEERING_PLAN.md` §15.1 — binding contract
+- `docs/ENGINEERING_PLAN.md` §15.1, §16.11 — binding contract
 - `docs/deploy.md` — operator guide (Docker, Compose, Helm, systemd, proxies, TLS, backups, upgrades)
 - `deploy/docker/`, `deploy/docker-compose.yml`, `deploy/helm/`, `deploy/systemd/`, `deploy/launchd/`
 - `deploy/validate.sh`, `deploy/validate-files.mjs`, `deploy/helm/check/` — validation
 - `scripts/release.sh`, `scripts/install.sh`, `scripts/install.ps1`
 - `.github/workflows/ci.yml`, `.github/workflows/release.yml`
-- `services/server-go/internal/config/config.go` — flags and `WT_*` variables
+- `services/server-go/internal/config/config.go`, `serverops.go` — flags and `WT_*` variables
+- `services/server-go/internal/retention/`, `internal/notify/outbox.go`, `internal/backup/target.go`
+  — retention service, email outbox, backup targets
 - [`Server.md`](./Server.md) — server architecture and operations

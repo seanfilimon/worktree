@@ -88,14 +88,88 @@
       "type": "object",
       "properties": {
         "url": { "type": "string", "pattern": "^(smtps?://.+)?$" },
-        "from": { "type": "string" }
+        "from": { "type": "string" },
+        "deadAfter": { "type": ["string", "integer"] }
       }
     },
     "backup": {
       "type": "object",
       "properties": {
         "interval": { "type": ["string", "integer"] },
-        "keep": { "type": "integer", "minimum": 1 }
+        "keep": { "type": "integer", "minimum": 1 },
+        "target": { "enum": ["disk", "s3"] },
+        "s3Prefix": { "type": "string" },
+        "maxAge": { "type": ["string", "integer"] },
+        "cronJob": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "schedule": { "type": "string", "minLength": 1 },
+            "image": { "type": "string", "minLength": 1 },
+            "note": { "type": "string" },
+            "tokenSecret": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "key": { "type": "string", "minLength": 1 }
+              }
+            },
+            "successfulJobsHistoryLimit": { "type": "integer", "minimum": 0 },
+            "failedJobsHistoryLimit": { "type": "integer", "minimum": 0 },
+            "backoffLimit": { "type": "integer", "minimum": 0 },
+            "resources": { "type": "object" }
+          }
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "properties": {
+        "policyVersions": {
+          "type": "string",
+          "pattern": "^$|^[0-9]+$|^(0|([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h|d))+)(,[0-9]+)?$"
+        },
+        "webhookDeliveries": { "type": ["string", "integer"] },
+        "webhookDeliveryKeep": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "interval": { "type": "string", "minLength": 1 },
+            "scrapeTimeout": { "type": "string", "minLength": 1 },
+            "labels": { "type": "object" },
+            "annotations": { "type": "object" },
+            "namespace": { "type": "string" },
+            "tlsInsecureSkipVerify": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressFrom": { "type": "array", "items": { "type": "object" } },
+        "egress": {
+          "type": "object",
+          "properties": {
+            "allowAll": { "type": "boolean" },
+            "extra": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "type": ["string", "integer"], "minimum": 0, "pattern": "^([0-9]+%?)?$" },
+        "maxUnavailable": { "type": ["string", "integer"], "minimum": 0, "pattern": "^([0-9]+%?)?$" }
       }
     },
     "extraEnv": { "type": "array" },

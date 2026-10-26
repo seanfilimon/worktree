@@ -22,6 +22,17 @@ A random admin password was generated. Read it with:
 Log in from the CLI:
   wt login <server URL> -u {{ .Values.server.adminUser }}
 
+{{- if .Values.backup.cronJob.enabled }}
+
+Backups: CronJob {{ include "worktree.backupCronJobName" . }} runs "{{ .Values.backup.cronJob.schedule }}" with the
+API token in Secret {{ .Values.backup.cronJob.tokenSecret.name }} (key {{ .Values.backup.cronJob.tokenSecret.key }}). Trigger one now:
+  kubectl --namespace {{ .Release.Namespace }} create job --from=cronjob/{{ include "worktree.backupCronJobName" . }} {{ include "worktree.backupCronJobName" . | trunc 45 | trimSuffix "-" }}-manual
+{{- end }}
+{{- if and .Values.podDisruptionBudget.enabled (include "worktree.optString" (list .Values.podDisruptionBudget "minAvailable")) }}
+
+NOTE: podDisruptionBudget.minAvailable is set and the server runs one
+replica, so voluntary evictions (node drains) wait until you relax it.
+{{- end }}
 {{- if not .Values.persistence.enabled }}
 
 WARNING: persistence is disabled; all data is lost when the pod restarts.

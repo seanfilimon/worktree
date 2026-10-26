@@ -135,6 +135,10 @@ What the chart creates:
 | `Ingress` (+ `-grpc` Ingress) | Optional. The second Ingress routes `/worktree.sync.v1.SyncService` with `ingress.grpc.annotations` (default `nginx.ingress.kubernetes.io/backend-protocol: GRPC`) for controllers that choose the backend protocol per Ingress. Set `ingress.grpc.enabled=false` for controllers that honour `appProtocol` (Traefik, Contour, Envoy Gateway) |
 | `ServiceAccount` | Without a mounted API token |
 | `Pod` (`helm test`) | Calls `/healthz` through the Service |
+| `ServiceMonitor` | Optional (`metrics.serviceMonitor.enabled`, needs the Prometheus Operator CRDs): scrapes `/metrics` on port `http` |
+| `NetworkPolicy` | Optional (`networkPolicy.enabled`): ingress to the server port from `networkPolicy.ingressFrom` (empty = anyone; this release's CronJob and test pod stay allowed); egress all by default, or DNS + `networkPolicy.egress.extra` with `egress.allowAll=false` |
+| `PodDisruptionBudget` | Optional (`podDisruptionBudget.enabled`): exactly one of `minAvailable` / `maxUnavailable` (default `maxUnavailable: 1`). With one replica, `minAvailable: 1` blocks node drains |
+| `CronJob` (`<release>-backup`) | Optional example (`backup.cronJob.enabled`): `curl -X POST /api/v1/admin/backups` on `backup.cronJob.schedule` with a server-admin token from `backup.cronJob.tokenSecret` (required); with `backup.target=s3` the archives land in the bucket |
 
 Key values (see `deploy/helm/worktree/values.yaml` and `values.schema.json` for all):
 
@@ -148,13 +152,20 @@ Key values (see `deploy/helm/worktree/values.yaml` and `values.schema.json` for 
 | `server.tls.enabled`, `server.tls.secretName`, `server.tls.clientCASecretName` | off | End-to-end TLS from the pod (probes switch to HTTPS); optional mTLS CA (`ca.crt`) |
 | `objectStore`, `s3.*` | `disk` | `s3` needs `s3.bucket`; server v0.7+ |
 | `smtp.url`, `smtp.from` | empty | Server v0.7+ |
-| `backup.interval`, `backup.keep` | `"0"`, `7` | Scheduled backups into `/data/backups`; server v0.7+ |
+| `backup.interval`, `backup.keep` | `"0"`, `7` | Scheduled backups; server v0.7+ |
+| `backup.target`, `backup.s3Prefix`, `backup.maxAge` | `disk`, `""`, `"0"` | `s3` keeps backups in the `s3.*` bucket (also with `objectStore: disk`; needs `s3.bucket`); prune scheduled backups by age; server v0.8+ |
+| `backup.cronJob.*` | off | See the CronJob row above |
+| `retention.policyVersions`, `retention.webhookDeliveries`, `retention.webhookDeliveryKeep` | `""`, `720h`, `200` | Server v0.8+ (see [Retention](#retention)) |
+| `smtp.deadAfter` | `24h` | Dead-letter queued email that still fails after this long; server v0.8+ |
+| `metrics.serviceMonitor.*`, `networkPolicy.*`, `podDisruptionBudget.*` | off | See the rows above |
 | `persistence.size`, `persistence.storageClass` | `20Gi`, cluster default | Volume claim templates are immutable: resize the PVC directly |
 | `resources` | 100m / 128Mi requests, 1Gi memory limit | |
 | `extraEnv`, `extraArgs` | `[]` | Anything else (`--gc-interval`, `TZ`, …) |
 
 The chart refuses inconsistent values at render time (TLS without a Secret, `objectStore=s3`
-without a bucket, an unknown object store, an existing claim with persistence disabled).
+or `backup.target=s3` without a bucket, an unknown object store, an existing claim with
+persistence disabled, the backup CronJob without `tokenSecret.name`, a PodDisruptionBudget with
+both or neither bound).
 
 Validate changes with `helm lint --strict deploy/helm/worktree`, or without Helm with
 `cd deploy/helm/check && go run .` (renders the chart for every case in `cases/` and checks the
@@ -273,12 +284,50 @@ From v0.7 the server takes consistent online backups (`POST /api/v1/admin/backup
 panel's **Backups** page, `wt admin backup create`, or on a schedule with `--backup-interval` /
 `WT_BACKUP_INTERVAL` and `--backup-keep`) into `<data>/backups/<id>.wtbak`; restore is offline with
 `worktree-server restore --data DIR FILE`. See
-[`specs/storage/Backends.md`](../crates/worktree-protocol/specs/storage/Backends.md). Copy the
-backup files off the host (they live on the same volume as the data).
+[`specs/storage/Backends.md`](../crates/worktree-protocol/specs/storage/Backends.md).
+
+From v0.8 backups can go straight to object storage, off the data volume:
+
+```bash
+worktree-server --backup-target s3 --backup-interval 24h --backup-keep 14 --backup-max-age 30d \
+  --s3-endpoint s3.amazonaws.com --s3-bucket wt-backups --s3-region eu-west-1   # keys via WT_S3_*
+```
+
+`--backup-target s3` (`WT_BACKUP_TARGET`) reuses the `--s3-*` connection settings (it works with
+`--object-store disk` too) and stores archives under `--backup-s3-prefix` (default
+`<s3-prefix>backups/`). To restore, stop the server and list or restore by id straight from the
+bucket, with the same target flags:
+
+```bash
+worktree-server restore --list --data /var/lib/worktree --backup-target s3 --s3-bucket wt-backups ...
+worktree-server restore --data /var/lib/worktree --backup-target s3 --s3-bucket wt-backups ... bk-20261026T030000Z-a1b2c3
+```
+
+With the disk target, `worktree-server restore --data DIR ID` reads `DIR/backups/<id>.wtbak` (a
+data directory that only contains `backups/` counts as empty). On Kubernetes the chart's optional
+`backup.cronJob` triggers backups on a schedule instead of `--backup-interval`. Without the S3
+target, copy the backup files off the host (they live on the same volume as the data).
 
 Without that feature, stop the server and copy the whole data directory (`meta.db` and
 `objects/`), or snapshot the volume while the server is stopped. A live copy of `meta.db` is not
 consistent. With the S3 object store, back up the bucket with your provider's tools as well.
+
+## Retention
+
+From v0.8 a background pass at startup and every hour prunes old operational data (run it now
+with `wt admin retention run`; `wt admin retention` and the admin **Backups** page show the
+settings and the last pass):
+
+| Data | Flag (env) | Default |
+|---|---|---|
+| Policy versions | `--policy-version-retention AGE,COUNT` (`WT_POLICY_VERSION_RETENTION`), e.g. `90d,100`; the latest version of a policy is always kept | keep all |
+| Audit events | `--audit-retention AGE` (`WT_AUDIT_RETENTION`) | keep all |
+| Webhook deliveries | `--webhook-delivery-retention AGE` / `--webhook-delivery-keep N` per webhook | `720h` / `200` |
+| Scheduled backups | `--backup-max-age AGE` / `--backup-keep N` | none / `7` |
+
+Notification email is queued in a durable outbox (v0.8): it survives restarts, is retried with
+backoff and dead-lettered after `--email-dead-after` (default `24h`). Inspect and retry it with
+`wt admin outbox list` / `wt admin outbox retry ID|--all`, or on the admin **Backups** page.
 
 ## Upgrades
 
@@ -337,7 +386,9 @@ bash scripts/release.sh --all                    # every target with an installe
 bash scripts/release.sh --target aarch64-unknown-linux-gnu --skip-admin
 ```
 
-Per target (`{x86_64,aarch64}-{unknown-linux-gnu,apple-darwin,pc-windows-msvc}`) it writes
+Per target (`{x86_64,aarch64}-{unknown-linux-gnu,unknown-linux-musl,apple-darwin,pc-windows-msvc}`;
+the musl targets need a musl C toolchain — `<arch>-linux-musl-gcc`, `musl-gcc` or
+`cargo-zigbuild` — and are skipped without one) it writes
 `worktree-<version>-<target>.tar.gz` (`.zip` on Windows) with `wt`, `worktree-bg`,
 `worktree-server`, `LICENSE` and `README.md`; plus `worktree-admin-<version>.tar.gz`, a `.sha256`
 per archive and `SHA256SUMS`. The version comes from `[workspace.package]` in `Cargo.toml`. Targets

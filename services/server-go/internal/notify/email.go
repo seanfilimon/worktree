@@ -17,7 +17,6 @@ import (
 	"net/smtp"
 	"net/url"
 	"strings"
-	"sync"
 	texttemplate "text/template"
 	"time"
 
@@ -65,25 +64,16 @@ type Email struct {
 	ID      string // notification id (X-WT-Notification)
 }
 
-type mailJob struct {
-	msg      Email
-	attempts int
-}
-
-// mailer sends Emails over SMTP in a background goroutine with retries.
+// mailer sends Emails over SMTP. server-ops (§16.11): queueing, retries
+// and dead-lettering live in the durable outbox (outbox.go).
 type mailer struct {
 	u          *url.URL
 	from       mail.Address
-	backoff    []time.Duration
 	timeout    time.Duration
 	skipVerify bool
 	log        *slog.Logger
 
-	mu      sync.Mutex
-	queue   chan mailJob // nil until start
-	pending sync.WaitGroup
-	sent    int
-	failed  int
+	outbox *outbox // set by Service.Configure
 }
 
 func newMailer(o Options, log *slog.Logger) (*mailer, error) {
@@ -102,81 +92,22 @@ func newMailer(o Options, log *slog.Logger) (*mailer, error) {
 		}
 		from = &mail.Address{Name: "W0rkTree", Address: "noreply@" + host}
 	}
-	return &mailer{u: u, from: *from, backoff: o.EmailBackoff, timeout: o.EmailTimeout, skipVerify: o.SkipVerify, log: log}, nil
+	return &mailer{u: u, from: *from, timeout: o.EmailTimeout, skipVerify: o.SkipVerify, log: log}, nil
 }
 
+// start starts the outbox worker (server-ops §16.11).
 func (m *mailer) start(ctx context.Context) {
-	q := make(chan mailJob, 256)
-	m.mu.Lock()
-	m.queue = q
-	m.mu.Unlock()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case j := <-q:
-				m.run(ctx, j)
-			}
-		}
-	}()
+	if m.outbox != nil {
+		m.outbox.start(ctx)
+	}
 }
 
-// enqueue queues msg; without start it is sent synchronously (tests).
+// enqueue writes msg to the durable outbox, which sends it in the
+// background (server-ops §16.11).
 func (m *mailer) enqueue(ctx context.Context, msg Email) {
-	m.pending.Add(1)
-	m.mu.Lock()
-	q := m.queue
-	m.mu.Unlock()
-	j := mailJob{msg: msg}
-	if q == nil {
-		m.run(ctx, j)
-		return
+	if m.outbox != nil {
+		m.outbox.enqueue(ctx, msg)
 	}
-	select {
-	case q <- j:
-	default:
-		m.log.WarnContext(ctx, "notify: email queue full; dropped", "to", msg.To)
-		m.pending.Done()
-	}
-}
-
-// run makes one attempt and schedules the retry; it marks the job done
-// once it succeeded or ran out of attempts.
-func (m *mailer) run(ctx context.Context, j mailJob) {
-	j.attempts++
-	err := m.send(ctx, j.msg)
-	if err == nil {
-		m.mu.Lock()
-		m.sent++
-		m.mu.Unlock()
-		m.pending.Done()
-		return
-	}
-	if j.attempts > len(m.backoff) || ctx.Err() != nil {
-		m.log.WarnContext(ctx, "notify: email failed; giving up", "to", j.msg.To, "attempts", j.attempts, "err", err)
-		m.mu.Lock()
-		m.failed++
-		m.mu.Unlock()
-		m.pending.Done()
-		return
-	}
-	delay := m.backoff[j.attempts-1]
-	m.log.InfoContext(ctx, "notify: email failed; will retry", "to", j.msg.To, "attempt", j.attempts, "retry_in", delay, "err", err)
-	time.AfterFunc(delay, func() {
-		m.mu.Lock()
-		q := m.queue
-		m.mu.Unlock()
-		if q == nil {
-			m.run(ctx, j)
-			return
-		}
-		select {
-		case q <- j:
-		case <-ctx.Done():
-			m.pending.Done()
-		}
-	})
 }
 
 // send runs one SMTP conversation.
@@ -361,22 +292,23 @@ func buildEmail(n domain.Notification, acct *domain.Account, publicURL string) E
 	return Email{To: acct.Email, ToName: acct.DisplayName, Subject: subject, Text: text.String(), HTML: html.String(), ID: n.ID}
 }
 
-// WaitEmails blocks until every queued email was sent or gave up, or ctx
-// ends (tests, shutdown). It returns the sent and failed totals.
+// WaitEmails blocks until every email queued by this process was sent or
+// dead-lettered, or ctx ends (tests, shutdown). It returns the sent and
+// dead-lettered totals.
 func (s *Service) WaitEmails(ctx context.Context) (sent, failed int) {
 	s.mu.Lock()
-	m := s.mailer
+	m, ob := s.mailer, s.outbox
 	s.mu.Unlock()
-	if m == nil {
+	if m == nil || ob == nil {
 		return 0, 0
 	}
 	done := make(chan struct{})
-	go func() { m.pending.Wait(); close(done) }()
+	go func() { ob.pending.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-ctx.Done():
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.sent, m.failed
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+	return ob.sent, ob.failed
 }

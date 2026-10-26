@@ -125,8 +125,15 @@ type Options struct {
 	Retention   time.Duration
 	Keep        int
 	// EmailBackoff are the delays between email attempts (nil = default);
-	// an email gets 1+len(EmailBackoff) attempts.
+	// server-ops (§16.11): the last delay repeats until EmailDeadAfter.
 	EmailBackoff []time.Duration
+	// server-ops (§16.11, outbox.go): EmailDeadAfter dead-letters a queued
+	// email that still fails this long after it was queued (0 = 24 h);
+	// OutboxPoll bounds the worker's sleep (0 = 30 s); OutboxNow is the
+	// outbox clock (nil = wall clock; notification times use Now).
+	EmailDeadAfter time.Duration
+	OutboxPoll     time.Duration
+	OutboxNow      func() time.Time
 	// EmailTimeout bounds one SMTP conversation (0 = 30 s).
 	EmailTimeout time.Duration
 	// SkipVerify disables TLS certificate verification for SMTP (tests).
@@ -152,6 +159,13 @@ func (o Options) withDefaults() Options {
 	if o.EmailTimeout <= 0 {
 		o.EmailTimeout = 30 * time.Second
 	}
+	// server-ops (§16.11)
+	if o.EmailDeadAfter <= 0 {
+		o.EmailDeadAfter = DefaultEmailDeadAfter
+	}
+	if o.OutboxPoll <= 0 {
+		o.OutboxPoll = DefaultOutboxPoll
+	}
 	return o
 }
 
@@ -162,6 +176,7 @@ type Service struct {
 	mu     sync.Mutex
 	o      Options
 	mailer *mailer              // nil = email disabled
+	outbox *outbox              // server-ops (§16.11): durable email queue
 	recent map[string]time.Time // dedup key -> last created
 	create sync.Mutex           // serializes creation (dedup + prune)
 }
@@ -171,7 +186,19 @@ func New(d Deps) *Service {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Service{d: d, o: Options{}.withDefaults(), recent: map[string]time.Time{}}
+	o := Options{}.withDefaults()
+	s := &Service{d: d, o: o, recent: map[string]time.Time{}}
+	s.outbox = newOutbox(s.docStore(), nil, o, d.Logger) // server-ops (§16.11)
+	return s
+}
+
+// docStore is Deps.Store, or an in-memory store when unset (server-ops
+// §16.11: the outbox needs somewhere to queue).
+func (s *Service) docStore() domain.DocStore {
+	if s.d.Store != nil {
+		return s.d.Store
+	}
+	return meta.NewMemory()
 }
 
 // Configure replaces the Options; call it before Start. It fails when
@@ -185,10 +212,20 @@ func (s *Service) Configure(o Options) error {
 			return err
 		}
 	}
+	// server-ops (§16.11): the outbox sends through the mailer.
+	var send func(context.Context, Email) error
+	if m != nil {
+		send = m.send
+	}
+	ob := newOutbox(s.docStore(), send, o, s.d.Logger)
+	if m != nil {
+		m.outbox = ob
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.o = o
 	s.mailer = m
+	s.outbox = ob
 	return nil
 }
 

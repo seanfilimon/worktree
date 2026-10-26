@@ -145,7 +145,7 @@ func validateObjectStore(kind string, s3 S3Config) []error {
 
 // restoreUsageHint appends the restore subcommand to the server usage.
 func restoreUsageHint(w io.Writer) {
-	fmt.Fprintf(w, "\nSubcommands:\n  worktree-server restore [--force] --data DIR [storage flags] FILE.wtbak\n\tRestore a backup into an empty data directory (offline; see `worktree-server restore -h`).\n")
+	fmt.Fprintf(w, "\nSubcommands:\n  worktree-server restore [--force] --data DIR [storage flags] FILE.wtbak|BACKUP-ID\n\tRestore a backup into an empty data directory (offline; see `worktree-server restore -h`).\n")
 }
 
 // RestoreConfig is the configuration of `worktree-server restore`.
@@ -163,6 +163,13 @@ type RestoreConfig struct {
 	ObjectStore     string
 	S3              S3Config
 	CompressObjects bool
+
+	// server-ops (§16.11): FILE may be a backup id, read from the backup
+	// target (BackupTarget/BackupS3Prefix, same flags as the server);
+	// List lists the target's backups instead of restoring.
+	BackupTarget   string
+	BackupS3Prefix string
+	List           bool
 }
 
 // LoadRestore parses the arguments of `worktree-server restore` (after the
@@ -176,8 +183,8 @@ func loadRestore(args []string, lookup lookupFunc) (RestoreConfig, error) {
 	if err != nil {
 		return RestoreConfig{}, err
 	}
-	var force bool
-	fs := restoreFlagSet(&base, &force, io.Discard)
+	var force, list bool
+	fs := restoreFlagSet(&base, &force, &list, io.Discard)
 	// Flags may come before or after FILE.
 	var positional []string
 	for {
@@ -196,11 +203,21 @@ func loadRestore(args []string, lookup lookupFunc) (RestoreConfig, error) {
 		ObjectStore:     base.ObjectStore,
 		S3:              base.S3,
 		CompressObjects: base.CompressObjects,
+		// server-ops (§16.11)
+		BackupTarget:   base.BackupTarget,
+		BackupS3Prefix: base.BackupS3Prefix,
+		List:           list,
 	}
 	switch len(positional) {
 	case 0:
-		return RestoreConfig{}, errors.New("restore: missing the backup FILE")
+		if list { // server-ops (§16.11): --list needs no FILE
+			break
+		}
+		return RestoreConfig{}, errors.New("restore: missing the backup FILE or ID")
 	case 1:
+		if list {
+			return RestoreConfig{}, fmt.Errorf("restore: --list takes no argument, got %q", positional[0])
+		}
 		rc.File = positional[0]
 	default:
 		return RestoreConfig{}, fmt.Errorf("restore: unexpected argument %q", positional[1])
@@ -209,30 +226,39 @@ func loadRestore(args []string, lookup lookupFunc) (RestoreConfig, error) {
 	if strings.TrimSpace(rc.DataDir) == "" {
 		errs = append(errs, errors.New("restore: data directory must not be empty"))
 	}
-	errs = append(errs, validateObjectStore(rc.ObjectStore, rc.S3)...)
+	if !rc.List {
+		errs = append(errs, validateObjectStore(rc.ObjectStore, rc.S3)...)
+	}
+	errs = append(errs, validateBackupTarget(rc.BackupTarget, rc.S3)...) // server-ops (§16.11)
 	if err := errors.Join(errs...); err != nil {
 		return RestoreConfig{}, err
 	}
 	return rc, nil
 }
 
-func restoreFlagSet(cfg *Config, force *bool, out io.Writer) *flag.FlagSet {
+func restoreFlagSet(cfg *Config, force, list *bool, out io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet("worktree-server restore", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&cfg.DataDir, "data", cfg.DataDir, "data `directory` to restore into; must be empty unless --force (env WT_DATA)")
+	fs.StringVar(&cfg.DataDir, "data", cfg.DataDir, "data `directory` to restore into; must be empty (a backups/ directory is ignored) unless --force (env WT_DATA)")
 	fs.BoolVar(force, "force", false, "restore into a non-empty data directory (replaces meta.db, adds objects)")
 	fs.BoolVar(&cfg.CompressObjects, "compress-objects", cfg.CompressObjects, "store restored objects zstd-compressed when that saves at least 10% (env WT_COMPRESS_OBJECTS)")
 	objectStoreFlags(fs, cfg)
+	// server-ops (§16.11): restore by id from the backup target, or list it.
+	backupTargetFlags(fs, cfg)
+	fs.BoolVar(list, "list", false, "list the backups in the backup target (<data>/backups or the S3 bucket) and exit")
 	return fs
 }
 
 // RestoreUsage writes the restore subcommand documentation to w.
 func RestoreUsage(w io.Writer) {
 	cfg, _ := fromEnv(func(string) (string, bool) { return "", false })
-	fs := restoreFlagSet(&cfg, new(bool), w)
-	fmt.Fprintf(w, "Usage: worktree-server restore [flags] FILE.wtbak\n\n"+
+	fs := restoreFlagSet(&cfg, new(bool), new(bool), w)
+	fmt.Fprintf(w, "Usage: worktree-server restore [flags] FILE.wtbak|BACKUP-ID\n"+
+		"       worktree-server restore --list [--data DIR] [--backup-target disk|s3 ...]\n\n"+
 		"Restores a backup (meta.db and every object, each verified against its hash)\n"+
 		"into a stopped server's data directory and object store. The data directory\n"+
-		"must be empty unless --force is given.\n\nFlags:\n")
+		"must be empty (a backups/ directory is ignored) unless --force is given. A\n"+
+		"BACKUP-ID (bk-...) is read from the backup target: <data>/backups/<id>.wtbak,\n"+
+		"or the S3 bucket with --backup-target s3.\n\nFlags:\n")
 	fs.PrintDefaults()
 }

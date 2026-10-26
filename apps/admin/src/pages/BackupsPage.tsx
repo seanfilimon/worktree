@@ -5,6 +5,7 @@ import {
   backupAuthor,
   backupFileName,
   backupKeys,
+  backupTargetText,
   MAX_BACKUP_NOTE,
   useBackupsApi,
   useBackupStatus,
@@ -27,6 +28,8 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { downloadBytes } from "@/lib/files";
 import { absoluteTime, formatBytes, formatNumber, relativeTime } from "@/lib/format";
+import { OutboxCard } from "@/pages/backups/OutboxCard";
+import { RetentionCard } from "@/pages/backups/RetentionCard";
 import { NotImplementedNotice } from "@/pages/tenants/opsShared";
 import { useToast } from "@/toast/store";
 
@@ -64,9 +67,10 @@ function StoreCard({ status }: { status: BackupStatus }) {
   const Icon = s3 ? Cloud : HardDrive;
   const rows: [string, string][] = [
     ...storeRows(store),
-    ["Backup directory", config.dir || "—"],
+    ["Backup target", backupTargetText(config)],
     ["Schedule", scheduleText(status)],
     ["Keep", config.keep ? `${formatNumber(config.keep)} scheduled backups` : "All"],
+    ["Max age", config.max_age_seconds ? config.max_age : "None"],
   ];
   if (status.next_run_at) rows.push(["Next backup", `${relativeTime(status.next_run_at)} (${absoluteTime(status.next_run_at)})`]);
   return (
@@ -78,7 +82,9 @@ function StoreCard({ status }: { status: BackupStatus }) {
         </CardTitle>
         <CardDescription>
           Set with <span className="font-mono">--object-store</span>, <span className="font-mono">--s3-*</span>,{" "}
-          <span className="font-mono">--backup-interval</span> and <span className="font-mono">--backup-keep</span>.
+          <span className="font-mono">--backup-target</span>, <span className="font-mono">--backup-s3-prefix</span>,{" "}
+          <span className="font-mono">--backup-interval</span>, <span className="font-mono">--backup-keep</span> and{" "}
+          <span className="font-mono">--backup-max-age</span>.
         </CardDescription>
         <CardAction>
           <Badge variant="outline" className="font-mono uppercase">
@@ -115,11 +121,17 @@ function RestoreCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <pre className="overflow-x-auto rounded-md border bg-muted px-3 py-2 font-mono text-xs">
-          worktree-server restore --data /var/lib/worktree backup.wtbak
+          {"worktree-server restore --data /var/lib/worktree <FILE|ID>\nworktree-server restore --list"}
         </pre>
         <p className="text-xs text-muted-foreground">
-          Pass the same <span className="font-mono">--object-store</span> / <span className="font-mono">--s3-*</span> flags as the
-          server to restore objects into S3, and <span className="font-mono">--force</span> to restore over existing data.
+          Restore from an archive file or by backup id: an ID restores from the backup target (
+          <span className="font-mono">&lt;data&gt;/backups</span> or the S3 bucket); <span className="font-mono">--list</span>{" "}
+          shows the backups there.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Pass the same <span className="font-mono">--object-store</span> / <span className="font-mono">--s3-*</span> /{" "}
+          <span className="font-mono">--backup-target</span> flags as the server to restore objects into S3 or read backups from
+          the bucket, and <span className="font-mono">--force</span> to restore over existing data.
         </p>
       </CardContent>
     </Card>
@@ -338,7 +350,10 @@ function BackupsTable({ status }: { status: BackupStatus }) {
   );
 }
 
-/** Server backups: list, create, download, delete; object store info (server administrators). */
+/**
+ * Server backups: list, create, download, delete; object store and backup
+ * target info; the email outbox and data retention (server administrators).
+ */
 export function BackupsPage() {
   const { isAdmin } = useAuth();
   const status = useBackupStatus(isAdmin);
@@ -361,25 +376,30 @@ export function BackupsPage() {
       <PageHeader
         title="Backups"
         breadcrumbs={breadcrumbs}
-        description="Point-in-time archives of the metadata database and every object."
+        description="Point-in-time archives of the metadata database and every object, the email outbox and data retention."
       />
-      {isNotImplemented(status.error) ? (
-        <NotImplementedNotice feature="Backup" />
-      ) : status.isError ? (
-        <ErrorState className="m-0" error={status.error} onRetry={() => void status.refetch()} />
-      ) : status.isPending ? (
-        <Card className="py-0">
-          <SkeletonRows rows={5} label="Loading backups" />
-        </Card>
-      ) : (
-        <div className="flex flex-col gap-6">
-          <BackupsTable status={status.data} />
-          <div className="grid gap-4 lg:grid-cols-2">
-            <StoreCard status={status.data} />
-            <RestoreCard />
-          </div>
-        </div>
-      )}
+      <div className="flex flex-col gap-6">
+        {isNotImplemented(status.error) ? (
+          <NotImplementedNotice feature="Backup" />
+        ) : status.isError ? (
+          <ErrorState className="m-0" error={status.error} onRetry={() => void status.refetch()} />
+        ) : status.isPending ? (
+          <Card className="py-0">
+            <SkeletonRows rows={5} label="Loading backups" />
+          </Card>
+        ) : (
+          <>
+            <BackupsTable status={status.data} />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <StoreCard status={status.data} />
+              <RestoreCard />
+            </div>
+          </>
+        )}
+        {/* v0.8 server operations (§16.11); each card handles older servers itself. */}
+        <OutboxCard enabled={isAdmin} />
+        <RetentionCard enabled={isAdmin} />
+      </div>
     </>
   );
 }

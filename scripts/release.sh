@@ -15,12 +15,21 @@
 # [workspace.package] in Cargo.toml.
 #
 # Targets (Rust triple -> GOOS/GOARCH):
-#   x86_64-unknown-linux-gnu  aarch64-unknown-linux-gnu
-#   x86_64-apple-darwin       aarch64-apple-darwin
-#   x86_64-pc-windows-msvc    aarch64-pc-windows-msvc
+#   x86_64-unknown-linux-gnu   aarch64-unknown-linux-gnu
+#   x86_64-unknown-linux-musl  aarch64-unknown-linux-musl
+#   x86_64-apple-darwin        aarch64-apple-darwin
+#   x86_64-pc-windows-msvc     aarch64-pc-windows-msvc
 # A target is built only when its Rust standard library is installed
 # (rustup target add <target>) and, for cross builds, a working linker is
 # available; others are skipped with a warning (an error with --strict).
+#
+# The musl targets (static binaries for Alpine and other musl or minimal
+# Linux systems) also need a musl C toolchain for the crates with C code,
+# unless the target is the host's own: <arch>-linux-musl-gcc on PATH (used
+# as CC_<target> and CARGO_TARGET_<TARGET>_LINKER), musl-gcc for x86_64 on
+# an x86_64 Linux host, or cargo-zigbuild (then `cargo zigbuild` replaces
+# `cargo build`). Their worktree-server is the same static CGO_ENABLED=0
+# linux binary as in the gnu archives.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,6 +37,7 @@ cd "$ROOT"
 
 ALL_TARGETS=(
   x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+  x86_64-unknown-linux-musl aarch64-unknown-linux-musl
   x86_64-apple-darwin aarch64-apple-darwin
   x86_64-pc-windows-msvc aarch64-pc-windows-msvc
 )
@@ -48,6 +58,17 @@ Options:
   --strict          fail instead of skipping a target that cannot be built
   --target-dir DIR  cargo target directory (default: $CARGO_TARGET_DIR or target/)
   -h, --help        show this help
+
+Targets:
+  x86_64-unknown-linux-gnu   aarch64-unknown-linux-gnu
+  x86_64-unknown-linux-musl  aarch64-unknown-linux-musl
+  x86_64-apple-darwin        aarch64-apple-darwin
+  x86_64-pc-windows-msvc     aarch64-pc-windows-msvc
+
+A target is skipped (an error with --strict) when its Rust target is not
+installed. The musl targets also need a musl C toolchain unless they are the
+host target: <arch>-linux-musl-gcc, musl-gcc (x86_64 on x86_64 Linux) or
+cargo-zigbuild.
 EOF
 }
 
@@ -137,6 +158,37 @@ target_installed() {
   printf '%s\n' "$installed_targets" | grep -qx "$1"
 }
 
+# musl_toolchain TRIPLE: pick the C toolchain for a *-linux-musl target.
+# Sets cargo_sub (build|zigbuild) and cargo_env (VAR=value words for env);
+# returns 1 when no toolchain is found.
+cargo_sub=build
+cargo_env=()
+musl_toolchain() {
+  local target="$1" arch="${1%%-*}" cc="" ar=""
+  cargo_sub=build
+  cargo_env=()
+  # The host's own target builds with the native compiler (Alpine etc.).
+  [ "$target" = "$(host_target)" ] && return 0
+  if need "$arch-linux-musl-gcc"; then
+    cc="$arch-linux-musl-gcc"
+    need "$arch-linux-musl-ar" && ar="$arch-linux-musl-ar"
+  elif [ "$arch" = x86_64 ] && [ "$(uname -s 2>/dev/null)" = Linux ] &&
+    [ "$(uname -m 2>/dev/null)" = x86_64 ] && need musl-gcc; then
+    cc=musl-gcc
+  elif need cargo-zigbuild; then
+    cargo_sub=zigbuild
+    return 0
+  else
+    return 1
+  fi
+  local lower upper
+  lower="$(printf '%s' "$target" | tr '-' '_')"
+  upper="$(printf '%s' "$lower" | tr '[:lower:]' '[:upper:]')"
+  cargo_env=("CC_$lower=$cc" "CARGO_TARGET_${upper}_LINKER=$cc")
+  [ -n "$ar" ] && cargo_env+=("AR_$lower=$ar")
+  return 0
+}
+
 go_platform() { # TRIPLE -> "GOOS GOARCH EXT ARCHIVE_EXT"
   local arch os
   case "$1" in
@@ -215,9 +267,23 @@ build_target() {
       warn "$msg; skipping"
       return 0
     fi
-    say "cargo build --release --target $target (wt, worktree-bg)"
+    cargo_sub=build
+    cargo_env=()
+    case "$target" in
+      *-linux-musl)
+        if ! musl_toolchain "$target"; then
+          local arch="${target%%-*}"
+          local msg="no musl C toolchain for $target (install $arch-linux-musl-gcc, musl-gcc on x86_64 Linux, or cargo-zigbuild)"
+          [ "$strict" = 1 ] && die "$msg"
+          warn "$msg; skipping"
+          return 0
+        fi
+        ;;
+    esac
+    say "cargo $cargo_sub --release --target $target (wt, worktree-bg)${cargo_env[*]:+ with ${cargo_env[*]}}"
     local locked=(); [ -f Cargo.lock ] && locked=(--locked)
-    if ! cargo build --release "${locked[@]}" --target "$target" -p worktree-cli -p worktree-bg; then
+    if ! env ${cargo_env[@]+"${cargo_env[@]}"} cargo "$cargo_sub" --release ${locked[@]+"${locked[@]}"} \
+      --target "$target" -p worktree-cli -p worktree-bg; then
       [ "$strict" = 1 ] && die "cargo build failed for $target"
       warn "cargo build failed for $target (missing cross linker?); skipping"
       return 0

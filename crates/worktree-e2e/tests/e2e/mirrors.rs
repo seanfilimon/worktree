@@ -180,13 +180,24 @@ fn mirrors() {
     a.wt().args(["mirror", "update", &id, "--inactive"]).ok();
     let paused = a.wt().args(["mirror", "sync", &id]).fails();
     assert!(paused.mentions("inactive"), "{paused}");
+    // server-ops (§16.11): the server tree is `--in TENANT/TREE`; the old
+    // `--tree TENANT/TREE` still works with a deprecation warning.
+    let deprecated = a
+        .wt()
+        .args(["mirror", "list", "--tree", &format!("alice/{TREE}")])
+        .ok();
+    assert!(
+        deprecated.mentions("deprecated") && deprecated.mentions(&id),
+        "{}",
+        deprecated.combined()
+    );
     a.wt()
         .args([
             "mirror",
             "remove",
             &id,
             "--yes",
-            "--tree",
+            "--in",
             &format!("alice/{TREE}"),
         ])
         .ok();

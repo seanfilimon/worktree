@@ -1,0 +1,11 @@
+# Chart defaults with assertions: the opt-in v0.8 operations objects stay
+# off and nothing S3- or backup-specific is configured.
+# expect: StatefulSet/wt-worktree, Service/wt-worktree, Service/wt-worktree-headless, ConfigMap/wt-worktree, Secret/wt-worktree, ServiceAccount/wt-worktree, Pod/wt-worktree-test-healthz
+# expect-not: ServiceMonitor/wt-worktree, NetworkPolicy/wt-worktree, PodDisruptionBudget/wt-worktree, CronJob/wt-worktree-backup, Ingress/wt-worktree, Ingress/wt-worktree-grpc
+# expect-not-text: WT_OBJECT_STORE
+# expect-not-text: WT_S3_
+# expect-not-text: WT_BACKUP_
+# expect-not-text: WT_POLICY_VERSION_RETENTION
+# expect-text: WT_WEBHOOK_DELIVERY_RETENTION: "720h"
+# expect-text: WT_EMAIL_DEAD_AFTER: "24h"
+{}

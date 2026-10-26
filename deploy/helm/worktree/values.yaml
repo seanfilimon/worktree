@@ -88,6 +88,7 @@ secretKeys:
 
 # Object storage: "disk" keeps objects on the data volume, "s3" uses any
 # S3-compatible store (AWS S3, MinIO, R2, ...). Requires server v0.7+.
+# The s3 settings are also used by backup.target=s3.
 objectStore: disk
 s3:
   endpoint: ""
@@ -104,11 +105,57 @@ s3:
 smtp:
   url: ""
   from: ""
+  # Queued e-mail that still cannot be delivered after this long is moved
+  # to the dead-letter list (admin panel, `wt admin outbox`). Server v0.8+.
+  deadAfter: 24h
 
-# Scheduled backups into <data>/backups (server v0.7+). "0" = off.
+# Backups (server v0.7+).
 backup:
+  # Scheduled backups by the server itself ("0" = off), keeping the newest
+  # `keep` of them.
   interval: "0"
   keep: 7
+  # Where backups are written (server v0.8+): "disk" = <data>/backups on
+  # the data volume, "s3" = the bucket configured under `s3` (endpoint,
+  # bucket, region, credentials), also when objectStore stays "disk".
+  target: disk
+  # Key prefix of backups in the bucket (target=s3); "" = server default.
+  s3Prefix: ""
+  # Also prune backups older than this (Go duration, e.g. 720h); "0" =
+  # prune by count (`keep`) only.
+  maxAge: "0"
+  # Example CronJob that triggers a backup through the REST API
+  # (POST /api/v1/admin/backups) instead of, or in addition to, `interval`.
+  # The request is synchronous, so the job finishes when the backup does.
+  cronJob:
+    enabled: false
+    schedule: "0 3 * * *"
+    image: curlimages/curl:8.11.1
+    # Free-text note stored with each backup.
+    note: scheduled by CronJob
+    # Secret holding a server-admin API token (create one with
+    # `wt token create` as a server admin, then
+    # `kubectl create secret generic wt-backup-token --from-literal=token=<token>`).
+    # Required when the CronJob is enabled.
+    tokenSecret:
+      name: ""
+      key: token
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    backoffLimit: 2
+    resources: {}
+
+# Retention of server history (server v0.8+). server.auditRetention covers
+# the audit log.
+retention:
+  # Policy versions to keep: "" = keep all; "AGE", "COUNT" or "AGE,COUNT",
+  # e.g. "2160h,100" or "90d,100" (versions older than AGE are pruned, but
+  # the newest COUNT are always kept).
+  policyVersions: ""
+  # Webhook delivery log: entries older than this are pruned,
+  # but the newest webhookDeliveryKeep per webhook are kept.
+  webhookDeliveries: 720h
+  webhookDeliveryKeep: 200
 
 # Extra environment variables (list of EnvVar) and extra flags.
 extraEnv: []
@@ -147,6 +194,61 @@ ingress:
     enabled: true
     annotations:
       nginx.ingress.kubernetes.io/backend-protocol: GRPC
+
+# Prometheus Operator ServiceMonitor for the server's /metrics endpoint
+# (Prometheus text format, unauthenticated) on the Service port `http`.
+# Requires the monitoring.coreos.com CRDs.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels, e.g. the `release: <name>` your Prometheus selects on.
+    labels: {}
+    annotations: {}
+    # Create the ServiceMonitor in this namespace (where Prometheus looks
+    # for them) instead of the release namespace.
+    namespace: ""
+    # With server.tls.enabled the scrape uses HTTPS; skip certificate
+    # verification when the certificate does not name the Service. (With
+    # server.tls.clientCASecretName the server also demands a client
+    # certificate, which this ServiceMonitor does not configure.)
+    tlsInsecureSkipVerify: false
+
+# NetworkPolicy for the server pods (needs a CNI that enforces policies).
+networkPolicy:
+  enabled: false
+  # Who may connect to the server port: a list of NetworkPolicyPeer, e.g.
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: ingress-nginx
+  # Empty = any source. When set, pods of this release (the backup CronJob,
+  # the `helm test` pod) are allowed as well.
+  ingressFrom: []
+  egress:
+    # true: all outbound traffic stays allowed (S3, SMTP, webhooks, SSO,
+    # git mirrors), even under a namespace default-deny policy.
+    # false: only DNS (UDP/TCP 53), the server pods themselves and the
+    # rules in `extra` (a list of NetworkPolicyEgressRule) are allowed.
+    allowAll: true
+    extra: []
+    #  - to:
+    #      - ipBlock:
+    #          cidr: 10.20.0.0/16
+    #    ports:
+    #      - port: 443
+    #        protocol: TCP
+
+# PodDisruptionBudget for the server pod. Set exactly one of minAvailable
+# and maxUnavailable (an integer or a percentage like "50%"; set
+# maxUnavailable: null to use minAvailable). The server runs ONE replica:
+# minAvailable: 1 (or maxUnavailable: 0) blocks every voluntary eviction,
+# so node drains hang until the budget is relaxed; maxUnavailable: 1 only
+# documents the intent.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: ""
+  maxUnavailable: 1
 
 probes:
   startup:

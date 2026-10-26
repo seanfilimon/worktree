@@ -3432,9 +3432,12 @@ paths:
         a consistent snapshot of the metadata database plus every object,
         streamed into `<data>/backups/<id>.wtbak` (a zstd-compressed tar
         holding `meta.db`, `objects/<2-hex>/<62-hex>` and `manifest.json`).
-        Works with the disk and the S3 object store. The backup continues
-        when the client disconnects. The body is optional. Restore is
-        offline: `worktree-server restore --data DIR FILE`.
+        Works with the disk and the S3 object store. v0.8 (§16.11): with
+        `--backup-target s3` the archive is then uploaded to the S3 bucket
+        under `--backup-s3-prefix` and `path` is `s3://bucket/prefix/<id>.wtbak`.
+        The backup continues when the client disconnects. The body is
+        optional. Restore is offline: `worktree-server restore --data DIR
+        FILE|ID`.
       tags: [Admin]
       x-wt-action: server:admin
       requestBody:
@@ -3494,7 +3497,7 @@ paths:
     get:
       operationId: downloadBackup
       summary: Download a backup
-      description: v0.7 (§15.2). The `.wtbak` archive as an attachment; `Range` requests are supported.
+      description: v0.7 (§15.2). The `.wtbak` archive as an attachment; `Range` requests are supported for the disk backup target (archives in an S3 target are streamed whole).
       tags: [Admin]
       x-wt-action: server:admin
       responses:
@@ -3541,6 +3544,174 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
   # ---- end storage-backends ----
+  # ---- server-ops (§16.11) ----
+  /api/v1/admin/outbox:
+    get:
+      operationId: listOutbox
+      summary: List the email outbox
+      description: |
+        v0.8 (§16.11). The durable email outbox: every notification email
+        is queued here before it is sent, retried with backoff and
+        dead-lettered once it still fails `dead_after` (`--email-dead-after`,
+        default 24 h) after it was queued. Newest first; message bodies are
+        not included. Sent emails are kept 7 days, dead letters 30 days.
+      tags: [Admin]
+      x-wt-action: server:admin
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Only emails with this status.
+          schema:
+            type: string
+            enum: [pending, sent, dead]
+        - name: limit
+          in: query
+          required: false
+          description: Maximum emails returned (default 100, at most 1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: Outbox counts and emails.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutboxList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/outbox/retry:
+    post:
+      operationId: retryDeadEmails
+      summary: Retry every dead-lettered email
+      description: v0.8 (§16.11). Queues every dead email again for an immediate attempt, with a fresh dead-letter deadline. Audited.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: How many emails were queued again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryDeadEmailsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/outbox/{id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/OutboxEmailID"
+    post:
+      operationId: retryEmail
+      summary: Retry one email
+      description: v0.8 (§16.11). Queues a pending or dead email for an immediate attempt, with a fresh dead-letter deadline. Audited.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: The email, pending again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutboxEmail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`already_sent`: the email was sent."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/outbox/{id}:
+    parameters:
+      - $ref: "#/components/parameters/OutboxEmailID"
+    delete:
+      operationId: deleteEmail
+      summary: Delete an email from the outbox
+      description: v0.8 (§16.11). Removes a queued, sent or dead email. Audited.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/retention:
+    get:
+      operationId: getRetention
+      summary: Get the retention settings and last pass
+      description: |
+        v0.8 (§16.11). The limits of the background retention passes
+        (hourly and at startup): policy versions
+        (`--policy-version-retention AGE,COUNT`, the latest version of a
+        policy is always kept), audit events (`--audit-retention`), webhook
+        deliveries (`--webhook-delivery-retention`, `--webhook-delivery-keep`
+        per webhook) and scheduled backups (`--backup-max-age`,
+        `--backup-keep`). A zero age or count means no limit.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: Retention status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/retention/run:
+    post:
+      operationId: runRetention
+      summary: Run a retention pass now
+      description: v0.8 (§16.11). Prunes every category now and returns the counts. A partial failure is reported in `GET /admin/retention`'s `last_error`.
+      tags: [Admin]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: What the pass deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`retention_running`: another pass is running."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  # ---- end server-ops ----
   /api/v1/admin/tenants/{tenant}/limits:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -9292,6 +9463,13 @@ components:
       schema:
         type: string
         pattern: "^bk-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$"
+    OutboxEmailID:
+      name: id
+      in: path
+      required: true
+      description: "Outbox email id (`em-<UTC time>-<8 hex>`). server-ops (§16.11)."
+      schema:
+        type: string
     Limit:
       name: limit
       in: query
@@ -9624,12 +9802,25 @@ components:
     # ---- storage-backends (§15.2) ----
     BackupConfig:
       type: object
-      description: "Backup configuration (server flags `--backup-interval`, `--backup-keep`)."
-      required: [dir, interval, interval_seconds, keep]
+      description: "Backup configuration (server flags `--backup-interval`, `--backup-keep`, `--backup-max-age`, `--backup-target`, `--backup-s3-prefix`)."
+      required: [dir, target, location, interval, interval_seconds, keep, max_age, max_age_seconds]
       properties:
         dir:
           type: string
-          description: "Directory on the server holding the archives (`<data>/backups`)."
+          description: "Local backup directory on the server (`<data>/backups`): the disk target and the staging directory of S3 uploads."
+        target:
+          type: string
+          enum: [disk, s3]
+          description: "v0.8 (§16.11): where archives are kept (`--backup-target`)."
+        location:
+          type: string
+          description: "v0.8 (§16.11): the target's location, the directory or `s3://bucket/prefix/`."
+        max_age:
+          type: string
+          description: "v0.8 (§16.11): scheduled backups older than this are pruned (`0s` = no age limit)."
+        max_age_seconds:
+          type: integer
+          format: int64
         interval:
           type: string
           description: "Schedule as a Go duration (`0s` = no scheduled backups)."
@@ -9728,6 +9919,164 @@ components:
           maxLength: 500
           description: "Note is a free-form description stored with the backup."
     # ---- end storage-backends ----
+    # ---- server-ops (§16.11) ----
+    OutboxCounts:
+      type: object
+      description: "OutboxCounts counts the outbox by status."
+      required: [pending, sent, dead]
+      properties:
+        pending:
+          type: integer
+        sent:
+          type: integer
+        dead:
+          type: integer
+    OutboxEmail:
+      type: object
+      description: "One queued email as reported by the admin API (bodies omitted)."
+      required: [id, to, subject, status, attempts, created_at, updated_at, deadline_at]
+      properties:
+        id:
+          type: string
+        to:
+          type: string
+          description: "Recipient address."
+        subject:
+          type: string
+        notification_id:
+          type: string
+          description: "The notification the email belongs to."
+        status:
+          type: string
+          enum: [pending, sent, dead]
+        attempts:
+          type: integer
+        last_error:
+          type: string
+          description: "Why the last attempt failed."
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: "When a pending email is tried next."
+        deadline_at:
+          type: string
+          format: date-time
+          description: "When a still-failing email is dead-lettered."
+        sent_at:
+          type: string
+          format: date-time
+        dead_at:
+          type: string
+          format: date-time
+    OutboxList:
+      type: object
+      description: "Response of GET /api/v1/admin/outbox."
+      required: [enabled, dead_after, dead_after_seconds, counts, emails]
+      properties:
+        enabled:
+          type: boolean
+          description: "SMTP is configured (`--smtp-url`): queued emails are sent."
+        dead_after:
+          type: string
+          description: "Dead-letter age as a Go duration (`--email-dead-after`)."
+        dead_after_seconds:
+          type: integer
+          format: int64
+        counts:
+          $ref: "#/components/schemas/OutboxCounts"
+        emails:
+          type: array
+          description: "Newest first."
+          items:
+            $ref: "#/components/schemas/OutboxEmail"
+    RetryDeadEmailsResponse:
+      type: object
+      description: "Response of POST /api/v1/admin/outbox/retry."
+      required: [retried]
+      properties:
+        retried:
+          type: integer
+          description: "Number of dead-lettered emails queued again."
+    RetentionAge:
+      type: object
+      description: "An age limit (`0s` = none)."
+      required: [max_age, max_age_seconds]
+      properties:
+        max_age:
+          type: string
+        max_age_seconds:
+          type: integer
+          format: int64
+    RetentionRule:
+      type: object
+      description: "An age and count limit (0 = none)."
+      required: [max_age, max_age_seconds, keep]
+      properties:
+        max_age:
+          type: string
+        max_age_seconds:
+          type: integer
+          format: int64
+        keep:
+          type: integer
+    RetentionConfig:
+      type: object
+      description: "Limits of every retention category."
+      required: [policy_versions, audit, webhook_deliveries, backups]
+      properties:
+        policy_versions:
+          $ref: "#/components/schemas/RetentionRule"
+        audit:
+          $ref: "#/components/schemas/RetentionAge"
+        webhook_deliveries:
+          $ref: "#/components/schemas/RetentionRule"
+        backups:
+          $ref: "#/components/schemas/RetentionRule"
+    RetentionReport:
+      type: object
+      description: "What one retention pass deleted."
+      required: [at, policy_versions_pruned, audit_pruned, webhook_deliveries_pruned, backups_pruned, took_ms]
+      properties:
+        at:
+          type: string
+          format: date-time
+        policy_versions_pruned:
+          type: integer
+        audit_pruned:
+          type: integer
+        webhook_deliveries_pruned:
+          type: integer
+        backups_pruned:
+          type: integer
+        took_ms:
+          type: integer
+          format: int64
+    RetentionStatus:
+      type: object
+      description: "Response of GET /api/v1/admin/retention."
+      required: [interval, config, running]
+      properties:
+        interval:
+          type: string
+          description: "Period of background passes (Go duration)."
+        config:
+          $ref: "#/components/schemas/RetentionConfig"
+        running:
+          type: boolean
+        last_run_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+        last_report:
+          $ref: "#/components/schemas/RetentionReport"
+    # ---- end server-ops ----
     BlameLine:
       type: object
       description: "BlameLine attributes one line of a file to the snapshot that last changed it."

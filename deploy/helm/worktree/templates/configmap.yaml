@@ -40,6 +40,8 @@ data:
   {{- end }}
   {{- if eq .Values.objectStore "s3" }}
   WT_OBJECT_STORE: "s3"
+  {{- end }}
+  {{- if include "worktree.s3Used" . }}
   WT_S3_BUCKET: {{ .Values.s3.bucket | quote }}
   {{- with .Values.s3.endpoint }}
   WT_S3_ENDPOINT: {{ . | quote }}
@@ -55,7 +57,22 @@ data:
   {{- with .Values.smtp.from }}
   WT_SMTP_FROM: {{ . | quote }}
   {{- end }}
+  WT_EMAIL_DEAD_AFTER: {{ .Values.smtp.deadAfter | toString | quote }}
   {{- if ne (toString .Values.backup.interval) "0" }}
   WT_BACKUP_INTERVAL: {{ .Values.backup.interval | toString | quote }}
   WT_BACKUP_KEEP: {{ .Values.backup.keep | int | toString | quote }}
   {{- end }}
+  {{- if ne .Values.backup.target "disk" }}
+  WT_BACKUP_TARGET: {{ .Values.backup.target | quote }}
+  {{- end }}
+  {{- with .Values.backup.s3Prefix }}
+  WT_BACKUP_S3_PREFIX: {{ . | quote }}
+  {{- end }}
+  {{- if ne (toString .Values.backup.maxAge) "0" }}
+  WT_BACKUP_MAX_AGE: {{ .Values.backup.maxAge | toString | quote }}
+  {{- end }}
+  {{- with .Values.retention.policyVersions }}
+  WT_POLICY_VERSION_RETENTION: {{ . | toString | quote }}
+  {{- end }}
+  WT_WEBHOOK_DELIVERY_RETENTION: {{ .Values.retention.webhookDeliveries | toString | quote }}
+  WT_WEBHOOK_DELIVERY_KEEP: {{ .Values.retention.webhookDeliveryKeep | int | toString | quote }}

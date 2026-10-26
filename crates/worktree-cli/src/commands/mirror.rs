@@ -4,8 +4,10 @@
 //! The server exports the tree's snapshots into Git commits (deterministic,
 //! license-aware) and pushes the mirrored branches and tags to the remote
 //! after every push, and on `wt mirror sync`. Every subcommand needs
-//! `tree:admin` and takes `--tree TENANT/TREE` (default: the tree of the
-//! current worktree).
+//! `tree:admin` and takes `--in TENANT/TREE` (default: the server tree of
+//! the current worktree's tree, which the global `--tree NAME` selects as
+//! everywhere else). The pre-0.8 spelling `--tree TENANT/TREE` still works
+//! with a deprecation warning (docs/ENGINEERING_PLAN.md §16.11).
 //!
 //! Credentials for http(s) remotes are read from an environment variable
 //! (`--token-env VAR`) so they never appear in shell history or `ps`.
@@ -33,9 +35,14 @@ pub struct MirrorArgs {
 /// Which tree a command addresses.
 #[derive(Debug, Clone, Default, Args)]
 pub struct Scope {
-    /// Mirrors of this server tree (TENANT/TREE; default: the current worktree's tree)
-    // Shares the id of the global `--tree` so it replaces that flag here.
-    #[arg(long, value_name = "TENANT/TREE", value_parser = tree_spec)]
+    /// Mirrors of this server tree (default: the current worktree's tree)
+    // The id `tree` belongs to the global `--tree NAME` flag (see TreeRef).
+    #[arg(
+        id = "tree_ref",
+        long = "in",
+        value_name = "TENANT/TREE",
+        value_parser = tree_spec
+    )]
     pub tree: Option<String>,
 }
 
@@ -213,11 +220,35 @@ fn item(tree: &TreeRef, id: &str) -> String {
 }
 
 fn resolve(ctx: &Context, scope: &Scope) -> Result<TreeRef> {
-    let tree = match &scope.tree {
-        Some(spec) => Some(spec.parse::<TreeRef>().map_err(CliError::usage)?),
-        None => None,
-    };
+    let (tree, deprecated) = scope_tree(scope.tree.clone(), ctx.tree_flag())?;
+    if deprecated {
+        eprintln!(
+            "{} `wt mirror --tree TENANT/TREE` is deprecated; use `--in TENANT/TREE`",
+            "warning:".yellow().bold()
+        );
+    }
     tree_or_default(ctx, tree)
+}
+
+/// The explicit server tree of a mirror command and whether it came from
+/// the deprecated `--tree TENANT/TREE` spelling: `--in` wins; else a global
+/// `--tree` value of the form TENANT/TREE is taken as the server tree;
+/// else None (the global `--tree NAME`, if any, selects the local tree).
+fn scope_tree(
+    in_flag: Option<String>,
+    global_tree: Option<&str>,
+) -> Result<(Option<TreeRef>, bool)> {
+    if let Some(spec) = in_flag {
+        let tree = spec.parse::<TreeRef>().map_err(CliError::usage)?;
+        return Ok((Some(tree), false));
+    }
+    match global_tree {
+        Some(spec) if spec.contains('/') => {
+            let tree = spec.parse::<TreeRef>().map_err(CliError::usage)?;
+            Ok((Some(tree), true))
+        }
+        _ => Ok((None, false)),
+    }
 }
 
 /// The credential in environment variable `var`.
@@ -568,9 +599,10 @@ fn sync_summary(t: &mut Text, resp: &SyncResponse) {
 #[cfg(test)]
 mod tests {
     use clap::error::ErrorKind;
+    use clap::Parser;
 
     use super::*;
-    use crate::cli::Command;
+    use crate::cli::{Cli, Command};
     use crate::commands::server_common::testing::{parse, parse_err};
 
     fn mirror(args: &[&str]) -> MirrorCommand {
@@ -584,14 +616,29 @@ mod tests {
 
     #[test]
     fn parses_every_subcommand() {
-        let MirrorCommand::List { scope } = mirror(&["list", "--tree", "acme/web"]) else {
+        let MirrorCommand::List { scope } = mirror(&["list", "--in", "acme/web"]) else {
             panic!()
         };
         assert_eq!(scope.tree.as_deref(), Some("acme/web"));
         assert_eq!(
-            parse_err(&["mirror", "list", "--tree", "nope"]),
+            parse_err(&["mirror", "list", "--in", "nope"]),
             ErrorKind::ValueValidation
         );
+        // `--tree` is the global local-tree flag again (§16.11).
+        let cli =
+            Cli::try_parse_from(["wt", "mirror", "list", "--tree", "acme/web"]).expect("parse");
+        assert_eq!(cli.global.tree.as_deref(), Some("acme/web"));
+        let Command::Mirror(MirrorArgs {
+            command: MirrorCommand::List { scope },
+        }) = cli.command
+        else {
+            panic!()
+        };
+        assert_eq!(scope.tree, None);
+        let cli =
+            Cli::try_parse_from(["wt", "--tree", "web", "mirror", "sync", "m1", "--in", "a/b"])
+                .expect("parse");
+        assert_eq!(cli.global.tree.as_deref(), Some("web"));
         let MirrorCommand::Add {
             url,
             branches,
@@ -667,6 +714,31 @@ mod tests {
             mirror(&["sync", "m1", "--no-wait"]),
             MirrorCommand::Sync { no_wait: true, .. }
         ));
+    }
+
+    #[test]
+    fn resolves_the_deprecated_tree_alias() {
+        let acme_web: TreeRef = "acme/web".parse().expect("tree");
+        // --in wins (no warning), whatever the global --tree says.
+        assert_eq!(
+            scope_tree(Some("acme/web".into()), None).expect("in"),
+            (Some(acme_web.clone()), false)
+        );
+        assert_eq!(
+            scope_tree(Some("acme/web".into()), Some("other/tree")).expect("in"),
+            (Some(acme_web.clone()), false)
+        );
+        // Deprecated: --tree TENANT/TREE.
+        assert_eq!(
+            scope_tree(None, Some("acme/web")).expect("alias"),
+            (Some(acme_web), true)
+        );
+        // --tree NAME selects the local tree: no explicit server tree.
+        assert_eq!(scope_tree(None, Some("web")).expect("local"), (None, false));
+        assert_eq!(scope_tree(None, None).expect("none"), (None, false));
+        // A malformed TENANT/TREE alias is a usage error.
+        let err = scope_tree(None, Some("a/b/c")).expect_err("bad alias");
+        assert_eq!(err.exit_code(), 2);
     }
 
     #[test]

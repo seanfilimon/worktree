@@ -1,0 +1,3 @@
+# expect-error: backup.target=s3 requires s3.bucket
+backup:
+  target: s3

@@ -13,8 +13,10 @@
 //     Sprig/Helm functions the chart uses (implemented below),
 //   - parses every rendered document as YAML and checks the Kubernetes
 //     basics (apiVersion, kind, metadata.name, DNS-1123 names, unique
-//     kind/name pairs, base64 Secret data, container images and probes),
-//   - compares the result with the case's "# expect:" / "# expect-error:"
+//     kind/name pairs, base64 Secret data, container images and probes,
+//     CronJob schedules and PodDisruptionBudget bounds),
+//   - compares the result with the case's "# expect:", "# expect-not:",
+//     "# expect-text:", "# expect-not-text:" and "# expect-error:"
 //     header comments.
 //
 // Exit status is 0 when every case passes, 1 otherwise.
@@ -199,6 +201,7 @@ type testCase struct {
 	expectNot   []string // "Kind/name" that must not be rendered
 	expectError string   // substring of the expected render/validation error
 	expectText  []string // substrings that must appear in the rendered output
+	noText      []string // substrings that must not appear in the rendered output
 }
 
 func loadCases(dir string) ([]testCase, error) {
@@ -224,13 +227,14 @@ func loadCases(dir string) ([]testCase, error) {
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
 			for prefix, dst := range map[string]*[]string{
-				"# expect:":      &tc.expect,
-				"# expect-not:":  &tc.expectNot,
-				"# expect-text:": &tc.expectText,
+				"# expect:":          &tc.expect,
+				"# expect-not:":      &tc.expectNot,
+				"# expect-text:":     &tc.expectText,
+				"# expect-not-text:": &tc.noText,
 			} {
 				if strings.HasPrefix(line, prefix) {
 					val := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-					if prefix == "# expect-text:" {
+					if prefix == "# expect-text:" || prefix == "# expect-not-text:" {
 						*dst = append(*dst, val)
 						continue
 					}
@@ -288,6 +292,11 @@ func runCase(c *chartFiles, tc testCase) (string, error) {
 		for _, s := range tc.expectText {
 			if !strings.Contains(manifests, s) {
 				return fmt.Errorf("expected rendered output to contain %q", s)
+			}
+		}
+		for _, s := range tc.noText {
+			if strings.Contains(manifests, s) {
+				return fmt.Errorf("expected rendered output not to contain %q", s)
 			}
 		}
 		return nil
@@ -558,6 +567,35 @@ func checkKind(id, kind string, doc map[string]any) error {
 					return fmt.Errorf("%s: volumeMount %q has no matching volume", id, name)
 				}
 			}
+		}
+	case "CronJob":
+		// Job names get a timestamp suffix: CronJob names stay <= 52.
+		if name, _ := dig(doc, "metadata", "name").(string); len(name) > 52 {
+			return fmt.Errorf("%s: name longer than 52 characters", id)
+		}
+		if s, _ := dig(doc, "spec", "schedule").(string); strings.TrimSpace(s) == "" {
+			return fmt.Errorf("%s: no schedule", id)
+		}
+		pod, _ := dig(doc, "spec", "jobTemplate", "spec", "template", "spec").(map[string]any)
+		if rp := pod["restartPolicy"]; rp != "Never" && rp != "OnFailure" {
+			return fmt.Errorf("%s: restartPolicy must be Never or OnFailure, got %v", id, rp)
+		}
+		containers, _ := pod["containers"].([]any)
+		if len(containers) == 0 {
+			return fmt.Errorf("%s: no containers", id)
+		}
+		for _, ci := range containers {
+			cm, _ := ci.(map[string]any)
+			if img, _ := cm["image"].(string); img == "" || !strings.Contains(path.Base(img), ":") {
+				return fmt.Errorf("%s: container %v has no image tag", id, cm["name"])
+			}
+		}
+	case "PodDisruptionBudget":
+		spec, _ := doc["spec"].(map[string]any)
+		_, hasMin := spec["minAvailable"]
+		_, hasMax := spec["maxUnavailable"]
+		if hasMin == hasMax {
+			return fmt.Errorf("%s: exactly one of minAvailable and maxUnavailable must be set", id)
 		}
 	case "Ingress":
 		rules, _ := dig(doc, "spec", "rules").([]any)

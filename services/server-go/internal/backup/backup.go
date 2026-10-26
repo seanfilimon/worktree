@@ -1,14 +1,16 @@
 // Package backup creates and restores server backups of the metadata
-// database and objects (docs/ENGINEERING_PLAN.md §15.2,
+// database and objects (docs/ENGINEERING_PLAN.md §15.2, §16.11,
 // crates/worktree-protocol/specs/storage/Backends.md).
 //
-// A backup is one <data>/backups/<id>.wtbak file (see archive.go) holding a
-// consistent bbolt snapshot, every object and a manifest. It works with any
-// object store that can list its objects (disk and S3). Backups are
-// indexed in the doc collection "backups" (key = id); files found in the
-// backup directory without an index entry are listed too, so a restored
-// server still sees its archives. Restore is offline (Restore,
-// `worktree-server restore`).
+// A backup is one <id>.wtbak archive (see archive.go) holding a consistent
+// bbolt snapshot, every object and a manifest. It works with any object
+// store that can list its objects (disk and S3). Archives are written to
+// <data>/backups and then kept there (the disk target) or uploaded to a
+// bucket (the S3 target, `--backup-target s3`; target.go). Backups are
+// indexed in the doc collection "backups" (key = id); archives found in the
+// target without an index entry are listed too, so a restored server still
+// sees its archives. Restore is offline (Restore, `worktree-server
+// restore`).
 package backup
 
 import (
@@ -18,7 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,7 +45,7 @@ const (
 )
 
 // ScheduledBy is BackupInfo.CreatedBy of scheduled backups; only those are
-// pruned by the keep count.
+// pruned by the keep count and the maximum age.
 const ScheduledBy = audit.ActorSystem
 
 var (
@@ -71,12 +73,17 @@ type Deps struct {
 
 // Options configure the service (server flags).
 type Options struct {
-	// Dir holds the .wtbak files (<data>/backups).
+	// Dir is the local backup directory (<data>/backups): the disk target
+	// and the staging directory of uploads.
 	Dir string
+	// Target keeps finished archives (nil = a DiskTarget on Dir).
+	Target Target
 	// Interval is the period of scheduled backups (0 = off).
 	Interval time.Duration
 	// Keep is how many scheduled backups survive pruning (0 keeps all).
 	Keep int
+	// MaxAge prunes scheduled backups older than this (0 = no age limit).
+	MaxAge time.Duration
 	// Version is the server version recorded in manifests.
 	Version string
 }
@@ -115,6 +122,15 @@ func (s *Service) opts() Options {
 	return s.o
 }
 
+// target returns the configured target (a DiskTarget on Dir by default).
+func (s *Service) target() Target {
+	o := s.opts()
+	if o.Target != nil {
+		return o.Target
+	}
+	return NewDiskTarget(o.Dir)
+}
+
 // StoreInfo describes the object store being backed up.
 type StoreInfo struct {
 	// Kind is "disk", "s3" or "other".
@@ -146,14 +162,22 @@ func DescribeStore(s objstore.Store) StoreInfo {
 
 // Config is the backup configuration as reported by the API.
 type Config struct {
-	// Dir is where backups are written on the server.
+	// Dir is the local backup (staging) directory on the server.
 	Dir string `json:"dir"`
+	// Target is where archives are kept: "disk" or "s3" (--backup-target).
+	Target string `json:"target"`
+	// Location describes the target: the directory, or s3://bucket/prefix/.
+	Location string `json:"location"`
 	// Interval is the schedule ("0s" = off) and IntervalSeconds the same
 	// in seconds.
 	Interval        string `json:"interval"`
 	IntervalSeconds int64  `json:"interval_seconds"`
 	// Keep is how many scheduled backups are kept (0 keeps all).
 	Keep int `json:"keep"`
+	// MaxAge prunes scheduled backups older than this ("0s" = no limit,
+	// --backup-max-age); MaxAgeSeconds is the same in seconds.
+	MaxAge        string `json:"max_age"`
+	MaxAgeSeconds int64  `json:"max_age_seconds"`
 }
 
 // Status is the response of GET /api/v1/admin/backups.
@@ -189,15 +213,25 @@ func (s *Service) Running() bool {
 	return true
 }
 
+// Describe returns the configuration as reported by the API.
+func (s *Service) Describe() Config {
+	o := s.opts()
+	t := s.target()
+	return Config{
+		Dir: o.Dir, Target: t.Kind(), Location: t.Location(),
+		Interval: o.Interval.String(), IntervalSeconds: int64(o.Interval.Seconds()), Keep: o.Keep,
+		MaxAge: o.MaxAge.String(), MaxAgeSeconds: int64(o.MaxAge.Seconds()),
+	}
+}
+
 // Status returns the configuration, schedule and every backup.
 func (s *Service) Status(ctx context.Context) (*Status, error) {
 	list, err := s.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	o := s.opts()
 	st := &Status{
-		Config: Config{Dir: o.Dir, Interval: o.Interval.String(), IntervalSeconds: int64(o.Interval.Seconds()), Keep: o.Keep},
+		Config: s.Describe(),
 		Store:  DescribeStore(s.d.Objects), Supported: s.Supported(), Running: s.Running(), Backups: list,
 	}
 	s.mu.Lock()
@@ -216,19 +250,25 @@ var idRe = regexp.MustCompile(`^bk-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$`)
 // (bk-<yyyymmdd>T<hhmmss>Z-<6 hex>), which is also safe as a file name.
 func ValidID(id string) bool { return idRe.MatchString(id) }
 
+// IDTime returns the creation time encoded in a valid id.
+func IDTime(id string) (time.Time, bool) {
+	if !ValidID(id) {
+		return time.Time{}, false
+	}
+	t, err := time.Parse("20060102T150405Z", id[3:19])
+	return t, err == nil
+}
+
 func newID(at time.Time) string {
 	var b [3]byte
 	_, _ = rand.Read(b[:])
 	return "bk-" + at.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b[:])
 }
 
-func (s *Service) path(id string) string {
-	return filepath.Join(s.opts().Dir, id+FileExt)
-}
-
-// Create writes a new backup and indexes it. createdBy is the username (or
-// ScheduledBy). It returns ErrRunning when another backup is in progress
-// and ErrUnsupported when the stores cannot be backed up.
+// Create writes a new backup, moves it into the target and indexes it.
+// createdBy is the username (or ScheduledBy). It returns ErrRunning when
+// another backup is in progress and ErrUnsupported when the stores cannot
+// be backed up.
 func (s *Service) Create(ctx context.Context, createdBy, note string) (*domain.BackupInfo, error) {
 	snap, ok := s.d.Store.(Snapshotter)
 	objs, ok2 := s.d.Objects.(objectSource)
@@ -240,24 +280,24 @@ func (s *Service) Create(ctx context.Context, createdBy, note string) (*domain.B
 		return nil, ErrRunning
 	}
 	defer s.run.Unlock()
+	target := s.target()
 
 	started := s.now().UTC()
 	id := newID(started)
 	if err := os.MkdirAll(o.Dir, 0o750); err != nil {
 		return nil, fmt.Errorf("backup: create backup directory: %w", err)
 	}
-	final := s.path(id)
-	partial := final + ".partial"
+	partial := filepath.Join(o.Dir, id+FileExt+".partial")
 	f, err := os.OpenFile(partial, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("backup: create file: %w", err)
 	}
-	done := false
+	closed := false
 	defer func() {
-		if !done {
+		if !closed {
 			_ = f.Close()
-			_ = os.Remove(partial)
 		}
+		_ = os.Remove(partial) // gone after a successful Store
 	}()
 
 	m, err := writeArchive(ctx, f, snap, objs, Manifest{
@@ -270,83 +310,76 @@ func (s *Service) Create(ctx context.Context, createdBy, note string) (*domain.B
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("backup: sync: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		return nil, fmt.Errorf("backup: close: %w", err)
-	}
-	done = true
-	if err := os.Rename(partial, final); err != nil {
-		_ = os.Remove(partial)
-		return nil, fmt.Errorf("backup: finish file: %w", err)
-	}
-	fi, err := os.Stat(final)
+	fi, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("backup: stat: %w", err)
 	}
-	abs, err := filepath.Abs(final)
-	if err != nil {
-		abs = final
+	closed = true
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("backup: close: %w", err)
+	}
+	// The upload outlives a client that disconnects.
+	if err := target.Store(context.WithoutCancel(ctx), id, partial); err != nil {
+		return nil, err
 	}
 	info := &domain.BackupInfo{
-		ID: id, Path: abs, SizeBytes: fi.Size(), Objects: m.Objects,
+		ID: id, Path: target.Path(id), SizeBytes: fi.Size(), Objects: m.Objects,
 		CreatedAt: started, CreatedBy: createdBy, Note: note,
 	}
 	if err := s.d.Store.PutDoc(context.WithoutCancel(ctx), Collection, id, info); err != nil {
 		return nil, fmt.Errorf("backup: index: %w", err)
 	}
-	s.d.Logger.Info("backup created", slog.String("id", id), slog.Int64("objects", m.Objects),
-		slog.Int64("bytes", fi.Size()), slog.String("by", createdBy), slog.Duration("took", time.Since(started)))
+	s.d.Logger.Info("backup created", slog.String("id", id), slog.String("target", target.Location()),
+		slog.Int64("objects", m.Objects), slog.Int64("bytes", fi.Size()), slog.String("by", createdBy),
+		slog.Duration("took", time.Since(started)))
 	return info, nil
 }
 
-// List returns every backup, newest first: indexed backups whose file
-// still exists plus unindexed .wtbak files in the backup directory (e.g.
-// archives copied in, or created after the snapshot a server was restored
-// from).
+// List returns every backup in the target, newest first: indexed backups
+// whose archive still exists plus unindexed archives (e.g. archives copied
+// in, or created after the snapshot a server was restored from).
 func (s *Service) List(ctx context.Context) ([]domain.BackupInfo, error) {
-	o := s.opts()
+	if s.opts().Dir == "" && s.opts().Target == nil {
+		return []domain.BackupInfo{}, nil
+	}
+	target := s.target()
+	objs, err := target.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	found := make(map[string]TargetObject, len(objs))
+	for _, o := range objs {
+		found[o.ID] = o
+	}
 	raws, err := s.d.Store.ListDocs(ctx, Collection, "")
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
 	out := []domain.BackupInfo{}
+	seen := map[string]bool{}
 	for _, raw := range raws {
 		var b domain.BackupInfo
 		if err := json.Unmarshal(raw, &b); err != nil || !ValidID(b.ID) {
 			continue
 		}
-		if o.Dir == "" {
-			continue
-		}
 		// The directory may have moved (restored data dir): trust the id.
-		fi, err := os.Stat(s.path(b.ID))
-		if err != nil || !fi.Mode().IsRegular() {
+		obj, ok := found[b.ID]
+		if !ok {
 			continue
 		}
-		b.Path, b.SizeBytes = absPath(s.path(b.ID)), fi.Size()
+		b.Path, b.SizeBytes = target.Path(b.ID), obj.Size
 		seen[b.ID] = true
 		out = append(out, b)
 	}
-	if o.Dir != "" {
-		entries, err := os.ReadDir(o.Dir)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("backup: read backup directory: %w", err)
+	for _, obj := range objs {
+		if seen[obj.ID] {
+			continue
 		}
-		for _, e := range entries {
-			id, ok := strings.CutSuffix(e.Name(), FileExt)
-			if !ok || !ValidID(id) || seen[id] || !e.Type().IsRegular() {
-				continue
-			}
-			fi, err := e.Info()
-			if err != nil {
-				continue
-			}
-			created := fi.ModTime().UTC()
-			if t, err := time.Parse("20060102T150405Z", id[3:19]); err == nil {
-				created = t
-			}
-			out = append(out, domain.BackupInfo{ID: id, Path: absPath(s.path(id)), SizeBytes: fi.Size(), CreatedAt: created})
+		created := obj.Modified
+		if t, ok := IDTime(obj.ID); ok {
+			created = t
 		}
+		out = append(out, domain.BackupInfo{ID: obj.ID, Path: target.Path(obj.ID), SizeBytes: obj.Size, CreatedAt: created})
 	}
 	slices.SortFunc(out, func(a, b domain.BackupInfo) int {
 		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
@@ -381,20 +414,19 @@ func (s *Service) Get(ctx context.Context, id string) (*domain.BackupInfo, error
 	return nil, ErrNotFound
 }
 
-// Open opens the archive of backup id for reading (download).
-func (s *Service) Open(ctx context.Context, id string) (*os.File, *domain.BackupInfo, error) {
+// Open opens the archive of backup id for reading (download). The reader
+// is an *os.File (seekable) for the disk target.
+func (s *Service) Open(ctx context.Context, id string) (io.ReadCloser, *domain.BackupInfo, error) {
 	info, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, nil, err
 	}
-	f, err := os.Open(s.path(id))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, ErrNotFound
-	}
+	r, obj, err := s.target().Open(ctx, id)
 	if err != nil {
-		return nil, nil, fmt.Errorf("backup: open: %w", err)
+		return nil, nil, err
 	}
-	return f, info, nil
+	info.SizeBytes = obj.Size
+	return r, info, nil
 }
 
 // Delete removes the archive and the index entry of backup id;
@@ -404,13 +436,13 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	found := false
-	err := os.Remove(s.path(id))
+	err := s.target().Delete(ctx, id)
 	switch {
 	case err == nil:
 		found = true
-	case errors.Is(err, fs.ErrNotExist):
+	case errors.Is(err, ErrNotFound):
 	default:
-		return fmt.Errorf("backup: delete file: %w", err)
+		return err
 	}
 	err = s.d.Store.DeleteDoc(ctx, Collection, id)
 	switch {
@@ -426,18 +458,19 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// Prune deletes scheduled backups beyond the newest Keep (no-op when Keep
-// is 0) and returns the deleted ids. Backups created by people are never
-// pruned.
+// Prune deletes scheduled backups beyond the newest Keep (0 = no count
+// limit) and those older than MaxAge (0 = no age limit), and returns the
+// deleted ids. Backups created by people are never pruned.
 func (s *Service) Prune(ctx context.Context) ([]string, error) {
-	keep := s.opts().Keep
-	if keep <= 0 {
+	o := s.opts()
+	if o.Keep <= 0 && o.MaxAge <= 0 {
 		return nil, nil
 	}
 	list, err := s.List(ctx)
 	if err != nil {
 		return nil, err
 	}
+	cutoff := s.now().Add(-o.MaxAge)
 	var deleted []string
 	n := 0
 	for _, b := range list { // newest first
@@ -445,7 +478,9 @@ func (s *Service) Prune(ctx context.Context) ([]string, error) {
 			continue
 		}
 		n++
-		if n <= keep {
+		tooMany := o.Keep > 0 && n > o.Keep
+		tooOld := o.MaxAge > 0 && b.CreatedAt.Before(cutoff)
+		if !tooMany && !tooOld {
 			continue
 		}
 		if err := s.Delete(ctx, b.ID); err != nil && !errors.Is(err, ErrNotFound) {
@@ -454,6 +489,18 @@ func (s *Service) Prune(ctx context.Context) ([]string, error) {
 		deleted = append(deleted, b.ID)
 	}
 	return deleted, nil
+}
+
+// PruneAudited runs Prune and records every deletion in the audit log
+// (reason "retention").
+func (s *Service) PruneAudited(ctx context.Context) ([]string, error) {
+	pruned, err := s.Prune(ctx)
+	if s.d.Audit != nil {
+		for _, id := range pruned {
+			s.d.Audit.Record(ctx, audit.System(ActionDelete, "backup", id, map[string]string{"reason": "retention"}))
+		}
+	}
+	return pruned, err
 }
 
 // RunScheduled creates one scheduled backup, records it in the audit log
