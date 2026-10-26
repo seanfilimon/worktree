@@ -74,6 +74,25 @@ watch patterns in `railway.json`. Use either that or the workflow, not both,
 or every push deploys twice. The workflow has the advantage of running the link
 checker before deploying.
 
+## Troubleshooting "Application failed to respond"
+
+Railway's proxy reached the service but nothing answered on the domain's port.
+
+1. **Port.** Open the service's deploy logs and find Next's `- Network: http://[::]:PORT`
+   line. In Settings > Networking, the public domain's target port must be that
+   port (8080 after `setup`, which sets `PORT=8080`). If you created the domain
+   in the dashboard with another port, edit it or delete it and run
+   `railway domain --service docs --port 8080`.
+2. **Bind address.** The image binds to `::` (all IPv6 and IPv4 addresses)
+   regardless of the `HOSTNAME` Railway injects; images built before this fix
+   listened on the container name only. Redeploy to pick it up. `WEB_BIND_HOST`
+   overrides the address if you ever need to.
+3. **Config file.** If the dashboard does not show the health check on `/`,
+   the service is not reading `/apps/web/railway.json` (Settings >
+   Config-as-code), so a broken build can go live. Set it and redeploy.
+4. **Crash on start.** `railway logs --service docs` shows the runtime log;
+   a missing `- Network:` line means the server never started.
+
 ## Operating
 
 - Logs: `railway logs --service docs`; deployments: `railway deployment list --service docs`.

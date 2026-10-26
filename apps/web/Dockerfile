@@ -44,8 +44,7 @@ RUN npm run build --workspace=apps/web
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
-    PORT=8080 \
-    HOSTNAME=0.0.0.0
+    PORT=8080
 
 RUN addgroup -S -g 1001 nodejs && adduser -S -D -H -u 1001 -G nodejs nextjs
 
@@ -59,4 +58,8 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-8080}/" || exit 1
 
-CMD ["node", "apps/web/server.js"]
+# server.js binds to $HOSTNAME. Platforms such as Railway set HOSTNAME to the
+# container name at runtime, overriding an image ENV, and Next then listens on
+# one internal address only ("Application failed to respond"). Bind
+# explicitly instead: "::" accepts IPv6 and IPv4 (WEB_BIND_HOST overrides).
+CMD ["sh", "-c", "HOSTNAME=\"${WEB_BIND_HOST:-::}\" exec node apps/web/server.js"]
