@@ -1,6 +1,6 @@
 [package]
 name = "worktree-sdk"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "SDK for the Worktree version control system"
 

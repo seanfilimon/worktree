@@ -11,6 +11,6 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.8.0"
 edition = "2021"
 license = "LicenseRef-W0rkTree-Public-License-1.0"

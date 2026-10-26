@@ -5,8 +5,8 @@ type: application
 # Chart version and appVersion follow the workspace version in Cargo.toml:
 # deploy/validate.sh fails when appVersion differs, and the release workflow
 # packages the chart with --version/--app-version set to the release.
-version: 0.7.0
-appVersion: "0.7.0"
+version: 0.8.0
+appVersion: "0.8.0"
 home: https://github.com/seanfilimon/worktree
 sources:
   - https://github.com/seanfilimon/worktree
