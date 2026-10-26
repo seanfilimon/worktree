@@ -15,7 +15,7 @@ prost = "0.13"
 prost-types = "0.13"
 tonic = "0.12"
 # access workstream: declarative access compiler (src/access/declarative.rs)
-toml = "0.8"
+toml = "1.1"
 serde_json = "1"
 # pack-delta (ENGINEERING_PLAN §16.1): zstd pack payloads (src/pack/)
 zstd = { version = "0.13", default-features = false }
