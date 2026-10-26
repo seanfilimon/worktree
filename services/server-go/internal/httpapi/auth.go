@@ -30,6 +30,13 @@ type loginRequest struct {
 type sessionResponse struct {
 	Token   string          `json:"token"`
 	Account *domain.Account `json:"account"`
+
+	// device-auth (§16.6): with refresh tokens, Token is an access token
+	// valid ExpiresIn seconds, renewed with RefreshToken (device.go).
+	TokenType        string `json:"token_type,omitempty"`
+	ExpiresIn        int    `json:"expires_in,omitempty"`
+	RefreshToken     string `json:"refresh_token,omitempty"`
+	RefreshExpiresIn int    `json:"refresh_expires_in,omitempty"`
 }
 
 type membershipView struct {
@@ -85,8 +92,12 @@ func (a *api) handleRegister(w http.ResponseWriter, r *http.Request) error {
 	if acct2 != nil {
 		acct = acct2
 	}
+	resp, err := a.loginSession(r, token, acct) // device-auth (§16.6): token pair
+	if err != nil {
+		return err
+	}
 	a.auditAs(r, acct, "auth.register", acct.TenantID, "account", acct.ID, nil)
-	writeJSON(w, http.StatusCreated, sessionResponse{Token: token, Account: acct})
+	writeJSON(w, http.StatusCreated, resp)
 	return nil
 }
 
@@ -129,8 +140,12 @@ func (a *api) handleLogin(w http.ResponseWriter, r *http.Request) error {
 			MFARequired: true, MFAToken: res.MFAToken, Account: mfaAccountView{Username: acct.Username}})
 		return nil
 	}
+	resp, err := a.loginSession(r, res.Token, acct) // device-auth (§16.6): token pair
+	if err != nil {
+		return err
+	}
 	a.auditAs(r, acct, "auth.login", acct.TenantID, "account", acct.ID, nil)
-	writeJSON(w, http.StatusOK, sessionResponse{Token: res.Token, Account: acct})
+	writeJSON(w, http.StatusOK, resp)
 	return nil
 }
 

@@ -1,6 +1,6 @@
 //! `wt login`, `wt logout`, `wt whoami`, `wt register`, `wt password-reset`
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 
 use clap::Args;
 use colored::Colorize;
@@ -32,6 +32,21 @@ pub struct LoginArgs {
     /// (prompted for when needed)
     #[arg(long, value_name = "CODE", env = "WT_MFA_CODE", hide_env_values = true)]
     pub mfa_code: Option<String>,
+
+    /// Sign in through the browser instead of a password (OAuth device
+    /// flow): prints a one-time code and a URL, opens the browser when
+    /// possible and waits until you approve the code in the admin panel
+    #[arg(long, conflicts_with_all = ["username", "password_stdin"])]
+    pub device: bool,
+
+    /// With --device: restrict the new session to these actions
+    /// (e.g. tree:read; repeatable; default: full account access)
+    #[arg(long = "scope", value_name = "ACTION", requires = "device")]
+    pub scopes: Vec<String>,
+
+    /// With --device: only print the URL, do not open a browser
+    #[arg(long, requires = "device")]
+    pub no_browser: bool,
 }
 
 #[derive(Debug, Args)]
@@ -112,7 +127,10 @@ struct Identity<'a> {
 }
 
 pub fn login(ctx: &Context, args: LoginArgs) -> Result<()> {
-    let server = resolve_server(ctx, args.server)?;
+    let server = resolve_server(ctx, args.server.clone())?;
+    if args.device {
+        return login_device(ctx, &server, &args);
+    }
     let username = match args.username {
         Some(user) => user,
         None if args.password_stdin => {
@@ -141,6 +159,82 @@ pub fn login(ctx: &Context, args: LoginArgs) -> Result<()> {
         ));
     })
 }
+
+// --- device-auth (ENGINEERING_PLAN §16.6): `wt login --device` ---
+
+/// Name this machine reports to the approving user.
+fn device_client_name() -> String {
+    let host = ["COMPUTERNAME", "HOSTNAME"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|h| h.trim().to_string())
+        .find(|h| !h.is_empty());
+    match host {
+        Some(host) => format!("wt CLI on {host}"),
+        None => "wt CLI".to_string(),
+    }
+}
+
+/// Instructions printed (on stderr, so `--json` output stays clean) while
+/// the device login waits.
+fn device_instructions(auth: &remote::DeviceAuthorization) -> String {
+    let mut s = format!(
+        "To sign in, open {} and enter the code {}",
+        auth.verification_uri, auth.user_code
+    );
+    if !auth.verification_uri_complete.is_empty()
+        && auth.verification_uri_complete != auth.verification_uri
+    {
+        s.push_str(&format!(
+            "\n(or open {} to have it filled in)",
+            auth.verification_uri_complete
+        ));
+    }
+    s
+}
+
+/// `wt login --device`: OAuth device authorization (RFC 8628).
+fn login_device(ctx: &Context, server: &str, args: &LoginArgs) -> Result<()> {
+    let scopes: Vec<String> = args
+        .scopes
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let auth = block_on(remote::login_device_start(
+        server,
+        &device_client_name(),
+        &scopes,
+    ))??;
+    let mut stderr = std::io::stderr();
+    writeln!(stderr, "{}", device_instructions(&auth))?;
+    // Only when a person is watching: never pop up browsers in scripts.
+    if !args.no_browser && stderr.is_terminal() && std::env::var_os("WT_NO_BROWSER").is_none() {
+        let launch = crate::commands::open::launcher(
+            std::env::consts::OS,
+            &auth.verification_uri_complete,
+            std::env::var("BROWSER").ok().as_deref(),
+        );
+        if crate::commands::open::spawn(&launch).is_ok() {
+            writeln!(stderr, "Opened your browser.")?;
+        }
+    }
+    writeln!(
+        stderr,
+        "Waiting for approval (the code expires in {} minutes)...",
+        auth.expires_in.div_ceil(60)
+    )?;
+    let info = block_on(remote::login_device_wait(&auth, |_| {}))??;
+    ctx.out.emit(&Session::from(&info), |t| {
+        t.line(format_args!(
+            "Logged in to {} as {} (device login)",
+            info.server.bold(),
+            info.username.green().bold()
+        ));
+    })
+}
+
+// --- end device-auth ---
 
 pub fn register(ctx: &Context, args: RegisterArgs) -> Result<()> {
     let server = resolve_server(ctx, args.server)?;
@@ -351,6 +445,55 @@ mod tests {
             panic!()
         };
         assert_eq!(a.server.as_deref(), Some("http://s"));
+    }
+
+    #[test]
+    fn parses_device_login() {
+        use crate::cli::Command;
+        use crate::commands::iam_common::parse;
+
+        let Command::Login(a) = parse(&[
+            "login",
+            "http://s",
+            "--device",
+            "--scope",
+            "tree:read",
+            "--scope",
+            "mr:*",
+            "--no-browser",
+        ]) else {
+            panic!()
+        };
+        assert!(a.device && a.no_browser);
+        assert_eq!(a.scopes, vec!["tree:read", "mr:*"]);
+        let Command::Login(a) = parse(&["login", "--device"]) else {
+            panic!()
+        };
+        assert!(a.device && a.scopes.is_empty() && !a.no_browser);
+    }
+
+    #[test]
+    fn device_instructions_show_code_and_urls() {
+        let auth = remote::DeviceAuthorization {
+            server: "http://s".into(),
+            device_code: "wtd_secret".into(),
+            user_code: "BCDF-GHJK".into(),
+            verification_uri: "http://s/admin/device".into(),
+            verification_uri_complete: "http://s/admin/device?code=BCDF-GHJK".into(),
+            expires_in: 600,
+            interval: 5,
+        };
+        let text = device_instructions(&auth);
+        assert!(
+            text.contains("http://s/admin/device and enter the code BCDF-GHJK"),
+            "{text}"
+        );
+        assert!(text.contains("?code=BCDF-GHJK"), "{text}");
+        assert!(
+            !text.contains("wtd_secret"),
+            "the device code is secret: {text}"
+        );
+        assert!(device_client_name().starts_with("wt CLI"));
     }
 
     #[test]

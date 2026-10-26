@@ -12,7 +12,6 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use worktree_sdk::remote::rest::seg;
-use worktree_sdk::remote::CredentialStore;
 use worktree_sdk::SdkError;
 
 use crate::commands::server_common::{
@@ -183,10 +182,13 @@ pub fn run(ctx: &Context, api: &Api, args: BackupArgs) -> Result<()> {
 }
 
 /// The saved bearer token for the API's server (or `WT_TOKEN`).
-fn token(api: &Api) -> Result<Option<String>> {
-    Ok(CredentialStore::default_location()
-        .get(api.client().server())?
-        .map(|c| c.token))
+/// device-auth (§16.6): renewed first when it is about to expire.
+async fn token(api: &Api) -> Result<Option<String>> {
+    Ok(
+        worktree_sdk::remote::fresh_credential(api.client().server())
+            .await?
+            .map(|c| c.token),
+    )
 }
 
 fn http_client() -> Result<reqwest::Client> {
@@ -255,7 +257,7 @@ async fn long_request(
 ) -> Result<Vec<u8>> {
     let server = api.client().server().to_string();
     let mut req = http_client()?.request(method, format!("{server}{path}"));
-    if let Some(t) = token(api)? {
+    if let Some(t) = token(api).await? {
         req = req.header(AUTHORIZATION, format!("Bearer {t}"));
     }
     if let Some(body) = body {
@@ -281,7 +283,7 @@ async fn download(api: &Api, id: &str, dest: &Path) -> Result<u64> {
     let server = api.client().server().to_string();
     let url = format!("{server}{}/download", backup_path(id));
     let mut req = http_client()?.get(url);
-    if let Some(t) = token(api)? {
+    if let Some(t) = token(api).await? {
         req = req.header(AUTHORIZATION, format!("Bearer {t}"));
     }
     let mut resp = req

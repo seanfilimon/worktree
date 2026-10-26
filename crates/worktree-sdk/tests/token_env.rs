@@ -11,10 +11,7 @@ fn wt_token_overrides_the_default_store_only() {
     store
         .put(
             "http://localhost:7420",
-            &Credential {
-                username: "alice".into(),
-                token: "wt_saved".into(),
-            },
+            &Credential::new("alice", "wt_saved"),
         )
         .unwrap();
     assert_eq!(

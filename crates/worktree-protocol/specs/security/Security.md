@@ -92,10 +92,16 @@ The server serves gRPC and REST on **one port** (default `:7420`, `--addr`).
 - **Format.** `wt_` followed by the unpadded base64url encoding of 32 random
   bytes from `crypto/rand`. Only the hex SHA-256 is stored, and malformed
   tokens are rejected without a store lookup.
-- **Kinds.** `session` (password, MFA or SSO login), `api` (personal) and
-  `service` (service-account keys). Sessions default to **30 days**. API
-  tokens and keys can be given a TTL (`ttl_hours`) or never expire. All can be
-  **scoped** to action patterns ([IAM §11](../iam/IAM.md#11-tokens-scopes-and-authentication)).
+- **Kinds.** `session` (password, MFA, SSO or device login), `api`
+  (personal) and `service` (service-account keys). API tokens and keys can be
+  given a TTL (`ttl_hours`) or never expire. All can be **scoped** to action
+  patterns ([IAM §11](../iam/IAM.md#11-tokens-scopes-and-authentication)).
+- **Access and refresh tokens (v0.8).** Password, MFA, registration and
+  device logins return a session valid **1 hour** plus a single-use
+  `wtrt_` refresh token (30 days) that `POST /auth/refresh` rotates; reusing
+  a rotated refresh token revokes the whole login. SSO sessions keep the
+  **30-day** lifetime. The OAuth device flow (`wt login --device`) is
+  approved in the admin panel. See [Device authorization](./DeviceAuth.md).
 - **Presentation.** REST and gRPC use `Authorization: Bearer <token>`. GET
   requests may also send `?access_token=`, for `EventSource` clients that
   cannot set headers.
@@ -406,6 +412,7 @@ Secret scanning runs **on the client, before every snapshot**, in
 | Client-side secret scanning with config | Built (`[secret_scanning]` honoured in v0.5) |
 | IPC token for the daemon | Built (v0.5) |
 | Credential file protection on Windows | Partial (relies on profile ACLs) |
+| OAuth device flow, 1-hour access tokens, rotating refresh tokens with reuse detection ([DeviceAuth](./DeviceAuth.md)) | Built (v0.8) |
 
 ## 18. Roadmap
 
@@ -418,8 +425,9 @@ built:
 - **Encryption at rest**: per-tenant data keys, envelope encryption, an
   HSM-backed master key and key rotation. The data directory is protected only
   by the operating system.
-- **OAuth2 device flow, JWT access tokens and refresh tokens.** Tokens are
-  opaque bearer strings. Sessions expire and are renewed with `wt login`.
+- **JWT access tokens.** Tokens are opaque bearer strings looked up by
+  hash. (The OAuth2 device flow and refresh tokens are built since v0.8,
+  [DeviceAuth](./DeviceAuth.md); refresh tokens for SSO logins are not.)
 - **Tokens in `.wt/identity/token`.** Credentials live in
   `$WT_HOME/credentials.toml`. The **OS keychain** is not used.
 - **Server-side secret scanning** on push, the `secret_detected` audit event,

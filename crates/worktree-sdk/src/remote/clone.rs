@@ -2,8 +2,7 @@
 
 use std::path::Path;
 
-use super::client::{RemoteTree, SyncClient};
-use super::credentials::CredentialStore;
+use super::client::RemoteTree;
 use super::fetch::fetch_with;
 use super::server_url::normalize_server_url;
 use super::session::RemoteSession;
@@ -88,10 +87,10 @@ pub(crate) async fn clone(
     let sparse = crate::repo::normalize_sparse_patterns(sparse)?;
     let state = check_destination(dest)?;
 
-    let cred = CredentialStore::default_location().get(&server)?;
-    let mut client = SyncClient::connect(&server, cred.as_ref().map(|c| c.token.as_str())).await?;
     // Resolve before creating anything, so a typo leaves no directory behind.
-    let tree = client.resolve_tree(tenant, tree_name, false).await?;
+    // device-auth (§16.6): renews an expired access token.
+    let (client, tree, cred) =
+        super::session::connect_and_resolve(&server, tenant, tree_name, false, false).await?;
     let session = RemoteSession {
         client,
         tree,

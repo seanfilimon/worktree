@@ -14,7 +14,6 @@ use std::time::Duration;
 use clap::Args;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Method;
-use worktree_sdk::remote::CredentialStore;
 
 use crate::context::{block_on, Context};
 use crate::error::{CliError, Result};
@@ -81,9 +80,9 @@ pub fn run(ctx: &Context, args: ApiArgs) -> Result<()> {
     let client = ctx.rest()?;
     let server = client.server().to_string();
     if !headers.contains_key(AUTHORIZATION) {
-        let token = CredentialStore::default_location()
-            .get(&server)?
-            .map(|cred| cred.token);
+        // device-auth (§16.6): renew an access token about to expire.
+        let token =
+            block_on(worktree_sdk::remote::fresh_credential(&server))??.map(|cred| cred.token);
         if let Some(token) = token {
             let value = HeaderValue::from_str(&format!("Bearer {token}"))
                 .map_err(|_| CliError::failure("the saved token is not a valid header value"))?;

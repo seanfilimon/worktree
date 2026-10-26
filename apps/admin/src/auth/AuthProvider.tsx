@@ -41,6 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (res: AuthResponse) => {
       queryClient.clear();
       api.client.setToken(res.token);
+      api.client.setRefreshToken(res.refresh_token ?? null); // v0.8 device-auth (§16.6)
       setToken(res.token);
       setSsoError(null);
     },

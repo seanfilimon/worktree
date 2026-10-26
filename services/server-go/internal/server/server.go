@@ -108,7 +108,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	history := meta.NewHistory(store)
 
 	// ---- services ----
-	iamSvc := iam.New(store, iam.Options{AllowRegistration: cfg.AllowRegistration})
+	iamSvc := iam.New(store, iam.Options{AllowRegistration: cfg.AllowRegistration, PublicURL: cfg.PublicURL}) // PublicURL: device-auth (§16.6)
 	if cfg.AdminPassword != "" {
 		if err := iam.EnsureAdmin(ctx, store, iamSvc, cfg.AdminUser, cfg.AdminPassword); err != nil {
 			return fmt.Errorf("ensure admin account %q: %w", cfg.AdminUser, err)

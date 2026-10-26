@@ -51,6 +51,20 @@ struct Session {
     mfa: bool,
     #[serde(default)]
     current: bool,
+    /// "session" for sign-ins, "device: <client>" for device logins
+    /// (device-auth, §16.6).
+    #[serde(default)]
+    name: String,
+}
+
+/// How a session was created: `device (<client>)` for `wt login --device`
+/// approvals, else `sign-in`.
+fn session_via(name: &str) -> String {
+    match name.strip_prefix("device: ") {
+        Some(client) if !client.trim().is_empty() => format!("device ({})", client.trim()),
+        Some(_) => "device".to_string(),
+        None => "sign-in".to_string(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +108,7 @@ fn session_list(t: &mut Text, sessions: &[Session]) {
         "last ip",
         "mfa",
         "user agent",
+        "via",
     ]);
     for s in sessions {
         table.row([
@@ -104,6 +119,7 @@ fn session_list(t: &mut Text, sessions: &[Session]) {
             s.last_ip.clone(),
             yes(s.mfa).to_string(),
             s.user_agent.clone(),
+            session_via(&s.name),
         ]);
     }
     table.render(t, "No sessions.");
@@ -157,5 +173,24 @@ mod tests {
             "{lines:?}"
         );
         assert!(lines[2].starts_with("s2  -"), "{lines:?}");
+        assert!(lines[1].ends_with("sign-in"), "{lines:?}");
+    }
+
+    #[test]
+    fn device_sessions_show_their_client() {
+        let sessions: Vec<Session> = serde_json::from_value(json!([
+            {"id": "d1", "name": "device: wt CLI on laptop", "kind": "session",
+             "created_at": "2026-01-01T00:00:00Z", "current": false}
+        ]))
+        .unwrap();
+        let mut t = Text::default();
+        session_list(&mut t, &sessions);
+        assert!(
+            t.as_str().contains("device (wt CLI on laptop)"),
+            "{}",
+            t.as_str()
+        );
+        assert_eq!(session_via("device: "), "device");
+        assert_eq!(session_via("session"), "sign-in");
     }
 }

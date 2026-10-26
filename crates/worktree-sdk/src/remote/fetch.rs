@@ -582,10 +582,14 @@ async fn lazy_download(
             let client = match clients.entry(server.clone()) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    let cred = super::credentials::CredentialStore::default_location()
-                        .get(server)
-                        .ok()
-                        .flatten();
+                    // device-auth (§16.6): renew an expiring access token.
+                    let cred = super::session::saved_credential(
+                        &super::credentials::CredentialStore::default_location(),
+                        server,
+                    )
+                    .await
+                    .ok()
+                    .flatten();
                     match super::client::SyncClient::connect(
                         server,
                         cred.as_ref().map(|c| c.token.as_str()),

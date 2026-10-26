@@ -295,11 +295,13 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, accountID, keepTokenH
 		return 0, fmt.Errorf("iam: listing tokens: %w", err)
 	}
 	n := 0
+	keepID := ""
 	for _, t := range toks {
 		if t.AccountID != accountID || TokenKind(&t) != domain.TokenSession {
 			continue
 		}
 		if keepTokenHash != "" && t.TokenHash == keepTokenHash {
+			keepID = t.ID
 			continue
 		}
 		if err := s.deleteToken(ctx, t.ID); err != nil {
@@ -308,6 +310,10 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, accountID, keepTokenH
 		n++
 	}
 	s.pending.dropAccount(accountID)
+	// device-auth (§16.6): the other logins' refresh tokens end too.
+	if err := s.revokeAccountRefresh(ctx, accountID, keepID); err != nil {
+		return n, err
+	}
 	return n, nil
 }
 
@@ -339,5 +345,6 @@ func (s *Service) revokeAllTokens(ctx context.Context, accountID string) error {
 		}
 	}
 	s.pending.dropAccount(accountID)
-	return nil
+	// device-auth (§16.6): and every refresh token.
+	return s.revokeAccountRefresh(ctx, accountID, "")
 }

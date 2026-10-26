@@ -73,3 +73,4 @@ mod forks; // forks (§16.2)
 mod tenant_lifecycle; // tenant-lifecycle (§16.4)
 // v0.8 build-out (ENGINEERING_PLAN §16).
 mod staged_v2; // staged-v2 (§16.8)
+mod device_auth; // device-auth (§16.6)
