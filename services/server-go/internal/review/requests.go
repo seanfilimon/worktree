@@ -29,6 +29,10 @@ type OpenInput struct {
 	// Reviewers are requested explicitly (any accepted form, see
 	// NormalizeOwner); they must exist.
 	Reviewers []string
+	// v0.8 forks (§16.2, forks.go): SourceTree is the tree the source
+	// branch lives in (nil = the merge request's own tree); it must be in
+	// the same fork network.
+	SourceTree *domain.Tree
 }
 
 // OpenWith is Open with the v0.7 options: a non-draft merge request
@@ -286,7 +290,7 @@ func (s *Service) SourcePushed(ctx context.Context, treeID, branch, actor string
 	}
 	for i := range open {
 		mr := &open[i]
-		if mr.SourceBranch != branch || mr.Draft {
+		if mr.SourceBranch != branch || mr.Draft || crossTree(tree, mr) { // forks (§16.2): pushes here do not move fork sources
 			continue
 		}
 		added := addReviewers(mr, s.ownerReviewers(ctx, tree, mr))

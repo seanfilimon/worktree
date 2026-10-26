@@ -61,6 +61,7 @@ import { firstLine, shortId } from "@/lib/format";
 import { treePath } from "@/lib/paths";
 import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
+import { useForkSource } from "./forksApi"; // forks (§16.2)
 
 type Action = "approve" | "merge" | "close";
 const DONE: Record<Action, string> = { approve: "Approved", merge: "Merged", close: "Closed" };
@@ -117,6 +118,7 @@ function Notice({ title, message, children }: { title: string; message: string; 
  */
 function useMergeComparison(tenant: string, tree: string, m: MergeRequest) {
   const branches = useBranches(tenant, tree);
+  const fork = useForkSource(tenant, tree, m); // forks (§16.2): a fork's tip, copied into this tree
   let to = "";
   let from: string | undefined;
   let problem: string | undefined;
@@ -124,8 +126,10 @@ function useMergeComparison(tenant: string, tree: string, m: MergeRequest) {
 
   if (m.state === "merged") {
     to = m.merged_snapshot ?? "";
+  } else if (fork.pending) {
+    // Wait for the fork's source tip.
   } else if (branches.data) {
-    const source = findBranch(branches.data, m.source_branch);
+    const source = fork.cross ? fork.branch : findBranch(branches.data, m.source_branch);
     const target = findBranch(branches.data, m.target_branch);
     if (!source) problem = `Source branch “${m.source_branch}” no longer exists.`;
     else if (!source.tip) problem = `Source branch “${m.source_branch}” has no snapshots.`;
@@ -169,7 +173,8 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
   // changes-requested review blocks until that reviewer approves.
   const v = asV05(m);
   const branchList = useBranches(tenant, tree);
-  const sourceTip = findBranch(branchList.data, m.source_branch)?.tip || undefined;
+  const fork = useForkSource(tenant, tree, m); // forks (§16.2)
+  const sourceTip = (fork.cross ? fork.branch?.tip : findBranch(branchList.data, m.source_branch)?.tip) || undefined;
   const reviews = latestReviews(v.approvals);
   const stateOf = (r: ReviewApproval): ReviewState => reviewState(r, open ? sourceTip : undefined);
   const counted = reviews.filter((r) => stateOf(r) === "approved");
@@ -281,7 +286,7 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
           {draft && <DraftBadge />}
           <UserChip name={m.author} className="text-foreground" />
           <span className="inline-flex flex-wrap items-center gap-1">
-            wants to merge <BranchFlow source={m.source_branch} target={m.target_branch} />
+            wants to merge <BranchFlow source={fork.label || m.source_branch} target={m.target_branch} />
           </span>
           <span>
             opened <Timestamp value={m.created_at} />

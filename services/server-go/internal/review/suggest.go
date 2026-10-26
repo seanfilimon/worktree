@@ -266,6 +266,9 @@ func (s *Service) ApplySuggestion(ctx context.Context, p *domain.Principal, tree
 	if err != nil {
 		return nil, err
 	}
+	if crossTree(tree, mr) { // forks (§16.2): the source branch lives in the fork
+		return nil, fmt.Errorf("merge request !%d comes from a fork: apply the suggestion in the fork and push: %w", number, domain.ErrConflict)
+	}
 	if err := s.CheckPush(ctx, p, tree, mr.SourceBranch); err != nil {
 		return nil, err
 	}

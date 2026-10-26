@@ -1447,7 +1447,12 @@ paths:
         audited by the review service. v0.7 (§15.7): `draft` opens a draft
         (not mergeable until `POST .../ready`); `reviewers` requests
         reviewers; a non-draft merge request also requests the owners of
-        its changed paths (`mr.review_requested`).
+        its changed paths (`mr.review_requested`). v0.8 (§16.2):
+        `source_tenant` + `source_tree` open it from a fork (another tree
+        of the same fork network; recorded as `source_tree_id`); besides
+        `mr:create`, `tree:fork` on this tree plus `tree:write` on the
+        fork also allows opening it. Merging needs the usual permissions
+        here.
       tags: [MergeRequests]
       x-wt-action: mr:create
       requestBody:
@@ -7849,6 +7854,231 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
   # ---- end notifications ----
+  # ---- forks (§16.2) ----
+  /api/v1/trees/{tenant}/{tree}/forks:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: listTreeForks
+      summary: List the forks of a tree
+      description: |
+        v0.8 (§16.2). The forks of the tree (direct forks only) that the
+        caller may read, sorted by tenant and name. Forks the caller cannot
+        read are left out.
+      tags: [Trees]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The readable forks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Fork"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    post:
+      operationId: forkTree
+      summary: Fork a tree
+      description: |
+        v0.8 (§16.2). Creates a fork of the tree in `tenant` (default: the
+        caller's personal tenant) named `name` (default: the tree's name).
+        Needs `tree:fork` on the tree and `tree:create` in the destination
+        tenant; the destination's `max_trees` quota applies. Branches (all,
+        or the ones in `branches`) and tags are copied; branch protections,
+        license rules, grants and other settings are not. Objects are
+        shared; snapshot records are copied under new ids (copies carry no
+        signatures). `visibility` defaults to the tree's and may not be
+        wider. When the fork leaves the tree's tenant, every path of the
+        copied branch and tag tips must be redistributable to the
+        destination tenant under the tree's license rules (the archive
+        rule), else 403 `license_violation`. Publishes `tree.forked` on the
+        upstream and `tree.created` on the fork; audited as `tree.fork` in
+        both tenants.
+      tags: [Trees]
+      x-wt-action: [tree:fork, tree:create]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateForkRequest"
+      responses:
+        "201":
+          description: The new fork (`fork_of` is the upstream's id).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tree"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden`, or `license_violation`: a path may not be redistributed to the destination tenant."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the destination tenant already has a tree of that name; `quota_exceeded`: its `max_trees` quota is reached."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/fork:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getTreeUpstream
+      summary: Get the upstream of a fork
+      description: |
+        v0.8 (§16.2). `fork` is false for trees that are not forks. For a
+        fork: the upstream's id, tenant and name, who forked it and when,
+        the last sync, and the relation of every branch to the upstream
+        branch of the same name (`up_to_date`, `ahead`, `behind`,
+        `diverged`, `fork_only`, `upstream_only`). `upstream_missing`: the
+        upstream was deleted (the fork is intact, `fork_of` keeps the id);
+        `upstream_hidden`: the caller may not read the upstream.
+      tags: [Trees]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForkUpstream"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/fork/sync:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    post:
+      operationId: syncTreeFork
+      summary: Sync a fork with its upstream
+      description: |
+        v0.8 (§16.2). Fast-forwards fork branches to the upstream branch of
+        the same name where possible (copying the new snapshots). Without
+        `branches`: every branch both trees have (upstream-only branches
+        are reported as `upstream_only`); named branches that exist only
+        upstream are created. Per branch `result`: `fast_forwarded`,
+        `created`, `up_to_date`, `ahead` (the fork contains the upstream),
+        `diverged` (listed in `diverged`; merge locally), `upstream_only`
+        or `moved` (the branch moved during the sync). Needs `tree:write`
+        on the fork and `tree:read` on the upstream; fork branch
+        protections do not apply to these fast-forwards. Publishes
+        `branch.pushed` (and `branch.created`); audited as `fork.sync`.
+      tags: [Trees]
+      x-wt-action: [tree:write, tree:read]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncForkRequest"
+      responses:
+        "200":
+          description: The outcome per branch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForkSyncResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the upstream no longer exists (`upstream_missing`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/source:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number (per tree, from 1).
+        schema:
+          type: integer
+          minimum: 1
+    get:
+      operationId: getMRSource
+      summary: Where a merge request's source branch lives
+      description: |
+        v0.8 (§16.2). For a merge request from a fork (`source_tree_id`
+        set): the fork's id, tenant and name (empty when the caller may not
+        read it), the source tip in the fork and `target_tip`, the same
+        content as a snapshot of this tree (the fork's history is copied
+        here), which is what diffs, mergeability and approvals use. For
+        same-tree requests `tip` equals `target_tip`. `missing`: the source
+        tree or branch no longer exists.
+      tags: [MergeRequests]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MRSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  # ---- end forks ----
 components:
   securitySchemes:
     bearerAuth:
@@ -8841,6 +9071,12 @@ components:
           items:
             type: string
           description: "v0.7 (§15.7): reviewers to request: `user:NAME`, `team:SLUG` (also `@NAME`, `@TENANT/TEAM`); they must exist."
+        source_tenant:
+          type: string
+          description: "v0.8 (§16.2): with `source_tree`, the tree `source_branch` lives in: a fork of this tree (or this tree's upstream, or another fork of a common upstream). The caller must read it. `source_branch` may then equal `target_branch`."
+        source_tree:
+          type: string
+          description: "v0.8 (§16.2): name of the source tree in `source_tenant`."
     CreateReleaseRequest:
       type: object
       properties:
@@ -11979,3 +12215,175 @@ components:
         updated:
           type: integer
     # ---- end notifications ----
+    # ---- forks (§16.2) ----
+    Fork:
+      type: object
+      description: "A fork of a tree (GET {tree}/forks)."
+      required: [tree_id, tenant_id, tenant, name, description, visibility, branches, created_by, created_at]
+      properties:
+        tree_id:
+          type: string
+        tenant_id:
+          type: string
+        tenant:
+          type: string
+          description: "Tenant slug of the fork."
+        name:
+          type: string
+        description:
+          type: string
+        visibility:
+          type: string
+        branches:
+          type: array
+          items:
+            type: string
+          description: "Branches copied when the fork was created."
+        created_by:
+          type: string
+          description: "Username of the account that forked."
+        created_at:
+          type: string
+          format: date-time
+        last_sync_at:
+          type: string
+          format: date-time
+    ForkUpstream:
+      type: object
+      description: "The upstream of a tree (GET {tree}/fork)."
+      required: [fork, upstream_missing, upstream_hidden, branches]
+      properties:
+        fork:
+          type: boolean
+          description: "False for trees that are not forks (the other fields are then empty)."
+        upstream_tree_id:
+          type: string
+        upstream_missing:
+          type: boolean
+          description: "The upstream was deleted; the fork is intact."
+        upstream_hidden:
+          type: boolean
+          description: "The caller may not read the upstream."
+        tenant:
+          type: string
+          description: "Upstream tenant slug."
+        name:
+          type: string
+        visibility:
+          type: string
+        default_branch:
+          type: string
+        forked_by:
+          type: string
+        forked_at:
+          type: string
+          format: date-time
+        last_sync_at:
+          type: string
+          format: date-time
+        branches:
+          type: array
+          items:
+            $ref: "#/components/schemas/ForkBranchStatus"
+    ForkBranchStatus:
+      type: object
+      description: "A fork branch related to the upstream branch of the same name."
+      required: [name, tip, upstream_tip, status]
+      properties:
+        name:
+          type: string
+        tip:
+          type: string
+          description: "Fork tip (\"\" = absent or empty)."
+        upstream_tip:
+          type: string
+          description: "Upstream tip (an upstream snapshot id)."
+        status:
+          type: string
+          enum: [up_to_date, ahead, behind, diverged, fork_only, upstream_only]
+    ForkSyncResult:
+      type: object
+      description: "The outcome of POST {tree}/fork/sync."
+      required: [branches, updated, diverged]
+      properties:
+        branches:
+          type: array
+          items:
+            $ref: "#/components/schemas/ForkSyncBranch"
+        updated:
+          type: integer
+          description: "Fast-forwarded and created branches."
+        diverged:
+          type: array
+          items:
+            type: string
+          description: "Branches that could not be fast-forwarded."
+    ForkSyncBranch:
+      type: object
+      required: [name, result]
+      properties:
+        name:
+          type: string
+        result:
+          type: string
+          enum: [fast_forwarded, created, up_to_date, ahead, diverged, upstream_only, moved]
+        old_tip:
+          type: string
+        new_tip:
+          type: string
+    CreateForkRequest:
+      type: object
+      properties:
+        tenant:
+          type: string
+          description: "Destination tenant slug (default: the caller's personal tenant)."
+        name:
+          type: string
+          description: "Name of the fork (default: the tree's name)."
+        description:
+          type: string
+          description: "Default: the tree's description."
+        visibility:
+          type: string
+          description: "private, internal or public; default the tree's, never wider."
+        branches:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Branches to copy (default: all). Tags are always copied."
+    SyncForkRequest:
+      type: object
+      properties:
+        branches:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Branches to sync (default: every branch both trees have); upstream-only branches named here are created."
+    MRSource:
+      type: object
+      description: "Where the source branch of a merge request lives (GET {tree}/merge-requests/{n}/source)."
+      required: [cross_tree, tree_id, tenant, tree, branch, tip, target_tip, missing]
+      properties:
+        cross_tree:
+          type: boolean
+          description: "The source branch lives in another tree (a fork)."
+        tree_id:
+          type: string
+        tenant:
+          type: string
+          description: "Tenant slug of the source tree (\"\" when the caller may not read it)."
+        tree:
+          type: string
+          description: "Name of the source tree (\"\" when the caller may not read it)."
+        branch:
+          type: string
+        tip:
+          type: string
+          description: "Source tip in the source tree (\"\" when missing or empty)."
+        target_tip:
+          type: string
+          description: "The source tip as a snapshot of the merge request's tree."
+        missing:
+          type: boolean
+          description: "The source tree or branch no longer exists."
+    # ---- end forks ----
