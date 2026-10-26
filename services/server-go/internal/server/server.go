@@ -245,6 +245,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		// daemon (§13.11): ends WatchBranches streams on shutdown.
 		Done: ctx.Done(),
 	})
+	syncSvc.Start(ctx) // history-v2 (§16.10): push_ops / branch_reflog retention
 
 	// ---- gRPC ----
 	grpcServer, healthSrv := newGRPCServer(iamSvc, syncSvc, log, grpcOps{limiter: limiter, audit: auditLog})

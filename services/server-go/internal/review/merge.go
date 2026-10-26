@@ -54,6 +54,10 @@ type MergeOptions struct {
 	// DeleteSourceBranch deletes the source branch after the merge (v0.8
 	// §16.9, rebase.go); checked before merging.
 	DeleteSourceBranch bool
+	// Bypass merges past the review gates of the target's protection
+	// (needs branch:bypass_protection; always audited; v0.8 §16.10,
+	// bypass.go).
+	Bypass bool
 }
 
 // Conflict is one path a server-side merge cannot resolve. Tree is set for
@@ -208,8 +212,11 @@ func (s *Service) MergeWith(ctx context.Context, p *domain.Principal, tree *doma
 	if err != nil {
 		return nil, err
 	}
+	var bypassed []string // v0.8 (§16.10): protection bypass
 	if err := ev.mergeError(); err != nil {
-		return nil, err
+		if bypassed, err = s.bypassMerge(ctx, p, tree, ev, opts.Bypass, err); err != nil {
+			return nil, err
+		}
 	}
 	method, err := ev.selectMethod(opts.Method)
 	if err != nil {
@@ -234,7 +241,14 @@ func (s *Service) MergeWith(ctx context.Context, p *domain.Principal, tree *doma
 	if err := s.markMerged(ctx, mr, plan); err != nil {
 		return nil, err
 	}
-	s.announceMerge(ctx, p, tree, mr, ev, plan, moved, extra)
+	audit := s.bypassAudit(ctx, p, tree, mr, bypassed)
+	for k, v := range extra {
+		if audit == nil {
+			audit = map[string]string{}
+		}
+		audit[k] = v
+	}
+	s.announceMerge(ctx, p, tree, mr, ev, plan, moved, audit)
 	if opts.DeleteSourceBranch {
 		s.deleteSource(ctx, p, tree, mr)
 	}

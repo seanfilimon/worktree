@@ -147,6 +147,7 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Sync(args) => synchronize::run(ctx, args),
         Command::Fork(args) => fork::run(ctx, args),
         Command::Undo(args) => undo::run(ctx, args),
+        Command::Redo(args) => undo::run_redo(ctx, args),
         Command::Attr(args) => attr::run(ctx, args),
         Command::Compliance(args) => compliance::run(ctx, args),
         Command::Inbox(args) => inbox::run(ctx, args),

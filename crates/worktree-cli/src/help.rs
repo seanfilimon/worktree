@@ -30,6 +30,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "rebase",
             "stash",
             "undo",
+            "redo",
             "tag",
         ],
     ),

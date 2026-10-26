@@ -69,6 +69,7 @@ mod wt_tree_sharing;
 // v0.8 build-out (ENGINEERING_PLAN §16).
 mod conflict_resolution; // conflict-ui (§16.9)
 mod device_auth; // device-auth (§16.6)
+mod force_push_undo; // history-v2 (§16.10)
 mod forks; // forks (§16.2)
 mod server_secret_scan; // compliance (§16.7)
 mod staged_v2; // staged-v2 (§16.8)

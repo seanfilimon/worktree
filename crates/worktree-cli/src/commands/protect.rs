@@ -70,6 +70,10 @@ pub enum ProtectCommand {
         /// comma-separated (fast-forward, merge, squash; default: all)
         #[arg(long, value_name = "METHODS", value_delimiter = ',')]
         merge_methods: Vec<MergeMethod>,
+        /// Refuse force pushes to matching branches, even from admins and owners
+        /// (`wt push --force`; history-v2)
+        #[arg(long)]
+        no_force_push: bool,
     },
     /// Remove the rule for a branch pattern
     #[command(allow_missing_positional = true)]
@@ -153,6 +157,9 @@ struct Protection {
     // unknown fields) still accept the rule.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     require_owner_approval: bool,
+    // history-v2 (§16.10); omitted when off for older servers.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    no_force_push: bool,
 }
 
 /// `domain.TagProtection` (also the PUT body).
@@ -191,6 +198,7 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
             block_on_todos,
             require_owner_approval,
             merge_methods,
+            no_force_push,
         } => {
             let tree = tree_or_default(ctx, tree)?;
             let mut methods: Vec<String> = Vec::new();
@@ -212,6 +220,7 @@ pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
                 block_on_todos,
                 merge_methods: methods,
                 require_owner_approval,
+                no_force_push,
             };
             let value = api.put(&path(&tree), &rule)?;
             render(out, &value, |t, rule: Protection| {
@@ -383,6 +392,9 @@ fn describe(rule: &Protection) -> String {
     if !rule.merge_methods.is_empty() {
         parts.push(format!("merge methods {}", rule.merge_methods.join(", ")));
     }
+    if rule.no_force_push {
+        parts.push("no force pushes".into());
+    }
     if parts.is_empty() {
         "no restrictions".into()
     } else {
@@ -428,7 +440,10 @@ fn table(t: &mut Text, rules: &[Protection]) {
         }
     };
     for rule in rules {
-        let checks = merge_checks(rule);
+        let mut checks = merge_checks(rule);
+        if rule.no_force_push {
+            checks.push("no-force-push".into());
+        }
         table.row([
             Cell::from(rule.pattern.as_str()).green().bold(),
             allowed(rule.no_direct_push),
@@ -510,6 +525,7 @@ mod tests {
             block_on_todos,
             require_owner_approval,
             merge_methods,
+            no_force_push,
         } = protect(&[
             "set",
             "acme/web",
@@ -533,6 +549,7 @@ mod tests {
             "--require-owner-approval",
             "--merge-methods",
             "squash,fast-forward",
+            "--no-force-push",
         ])
         else {
             panic!()
@@ -546,6 +563,7 @@ mod tests {
         assert!(no_direct_push && no_delete);
         assert!(require_ci && require_signed && require_linear && block_on_todos);
         assert!(require_owner_approval);
+        assert!(no_force_push);
         assert_eq!(approvals, 2);
         assert_eq!(pushers, ["ada", "bob"]);
         assert_eq!(checks, ["build", "test"]);

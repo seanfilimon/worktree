@@ -41,6 +41,9 @@ mod watch;
 pub use watch::{unstage, watch_trees, BranchEvent, BranchEventStream, TreeWatch};
 // sparse (§15.4): the lazy object fetcher of partial clones.
 pub(crate) use fetch::lazy_fetcher;
+// history-v2 (§16.10): force push with lease, protection bypass, remote tag deletion.
+mod force;
+pub use force::{delete_remote_tag, push_with_options, PushOptions};
 // v0.7 trust (§15.8): push one (signed) tag, list server tags.
 mod tags;
 pub use tags::{push_tag, remote_tags};
@@ -259,6 +262,9 @@ pub struct PushReport {
     pub snapshots_sent: usize,
     pub objects_sent: usize,
     pub up_to_date: bool,
+    /// history-v2 (§16.10): the push rewound the server branch (`--force`).
+    #[serde(default)]
+    pub forced: bool,
 }
 
 /// Push `branch` (default current) of `tree` to `remote`: ResolveTree

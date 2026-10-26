@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -57,6 +58,10 @@ type Effective struct {
 	// v0.7 (§15.7): set when any matching rule requires an approval from
 	// the owners of every changed path (owners.go).
 	RequireOwnerApproval bool `json:"require_owner_approval"`
+
+	// v0.8 (§16.10): set when any matching rule forbids force pushes
+	// (absolute: not even branch:bypass_protection lifts it).
+	NoForcePush bool `json:"no_force_push"`
 }
 
 // MethodAllowed reports whether the merge-method restriction admits method
@@ -128,6 +133,7 @@ func Resolve(rules []domain.BranchProtection, branch string) Effective {
 		eff.RequireLinear = eff.RequireLinear || r.RequireLinear
 		eff.BlockOnTodos = eff.BlockOnTodos || r.BlockOnTodos
 		eff.RequireOwnerApproval = eff.RequireOwnerApproval || r.RequireOwnerApproval // v0.7 (§15.7)
+		eff.NoForcePush = eff.NoForcePush || r.NoForcePush                            // v0.8 (§16.10)
 		if r.RequireCIPass {
 			for _, c := range r.RequiredChecks {
 				if c = strings.TrimSpace(c); c != "" {
@@ -244,6 +250,52 @@ func matchSegments(pat, name []string) bool {
 	}
 	return len(name) == 0
 }
+
+// ---- v0.8 history-v2 (§16.10): force pushes ----
+
+// Force-push rules that only branch:bypass_protection lifts (reported by
+// CheckForcePush).
+const (
+	ForceRuleLinear    = "require_linear"
+	ForceRuleApprovals = "required_approvals"
+)
+
+// CheckForcePush decides whether p may force-push (rewind) branch. It
+// requires domain.ActBranchForcePush (the authorizer's error is returned
+// unchanged) and refuses with *domain.PushDenied{Kind: "branch_protection"}
+// when a matching rule sets NoForcePush; that refusal is absolute. It
+// returns the rules that refuse the force push unless the caller bypasses
+// branch protection (ForceRuleLinear for RequireLinear, ForceRuleApprovals
+// when merges need approvals): rewriting such a branch would sneak
+// unreviewed or non-linear history in.
+func (s *Service) CheckForcePush(ctx context.Context, p *domain.Principal, tree *domain.Tree, branch string) ([]string, error) {
+	if err := checkTree(tree); err != nil {
+		return nil, err
+	}
+	if err := s.authz.Authorize(ctx, p, domain.ActBranchForcePush, tree.TenantID, tree); err != nil {
+		return nil, err
+	}
+	eff, err := s.ProtectionFor(ctx, tree.ID, branch)
+	if err != nil {
+		return nil, err
+	}
+	if eff.NoForcePush {
+		return nil, &domain.PushDenied{
+			Kind:   "branch_protection",
+			Reason: fmt.Sprintf("branch '%s' is protected against force pushes (no_force_push)", branch),
+		}
+	}
+	var rules []string
+	if eff.RequireLinear {
+		rules = append(rules, ForceRuleLinear)
+	}
+	if eff.RequiredApprovals > 0 {
+		rules = append(rules, ForceRuleApprovals)
+	}
+	return rules, nil
+}
+
+// ---- end history-v2 ----
 
 // ValidatePattern reports whether pattern is a well-formed protection
 // pattern. It returns an error wrapping domain.ErrInvalid otherwise. API

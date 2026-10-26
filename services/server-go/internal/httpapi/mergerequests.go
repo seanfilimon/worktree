@@ -51,6 +51,9 @@ type mergeMRRequest struct {
 	Message string `json:"message"`
 	// v0.8 (§16.9): delete the source branch after the merge.
 	DeleteSourceBranch bool `json:"delete_source_branch,omitempty"`
+	// v0.8 (§16.10): merge past the review gates of the target's protection
+	// (needs branch:bypass_protection; audited).
+	Bypass bool `json:"bypass,omitempty"`
 }
 
 func (req *mergeMRRequest) validate() error {
@@ -279,7 +282,7 @@ func (a *api) mrAction(action string) handlerFunc {
 				return err
 			}
 			if m, ok := a.d.Review.(merger); ok {
-				mr, err = m.MergeWith(ctx, p, tree, n, review.MergeOptions{Method: req.Method, Message: req.Message, DeleteSourceBranch: req.DeleteSourceBranch})
+				mr, err = m.MergeWith(ctx, p, tree, n, review.MergeOptions{Method: req.Method, Message: req.Message, DeleteSourceBranch: req.DeleteSourceBranch, Bypass: req.Bypass})
 			} else if (req.Method == "" || req.Method == domain.MergeFastForward) && !req.DeleteSourceBranch {
 				mr, err = a.d.Review.Merge(ctx, p, tree, n)
 			} else {

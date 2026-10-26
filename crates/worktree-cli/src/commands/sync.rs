@@ -31,6 +31,19 @@ pub struct PushArgs {
     /// the daemon delivers it automatically with `sync.auto_flush`)
     #[arg(long)]
     pub queue: bool, // sync workstream (§15.5)
+
+    // ---- history-v2 (§16.10) ----
+    /// Rewind the server branch when it has snapshots your branch lacks
+    /// (needs branch:force_push; refused by no_force_push rules). Lease
+    /// semantics: refused unless the server tip is the last remote tip you
+    /// fetched, so you never overwrite work you have not seen
+    #[arg(long, visible_alias = "force-with-lease", conflicts_with = "queue")]
+    pub force: bool,
+
+    /// Push past branch protection (owners: branch:bypass_protection;
+    /// always audited on the server)
+    #[arg(long, conflicts_with = "queue")]
+    pub bypass_protection: bool,
 }
 
 #[derive(Debug, Args)]
@@ -157,11 +170,17 @@ pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
         }
         return Ok(());
     }
-    let report = block_on(remote::push(
+    // history-v2 (§16.10): --force / --bypass-protection.
+    let opts = remote::PushOptions {
+        force: args.force,
+        bypass_protection: args.bypass_protection,
+    };
+    let report = block_on(remote::push_with_options(
         &repo,
         &tree.name,
         &remote,
         args.branch.as_deref(),
+        &opts,
     ))?
     .map_err(|e| {
         let unreachable = remote::is_unreachable(&e);
@@ -214,11 +233,17 @@ fn render_push_text(t: &mut Text, remote: &str, report: &remote::PushReport) {
         return;
     }
     t.line(format_args!(
-        "  {}..{}  {} -> {remote}/{}",
+        "  {}{}{}  {} -> {remote}/{}{}",
         short_or(report.old_tip.as_deref(), "(new)"),
+        if report.forced { "..." } else { ".." },
         short(&report.new_tip),
         report.branch.green(),
-        report.branch
+        report.branch,
+        if report.forced {
+            " (forced update)"
+        } else {
+            ""
+        }
     ));
     t.line(format_args!(
         "Pushed {} and {}.",
@@ -514,6 +539,24 @@ mod tests {
         use clap::Parser;
         crate::cli::Cli::try_parse_from(std::iter::once("wt").chain(args.iter().copied()))
             .map(|c| c.command)
+    }
+
+    // history-v2 (§16.10)
+    #[test]
+    fn force_push_flags() {
+        use crate::cli::Command;
+        match parse(&["push", "--force", "--bypass-protection"]).expect("parse") {
+            Command::Push(a) => assert!(a.force && a.bypass_protection && !a.queue),
+            other => panic!("{other:?}"),
+        }
+        match parse(&["push", "--force-with-lease"]).expect("parse") {
+            Command::Push(a) => assert!(a.force && !a.bypass_protection),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            parse(&["push", "--force", "--queue"]).unwrap_err().kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
     }
 
     #[test]

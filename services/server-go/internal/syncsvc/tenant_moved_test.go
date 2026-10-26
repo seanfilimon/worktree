@@ -16,12 +16,6 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 )
 
-// GetDoc lets the shared fake store answer slug-reservation lookups
-// (tenant-lifecycle, §16.4): it holds no documents.
-func (f *fakeStore) GetDoc(context.Context, string, string, any) error {
-	return domain.ErrNotFound
-}
-
 // movedStore is the fake store plus a real document store.
 type movedStore struct {
 	*fakeStore

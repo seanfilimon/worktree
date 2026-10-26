@@ -54,7 +54,12 @@ const maxMissingReported = 5
 // Re-pushing the current tip is an idempotent success. On success the
 // pusher's staged entry for the branch is cleared, EventBranchPushed is
 // published and "branch.push" is audited.
-func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.PushResponse, error) {
+//
+// v0.8 (§16.10, push_force*.go): Push (the RPC) wraps pushOnce with
+// operation_id idempotency; force pushes pass step 6 when allowed
+// (checkForcePush), owners may bypass branch protection in steps 3 and 7
+// (bypassProtection), and afterPush records the server reflog.
+func (s *Service) pushOnce(ctx context.Context, req *syncpb.PushRequest) (*syncpb.PushResponse, error) {
 	p, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
@@ -102,9 +107,10 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 		}
 	}
 
-	// 3. Branch protection.
+	// 3. Branch protection (v0.8: owners may bypass it).
+	st := newPushState(ctx)
 	if s.d.Review != nil {
-		if err := s.d.Review.CheckPush(ctx, p, t, branch); err != nil {
+		if err := s.d.Review.CheckPush(ctx, p, t, branch); err != nil && !s.bypassProtection(ctx, p, t, st, err) {
 			return s.policyRejection(ctx, p, t, branch, newTip, err, "branch protection check")
 		}
 	}
@@ -134,7 +140,10 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 			return nil, s.toStatus(ctx, err, "ancestry check")
 		}
 		if !ok {
-			return rejected(conflict(serverTip)), nil
+			// v0.8 (§16.10): a force push may rewind the branch.
+			if resp, err := s.checkForcePush(ctx, p, t, branch, newTip, serverTip, req, st); resp != nil || err != nil {
+				return resp, err
+			}
 		}
 	}
 
@@ -153,7 +162,7 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 		if len(s.d.PushChecks) > 0 {
 			plan := s.pushPlanFor(pl, branch, serverTip, changed)
 			for _, c := range s.d.PushChecks {
-				if err := c.CheckPushPlan(ctx, p, t, plan); err != nil {
+				if err := c.CheckPushPlan(ctx, p, t, plan); err != nil && !(s.isProtectionCheck(c) && s.bypassProtection(ctx, p, t, st, err)) {
 					return s.policyRejection(ctx, p, t, branch, newTip, err, "push check")
 				}
 			}
@@ -189,30 +198,33 @@ func (s *Service) Push(ctx context.Context, req *syncpb.PushRequest) (*syncpb.Pu
 			s.log.WarnContext(ctx, "push: clearing staged snapshot failed", "tree", t.ID, "branch", branch, "err", err)
 		}
 	}
+	payload := map[string]any{
+		"branch":  branch,
+		"old_tip": serverTip,
+		"new_tip": newTip,
+		"count":   len(pl.newSnaps),
+	}
+	details := map[string]string{
+		"tree":    t.Name,
+		"branch":  branch,
+		"old_tip": serverTip,
+		"new_tip": newTip,
+		"count":   fmt.Sprint(len(pl.newSnaps)),
+	}
+	s.afterPush(ctx, p, t, branch, serverTip, newTip, len(pl.newSnaps), st, payload, details) // v0.8 (§16.10)
 	s.publish(domain.Event{
 		Type:     domain.EventBranchPushed,
 		TenantID: t.TenantID,
 		TreeID:   t.ID,
 		Actor:    p.Username,
-		Payload: map[string]any{
-			"branch":  branch,
-			"old_tip": serverTip,
-			"new_tip": newTip,
-			"count":   len(pl.newSnaps),
-		},
+		Payload:  payload,
 	})
 	s.audit(ctx, p, domain.AuditEvent{
 		TenantID:     t.TenantID,
 		Action:       "branch.push",
 		ResourceType: "branch",
 		ResourceID:   t.ID + "/" + branch,
-		Details: map[string]string{
-			"tree":    t.Name,
-			"branch":  branch,
-			"old_tip": serverTip,
-			"new_tip": newTip,
-			"count":   fmt.Sprint(len(pl.newSnaps)),
-		},
+		Details:      details,
 	})
 	return &syncpb.PushResponse{Accepted: true, NewTip: snapshotIDToPB(newTip)}, nil
 }

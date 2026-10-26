@@ -5,6 +5,7 @@
 //! ```text
 //! .wt/
 //!   config.toml                 WorktreeConfig
+//!   oplog.jsonl                 OpLogEntry per line: local operations for `wt undo` (§16.10)
 //!   ignore                      extra ignore patterns (one per line)
 //!   objects/<hh>/<62 hex>       blobs, manifests, chunk lists (ObjectStore)
 //!   snapshots/<id>.json         Snapshot records
@@ -81,6 +82,9 @@ pub use sparse::{normalize_sparse_patterns, SparseMatcher, SparseReport, SparseS
 // sync (§15.5): the offline push queue (`trees/<tree>/outbox.jsonl`).
 mod outbox;
 pub use outbox::OutboxEntry;
+// history-v2 (§16.10): the local operation log (`.wt/oplog.jsonl`), undo/redo.
+mod oplog;
+pub use oplog::{BranchRef, OpKind, OpLogEntry, RefChange, UndoOptions, UndoReport};
 
 pub(crate) use trees::TreeRecord;
 // hardening (§15.10): shared `.wt-tree/` files; identity in `local.toml`.

@@ -598,6 +598,7 @@ mod tests {
                 snapshots_sent: 2,
                 objects_sent: 3,
                 up_to_date: false,
+                forced: false,
             }),
             queued: None,
             conflicts: Vec::new(),

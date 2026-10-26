@@ -8,6 +8,7 @@ use worktree_protocol::proto::sync::push_rejection::Reason;
 
 use super::client::{entry_upload_objects, ObjectKind, RemoteBranch};
 use super::convert::{branch_id, snapshot_id, tenant_id, tree_id};
+use super::force::PushOptions;
 use super::session::{self, Access, RemoteSession};
 use super::PushReport;
 use crate::error::{Result, SdkError};
@@ -20,6 +21,18 @@ pub(crate) async fn push(
     tree: &str,
     remote: &str,
     branch: Option<&str>,
+) -> Result<PushReport> {
+    push_with(repo, tree, remote, branch, &PushOptions::default()).await
+}
+
+/// [`push`] with history-v2 options (§16.10): force (with lease) and the
+/// protection bypass.
+pub(crate) async fn push_with(
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    branch: Option<&str>,
+    opts: &PushOptions,
 ) -> Result<PushReport> {
     let tree_name = repo.tree(tree)?.name;
     let branch = match branch {
@@ -45,6 +58,7 @@ pub(crate) async fn push(
         snapshots_sent: 0,
         objects_sent: 0,
         up_to_date: false,
+        forced: false,
     };
 
     if server_tip.as_deref() == Some(new_tip.as_str()) {
@@ -59,7 +73,12 @@ pub(crate) async fn push(
     // this branch does not contain; the server would answer ConflictDetected.
     if let Some(tip) = &server_tip {
         if !repo.has_snapshot(tip) || !repo.is_ancestor(tip, &new_tip)? {
-            return Err(SdkError::PushRejected(behind_message(remote, &branch, tip)));
+            // history-v2 (§16.10): `--force` rewinds, with lease semantics.
+            if !opts.force {
+                return Err(SdkError::PushRejected(behind_message(remote, &branch, tip)));
+            }
+            super::force::check_lease(repo, &tree_name, remote, &branch, tip)?;
+            report.forced = true;
         }
     }
 
@@ -87,8 +106,9 @@ pub(crate) async fn push(
         .upload_objects(repo.store(), &to_send)
         .await?;
 
-    let req = push_request(&session, &branch, server_tip.as_deref(), &new_tip, &chain);
-    let resp = session.client.push(req).await?;
+    let mut req = push_request(&session, &branch, server_tip.as_deref(), &new_tip, &chain);
+    req.force = report.forced; // history-v2 (§16.10)
+    let resp = super::force::send_push(&mut session, req, opts).await?;
     if !resp.accepted {
         return Err(SdkError::PushRejected(rejection_message(
             remote,
@@ -103,7 +123,7 @@ pub(crate) async fn push(
         at: Utc::now(),
         tree: tree_name.clone(),
         branch: branch.clone(),
-        action: "push".into(),
+        action: if report.forced { "force-push" } else { "push" }.into(),
         old: server_tip,
         new: Some(new_tip.clone()),
         message: format!(

@@ -59,8 +59,18 @@ pub enum TagCommand {
         #[arg(long)]
         sign: bool,
     },
-    /// Delete a tag
-    Delete { name: String },
+    /// Delete a tag (locally; with --remote also on the server)
+    Delete {
+        name: String,
+        /// Also delete the tag on the server (needs write access; tag
+        /// protections apply). The local tag is deleted when it exists, so
+        /// the next push does not re-create it.
+        #[arg(long)]
+        remote: bool,
+        /// Remote for --remote (default: [sync].remote, usually origin)
+        #[arg(long = "from", value_name = "R", requires = "remote")]
+        from: Option<String>,
+    },
     /// Verify a tag's signature against local (and optionally an account's registered) keys
     Verify {
         name: String,
@@ -87,6 +97,11 @@ pub enum TagCommand {
 struct Deleted<'a> {
     tag: &'a str,
     deleted: bool,
+    /// history-v2 (§16.10): whether the local tag was deleted, and the
+    /// remote it was deleted on.
+    local: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote: Option<&'a str>,
 }
 
 /// `wt tag verify` result (JSON: the tag plus the flattened verification).
@@ -156,15 +171,30 @@ pub fn run(ctx: &Context, args: TagArgs) -> Result<()> {
                 ));
             })
         }
-        TagCommand::Delete { name } => {
-            repo.delete_tag(&tree.name, &name)?;
+        TagCommand::Delete { name, remote, from } => {
+            // history-v2 (§16.10): `--remote` deletes the server tag too.
+            let local = !remote || repo.tags(&tree.name)?.iter().any(|t| t.name == name);
+            let on = remote.then(|| remote_name(&repo, from));
+            if let Some(r) = &on {
+                block_on(remote::delete_remote_tag(&repo, &tree.name, r, &name))??;
+            }
+            if local {
+                repo.delete_tag(&tree.name, &name)?;
+            }
             ctx.out.emit(
                 &Deleted {
                     tag: &name,
                     deleted: true,
+                    local,
+                    remote: on.as_deref(),
                 },
-                |t| {
-                    t.line(format_args!("Deleted tag {}", name.bold()));
+                |t| match &on {
+                    Some(r) if local => t.line(format_args!(
+                        "Deleted tag {} locally and on {r}",
+                        name.bold()
+                    )),
+                    Some(r) => t.line(format_args!("Deleted tag {} on {r}", name.bold())),
+                    None => t.line(format_args!("Deleted tag {}", name.bold())),
                 },
             )
         }
@@ -281,6 +311,18 @@ mod tests {
         assert!(matches!(
             tag(&["verify", "v2", "--remote", "--from", "up"]).action,
             Some(TagCommand::Verify { remote: true, from: Some(r), .. }) if r == "up"
+        ));
+        assert!(matches!(
+            tag(&["delete", "v2", "--remote", "--from", "up"]).action,
+            Some(TagCommand::Delete { name, remote: true, from: Some(r) }) if name == "v2" && r == "up"
+        ));
+        assert!(matches!(
+            tag(&["delete", "v2"]).action,
+            Some(TagCommand::Delete {
+                remote: false,
+                from: None,
+                ..
+            })
         ));
         assert!(matches!(
             tag(&["push", "v2"]).action,

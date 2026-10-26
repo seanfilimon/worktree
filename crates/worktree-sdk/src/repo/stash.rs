@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::oplog::{STASH_CLEAR, STASH_DROP, STASH_POP, STASH_PUSH};
 use super::snapshotting::compute_changes;
 use super::trees::TreeRecord;
 use super::{fsutil, Repository};
@@ -95,7 +96,7 @@ impl Repository {
     /// `include_untracked`. `Other("no local changes to stash")` when there
     /// is nothing to stash. Refused during a merge, cherry-pick or rebase.
     pub fn stash_push(&self, tree: &str, opts: &StashOptions) -> Result<StashEntry> {
-        let _lock = self.lock_tree(tree)?;
+        let mut lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         self.ensure_no_rewrite(tree)?;
         if self.merge_state(tree)?.is_some() {
@@ -163,6 +164,7 @@ impl Repository {
             changes,
         };
         fsutil::append_line(&self.stash_path(tree), &serde_json::to_string(&entry)?)?;
+        lock.name_op(STASH_PUSH, format!("stash push: {}", entry.message)); // history-v2 (§16.10)
 
         // Reset the stashed paths to the head snapshot.
         self.apply_manifest(
@@ -218,11 +220,12 @@ impl Repository {
     /// [`Repository::stash_apply`], then drop the entry unless the merge
     /// conflicted (`wt stash pop [N]`).
     pub fn stash_pop(&self, tree: &str, index: usize) -> Result<StashApplyOutcome> {
-        let _lock = self.lock_tree(tree)?;
+        let mut lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         let mut outcome = self.apply_stash_unlocked(&rec, index)?;
         if outcome.conflicts.is_empty() {
             self.remove_stash_entries(tree, |e| e.id == outcome.entry.id)?;
+            lock.name_op(STASH_POP, format!("stash pop: {}", outcome.entry.message)); // history-v2 (§16.10)
             outcome.dropped = true;
         }
         Ok(outcome)
@@ -230,16 +233,18 @@ impl Repository {
 
     /// Remove entry `index` (`wt stash drop [N]`); returns it.
     pub fn stash_drop(&self, tree: &str, index: usize) -> Result<StashEntry> {
-        let _lock = self.lock_tree(tree)?;
+        let mut lock = self.lock_tree(tree)?;
         self.load_tree(tree)?;
         let entry = self.stash_get(tree, index)?;
+        lock.name_op(STASH_DROP, format!("stash drop: {}", entry.message)); // history-v2 (§16.10)
         self.remove_stash_entries(tree, |e| e.id == entry.id)?;
         Ok(entry)
     }
 
     /// Remove every entry (`wt stash clear`); returns how many there were.
     pub fn stash_clear(&self, tree: &str) -> Result<usize> {
-        let _lock = self.lock_tree(tree)?;
+        let mut lock = self.lock_tree(tree)?;
+        lock.name_op(STASH_CLEAR, "stash clear"); // history-v2 (§16.10)
         self.load_tree(tree)?;
         let count = self.read_stash(tree)?.len();
         fsutil::remove_file_if_exists(&self.stash_path(tree))?;
@@ -364,6 +369,20 @@ impl Repository {
             return Err(SdkError::MergeInProgress);
         }
         let entry = self.stash_get(tree, index)?;
+        self.apply_stash_entry_unlocked(rec, &entry, index)
+    }
+
+    /// Three-way merge `entry` (at stash position `index`, for the labels)
+    /// into the working tree; the caller holds the lock. history-v2
+    /// (§16.10): also used by `wt undo` of a stash push.
+    pub(crate) fn apply_stash_entry_unlocked(
+        &self,
+        rec: &TreeRecord,
+        entry: &StashEntry,
+        index: usize,
+    ) -> Result<StashApplyOutcome> {
+        let tree = rec.name.as_str();
+        let entry = entry.clone();
         let base = self.read_manifest(&entry.base_manifest)?;
         let theirs = self.read_manifest(&entry.manifest)?;
         let head = self.manifest_of_tip(self.head_tip(tree)?.1.as_deref())?;

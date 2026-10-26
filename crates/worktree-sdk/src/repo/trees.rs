@@ -187,7 +187,15 @@ impl Repository {
     }
 
     /// Take the per-tree lock (fails with `TreeNotFound` for unknown trees).
-    pub(crate) fn lock_tree(&self, tree: &str) -> Result<TreeLock> {
+    /// history-v2 (§16.10): the guard records the operation in the oplog
+    /// when it is dropped (see `repo/oplog.rs`).
+    pub(crate) fn lock_tree(&self, tree: &str) -> Result<super::oplog::OpGuard<'_>> {
+        let lock = self.acquire_tree_lock(tree)?;
+        Ok(super::oplog::OpGuard::new(self, tree, lock, true))
+    }
+
+    /// The bare per-tree OS lock.
+    pub(crate) fn acquire_tree_lock(&self, tree: &str) -> Result<TreeLock> {
         let dir = self.tree_meta_dir(tree);
         if names::validate_tree_name(tree).is_err() || !dir.join("tree.toml").is_file() {
             return Err(SdkError::TreeNotFound(tree.to_string()));
