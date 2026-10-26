@@ -404,6 +404,20 @@ pub struct SyncSection {
     pub auto_fetch: bool,
     #[serde(default = "default_sync_interval")]
     pub interval_secs: u64,
+    // ---- sync workstream (§15.5): one-step sync and the offline queue ----
+    /// How `wt sync` integrates the remote branch (`--merge` / `--rebase`
+    /// override it).
+    #[serde(default, skip_serializing_if = "SyncStrategy::is_default")]
+    pub strategy: SyncStrategy,
+    /// The daemon retries queued pushes (`.wt/trees/<tree>/outbox.jsonl`)
+    /// with backoff until the server accepts them.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub auto_flush: bool,
+    /// The daemon runs a full `wt sync` of every clean tree this often
+    /// (0 = off).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub auto_sync_secs: u64,
+    // ---- end sync workstream ----
 }
 
 fn default_sync_interval() -> u64 {
@@ -417,9 +431,56 @@ impl Default for SyncSection {
             remote: "origin".into(),
             auto_fetch: true,
             interval_secs: default_sync_interval(),
+            strategy: SyncStrategy::default(),
+            auto_flush: true,
+            auto_sync_secs: 0,
         }
     }
 }
+
+// ---- sync workstream (§15.5) ----
+/// `sync.strategy`: how `wt sync` integrates the remote branch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncStrategy {
+    /// Three-way merge (a merge snapshot when both sides changed).
+    #[default]
+    Merge,
+    /// Replay the local snapshots on top of the remote branch.
+    Rebase,
+}
+
+impl SyncStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncStrategy::Merge => "merge",
+            SyncStrategy::Rebase => "rebase",
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl fmt::Display for SyncStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SyncStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "merge" => Ok(SyncStrategy::Merge),
+            "rebase" => Ok(SyncStrategy::Rebase),
+            other => Err(format!("expected merge or rebase, got {other:?}")),
+        }
+    }
+}
+// ---- end sync workstream ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteSection {
@@ -458,9 +519,12 @@ const SCALAR_KEYS: &[(&str, Kind)] = &[
     ("signing.auto", Kind::Bool),
     ("signing.key", Kind::Str),
     ("sync.auto_fetch", Kind::Bool),
+    ("sync.auto_flush", Kind::Bool), // sync workstream (§15.5)
     ("sync.auto_stage", Kind::Bool),
+    ("sync.auto_sync_secs", Kind::UInt), // sync workstream (§15.5)
     ("sync.interval_secs", Kind::UInt),
     ("sync.remote", Kind::Str),
+    ("sync.strategy", Kind::Str), // sync workstream (§15.5)
     ("user.email", Kind::Str),
     ("user.name", Kind::Str),
     ("worktree.created_at", Kind::Str),
@@ -633,6 +697,10 @@ impl WorktreeConfig {
             "sync.remote" => self.sync.remote.clone(),
             "sync.auto_fetch" => self.sync.auto_fetch.to_string(),
             "sync.interval_secs" => self.sync.interval_secs.to_string(),
+            // sync workstream (§15.5)
+            "sync.strategy" => self.sync.strategy.as_str().to_string(),
+            "sync.auto_flush" => self.sync.auto_flush.to_string(),
+            "sync.auto_sync_secs" => self.sync.auto_sync_secs.to_string(),
             "secret_scanning.enabled" => self.secret_scanning.enabled.to_string(),
             "secret_scanning.block_on_match" => self.secret_scanning.block_on_match.to_string(),
             "secret_scanning.exclude" => self.secret_scanning.exclude.join(","),
@@ -743,6 +811,14 @@ impl WorktreeConfig {
             "sync.auto_stage" => self.sync.auto_stage = parse_bool(key, value)?,
             "sync.auto_fetch" => self.sync.auto_fetch = parse_bool(key, value)?,
             "sync.interval_secs" => self.sync.interval_secs = parse_num(key, value)?,
+            // sync workstream (§15.5)
+            "sync.strategy" => {
+                self.sync.strategy = value
+                    .parse()
+                    .map_err(|e| SdkError::InvalidConfig(format!("{key}: {e}")))?;
+            }
+            "sync.auto_flush" => self.sync.auto_flush = parse_bool(key, value)?,
+            "sync.auto_sync_secs" => self.sync.auto_sync_secs = parse_num(key, value)?,
             "sync.remote" => {
                 crate::repo::names::validate_remote_name(value)
                     .map_err(|e| SdkError::InvalidConfig(e.to_string()))?;
@@ -2006,6 +2082,50 @@ mod tests {
             c.set("worktree.default_branch", "a b"),
             Err(SdkError::InvalidConfig(_))
         ));
+    }
+
+    // sync workstream (§15.5)
+    #[test]
+    fn sync_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut c = cfg();
+        assert_eq!(c.get("sync.strategy").as_deref(), Some("merge"));
+        assert_eq!(c.get("sync.auto_flush").as_deref(), Some("true"));
+        assert_eq!(c.get("sync.auto_sync_secs").as_deref(), Some("0"));
+        // Defaults are not written out.
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("strategy") && !text.contains("auto_flush"),
+            "{text}"
+        );
+
+        c.set("sync.strategy", "Rebase").unwrap();
+        c.set("sync.auto_flush", "false").unwrap();
+        c.set("sync.auto_sync_secs", "120").unwrap();
+        assert_eq!(c.sync.strategy, SyncStrategy::Rebase);
+        assert!(!c.sync.auto_flush);
+        assert_eq!(c.sync.auto_sync_secs, 120);
+        assert!(matches!(
+            c.set("sync.strategy", "squash"),
+            Err(SdkError::InvalidConfig(m)) if m.contains("merge or rebase")
+        ));
+        assert!(c.set("sync.auto_sync_secs", "-1").is_err());
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("strategy = \"rebase\""), "{text}");
+        let loaded = WorktreeConfig::load(&path).unwrap();
+        assert_eq!(loaded, c);
+        assert_eq!(loaded.get("sync.strategy").as_deref(), Some("rebase"));
+        assert_eq!(
+            c.toml_value("sync.auto_sync_secs"),
+            Some(Value::Integer(120))
+        );
+        assert!(c
+            .entries()
+            .iter()
+            .any(|(k, v)| k == "sync.auto_flush" && v == "false"));
     }
 
     #[test]

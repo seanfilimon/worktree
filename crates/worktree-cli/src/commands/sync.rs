@@ -24,6 +24,12 @@ pub struct PushArgs {
     /// Branch to push (default: the current branch)
     #[arg(long, value_name = "B")]
     pub branch: Option<String>,
+
+    /// If the server is unreachable, queue the push in the offline outbox
+    /// instead of failing (`wt sync queue` lists it, `wt sync flush` retries;
+    /// the daemon delivers it automatically with `sync.auto_flush`)
+    #[arg(long)]
+    pub queue: bool, // sync workstream (§15.5)
 }
 
 #[derive(Debug, Args)]
@@ -109,12 +115,49 @@ pub struct UnstageArgs {
 pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
+    // ---- sync workstream (§15.5): `wt push --queue` ----
+    if args.queue {
+        let out = block_on(remote::push_or_queue(
+            &repo,
+            &tree.name,
+            &remote,
+            args.branch.as_deref(),
+        ))??;
+        if let Some(entry) = &out.queued {
+            return ctx.out.emit(&out, |t| {
+                t.line(format_args!(
+                    "Server unreachable; queued push of {} ({}) to {remote}.",
+                    entry.branch.green(),
+                    short(&entry.tip).yellow()
+                ));
+                t.line("Run `wt sync flush` to retry (the daemon retries automatically).");
+            });
+        }
+        if let Some(report) = out.push {
+            return render_push(ctx, &remote, &report);
+        }
+        return Ok(());
+    }
     let report = block_on(remote::push(
         &repo,
         &tree.name,
         &remote,
         args.branch.as_deref(),
-    ))??;
+    ))?
+    .map_err(|e| {
+        let unreachable = remote::is_unreachable(&e);
+        let err = CliError::from(e);
+        if unreachable {
+            err.with_hint("use `wt push --queue` (or `wt sync`) to queue the push until the server is reachable")
+        } else {
+            err
+        }
+    })?;
+    // ---- end sync workstream ----
+    render_push(ctx, &remote, &report)
+}
+
+fn render_push(ctx: &Context, remote: &str, report: &remote::PushReport) -> Result<()> {
     ctx.out.emit(&report, |t| {
         if report.up_to_date {
             t.line(format_args!(

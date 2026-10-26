@@ -93,6 +93,7 @@ fn fast(interval: Duration) -> SyncSettings {
         interval: Some(interval),
         recheck: Duration::from_millis(200),
         healthy_stream: Duration::from_secs(30),
+        ..SyncSettings::default() // sync workstream (§15.5): outbox settings
     }
 }
 
