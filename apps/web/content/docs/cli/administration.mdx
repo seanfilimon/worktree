@@ -13,7 +13,12 @@ These commands talk to the server's REST API. They accept `--server URL` (or `WT
 wt tenant list
 wt tenant create [--name <N>] <SLUG>
 wt tenant show <TENANT>
-wt tenant rename <TENANT> <NAME>
+wt tenant set-name <TENANT> <NAME>
+wt tenant rename <TENANT> <NEW_SLUG>
+wt tenant delete [--yes] <TENANT>
+wt tenant restore <TENANT>
+wt tenant email set|verify|resend|clear <TENANT> [EMAIL|CODE]
+wt tenant switch [--remote <R>] <SLUG>
 wt tenant plan <TENANT> <free|pro|enterprise>
 wt tenant members <TENANT>
 wt tenant add-member [--role <R>] <TENANT> <USERNAME>
@@ -27,7 +32,8 @@ wt tenant deactivate [--reason <TEXT>] <TENANT>
 - `create` makes an organization tenant with you as `owner`. Every account also has a personal tenant whose slug is its username.
 - `add-member` defaults to `--role developer`; roles are the built-in ones or a [custom role](/docs/cli/iam#wt-role). Only owners can assign `owner`, and removing or demoting the last owner fails (`409 last_owner`). [`wt invite`](/docs/cli/iam#wt-invite) onboards people by code instead.
 - `plan` sets a label (`free`, `pro`, `enterprise`); it changes no limits. Server admins only.
-- **Status** (server admins only): `suspend` makes the tenant read-only (every write is refused with the reason, reads still work) and revokes nothing; `deactivate` refuses all access; `resume` lifts either. `--reason` is shown to members whose requests are refused. Server admins are never affected.
+- **Status** (server admins only): `suspend` makes the tenant read-only (every write is refused with the reason, reads still work) and revokes the tenant's service-account keys; `deactivate` refuses all access; `resume` lifts either. `--reason` is shown to members whose requests are refused. Server admins are never affected. Tenant grants naming a suspended tenant are paused.
+- **Lifecycle** (v0.8): `set-name` changes the display name; `rename` changes the slug (owners) and keeps the old slug reserved for 90 days, where it answers "tenant moved" with the new slug; inside a worktree, `switch` points the remote at the new slug. `email set` stores a contact email and sends a single-use code (24 h; written to the server log without SMTP), `email verify` redeems it; a verified email names the tenant in grants and license rules. `delete` suspends the tenant and purges it after a 30-day recovery window; `restore` cancels it.
 
 ```bash
 wt tenant create acme --name "Acme Corp"

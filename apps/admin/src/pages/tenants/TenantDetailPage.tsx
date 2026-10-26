@@ -20,6 +20,8 @@ import { RolesTab } from "@/pages/iam/RolesTab";
 import { ServiceAccountsTab } from "@/pages/iam/ServiceAccountsTab";
 import { TeamsTab } from "@/pages/iam/TeamsTab";
 import { WebhooksPanel } from "@/pages/webhooks/WebhooksPanel";
+import { movedTo } from "@/api/tenantLifecycle";
+import { TenantMovedNotice } from "./TenantMovedNotice";
 import { TenantStatusBadge } from "./opsShared";
 import { TenantMembersTab } from "./TenantMembersTab";
 import { TenantSettingsTab } from "./TenantSettingsTab";
@@ -95,7 +97,9 @@ export function TenantDetailPage() {
           )
         }
       />
-      {t.isError ? (
+      {t.isError && movedTo(t.error) ? (
+        <TenantMovedNotice from={slug} to={movedTo(t.error)!} />
+      ) : t.isError ? (
         <QueryError error={t.error} onRetry={() => void t.refetch()} title="Could not load tenant" />
       ) : (
         <Tabs value={tab} onValueChange={setTab} className="gap-4">
@@ -174,7 +178,9 @@ export function TenantDetailPage() {
               description="Tenant webhooks receive events from every tree of the tenant that their creator can read."
             />
           </TabsContent>
-          <TabsContent value="settings">{tenant && <TenantSettingsTab tenant={tenant} editable={manage} />}</TabsContent>
+          <TabsContent value="settings">
+            {tenant && <TenantSettingsTab tenant={tenant} editable={manage} owner={isAdmin || role === "owner"} />}
+          </TabsContent>
         </Tabs>
       )}
       {tenant && createTrees && <CreateTreeDialog open={creatingTree} onOpenChange={setCreatingTree} tenants={[tenant]} />}

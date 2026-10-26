@@ -72,7 +72,14 @@ fn tenant_lifecycle() {
         .args(["tenant", "create", "acme", "--name", "Acme"])
         .ok();
     olga.wt()
-        .args(["tenant", "add-member", "acme", "dave", "--role", "developer"])
+        .args([
+            "tenant",
+            "add-member",
+            "acme",
+            "dave",
+            "--role",
+            "developer",
+        ])
         .ok();
     let repo = olga.init("proj");
     repo.commit(&[("README.md", "# acme\n")], "initial");
@@ -115,15 +122,26 @@ fn tenant_lifecycle() {
         .args(["tenant", "rename", "acme", "acme-inc"])
         .fails();
     let renamed = wt_json(&olga, &["tenant", "rename", "acme", "acme-inc"]);
-    assert_eq!(renamed["tenant"]["slug"], "acme-inc", "{}", pretty(&renamed));
-    assert_eq!(renamed["reservation"]["slug"], "acme", "{}", pretty(&renamed));
+    assert_eq!(
+        renamed["tenant"]["slug"],
+        "acme-inc",
+        "{}",
+        pretty(&renamed)
+    );
+    assert_eq!(
+        renamed["reservation"]["slug"],
+        "acme",
+        "{}",
+        pretty(&renamed)
+    );
     // REST: the old slug answers 301 tenant_moved with the new slug.
     let moved = olga.api().get("/api/v1/tenants/acme");
     moved.assert_status(301);
     let body = moved.json();
     assert_eq!(body["error"]["code"], "tenant_moved", "{}", pretty(&body));
     assert_eq!(
-        body["error"]["details"]["new_slug"], "acme-inc",
+        body["error"]["details"]["new_slug"],
+        "acme-inc",
         "{}",
         pretty(&body)
     );
@@ -172,7 +190,10 @@ fn tenant_lifecycle() {
     assert_eq!(d["revoked_keys"], 1, "{}", pretty(&d));
     sa_api.get("/api/v1/tenants/acme-inc").assert_status(401);
     let shown = olga.wt().args(["tenant", "show", "acme-inc"]).ok();
-    assert!(shown.mentions("suspended") && shown.mentions("deletion"), "{shown}");
+    assert!(
+        shown.mentions("suspended") && shown.mentions("deletion"),
+        "{shown}"
+    );
     repo.commit(&[("NOTES.md", "while deleted\n")], "while deleted");
     let out = repo.wt().arg("push").fails();
     assert!(out.mentions("suspended") || out.mentions("denied"), "{out}");
