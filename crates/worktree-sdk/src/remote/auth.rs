@@ -56,6 +56,9 @@ struct ErrorBody {
     code: String,
     #[serde(default)]
     message: String,
+    /// tenant-lifecycle (v0.8): e.g. `tenant_moved` {old_slug, new_slug}.
+    #[serde(default)]
+    details: std::collections::HashMap<String, String>,
 }
 
 /// Log in to an account without a second factor and save the token in
@@ -235,7 +238,16 @@ fn api_error_message(body: &str) -> Option<String> {
 /// message. Bodies that are not the JSON error envelope are summarized.
 pub(crate) fn map_api_error(server: &str, status: u16, body: &str) -> SdkError {
     let (code, message) = match serde_json::from_str::<ErrorEnvelope>(body) {
-        Ok(env) => (env.error.code, env.error.message),
+        Ok(mut env) => {
+            // tenant-lifecycle (v0.8 §16.4): renamed tenants.
+            if env.error.code == "tenant_moved" {
+                if let Some(new) = env.error.details.remove("new_slug") {
+                    let old = env.error.details.remove("old_slug").unwrap_or_default();
+                    return SdkError::TenantMoved { old, new };
+                }
+            }
+            (env.error.code, env.error.message)
+        }
         Err(_) => (String::new(), summarize_body(body)),
     };
     if code == "unauthenticated" || status == 401 {
@@ -386,6 +398,22 @@ mod tests {
         }
         match map_api_error(SERVER, 500, "") {
             SdkError::Remote(m) => assert!(m.contains(SERVER) && m.contains("HTTP 500"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_tenant_moved() {
+        let body = r#"{"error":{"code":"tenant_moved","message":"renamed","details":{"old_slug":"acme","new_slug":"acme-inc"}}}"#;
+        match map_api_error(SERVER, 301, body) {
+            SdkError::TenantMoved { old, new } => {
+                assert_eq!((old.as_str(), new.as_str()), ("acme", "acme-inc"))
+            }
+            other => panic!("{other:?}"),
+        }
+        // Without details it stays a generic remote error.
+        match map_api_error(SERVER, 301, &envelope("tenant_moved", "renamed")) {
+            SdkError::Remote(m) => assert!(m.contains("tenant_moved"), "{m}"),
             other => panic!("{other:?}"),
         }
     }

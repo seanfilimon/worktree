@@ -454,6 +454,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Tenant"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -464,9 +466,14 @@ paths:
       operationId: patchTenant
       summary: Update a tenant
       description: |
-        Renames the tenant (`tenant:admin`) and/or changes its plan
-        (`free|pro|enterprise`, server administrators only). At least one
-        field is required. Audited as `tenant.update`.
+        Changes the display name (`tenant:admin`), the plan
+        (`free|pro|enterprise`, server administrators only) and/or the
+        contact email (`tenant:admin`, v0.8 §16.4; `""` clears it). A new
+        email is stored unverified and a single-use verification code
+        (24 h) is mailed to it, or written to the server log when SMTP is
+        not configured. At least one field is required. Audited as
+        `tenant.update` / `tenant.email`. The slug changes with
+        `POST /tenants/{tenant}/rename`.
       tags: [Tenants]
       x-wt-action: ['tenant:admin', 'server:admin']
       requestBody:
@@ -482,6 +489,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Tenant"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -490,6 +499,251 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteTenant
+      summary: Delete a tenant (30-day recovery window)
+      description: |
+        tenant-lifecycle (v0.8 §16.4). Owners (or server admins) schedule
+        the deletion of an organization tenant: it is suspended at once
+        (read-only; writes answer `tenant_suspended`), its service-account
+        keys are revoked, and after the recovery window
+        (`--tenant-deletion-window`, default 30 days) the purge job deletes
+        its trees, memberships, teams, service accounts, roles, policies,
+        invitations, tenant grants naming it and its documents, publishes
+        `tenant.deleted` and keeps the slug reserved for 90 days.
+        `POST /tenants/{tenant}/restore` cancels it. Personal tenants cannot
+        be deleted (`409 personal_tenant`); a second request answers
+        `409 deletion_scheduled`. Audited as `tenant.delete`.
+      tags: [Tenants]
+      x-wt-action: ['tenant:admin', 'server:admin']
+      responses:
+        "202":
+          description: The scheduled deletion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantDeletion"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/deletion:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    get:
+      operationId: getTenantDeletion
+      summary: Get a tenant's scheduled deletion
+      description: "tenant-lifecycle (v0.8 §16.4). The scheduled deletion with its `purge_at` (for countdowns), or `404 deletion_not_scheduled`."
+      tags: [Tenants]
+      x-wt-action: tenant:read
+      responses:
+        "200":
+          description: The scheduled deletion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantDeletion"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/restore:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    post:
+      operationId: restoreTenant
+      summary: Restore a tenant scheduled for deletion
+      description: "tenant-lifecycle (v0.8 §16.4). Owners (or server admins) cancel a scheduled deletion during the recovery window; the tenant gets back its previous status. Revoked service-account keys stay revoked. `404 deletion_not_scheduled` when none is scheduled. Audited as `tenant.restore`."
+      tags: [Tenants]
+      x-wt-action: ['tenant:admin', 'server:admin']
+      responses:
+        "200":
+          description: The restored tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/rename:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    post:
+      operationId: renameTenant
+      summary: Change a tenant's slug
+      description: |
+        tenant-lifecycle (v0.8 §16.4). Needs `tenant:admin` and the owner
+        role (or a server admin). The old slug is reserved for 90 days:
+        REST requests naming it answer `301 tenant_moved` (with
+        `error.details.new_slug`), gRPC answers NotFound with an
+        `ErrorInfo` (reason `TENANT_MOVED`), and no other tenant or account
+        can claim it. Policy resources and `tenant:` principals, license
+        grantees and tenant grants are rewritten to the new slug.
+        Personal tenants cannot be renamed (`409 personal_tenant`); a taken
+        or reserved slug answers `409 slug_taken` / `409 slug_reserved`.
+        Publishes `tenant.renamed`; audited as `tenant.rename`.
+      tags: [Tenants]
+      x-wt-action: tenant:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameTenantRequest"
+      responses:
+        "200":
+          description: The renamed tenant and the reservation of its old slug.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenameTenantResponse"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/email/verify:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    post:
+      operationId: verifyTenantEmail
+      summary: Verify a tenant's contact email
+      description: "tenant-lifecycle (v0.8 §16.4). Public: the single-use code (24 h) proves control of the mailbox. It must have been sent to the tenant's current address; every unusable code answers `400 invalid_email_token`. A verified email names the tenant in grantee references (tree grants with `subject_type: tenant`, license-rule grantees). `409 email_taken` when another tenant verified the same address. Audited as `tenant.email_verified`."
+      tags: [Tenants]
+      x-wt-action: public
+      security: [{}, {bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailTokenRequest"
+      responses:
+        "200":
+          description: The tenant with `email_verified_at` set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/tenants/{tenant}/email/resend:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    post:
+      operationId: resendTenantEmailVerification
+      summary: Send a new tenant email verification code
+      description: "tenant-lifecycle (v0.8 §16.4). Earlier codes stop working. `409 no_email` / `409 email_already_verified`."
+      tags: [Tenants]
+      x-wt-action: tenant:admin
+      responses:
+        "202":
+          description: Where the code went.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailVerificationSent"
+        "301":
+          $ref: "#/components/responses/TenantMoved"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/me/email/verify:
+    post:
+      operationId: verifyMyEmail
+      summary: Verify your account email
+      description: "tenant-lifecycle (v0.8 §16.4). Redeems a code sent by `POST /me/email/resend` and sets the account's `email_verified_at`. Every unusable code answers `400 invalid_email_token`. Audited as `account.email_verified`."
+      tags: [Auth]
+      x-wt-action: authenticated
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailTokenRequest"
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/me/email/resend:
+    post:
+      operationId: resendMyEmailVerification
+      summary: Send an account email verification code
+      description: "tenant-lifecycle (v0.8 §16.4). Mails a single-use code (24 h) to the account's email, or logs it when SMTP is not configured. Earlier codes stop working. `409 email_already_verified`."
+      tags: [Auth]
+      x-wt-action: authenticated
+      responses:
+        "202":
+          description: Where the code went.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailVerificationSent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/tenants/{tenant}/members:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -7988,6 +8242,16 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    TenantMoved:
+      description: "`tenant_moved` (v0.8 §16.4): the tenant was renamed and this is its old slug (reserved for 90 days). No `Location` header is sent, so clients do not follow it; `error.details.new_slug` and the `X-WT-Tenant-Moved` header carry the new slug."
+      headers:
+        X-WT-Tenant-Moved:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
   schemas:
     APIToken:
       type: object
@@ -9174,6 +9438,11 @@ components:
           type: string
         message:
           type: string
+        details:
+          type: object
+          description: "Machine-readable extras of some errors (v0.8), e.g. `tenant_moved`: `old_slug`, `new_slug`."
+          additionalProperties:
+            type: string
     Event:
       type: object
       description: "Event is published on the EventBus and streamed to clients over SSE."
@@ -9959,6 +10228,9 @@ components:
           type: [string, "null"]
         plan:
           type: [string, "null"]
+        email:
+          type: [string, "null"]
+          description: "Contact email (v0.8 §16.4); \"\" clears it. A new address is unverified and receives a verification code."
     PatchTenantStatusRequest:
       type: object
       properties:
@@ -11257,6 +11529,82 @@ components:
         role:
           type: string
           description: "team role: maintainer | member"
+    EmailTokenRequest:
+      type: object
+      description: "A one-time email verification code (`wte_…`, v0.8 §16.4)."
+      properties:
+        token:
+          type: string
+    EmailVerificationSent:
+      type: object
+      description: "Where a verification code went: `email` (queued on the SMTP mailer) or `log` (SMTP is not configured; the code is in the server log). Codes expire after 24 hours and are single use."
+      required: [email, delivery, expires_at]
+      properties:
+        email:
+          type: string
+        delivery:
+          type: string
+          enum: [email, log]
+        expires_at:
+          type: string
+          format: date-time
+    RenameTenantRequest:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: "The new slug (organization slug rules)."
+    RenameTenantResponse:
+      type: object
+      required: [tenant, reservation]
+      properties:
+        tenant:
+          $ref: "#/components/schemas/Tenant"
+        reservation:
+          $ref: "#/components/schemas/SlugReservation"
+    SlugReservation:
+      type: object
+      description: "An old slug reserved for 90 days after a rename (or after a purge); requests naming it answer `tenant_moved`."
+      required: [slug, tenant_id, reserved_at, expires_at]
+      properties:
+        slug:
+          type: string
+        tenant_id:
+          type: string
+        renamed_to:
+          type: string
+          description: "The slug it was renamed to (absent for purged tenants)."
+        reserved_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    TenantDeletion:
+      type: object
+      description: "A scheduled tenant deletion: the tenant is suspended (read-only) until `purge_at`, when the purge job deletes its trees, memberships, teams, service accounts, grants and documents."
+      required: [tenant_id, slug, requested_by, requested_at, purge_at, revoked_keys]
+      properties:
+        tenant_id:
+          type: string
+        slug:
+          type: string
+        requested_by:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+        purge_at:
+          type: string
+          format: date-time
+        previous_status:
+          type: string
+          description: "Status restored by `POST /tenants/{t}/restore`."
+        previous_status_reason:
+          type: string
+        revoked_keys:
+          type: integer
+          description: "Service-account keys revoked when the deletion started (not restored)."
     Tenant:
       type: object
       required: [id, slug, name, kind, plan, created_at]

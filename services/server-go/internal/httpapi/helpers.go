@@ -95,6 +95,11 @@ func (a *api) tenantByRef(ctx context.Context, ref string) (*domain.Tenant, erro
 	if t, err2 := a.d.Store.GetTenant(ctx, ref); err2 == nil {
 		return t, nil
 	}
+	// tenant-lifecycle (§16.4): verified tenant emails resolve; renamed
+	// slugs answer tenant_moved with the new slug.
+	if t, err := a.tenantByEmailOrMoved(ctx, ref); t != nil || err != nil {
+		return t, err
+	}
 	return nil, notFoundf("tenant %q not found", ref)
 }
 

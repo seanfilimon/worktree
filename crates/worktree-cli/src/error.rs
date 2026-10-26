@@ -132,6 +132,10 @@ fn sdk_hint(err: &SdkError) -> Option<String> {
             "run `wt pull` to integrate the remote changes, then push again".into()
         }
         SdkError::DaemonNotRunning => "start it with `wt daemon start`".into(),
+        // tenant-lifecycle (§16.4)
+        SdkError::TenantMoved { new, .. } => format!(
+            "use the new slug; inside a worktree, update the remote with `wt tenant switch {new}`"
+        ),
         _ => return None,
     };
     Some(hint)
@@ -188,6 +192,13 @@ mod tests {
                 "wt remote add",
             ),
             (SdkError::SecretsDetected("a.env".into()), "--no-scan"),
+            (
+                SdkError::TenantMoved {
+                    old: "acme".into(),
+                    new: "acme-inc".into(),
+                },
+                "wt tenant switch acme-inc",
+            ),
         ];
         for (err, needle) in cases {
             let message = err.to_string();

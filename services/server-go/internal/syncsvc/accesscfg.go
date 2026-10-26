@@ -111,7 +111,7 @@ func (s *Service) accessTenant(ctx context.Context, id *syncpb.TenantId) (*domai
 	}
 	tenant, err := s.d.Store.GetTenant(ctx, ref)
 	if errors.Is(err, domain.ErrNotFound) {
-		tenant, err = s.d.Store.GetTenantBySlug(ctx, ref)
+		return s.tenantBySlug(ctx, ref) // tenant-lifecycle (§16.4)
 	}
 	if err != nil {
 		return nil, s.toStatus(ctx, err, "tenant")

@@ -374,6 +374,9 @@ func (a *api) handleDeleteTag(w http.ResponseWriter, r *http.Request) error {
 type patchTenantRequest struct {
 	Name *string `json:"name"`
 	Plan *string `json:"plan"`
+	// tenant-lifecycle (§16.4): contact email ("" clears it); a new
+	// address is unverified and receives a verification code.
+	Email *string `json:"email"`
 }
 
 // handlePatchTenant answers PATCH /api/v1/tenants/{tenant}. Tenant admins
@@ -391,9 +394,16 @@ func (a *api) handlePatchTenant(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeJSON(w, r, &req); err != nil {
 		return err
 	}
-	if req.Name == nil && req.Plan == nil {
-		return badRequestf("at least one of name, plan is required")
+	if req.Name == nil && req.Plan == nil && req.Email == nil {
+		return badRequestf("at least one of name, plan, email is required")
 	}
+	// ---- tenant-lifecycle (§16.4) ----
+	if req.Email != nil {
+		if err := a.checkTenantEmailPatch(*req.Email); err != nil {
+			return err
+		}
+	}
+	// ---- end tenant-lifecycle ----
 	ctx := r.Context()
 	details := map[string]string{}
 	if req.Name != nil {
@@ -422,10 +432,19 @@ func (a *api) handlePatchTenant(w http.ResponseWriter, r *http.Request) error {
 		details["previous_plan"] = t.Plan
 		t.Plan = *req.Plan
 	}
-	if err := a.d.Store.UpdateTenant(ctx, t); err != nil {
-		return err
+	if req.Name != nil || req.Plan != nil {
+		if err := a.d.Store.UpdateTenant(ctx, t); err != nil {
+			return err
+		}
+		a.audit(r, "tenant.update", t.ID, "tenant", t.ID, details)
 	}
-	a.audit(r, "tenant.update", t.ID, "tenant", t.ID, details)
+	// ---- tenant-lifecycle (§16.4) ----
+	if req.Email != nil {
+		if t, err = a.patchTenantEmail(r, t, *req.Email); err != nil {
+			return err
+		}
+	}
+	// ---- end tenant-lifecycle ----
 	writeJSON(w, http.StatusOK, t)
 	return nil
 }

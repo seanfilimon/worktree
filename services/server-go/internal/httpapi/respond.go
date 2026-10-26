@@ -32,6 +32,11 @@ type apiError struct {
 	status int
 	code   string
 	msg    string
+
+	// tenant-lifecycle (§16.4): extra envelope fields (error.details) and
+	// response headers, e.g. the new slug of a renamed tenant.
+	details map[string]string
+	headers map[string]string
 }
 
 func (e *apiError) Error() string { return e.msg }
@@ -62,6 +67,9 @@ type errorBody struct {
 type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Details carries machine-readable extras of some errors (v0.8, e.g.
+	// tenant_moved: old_slug, new_slug).
+	Details map[string]string `json:"details,omitempty"`
 }
 
 // classify maps err onto an HTTP status, envelope code and client-facing
@@ -114,7 +122,14 @@ func (a *api) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if status == http.StatusForbidden {
 		a.auditDenied(r, code, msg)
 	}
-	writeJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: msg}})
+	body := errorBody{Error: errorDetail{Code: code, Message: msg}}
+	if ae := (*apiError)(nil); errors.As(err, &ae) {
+		body.Error.Details = ae.details
+		for k, v := range ae.headers {
+			w.Header().Set(k, v)
+		}
+	}
+	writeJSON(w, status, body)
 }
 
 // auditDenied records access.denied for a 403 answered by the REST API

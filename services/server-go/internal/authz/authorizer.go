@@ -567,6 +567,19 @@ func (a *Authorizer) heldRoles(ctx context.Context, c *requestCache, s *subject,
 				held = append(held, heldRole{source: SourceTeamRole, role: strings.ToLower(g.Role), via: fmt.Sprintf("team %s grant on tree %q", team, res.Tree.Name), tree: true})
 			}
 		case domain.SubjectTenant:
+			// ---- tenant-lifecycle (§16.4): grants naming a suspended or
+			// deactivated tenant are paused (resuming it restores them) ----
+			if gt, err := a.tenant(ctx, c, g.SubjectID); err != nil {
+				return nil, err
+			} else if gt != nil && (gt.Status == domain.TenantSuspended || gt.Status == domain.TenantDeactivated) {
+				if in, err := a.inTenant(ctx, c, s, g.SubjectID); err != nil {
+					return nil, err
+				} else if in {
+					e.info(SourceTreeGrant, "tenant %s grant on tree %q is paused: tenant %s is %s", gt.Slug, res.Tree.Name, gt.Slug, gt.Status)
+				}
+				continue
+			}
+			// ---- end tenant-lifecycle ----
 			in, err := a.inTenant(ctx, c, s, g.SubjectID)
 			if err != nil {
 				return nil, err

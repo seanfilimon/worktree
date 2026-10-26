@@ -77,6 +77,9 @@ func (a *api) handleCreateTenant(w http.ResponseWriter, r *http.Request) error {
 	if err := validateSlug(req.Slug); err != nil {
 		return err
 	}
+	if err := a.checkSlugNotReserved(r.Context(), req.Slug); err != nil { // tenant-lifecycle (§16.4)
+		return err
+	}
 	if req.Name == "" {
 		req.Name = req.Slug
 	}
@@ -356,6 +359,7 @@ func (a *api) handleAdminPatchTenant(w http.ResponseWriter, r *http.Request) err
 	if cur == "" {
 		cur = domain.TenantActive
 	}
+	a.onTenantSuspended(r, t, prev, cur) // tenant-lifecycle (§16.4): revokes service-account keys
 	a.audit(r, "tenant.status", t.ID, "tenant", t.ID, map[string]string{
 		"slug": t.Slug, "status": cur, "previous_status": prev,
 		"status_reason": t.StatusReason, "previous_status_reason": prevReason})

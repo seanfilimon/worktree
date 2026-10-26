@@ -113,6 +113,8 @@ type Deps struct {
 	Forks      *fork.Service
 	Scan       *scan.Service
 	TreeConfig *treeconfig.Service
+	// tenant-lifecycle (§16.4): email verification, renames, deletion.
+	TenantLifecycle *iam.TenantLifecycle
 
 	// hardening (§15.10): Pprof serves the Go runtime profiles at
 	// /debug/pprof to server admins; false = those routes answer 404.
