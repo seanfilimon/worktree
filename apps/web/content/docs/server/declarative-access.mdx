@@ -3,7 +3,6 @@ title: Declarative Access
 description: Keep custom roles and policies as TOML files in the worktree, review them like code, and apply them to a tenant or tree with wt access validate, plan, apply and pull.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 Custom roles and policies can live as TOML files in the worktree. You review changes to them like code and apply them to a server tenant in the style of Terraform: validate locally, show a plan, apply. The files describe the same objects as the IAM REST API (see [Access control](/docs/server/access-control)); applying a document replaces only the roles and policies that earlier applies of the same document created. See the [Declarative Access specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/DeclarativeAccess.md).

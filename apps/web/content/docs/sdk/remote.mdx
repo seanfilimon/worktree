@@ -3,7 +3,6 @@ title: Remote API
 description: The worktree_sdk::remote module — saved credentials, login with MFA and registration, ping, push, fetch, pull, clone with shallow options, staged snapshots, branch watching, declarative access, and the low-level gRPC and REST clients.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 `worktree_sdk::remote` is the client for the W0rkTree server. It speaks the gRPC `worktree.sync.v1.SyncService` and the REST API on the same base URL (for example `http://localhost:7420`, or `https://...` for a server with TLS). The `wt` remote commands, the daemon's auto-staging and background fetch are built on these functions. The wire-level flows are described in [Sync protocol](/docs/protocol/sync-protocol).
 

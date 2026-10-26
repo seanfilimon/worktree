@@ -3,7 +3,6 @@ title: Daemon
 description: Run the worktree-bg background daemon that watches worktrees, takes automatic snapshots, stages work in progress, and fetches remote branches as they change.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 The background daemon is a separate binary, `worktree-bg` (crate `worktree-bg`, installed with `cargo install --path crates/worktree-bg`). You normally control it through `wt daemon`. One daemon per user (per `$WT_HOME`) serves all your worktrees. For each watched worktree it:

@@ -3,7 +3,6 @@ title: License Rules
 description: Assign SPDX licenses to paths in a tree and control what other tenants may read, push and export, per tenant and with expiry.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 License rules attach an SPDX license expression and a **grant** to a set of paths in a tree. The grant decides what principals **outside the tree's owning tenant** may do with those paths: read, write (push) and export. The server enforces rules on every read, push and export, **in addition to IAM**: an operation must be allowed by both.
 

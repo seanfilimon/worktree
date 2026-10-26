@@ -3,7 +3,6 @@ title: Event Stream (SSE)
 description: Subscribe to live server activity such as pushes, staged snapshots, reviews, CI results, TODOs and releases over Server-Sent Events.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 The server publishes an event whenever something visible to a team happens: a branch is pushed, a snapshot is staged, a merge request is reviewed, a CI check reports, a TODO is created. Clients subscribe with a long-lived HTTP request that returns `text/event-stream` (Server-Sent Events). The admin panel's activity feed and `wt events` use this stream.

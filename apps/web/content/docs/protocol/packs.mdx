@@ -3,7 +3,6 @@ title: Pack and Delta Transfer
 description: Since v0.8 pushes, fetches and clones move objects as one pack with copy/insert deltas and zstd compression; pack uploads are resumable. The format, the UploadPack, QueryUpload and DownloadPack RPCs, client behaviour, server limits and metrics.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Before v0.8 every object travelled whole: a one-line edit to a 100 KB file re-sent 100 KB (gzip-compressed by gRPC). Since v0.8 the client and the server exchange **packs**: one byte stream carrying many objects, each either whole or as a **copy/insert delta** against an object the receiver already has, each payload optionally zstd-compressed, with a BLAKE3 checksum over the whole stream. The [Packs specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/Packs.md) is normative.
 

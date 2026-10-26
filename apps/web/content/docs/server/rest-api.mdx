@@ -3,7 +3,6 @@ title: REST API Reference
 description: Reference for the worktree-server REST API - authentication, errors, the core endpoints with request and response bodies, and a catalogue of every endpoint group.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 The REST API is served under `/api/v1` on the same port as gRPC (default `http://localhost:7420`). Requests and responses are JSON unless noted, and JSON field names are the `json` tags of the Go types in `services/server-go/internal/domain`. The admin panel and the server-side `wt` commands (`wt mr`, `wt trees`, `wt iam`, `wt admin`, ...) use this API; anything they can do, you can script.

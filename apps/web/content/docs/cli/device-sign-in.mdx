@@ -3,7 +3,6 @@ title: Device Sign-in and Refresh Tokens
 description: wt login --device signs in through the browser with the OAuth 2.0 device flow; since v0.8 every login returns a one-hour access token and a rotating, single-use refresh token that the CLI renews transparently.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Since v0.8 interactive logins produce a **token pair** instead of one 30-day session token, and machines without a browser (or where typing a password is undesirable) can sign in with the **device flow** (OAuth 2.0 device authorization grant, RFC 8628). The [Device authorization specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/security/DeviceAuth.md) is normative.
 

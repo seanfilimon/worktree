@@ -3,7 +3,6 @@ title: Snapshot Signing
 description: Sign snapshots with Ed25519 keys, register the public keys on the server, verify signatures locally, and require signed history on protected branches with wt identity and [signing].
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 Snapshots and tags can carry an Ed25519 signature made with a key that never leaves your machine. The server verifies signatures on push and marks the snapshot or tag **verified**; branch and tag protection can require it. Signed tags are what make a release verifiable; see [Signed tags](#signed-tags) and [Release integrity](/docs/server/release-integrity). The server-side commands below accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#wt-identity).

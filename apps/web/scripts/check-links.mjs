@@ -64,7 +64,12 @@ function addRoute(route, anchors, file) {
 
 // Static app routes (dynamic segments are covered by content collections).
 for (const file of walk(join(root, "app"), /^page\.tsx$/)) {
-  const rel = toPosix(relative(join(root, "app"), file)).replace(/\/?page\.tsx$/, "");
+  const rel = toPosix(relative(join(root, "app"), file))
+    .replace(/\/?page\.tsx$/, "")
+    // Route groups such as (site) do not appear in URLs.
+    .split("/")
+    .filter((segment) => !/^\(.*\)$/.test(segment))
+    .join("/");
   if (rel.includes("[")) continue;
   const source = readFileSync(file, "utf8");
   const ids = new Set(

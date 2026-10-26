@@ -3,7 +3,6 @@ title: Dependencies, TODOs and Releases
 description: Declare that a snapshot needs work in another tree, track the resulting TODOs, gate merges on them, and publish releases with assets using wt snapshot --depend, wt todo, wt deps and wt release.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 These commands talk to the server's REST API. They accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. A `TREE` argument is written `tenant/tree`; inside a worktree it defaults to the origin tenant plus the current tree's remote name. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#wt-todo).

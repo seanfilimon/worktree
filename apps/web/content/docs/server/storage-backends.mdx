@@ -3,7 +3,6 @@ title: S3 Storage and Backups
 description: Keep server objects on local disk or in an S3-compatible bucket, take consistent online backups (.wtbak) on demand or on a schedule, and restore or migrate them offline with worktree-server restore.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 Since v0.7 the server keeps its objects either on local disk (the default) or in an S3-compatible bucket, and it writes point-in-time **backups** of everything it stores (the metadata database and every object) into one `.wtbak` archive. The [Storage backends specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Backends.md) is normative; the data directory layout is described in [Storage](/docs/server/storage).

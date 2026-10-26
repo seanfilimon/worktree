@@ -4,7 +4,9 @@ import {
   defineConfig,
   frontmatterSchema,
 } from "fumadocs-mdx/config";
+import { rehypeCodeDefaultOptions } from "fumadocs-core/mdx-plugins";
 import { z } from "zod";
+import { codeThemes } from "./lib/code-themes";
 
 export const docs = defineDocs({
   dir: "content/docs",
@@ -41,6 +43,10 @@ export const maintainers = defineDocs({
 
 export default defineConfig({
   mdxOptions: {
-    // rehype/remark plugins can be added here
+    // Grayscale highlighting shared with better-iam.com (lib/code-themes.ts).
+    rehypeCodeOptions: {
+      ...rehypeCodeDefaultOptions,
+      themes: codeThemes,
+    },
   },
 });

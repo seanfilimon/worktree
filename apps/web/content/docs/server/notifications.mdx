@@ -3,7 +3,6 @@ title: Notifications
 description: Every account has an inbox of review requests, mentions, CI failures and activity in watched trees - read it with wt inbox, the admin panel bell or the REST API, set watch levels per tree or tenant, and get email through SMTP.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Every user account has an **inbox** of notifications: short records of something on the server that involves you (a review request, an `@mention`, a CI failure on your merge request, ...) or that happened in a tree you watch. The server creates them from the same events it streams over SSE and delivers to webhooks, so nothing has to be configured for the defaults to work. The [Notifications specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Notifications.md) is normative.
 

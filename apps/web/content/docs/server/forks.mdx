@@ -3,7 +3,6 @@ title: Forks
 description: Fork a server tree into another tenant, keep the fork in sync with its upstream, and propose changes back with merge requests from the fork (v0.8).
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 A **fork** is a server tree created as a copy of another tree, its **upstream**, usually in another tenant. It starts with the upstream's branches (all or a chosen set) and tags and has its own history from then on. People who may not push to a tree can still work on it: they fork it into their own tenant, push there, and open a **merge request from the fork** in the upstream, which the upstream's maintainers review and merge with their usual permissions. The [Forks specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Forks.md) is normative.
 

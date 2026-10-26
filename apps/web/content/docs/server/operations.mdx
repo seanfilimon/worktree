@@ -3,7 +3,6 @@ title: Operations
 description: Run worktree-server day to day - TLS, trusted proxies, garbage collection and retention, object compression and fsck, webhook targets, tenant quotas, rate limiting, tenant status and the wt admin commands.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 This page covers the knobs a server admin turns after the server is running. Every `wt admin` command needs a server admin account; `wt` finds the server from `--server URL` (or `WT_SERVER`), else the worktree's origin, else the only saved login. All commands accept `--json`. For health probes, metrics and the audit log, see [Monitoring](/docs/server/monitoring).
 

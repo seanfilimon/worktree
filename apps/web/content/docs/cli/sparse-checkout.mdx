@@ -3,7 +3,6 @@ title: Sparse Checkout and Partial Clones
 description: Check out only the paths you work on with wt sparse, and clone a large tree with wt clone --sparse so only those paths are downloaded - everything else arrives on demand.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 A **sparse checkout** writes only part of a tree to the working directory: the files matching the tree's sparse patterns. A **partial clone** goes one step further and downloads only the content of those files; everything else is downloaded on demand when an operation needs it (diff, merge, blame, checkout after widening the set). Both are local features of the client: the server and the protocol are unchanged, a partial clone simply asks for fewer objects. The [Sparse checkout specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/SparseCheckout.md) is normative.
 

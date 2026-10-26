@@ -3,7 +3,6 @@ title: Git Mirrors
 description: Push mirrors keep a copy of a server tree in a Git repository on GitHub, GitLab or your own Git server - deterministic commits, license-aware content, force-with-lease pushes, credentials that never reach a command line.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 A **mirror** keeps a copy of a server tree in a Git repository elsewhere: GitHub, GitLab, Gitea or a company Git server. It is a *push* mirror: the W0rkTree server is the source of truth, exports the tree's snapshots as Git commits and pushes the mirrored branches and tags after every push and on demand. Nothing is fetched back. The [Mirrors specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Mirrors.md) is normative.
 

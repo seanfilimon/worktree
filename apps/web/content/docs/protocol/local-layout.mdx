@@ -3,7 +3,6 @@ title: Local Layout
 description: The on-disk format of a W0rkTree worktree — the .wt/ directory, config.toml, nested .wt-tree/ markers, hooks and access files, per-user $WT_HOME files, and ignore rules.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Everything W0rkTree knows about a worktree lives in one `.wt/` directory at the worktree root. Per-user state (credentials, user configuration, signing keys, the daemon) lives separately in `$WT_HOME`. The authoritative description is the module documentation of `crates/worktree-sdk/src/repo/mod.rs` and the [`.wt/`](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt/DotWt.md) and [`.wt-tree/`](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/DotWtTree.md) specifications; this page summarizes them.
 

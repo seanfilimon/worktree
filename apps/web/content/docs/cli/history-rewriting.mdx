@@ -3,7 +3,6 @@ title: Cherry-pick, Rebase and Stash
 description: Copy snapshots between branches with wt cherry-pick, replay unpushed work onto a new base with wt rebase, set changes aside with wt stash, and auto-stash on branch switches.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Three local tools reshape work before it is shared. They act on the selected tree (`--tree NAME` or the tree containing the current directory), reuse the three-way merge engine of [`wt merge`](/docs/cli/branches#wt-merge), and stop on conflicts the same way. The [History rewriting specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/HistoryRewriting.md) is normative.
 

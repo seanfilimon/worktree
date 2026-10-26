@@ -3,7 +3,6 @@ title: Server Operations
 description: v0.8 operations features - backups straight to S3 with age and count retention, a durable email outbox with retries and dead letters, the retention pass for policy versions, audit events and webhook deliveries, and the optional Helm resources.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 v0.8 adds three operational features to the server: **backups to object storage**, a **durable email outbox**, and a **retention pass** that keeps operational history bounded. Every setting is a flag with a `WT_*` environment variable; ages accept Go durations (`720h`) or whole days (`30d`). The [Deployment specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Deployment.md) (§11) and the operator guide [`docs/deploy.md`](https://github.com/seanfilimon/worktree/blob/main/docs/deploy.md) are the full references. Server administrators see all three on the admin panel's **Backups** page.
 

@@ -3,7 +3,6 @@ title: Code Search
 description: Search file contents and symbol definitions across every tree you can read with wt search code or the REST API - literal, RE2 and symbol queries, any branch or all branches, a persistent on-disk index, and access rules.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Code search answers "which lines of which files contain X" and "where is the function, type or constant X defined" across the trees you may read. By default it searches the **tip of each tree's default branch**; a query may name another branch or ask for all branch tips. Code matching is line based, like `grep`. Since v0.7 the index is **persistent** (it survives restarts) and also holds **symbols**. The [Code search specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/CodeSearch.md) is normative.
 

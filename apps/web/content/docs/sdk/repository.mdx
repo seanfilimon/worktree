@@ -3,7 +3,6 @@ title: Repository API
 description: The worktree_sdk::Repository API grouped by area — lifecycle, trees, status and snapshots, revisions, branches, merge and conflict resolution, revert and restore, diff, tags, reflog, ignores, shallow and restricted paths, and low-level store and ref operations.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 `worktree_sdk::Repository` is the local engine over one `.wt/` directory. Every method that acts on history takes a **tree name** (`tree: &str`); use `root_tree()` or `tree_for_path()` to pick one. All methods are synchronous and return `worktree_sdk::Result<T>`. Mutating methods take the tree's `LOCK`, so they are safe to call while the daemon runs. Signatures below are those in `crates/worktree-sdk/src/repo/`.
 

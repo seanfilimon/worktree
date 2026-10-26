@@ -3,7 +3,6 @@ title: Config as Code
 description: Since v0.8 the server applies a tree's .wt-tree/branches.toml, protections.toml and access policies from its default branch, validates every config file on push with located errors, and records the applied configuration.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 A tree's shared [`.wt-tree/` files](/docs/cli/configuration#shared-tree-files) are versioned with its code. Since v0.8 some of them are **authoritative server configuration**: when a push or a server-side merge moves the tree's **default branch** and changes one of them, the server
 

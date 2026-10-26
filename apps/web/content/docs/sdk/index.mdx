@@ -3,8 +3,6 @@ title: Rust SDK
 description: The worktree-sdk crate — the local W0rkTree engine used by wt, worktree-bg, and worktree-git, and how to embed it in your own Rust tools.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-import { Card, Cards } from 'fumadocs-ui/components/card';
 
 `worktree-sdk` (`crates/worktree-sdk`) is the local W0rkTree engine. Everything that touches a `.wt/` directory lives in this crate; the CLI (`wt`), the background daemon (`worktree-bg`), and the Git bridge (`worktree-git`) are thin layers over it. Anything `wt` can do, an embedding program can do too: editor integrations, CI helpers, migration scripts, or custom clients.
 

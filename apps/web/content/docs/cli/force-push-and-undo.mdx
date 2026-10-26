@@ -3,7 +3,6 @@ title: Undo, Force Push and Remote Tag Deletion
 description: wt undo and wt redo restore refs from the local operation log; wt push --force rewinds a server branch with lease semantics; --bypass-protection, no_force_push, the server reflog, push idempotency and wt tag delete --remote (v0.8).
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Two kinds of mistakes are hard to fix in a version control system: a **local** operation that did something unexpected (a merge into the wrong branch, a rebase onto the wrong base, a deleted branch, a dropped stash entry), and a **shared** branch that holds history that should not be there (a pushed secret, a bad merge). Since v0.8 every local mutation is recorded in an operation log that `wt undo` and `wt redo` replay, and an administrator can **force-push** a rewritten branch. The [Undo specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Undo.md) is normative.
 

@@ -3,8 +3,6 @@ title: Architecture
 description: How the wt CLI, the Rust SDK, the background daemon, the Go server, the admin panel and the Git bridge fit together in W0rkTree v0.2.0.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-import { Card, Cards } from 'fumadocs-ui/components/card';
 
 W0rkTree v0.2.0 ("v2 rebuild") is a client/server version control system. A Rust client works on a local `.wt/` repository and synchronizes with a Go server that holds the team's canonical history. This page explains the pieces, where data lives, and what happens on the wire for push, pull and stage.
 

@@ -3,7 +3,6 @@ title: Webhooks
 description: Have the server POST signed JSON to your endpoint on pushes, merge requests, CI, releases and other events - setup, payload, signature verification, retries, the delivery log and the SSRF guard.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 A webhook makes the server send an HTTP `POST` with a signed JSON document to a URL whenever a matching event happens. Every event of the [event stream](/docs/server/events) can be delivered: pushes, merge request activity, CI results, releases, TODOs, access applies and policy changes. The [Webhooks specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Webhooks.md) is normative.

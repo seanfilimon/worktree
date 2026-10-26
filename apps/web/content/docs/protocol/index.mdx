@@ -3,8 +3,6 @@ title: Protocol Overview
 description: The contracts W0rkTree's components share — the gRPC sync protocol, the content-addressed object model, chunked large files and shallow sync, the local .wt/ layout, and merge and diff semantics.
 ---
 
-import { Card, Cards } from 'fumadocs-ui/components/card';
-import { Callout } from 'fumadocs-ui/components/callout';
 
 W0rkTree's components agree on a small set of contracts. The Rust client (`wt`, `worktree-bg`, `worktree-sdk`) and the Go server (`services/server-go`) share a gRPC service definition and a byte-exact object format, so a push or pull is a byte copy of content-addressed objects plus a list of snapshot records.
 

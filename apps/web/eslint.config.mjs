@@ -16,4 +16,14 @@ export default defineConfig([
       ],
     },
   },
+  {
+    // The design system shared with better-iam.com syncs with external systems in effects (Lenis, the theme,
+    // the reduced-motion setting after hydration) and passes a stepper object that carries its ref; the
+    // React Compiler rules below flag those deliberate patterns.
+    files: ["components/home/**", "components/site/**", "components/application/**"],
+    rules: {
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/refs": "off",
+    },
+  },
 ]);

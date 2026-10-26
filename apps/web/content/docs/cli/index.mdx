@@ -3,8 +3,6 @@ title: CLI Reference
 description: Global flags, exit codes, environment variables, revision syntax, and a map of every wt command.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-import { Card, Cards } from 'fumadocs-ui/components/card';
 
 `wt` is the W0rkTree command-line client (crate `worktree-cli`). It works on a local `.wt/` repository through the Rust SDK, talks to a W0rkTree server over gRPC and REST on a single port, and controls the background daemon `worktree-bg` over newline-delimited JSON on a loopback (`127.0.0.1`) TCP port.
 

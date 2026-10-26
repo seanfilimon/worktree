@@ -3,7 +3,6 @@ title: OpenAPI and wt api
 description: The OpenAPI 3.1 description every server serves at /api/v1/openapi.yaml, the x-wt-action extension, authentication, the error envelope, limits and versioning, and raw REST calls with wt api.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 Every server describes its REST API in an OpenAPI 3.1 document and serves it at `GET /api/v1/openapi.yaml`. Use it to generate clients, browse the API in your OpenAPI tool of choice, or check which action an endpoint authorizes. For raw calls from a terminal, `wt api` sends authenticated requests with your saved credentials. Conventions and the core endpoints are explained in the [REST API reference](/docs/server/rest-api); the [REST API specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/RestApi.md) is normative.

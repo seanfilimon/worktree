@@ -3,7 +3,6 @@ title: Snapshots
 description: Record, sign, inspect, compare, undo and export snapshots with snapshot, log, show, diff, reflog, revert, restore and archive.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 A **snapshot** is an immutable record of a tree's files at a point in time: an id (UUID v4), a manifest of every file (path, BLAKE3 hash, size, executable bit; files over 8 MiB are stored as chunks), parent snapshot ids, author, message, timestamp, whether it was auto-generated, and optionally dependencies, the snapshot it reverts, and an Ed25519 signature. History is append-only: no command on this page rewrites or deletes a snapshot.
 

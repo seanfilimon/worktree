@@ -3,7 +3,6 @@ title: Storage Maintenance
 description: Compressed object storage (WTZ1), gzip object transfers, reclaiming local space with wt gc, checking local history with wt fsck, and verifying the server store with wt admin fsck.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Since v0.6 objects are stored zstd-compressed when that pays off, object transfers are gzip-compressed, and both the local store and the server have integrity tools. Compression changes no object ids: hashes are always computed over the uncompressed content, so existing worktrees and servers need no migration. The [Compression and integrity specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Compression.md) is normative.
 

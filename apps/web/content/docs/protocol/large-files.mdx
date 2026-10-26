@@ -3,7 +3,6 @@ title: Large Files and Shallow Sync
 description: How W0rkTree stores and transfers large files as content-defined chunks, how shallow clones and fetches work, and why some paths arrive as restricted stubs.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Three features keep big repositories practical without a separate large-file system: **chunked large files** (no LFS), **shallow sync** (fetch only recent history), and **restricted paths** (files the server withholds from you are never downloaded). All three work end to end in `wt`, the daemon and the server; there is nothing to configure.
 

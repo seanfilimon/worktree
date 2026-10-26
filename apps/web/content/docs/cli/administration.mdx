@@ -3,7 +3,6 @@ title: Administration
 description: Manage tenants (members, email, renames, deletion), server trees and their config-as-code, license rules and audits, search and code search, webhooks, live events, server administration (accounts, garbage collection, fsck, quotas, backups, email outbox, retention), the audit log and raw API calls from the wt CLI.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 These commands talk to the server's REST API. They accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. A `TREE` argument is written `tenant/tree`; inside a worktree it defaults to the origin tenant plus the current tree's remote name. Destructive commands ask for confirmation and require `--yes` when stdin is not a terminal. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#collaboration).
 

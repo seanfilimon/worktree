@@ -3,7 +3,6 @@ title: Branch Protection and Merge Requests
 description: Protect branches and tags with glob-matched rules, and move protected branches forward through reviewed, CI-checked merge requests that the server fast-forwards, merges or squashes.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 Branch protection rules restrict how branches matching a pattern may change; tag protection rules do the same for tags. Merge requests are the path for changing a branch that does not accept direct pushes. Everything here is enforced on the server, for everyone, server admins included; there is no bypass permission.

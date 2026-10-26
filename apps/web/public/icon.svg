@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round">
+  <style>@media (prefers-color-scheme: dark) { svg { stroke: #fafafa; } }</style>
+  <circle cx="7" cy="5" r="2.25"/>
+  <circle cx="7" cy="19" r="2.25"/>
+  <circle cx="17" cy="8" r="2.25"/>
+  <path d="M7 7.25v9.5"/>
+  <path d="M17 10.25c0 3.6-2.6 5.3-7.6 6.1"/>
+</svg>

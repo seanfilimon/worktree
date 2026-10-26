@@ -3,7 +3,6 @@ title: Merge and Diff
 description: Three-way merge semantics, strategies, merge base selection, conflict kinds, markers and hunks, persisted merge state and resolution, revert, and the diff algorithm with rename detection and word diffs.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Merging and diffing are implemented as pure functions (no I/O) in `worktree_sdk::merge` and `worktree_sdk::diff`. `Repository::merge` and `Repository::diff_*` combine them with the object store and working directory. This page describes the semantics that [`wt merge`](/docs/cli/branches#wt-merge) and [`wt diff`](/docs/cli/snapshots#wt-diff) expose; the [Tree specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Tree.md) (§10) is normative.
 

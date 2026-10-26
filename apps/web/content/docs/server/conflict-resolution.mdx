@@ -3,7 +3,6 @@ title: Conflict Resolution and Rebase Merges
 description: Resolve merge-request conflicts on the server from the browser or with wt mr conflicts and wt mr resolve, merge with the rebase method, and delete the source branch after a merge (v0.8).
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 
 Before v0.8 a merge request with conflicts had to be fixed locally: merge the target into the source, resolve, push. Since v0.8 the server can also show the conflicts (base, ours and theirs per path, with a diff3 marker preview) and write a **merge-resolution snapshot** on the source branch from your resolutions, in the admin panel or from the CLI. v0.8 also adds the **rebase** merge method and deleting the source branch after a merge. The [Merging specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Merging.md) is normative; method selection and protection rules are on [Server-side merges](/docs/server/merging).

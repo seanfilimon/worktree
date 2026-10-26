@@ -3,7 +3,6 @@ title: Reflog and Recovery
 description: Use the append-only history model, wt reflog, wt revert, wt restore and branch archive/restore to undo mistakes and recover lost work, and know what the server guarantees.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 W0rkTree never rewrites history. Undoing something always means **adding** to history, and anything that was ever snapshotted stays reachable. This page shows how to find earlier states and get back to them.

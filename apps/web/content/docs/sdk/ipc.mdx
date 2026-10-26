@@ -3,7 +3,6 @@ title: Daemon IPC
 description: The protocol between wt and the worktree-bg background daemon — token-authenticated, newline-delimited JSON over loopback TCP, bg.json discovery, and every request and response type in worktree_sdk::ipc.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 The CLI controls the background daemon `worktree-bg` through a small JSON protocol defined in `worktree_sdk::ipc` (`crates/worktree-sdk/src/ipc.rs`). [`wt daemon`](/docs/cli/daemon#wt-daemon) subcommands are thin wrappers around it, and any tool running as the same user can use it to inspect or drive the daemon. The [BgProcess specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/bgprocess/BgProcess.md) (§9) is normative.

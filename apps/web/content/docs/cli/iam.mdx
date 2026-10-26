@@ -3,7 +3,6 @@ title: Access and Identity
 description: Manage declarative access files, teams, custom roles, policies (with ABAC attribute conditions), tree grants, service accounts, tokens, sessions, two-factor authentication, invitations, the access simulator and single sign-on from the wt CLI.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 These commands talk to the server's REST API (and, for `wt access`, the `SyncAccessConfig` RPC). They accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. A `TREE` argument is written `tenant/tree`; inside a worktree it defaults to the origin tenant plus the current tree's remote name. Most commands take the tenant slug as their first argument. Reads need `iam:read` (maintainer and above), changes need `iam:admin` (admin and above). Destructive commands ask for confirmation and require `--yes` when stdin is not a terminal. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#identity-and-access).
 

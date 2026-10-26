@@ -3,7 +3,6 @@ title: Access Control
 description: Accounts, tenants, built-in and custom roles, teams, tree grants, visibility, allow/deny policies, tokens, service accounts, MFA, SSO and how the server decides each request.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Every request to the server, over gRPC or REST, is made anonymously or as an authenticated principal (an account or a service account), and every operation is checked as one **action** (such as `tree:write` or `mr:merge`) on a resource (a tenant, tree, branch or path). Everything below is available from the [`wt` CLI](/docs/cli/iam), the [REST API](/docs/server/rest-api) and the admin panel. The full model is in the [IAM](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/IAM.md) and [Tenant Model](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/TenantModel.md) specifications.
 

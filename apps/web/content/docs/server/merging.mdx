@@ -3,7 +3,6 @@ title: Server-side Merges
 description: How the server merges a merge request - the fast-forward, merge, squash and rebase methods, the default choice, protection restrictions, conflicts, deleting the source branch and the mergeability endpoint.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Since v0.6 the server can merge a merge request whose target has moved on: besides fast-forwarding, it runs a three-way merge and writes a merge or squash snapshot itself. Since v0.8 it also replays the source onto the target (`rebase`), resolves conflicts on the server and deletes the source branch on request; see [Conflict resolution and rebase merges](/docs/server/conflict-resolution). Reviews, CI and the other readiness gates are unchanged and are checked first (see [Branch protection](/docs/server/branch-protection#merge-requests)). The [Merging specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Merging.md) is normative.
 

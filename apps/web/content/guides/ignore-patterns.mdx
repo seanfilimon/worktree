@@ -3,7 +3,6 @@ title: Ignore Patterns
 description: Keep build output, dependencies and local files out of snapshots with built-in ignores, .wt/ignore, .wtignore files and the wt ignore command.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 Because W0rkTree has no staging area, **ignore rules are how you decide what is versioned**: every file in a tree's working directory that is not ignored ends up in the next snapshot. Ignored paths are never snapshotted, never reported by `wt status`, never touched by `wt switch` or `wt restore`, and never watched by the daemon.

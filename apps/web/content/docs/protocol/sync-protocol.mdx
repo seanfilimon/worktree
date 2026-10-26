@@ -3,7 +3,6 @@ title: Sync Protocol
 description: The worktree.sync.v1.SyncService gRPC API — all 20 RPCs, authentication, and the push (including force pushes and packs), pull, stage, watch, tag and access-config flows used by wt and worktree-bg.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Clients synchronize with the server through one gRPC service, `worktree.sync.v1.SyncService`, defined in `crates/worktree-protocol/proto/sync.proto`. The Rust client in `worktree_sdk::remote` and the Go server in `services/server-go/internal/syncsvc` both implement this file; it is the contract between them. This page summarizes the [Sync specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/Sync.md), which is normative.
 

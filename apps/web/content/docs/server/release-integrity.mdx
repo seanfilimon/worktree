@@ -3,7 +3,6 @@ title: Release Integrity
 description: Ed25519-signed tags verified by the server, tag protections that require signatures, SHA-256 checksums for every release asset, SPDX 2.3 SBOMs, and wt release verify to check a download without trusting the server.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 A release is trustworthy when a consumer can check, without trusting the transport or the server's storage, that the release's **tag was signed** by a known person and that every **downloaded asset is byte-identical** to what was uploaded. v0.7 adds signed tags, server-side tag verification, signed-tag protections, per-asset SHA-256 checksums, verified releases, SBOM generation and client-side verification. The [Release integrity specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/security/ReleaseIntegrity.md) is normative.
 

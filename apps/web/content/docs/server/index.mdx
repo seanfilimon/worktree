@@ -3,8 +3,6 @@ title: W0rkTree Server
 description: The Go server that stores canonical history, enforces access, protection and license rules, and serves gRPC, REST, SSE and the admin panel on a single port.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-import { Card, Cards } from 'fumadocs-ui/components/card';
 
 The W0rkTree server (`worktree-server`, source in `services/server-go`) is the shared remote that `wt` clients push to and pull from. It is a single pure-Go binary (no cgo) that keeps all metadata in an embedded bbolt database and all file content in a BLAKE3 content-addressed object store, on local disk or in an [S3-compatible bucket](/docs/server/storage-backends). There are no external dependencies to run it; `git` is needed only for [Git mirrors](/docs/server/mirrors) and an SMTP server only for [notification email](/docs/server/notifications#email).
 

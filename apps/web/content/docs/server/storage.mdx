@@ -3,7 +3,6 @@ title: Storage
 description: Layout of the server data directory, object compression, integrity guarantees and fsck, garbage collection, quotas, and how to back up and restore it.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 All server state lives in one data directory, set with `--data` / `WT_DATA` (default `./wt-data`, created with mode 0750). There is no external database. Since v0.7 the objects can live in an S3-compatible bucket instead of `objects/`, and the server writes its own consistent backups; see [S3 storage and backups](/docs/server/storage-backends).

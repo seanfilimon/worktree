@@ -3,7 +3,6 @@ title: Policy History
 description: Every change to a tenant policy is kept as a version - list versions, diff them statement by statement, roll back, and restore deleted policies with wt policy or the REST API.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Every tenant [policy](/docs/server/access-control) keeps a version history on the server. Each change appends an immutable version holding the whole policy after the change, who made it, when and why. Use it to answer "who changed this deny statement, and when", to compare two versions, and to roll a policy back, including bringing back a deleted one. The [Policy history specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/PolicyHistory.md) is normative.
 

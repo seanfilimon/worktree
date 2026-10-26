@@ -3,7 +3,6 @@ title: Object Model
 description: How W0rkTree identifies and stores content — BLAKE3-256 hashes, blob, manifest and chunk-list objects, snapshot records with dependencies and signatures, tags, and branch tips.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 W0rkTree stores file content in a **content-addressed object store** and records history as **snapshots** that point at a manifest object. The client and server use the same bytes and the same hashes, so moving objects between them is a byte copy. The normative description is the [Storage specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Storage.md).
 

@@ -1,0 +1,172 @@
+/* ---------------------------------------------------------------------------
+ * W0rkTree monochrome theme, layered on BoardUI (styles/theme.css). Shared with
+ * better-iam.com so both sites read as one family.
+ *
+ * BoardUI tints every interactive surface from its accent-* ramp. Here that
+ * ramp is neutral and flips with the theme, so primary controls are black on
+ * white in light mode and white on near-black in dark mode. In dark mode the
+ * ramp has two roles: steps 400-800 are the light "ink" BoardUI components use
+ * for fills and selected text (buttons, tabs, switches, links), and the other
+ * steps are dark surfaces. BoardUI's dark tokens that read accent-700..950 as
+ * tinted surfaces are set explicitly below.
+ *
+ * Every token overridden in :root is also set in .dark, because both rules
+ * come after BoardUI's .dark block and a lone :root override would win there.
+ *
+ * Fumadocs' --color-fd-* palette maps onto the same semantic tokens so the
+ * docs shell and the marketing pages share one system.
+ * --------------------------------------------------------------------------- */
+
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-source), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  --color-accent-50: var(--color-neutral-50);
+  --color-accent-100: var(--color-neutral-100);
+  --color-accent-200: var(--color-neutral-200);
+  --color-accent-300: var(--color-neutral-300);
+  --color-accent-400: var(--color-neutral-700);
+  --color-accent-500: var(--color-neutral-800);
+  --color-accent-600: var(--color-neutral-900);
+  --color-accent-700: var(--color-neutral-950);
+  --color-accent-800: var(--color-neutral-950);
+  --color-accent-900: var(--color-black);
+  --color-accent-950: var(--color-black);
+
+  --color-button-primary-foreground: var(--color-white);
+  --color-switch-on-thumb-start: var(--color-white);
+  --color-switch-on-thumb-end: var(--color-neutral-100);
+
+  /* Page surfaces used by the marketing pages. */
+  --color-surface-raised: var(--color-white);
+  --color-surface-sunken: var(--color-neutral-50);
+  --color-hatch: color-mix(in srgb, var(--color-neutral-950) 7%, transparent);
+
+  --color-fd-background: var(--color-background-full);
+  --color-fd-foreground: var(--color-text-primary);
+  --color-fd-muted: var(--color-background-secondary-default);
+  --color-fd-muted-foreground: var(--color-text-secondary);
+  --color-fd-popover: var(--color-background-primary-default);
+  --color-fd-popover-foreground: var(--color-text-primary);
+  --color-fd-card: var(--color-neutral-50);
+  --color-fd-card-foreground: var(--color-text-primary);
+  --color-fd-border: var(--color-separator-border);
+  --color-fd-primary: var(--color-text-primary);
+  --color-fd-primary-foreground: var(--color-background-full);
+  --color-fd-secondary: var(--color-background-secondary-default);
+  --color-fd-secondary-foreground: var(--color-text-primary);
+  --color-fd-accent: var(--color-background-secondary-default);
+  --color-fd-accent-foreground: var(--color-text-primary);
+  --color-fd-ring: var(--color-border-focus-ring);
+}
+
+.dark {
+  --color-accent-50: var(--color-neutral-900);
+  --color-accent-100: var(--color-neutral-800);
+  --color-accent-200: var(--color-neutral-700);
+  --color-accent-300: var(--color-neutral-600);
+  --color-accent-400: var(--color-white);
+  --color-accent-500: var(--color-neutral-100);
+  --color-accent-600: var(--color-neutral-200);
+  --color-accent-700: var(--color-neutral-300);
+  --color-accent-800: var(--color-neutral-400);
+  --color-accent-900: var(--color-neutral-800);
+  --color-accent-950: var(--color-neutral-900);
+
+  /* BoardUI's dark secondary text (neutral-500) is too dim for long-form reading. */
+  --color-text-secondary: var(--color-neutral-400);
+  --color-text-tertiary: var(--color-neutral-500);
+
+  --color-button-primary-foreground: var(--color-neutral-950);
+  --color-switch-on-thumb-start: var(--color-neutral-800);
+  --color-switch-on-thumb-end: var(--color-neutral-900);
+
+  --color-button-ghost-background: var(--color-neutral-800);
+  --color-button-ghost-hover: var(--color-neutral-700);
+  --color-button-ghost-active: var(--color-neutral-600);
+  --color-button-ghost-foreground: var(--color-neutral-50);
+  --color-badge-new-background: var(--color-neutral-800);
+  --color-badge-new-text: var(--color-white);
+  --color-tab-count-selected-background: var(--color-neutral-800);
+  --color-date-range-background: var(--color-neutral-800);
+  --color-date-range-edge-background: var(--color-neutral-600);
+  --color-pill-tab-blue-selected-background: var(--color-neutral-800);
+
+  --color-surface-raised: var(--color-neutral-900);
+  --color-surface-sunken: color-mix(
+    in srgb,
+    var(--color-neutral-900) 55%,
+    var(--color-neutral-925)
+  );
+  --color-hatch: color-mix(in srgb, var(--color-white) 7%, transparent);
+
+  --color-fd-background: var(--color-background-full);
+  --color-fd-foreground: var(--color-text-primary);
+  --color-fd-muted: var(--color-background-secondary-default);
+  --color-fd-muted-foreground: var(--color-text-secondary);
+  --color-fd-popover: var(--color-neutral-900);
+  --color-fd-popover-foreground: var(--color-text-primary);
+  --color-fd-card: var(--color-neutral-900);
+  --color-fd-card-foreground: var(--color-text-primary);
+  --color-fd-border: var(--color-separator-border);
+  --color-fd-primary: var(--color-text-primary);
+  --color-fd-primary-foreground: var(--color-background-full);
+  --color-fd-secondary: var(--color-neutral-800);
+  --color-fd-secondary-foreground: var(--color-text-primary);
+  --color-fd-accent: var(--color-neutral-800);
+  --color-fd-accent-foreground: var(--color-text-primary);
+  --color-fd-ring: var(--color-border-focus-ring);
+}
+
+@theme inline {
+  --color-button-primary-foreground: var(--color-button-primary-foreground);
+  --color-switch-on-thumb-start: var(--color-switch-on-thumb-start);
+  --color-switch-on-thumb-end: var(--color-switch-on-thumb-end);
+  --color-surface-raised: var(--color-surface-raised);
+  --color-surface-sunken: var(--color-surface-sunken);
+  --color-hatch: var(--color-hatch);
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  /* BoardUI focus rings use ring-offset-2; Tailwind's default offset color is white, which reads as a halo in dark mode. */
+  *,
+  ::before,
+  ::after {
+    --tw-ring-offset-color: var(--color-background-full);
+  }
+}
+
+/* BoardUI shadow utilities follow the live dark elevation tokens (from BoardUI's globals.css). */
+.dark .shadow-2xs {
+  --tw-shadow: var(--shadow-2xs);
+}
+.dark .shadow-xs {
+  --tw-shadow: var(--shadow-xs);
+}
+.dark .shadow-sm {
+  --tw-shadow: var(--shadow-sm);
+}
+.dark .shadow-md {
+  --tw-shadow: var(--shadow-md);
+}
+.dark .shadow-lg {
+  --tw-shadow: var(--shadow-lg);
+}
+.dark .shadow-card {
+  --tw-shadow: var(--shadow-card);
+}
+.dark .shadow-dropdown {
+  --tw-shadow: var(--shadow-dropdown);
+}

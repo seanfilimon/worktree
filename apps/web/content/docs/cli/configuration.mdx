@@ -3,7 +3,6 @@ title: Configuration
 description: How wt layers user, worktree and tree configuration, every configuration key, ignore rule evaluation, snapshot hooks and secret-scanning settings.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 
 Client behaviour is driven by TOML files on disk, read and written with [`wt config`](/docs/cli/repository#wt-config); none of it is stored on the server. This page explains how those files combine and how the local snapshot pipeline (ignore rules, hooks, secret scanning) is configured. The file formats are specified in [DotWt.md](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt/DotWt.md) and [DotWtTree.md](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/DotWtTree.md).
 

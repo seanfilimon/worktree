@@ -3,7 +3,6 @@ title: Nested Trees
 description: Split one worktree into independently versioned trees with wt tree, select them with --tree, and understand how their branches, snapshots and server trees stay separate.
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 A worktree always has one **root tree**, created by `wt init` and named after the directory. You can register sub-directories as **nested trees**: independently versioned sub-projects that live in the same working directory but have their own history. Think of them as the W0rkTree answer to Git submodules, without a second repository to clone.
