@@ -167,6 +167,12 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	hooks.Configure(webhooks.Options{AllowPrivate: cfg.WebhookAllowPrivate, Version: cfg.Version})
 	hooks.Start(ctx)
 	codeIndex.Start(ctx) // code-search (§14.3): incremental re-index on pushes, drop on tree.deleted
+	// mirrors (§15.6): debounced Git mirror syncs on pushes, cleanup on tree.deleted.
+	mirrors.Configure(mirror.Options{DataDir: cfg.DataDir, GitBinary: cfg.GitBinary, AllowLocal: cfg.MirrorAllowLocal})
+	if st := mirrors.Git(); !st.Available {
+		log.Warn("git mirrors are disabled", slog.String("reason", st.Error))
+	}
+	mirrors.Start(ctx)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,

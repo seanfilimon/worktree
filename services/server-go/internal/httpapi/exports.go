@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/content"
@@ -231,46 +230,22 @@ func activeLicenseRules(rules []domain.LicenseRule, now time.Time) []domain.Lice
 // buildNotice renders LICENSES/NOTICE (same layout as the CLI): the SPDX id
 // of every included path covered by a rule, grouped by SPDX id. It returns
 // nil when no included path is covered and nothing was omitted.
+//
+// mirrors (§15.6): the rendering lives in license.BuildNotice, shared with
+// internal/mirror.
 func buildNotice(rules []domain.LicenseRule, files []archiveFile, omitted int, header []string) []byte {
-	bySPDX := map[string][]string{}
-	for _, f := range files {
-		if rule, ok := license.Resolve(rules, f.entry.GetPath()); ok {
-			bySPDX[rule.SPDX] = append(bySPDX[rule.SPDX], f.entry.GetPath())
-		}
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.entry.GetPath()
 	}
-	if len(bySPDX) == 0 && omitted == 0 {
-		return nil
-	}
-	var b strings.Builder
-	b.WriteString("W0rkTree license notice\n=======================\n\n")
-	for _, line := range header {
-		b.WriteString(line + "\n")
-	}
-	if len(header) > 0 {
-		b.WriteString("\n")
-	}
-	b.WriteString("SPDX license identifiers of the files in this export, from the tree's\n" +
-		"license rules. Files that are not listed are not covered by a rule.\n")
-	ids := make([]string, 0, len(bySPDX))
-	for id := range bySPDX {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		b.WriteString("\n" + id + "\n")
-		paths := bySPDX[id]
-		sort.Strings(paths)
-		for _, p := range paths {
-			b.WriteString("    " + p + "\n")
-		}
-	}
+	footer := ""
 	switch {
 	case omitted == 1:
-		b.WriteString("\n1 path was omitted: it is not readable by the requester.\n")
+		footer = "\n1 path was omitted: it is not readable by the requester.\n"
 	case omitted > 1:
-		fmt.Fprintf(&b, "\n%d paths were omitted: they are not readable by the requester.\n", omitted)
+		footer = fmt.Sprintf("\n%d paths were omitted: they are not readable by the requester.\n", omitted)
 	}
-	return []byte(b.String())
+	return license.BuildNotice(rules, paths, header, footer)
 }
 
 func fileMode(e *syncpb.ManifestEntry) int64 {

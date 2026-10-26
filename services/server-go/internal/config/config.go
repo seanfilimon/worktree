@@ -115,6 +115,19 @@ type Config struct {
 	// --webhook-allow-private, env WT_WEBHOOK_ALLOW_PRIVATE.
 	WebhookAllowPrivate bool
 
+	// ---- mirrors (§15.6) ----
+
+	// GitBinary is the git executable Git mirrors run (a name looked up on
+	// PATH or a path); mirrors are disabled when it is missing. Flag
+	// --git-binary, env WT_GIT_BINARY (default "git").
+	GitBinary string
+	// MirrorAllowLocal permits file:// mirror remotes and mirror hosts on
+	// loopback, link-local or private addresses. Flag --mirror-allow-local,
+	// env WT_MIRROR_ALLOW_LOCAL.
+	MirrorAllowLocal bool
+
+	// ---- end mirrors ----
+
 	// ---- storage (§14.6) ----
 
 	// CompressObjects stores new objects zstd-compressed (WTZ1) when that
@@ -262,6 +275,18 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 		cfg.WebhookAllowPrivate = b
 	}
 
+	// ---- mirrors (§15.6) ----
+	cfg.GitBinary = "git"
+	str("WT_GIT_BINARY", &cfg.GitBinary)
+	if v, ok := lookup("WT_MIRROR_ALLOW_LOCAL"); ok && v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("WT_MIRROR_ALLOW_LOCAL: invalid boolean %q", v))
+		}
+		cfg.MirrorAllowLocal = b
+	}
+	// ---- end mirrors ----
+
 	// ---- storage (§14.6) ----
 	cfg.CompressObjects = true
 	if v, ok := lookup("WT_COMPRESS_OBJECTS"); ok && v != "" {
@@ -315,6 +340,10 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 
 	// webhooks (§14.2).
 	fs.BoolVar(&cfg.WebhookAllowPrivate, "webhook-allow-private", cfg.WebhookAllowPrivate, "allow webhook targets on loopback, link-local and private addresses (env WT_WEBHOOK_ALLOW_PRIVATE)")
+
+	// Mirrors (§15.6).
+	fs.StringVar(&cfg.GitBinary, "git-binary", cfg.GitBinary, "git `executable` for Git mirrors; mirrors are disabled when it is missing (env WT_GIT_BINARY)")
+	fs.BoolVar(&cfg.MirrorAllowLocal, "mirror-allow-local", cfg.MirrorAllowLocal, "allow file:// mirror remotes and mirror hosts on loopback, link-local and private addresses (env WT_MIRROR_ALLOW_LOCAL)")
 
 	// Storage (§14.6).
 	fs.BoolVar(&cfg.CompressObjects, "compress-objects", cfg.CompressObjects, "store new objects zstd-compressed when that saves at least 10% (env WT_COMPRESS_OBJECTS)")
