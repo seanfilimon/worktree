@@ -66,6 +66,7 @@ is authoritative; the spec is a bug.
 | **Review workflow** | [`server/ReviewWorkflow.md`](./server/ReviewWorkflow.md) | Path owners (server config and `OWNERS` file), review requests, owner approval, draft merge requests, suggested changes, storage quotas on server-written snapshots |
 | **Performance** | [`server/Performance.md`](./server/Performance.md) | Measurements (`worktree-bench`, Go benchmarks), parallel transfer and incremental push checks, policy caching, hard limits, tuning flags, admin-only `/debug/pprof` |
 | **Forks** | [`tree/Forks.md`](./tree/Forks.md) | Forking trees across tenants (`tree:fork`), shared objects with copied snapshot records, branch relations and fork sync, merge requests from forks, license redistribution rule, `wt fork` |
+| **Tenant lifecycle** | [`iam/TenantLifecycle.md`](./iam/TenantLifecycle.md) | Tenant and account email verification, references by verified email, slug renames with 90-day reservations and `tenant_moved`, deletion with a recovery window, restore, purge job, `wt tenant switch` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

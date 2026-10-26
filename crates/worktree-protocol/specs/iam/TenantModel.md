@@ -53,15 +53,25 @@ model and its lifecycle.
 | `status` | `""` / `active` \| `suspended` \| `deactivated` | v0.5, see §7 |
 | `status_reason` | string | v0.5 |
 | `limits` | `TenantLimits` or absent | v0.5 per-tenant overrides, see §8 |
+| `email` | string or absent | v0.8 contact address, see [Tenant Lifecycle §2](./TenantLifecycle.md#2-contact-email-and-verification) |
+| `email_verified_at` | timestamp or absent | v0.8; set once the address is verified with a single-use code |
+| `attributes` | map or absent | v0.8 ABAC attributes |
 
 Slug rules:
 
 - **Organization slugs**: 1–63 characters from `[a-z0-9-]`, not starting or
   ending with `-` (`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).
-- **Personal slugs** equal the username (§3).
-- Slugs cannot be changed. `wt tenant rename` changes only the display name.
+- **Personal slugs** equal the username (§3) and cannot be changed.
+- **Renames** (v0.8): owners change an organization's slug with
+  `POST /tenants/{t}/rename` / `wt tenant rename T NEW_SLUG`. The old slug is
+  reserved for 90 days and answers `tenant_moved` with the new slug; see
+  [Tenant Lifecycle §5](./TenantLifecycle.md#5-slug-renames).
+  `wt tenant set-name` changes the display name.
+- **Reserved slugs**: slugs of renamed and purged tenants cannot be used by
+  new tenants or registrations for 90 days.
 
-The server keeps no tenant email address. Email belongs to accounts.
+A **verified** tenant email names the tenant in REST tenant references, tree
+grants and license grantees (`ops@acme.io` for `acme`).
 
 ## 3. Accounts
 
@@ -71,7 +81,8 @@ The server keeps no tenant email address. Email belongs to accounts.
 |---|---|
 | `id` | Account id |
 | `username` | `^[a-z0-9][a-z0-9-]{1,38}$`, entered lower-cased. Reserved: `admin`, `anonymous`, `api`, `auth`, `events`, `healthz`, `metrics`, `system`. `admin` can be claimed only by the configured server admin. |
-| `email` | Syntax-checked, **not verified** |
+| `email` | Syntax-checked; verified on request with a single-use code (`POST /me/email/resend`, `POST /me/email/verify`, v0.8) |
+| `email_verified_at` | When the email was verified (v0.8) |
 | `display_name` | Free text |
 | `tenant_id` | The personal tenant |
 | `is_admin` | Server admin |
@@ -126,14 +137,19 @@ Both belong to exactly one tenant. See [IAM §5](./IAM.md#5-teams) and
 | Step | How |
 |---|---|
 | Create organization | `POST /tenants {slug, name}` / `wt tenant create SLUG [--name N]`. The caller becomes `owner`. Kind `org`, plan `free`. |
-| Rename | `PATCH /tenants/{t} {name}` / `wt tenant rename T NAME` (`tenant:admin`) |
+| Display name | `PATCH /tenants/{t} {name}` / `wt tenant set-name T NAME` (`tenant:admin`) |
+| Contact email | `PATCH /tenants/{t} {email}` / `wt tenant email set\|verify\|resend\|clear` (`tenant:admin`; verification is public with the code, v0.8) |
+| Change slug | `POST /tenants/{t}/rename {slug}` / `wt tenant rename T NEW_SLUG` (`tenant:admin` + owner, v0.8) |
 | Change plan | `PATCH /tenants/{t} {plan}` / `wt tenant plan T free\|pro\|enterprise` (server admin) |
 | Suspend / resume / deactivate | `PATCH /admin/tenants/{t} {status, status_reason}` / `wt tenant suspend\|resume\|deactivate T [--reason]` (server admin, v0.5) |
 | Set limits | `PUT /admin/tenants/{t}/limits` / `wt admin limits T ...` (server admin, v0.5) |
-| Delete | Not supported. Deactivate the tenant instead (§7). |
+| Delete | `DELETE /tenants/{t}` / `wt tenant delete T` (owner, v0.8): suspended at once, purged after a 30-day recovery window. Personal tenants cannot be deleted. See [Tenant Lifecycle §6](./TenantLifecycle.md#6-deletion-recovery-window-and-restore). |
+| Restore | `POST /tenants/{t}/restore` / `wt tenant restore T` (owner, during the recovery window, v0.8) |
 
-`tenant.create` and `tenant.update` (rename, plan, status and limits) are
-audited.
+`tenant.create` and `tenant.update` (display name, plan, status and limits)
+are audited, as are the v0.8 lifecycle actions (`tenant.email`,
+`tenant.email_verified`, `tenant.rename`, `tenant.delete`, `tenant.restore`,
+`tenant.purge`). Renames publish `tenant.renamed`, purges `tenant.deleted`.
 
 ## 7. Tenant status
 
@@ -146,8 +162,17 @@ audited.
 Status changes follow these rules:
 
 - **Server admins** are never affected.
-- **No revocation.** Suspension and deactivation revoke no tokens, delete no
-  data and change no memberships. `resume` restores full access immediately.
+- **Service-account keys are revoked** (v0.8) when an active tenant is
+  suspended or deactivated, by a server admin or by a scheduled deletion.
+  Account sessions and tokens are not touched, no data is deleted and no
+  membership changes. `resume` restores access immediately, but revoked keys
+  must be reissued.
+- **Tenant grants are paused** (v0.8): tree grants with `subject_type:
+  "tenant"` that name a suspended or deactivated tenant give nothing until it
+  is resumed.
+- **Scheduled deletion** (v0.8) suspends the tenant with the reason
+  `scheduled for deletion on <date>`; restoring it brings back the previous
+  status.
 - **Scope.** Status applies to resources of the tenant. Members can still use
   other tenants they belong to.
 
@@ -238,16 +263,29 @@ There is no email delivery. The inviter passes the code on.
 GET    /api/v1/tenants                           -> tenants visible to the caller (all for server admins)
 POST   /api/v1/tenants {slug,name}               -> 201 tenant
 GET    /api/v1/tenants/{t}                       (tenant:read)
-PATCH  /api/v1/tenants/{t} {name?,plan?}         (tenant:admin; plan = server admin)
+PATCH  /api/v1/tenants/{t} {name?,plan?,email?} (tenant:admin; plan = server admin)
 GET    /api/v1/tenants/{t}/members               (tenant:read)
 PUT    /api/v1/tenants/{t}/members/{username} {role} | DELETE   (tenant:admin)
 GET    /api/v1/tenants/{t}/usage
 GET|PUT /api/v1/admin/tenants/{t}/limits         (server admin)
 PATCH  /api/v1/admin/tenants/{t} {status,status_reason}          (server admin)
+# v0.8 lifecycle (TenantLifecycle.md §9)
+POST   /api/v1/tenants/{t}/email/verify {token} | /email/resend
+POST   /api/v1/me/email/verify {token} | /me/email/resend
+POST   /api/v1/tenants/{t}/rename {slug}         (tenant:admin + owner)
+DELETE /api/v1/tenants/{t}                       (owner) -> 202 TenantDeletion
+GET    /api/v1/tenants/{t}/deletion | POST /api/v1/tenants/{t}/restore
 ```
 
+Requests naming a renamed tenant's old slug answer `301 tenant_moved` with
+`error.details.new_slug` (REST) or `NotFound` with a `TENANT_MOVED`
+`ErrorInfo` (gRPC).
+
 ```
-wt tenant list | create SLUG [--name N] | show T | rename T NAME | plan T PLAN
+wt tenant list | create SLUG [--name N] | show T | set-name T NAME | plan T PLAN
+wt tenant rename T NEW_SLUG | delete T [--yes] | restore T
+wt tenant email set T EMAIL | verify T CODE | resend T | clear T
+wt tenant switch SLUG [--remote R]       # sets remote.<R>.tenant of the current worktree
 wt tenant members T | add-member T USER [--role R] | set-role T USER ROLE | remove-member T USER
 wt tenant suspend|resume|deactivate T [--reason R]
 wt admin limits T [--max-trees N] [--max-storage SIZE] [--max-branches N] [--max-members N] [--rate N] [--clear]
@@ -261,16 +299,18 @@ wt remote add NAME URL --tenant T        # binds a worktree remote to a tenant
   one object store. Isolation is enforced by authorization on every request,
   and object downloads are scoped to objects reachable from a tree the caller
   can read.
-- **Unverified emails.** Account emails are never verified. They are
-  therefore not used to resolve tenants or principals, and SSO links an
-  identity to an existing account by email only when `link_by_email` is
-  enabled. See [Security](../security/Security.md).
+- **Verified emails only.** Only *verified* tenant emails resolve to a
+  tenant (v0.8); a verified address belongs to one tenant at most. Account
+  emails can be verified (v0.8) but are not used to resolve principals, and
+  SSO links an identity to an existing account by email only when
+  `link_by_email` is enabled. See [Security](../security/Security.md).
 - **Reserved names.** Reserved usernames stop accounts from shadowing URL
   segments and system actors. Organization slugs share the slug namespace with
   personal tenants, so a username whose slug is already taken by an
-  organization cannot register.
-- **Suspension is not revocation.** Suspension stops writes but not
-  authentication. To lock a person out, disable their account.
+  organization — or reserved by a renamed or purged one — cannot register.
+- **Suspension revokes automation, not people.** Suspension stops writes and
+  revokes service-account keys, but account sessions keep working (read
+  only). To lock a person out, disable their account.
 
 ## 14. Implementation status
 
@@ -284,6 +324,11 @@ wt remote add NAME URL --tenant T        # binds a worktree remote to a tenant
 | Per-tenant limits, server defaults, usage endpoint, quota enforcement | Built (v0.5) |
 | Tenant grants and `tenant:<slug>` principals | Built (v0.5) |
 | Tree visibility `private` / `internal` / `public` | Built |
+| Tenant email and verification, account email verification, references by verified email | Built (v0.8, [Tenant Lifecycle](./TenantLifecycle.md)) |
+| Slug renames with 90-day reservations; reservation after purge; `tenant_moved` | Built (v0.8) |
+| Deletion with a recovery window, restore, purge job | Built (v0.8) |
+| Service-account key revocation and paused tenant grants on suspension | Built (v0.8) |
+| `wt tenant switch` | Built (v0.8) |
 | Rust `worktree_protocol::iam::tenant` types | Legacy model, not used by the server |
 
 ## 15. Roadmap
@@ -291,23 +336,23 @@ wt remote add NAME URL --tenant T        # binds a worktree remote to a tenant
 The following were described in earlier versions of this spec but are not
 built:
 
-- **Tenant email and email verification.** A tenant email, verification
-  before activation, and resolving tenant references by email.
-- **Slug changes** with reservation of old slugs, and reservation after
-  deletion.
-- **Tenant deletion** with a recovery window and data purge.
+- **Verification before activation.** Tenants are usable at once; the
+  contact email is optional and verified independently. Email references in
+  policies and declarative access documents are listed in
+  [Tenant Lifecycle §16](./TenantLifecycle.md#16-roadmap).
 - **Plan-driven limits.** Fixed quotas per plan, `max_snapshot_size`, and a
   billing integration. Limits are server defaults plus per-tenant overrides.
 - **Tenant attributes for ABAC** (`department`, `location`, `clearance`, …).
 - **`shared` visibility** with discovery lists.
 - **`[[tenant_access]]` shorthand** in `.wt/config.toml`.
-- **Revoking tokens on suspension**, and pausing cross-tenant grants that
-  reference a suspended tenant. A suspended grantee tenant keeps the access
-  it was granted on other tenants' trees.
+- **Revoking account sessions on suspension.** Only service-account keys are
+  revoked; `tenant:<slug>` policy principals of a suspended tenant still
+  match (only tenant *grants* are paused).
 - **An org-only distinction for teams and accounts.** Personal tenants can
   have members and teams like organizations.
-- **Multi-tenant context switching in the CLI** (`wt tenant switch`). Each
-  worktree remote names its tenant (`[remote.<name>] tenant`).
+- **A global current tenant in the CLI.** `wt tenant switch` changes the
+  current worktree's remote; commands outside a worktree take the tenant as an
+  argument.
 
 ## 16. References
 
@@ -315,10 +360,11 @@ built:
   `Membership`, `Tree.Visibility`), `domain/v05.go` (`TenantLimits`, tenant
   status)
 - `services/server-go/internal/httpapi/{tenants.go,manage.go,admin.go,ops.go,iam_invitations.go}`
-- `services/server-go/internal/iam/{service.go,validate.go,invitations.go}`
+- `services/server-go/internal/iam/{service.go,validate.go,invitations.go,tenant_lifecycle*.go}`
+- `services/server-go/internal/httpapi/tenant_lifecycle.go`
 - `services/server-go/internal/limits/`, `internal/authz/`
 - `crates/worktree-cli/src/commands/{tenant,admin,invite,trees,remote}.rs`
-- `docs/ENGINEERING_PLAN.md` §7, §12, §13.3, §13.7
-- Related specs: [IAM](./IAM.md), [Declarative Access](./DeclarativeAccess.md),
+- `docs/ENGINEERING_PLAN.md` §7, §12, §13.3, §13.7, §16.4
+- Related specs: [Tenant Lifecycle](./TenantLifecycle.md), [IAM](./IAM.md), [Declarative Access](./DeclarativeAccess.md),
   [License Compliance](../licensing/LicenseCompliance.md),
   [Server](../server/Server.md)

@@ -12,7 +12,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/toast/store";
+import { tenantStatus } from "@/api/v05ops";
+import type { TenantV08 } from "@/api/tenantLifecycle";
+import { TenantDangerZone } from "./TenantDangerZone";
+import { TenantEmailCard } from "./TenantEmailCard";
 import { TenantLimitsCard } from "./TenantLimitsCard";
+import { TenantRenameDialog } from "./TenantRenameDialog";
 import { TenantStatusCard } from "./TenantStatusCard";
 
 const PLANS: TenantPlan[] = ["free", "pro", "enterprise"];
@@ -36,9 +41,10 @@ function useUpdateTenant(tenant: Tenant) {
   });
 }
 
-function GeneralCard({ tenant, editable }: { tenant: Tenant; editable: boolean }) {
+function GeneralCard({ tenant, editable, canRename }: { tenant: Tenant; editable: boolean; canRename: boolean }) {
   const update = useUpdateTenant(tenant);
   const [name, setName] = useState(tenant.name);
+  const [renaming, setRenaming] = useState(false);
   const trimmed = name.trim();
   const error = trimmed === "" ? "Required." : trimmed.length > MAX_NAME ? `At most ${MAX_NAME} characters.` : undefined;
   const dirty = trimmed !== tenant.name;
@@ -53,7 +59,9 @@ function GeneralCard({ tenant, editable }: { tenant: Tenant; editable: boolean }
       <form onSubmit={onSubmit} aria-label="Tenant name" noValidate className="flex flex-col gap-6">
         <CardHeader>
           <CardTitle>General</CardTitle>
-          <CardDescription>The slug is permanent: it is part of every remote URL.</CardDescription>
+          <CardDescription>
+            The slug is part of every remote URL. Owners can change it; the old slug stays reserved for 90 days.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
           <div className="grid gap-2">
@@ -74,7 +82,14 @@ function GeneralCard({ tenant, editable }: { tenant: Tenant; editable: boolean }
           </div>
           <div className="grid gap-2">
             <Label htmlFor="tenant-slug">Slug</Label>
-            <Input id="tenant-slug" value={tenant.slug} readOnly disabled className="font-mono" />
+            <div className="flex gap-2">
+              <Input id="tenant-slug" value={tenant.slug} readOnly disabled className="font-mono" />
+              {canRename && (
+                <Button type="button" variant="outline" onClick={() => setRenaming(true)}>
+                  Change slug
+                </Button>
+              )}
+            </div>
           </div>
           <div className="sm:col-span-2">
             <FormError error={update.error} />
@@ -91,6 +106,7 @@ function GeneralCard({ tenant, editable }: { tenant: Tenant; editable: boolean }
           </CardFooter>
         )}
       </form>
+      {canRename && <TenantRenameDialog tenant={tenant} open={renaming} onOpenChange={setRenaming} />}
     </Card>
   );
 }
@@ -129,8 +145,13 @@ function PlanCard({ tenant }: { tenant: Tenant }) {
   );
 }
 
-export function TenantSettingsTab({ tenant, editable }: { tenant: Tenant; editable: boolean }) {
+/**
+ * `owner`: the caller owns the tenant or is a server admin (renames,
+ * deletion and restore, §16.4).
+ */
+export function TenantSettingsTab({ tenant, editable, owner = false }: { tenant: TenantV08; editable: boolean; owner?: boolean }) {
   const { isAdmin } = useAuth();
+  const active = tenantStatus(tenant) === "active";
   return (
     <div className="flex flex-col gap-4">
       {!editable && (
@@ -138,7 +159,12 @@ export function TenantSettingsTab({ tenant, editable }: { tenant: Tenant; editab
           You can view these settings. Tenant owners and admins can change them.
         </p>
       )}
-      <GeneralCard key={tenant.name} tenant={tenant} editable={editable} />
+      <GeneralCard key={tenant.name} tenant={tenant} editable={editable} canRename={owner && active && tenant.kind === "org"} />
+      <TenantEmailCard
+        key={`${tenant.slug}|${tenant.email ?? ""}|${tenant.email_verified_at ?? ""}`}
+        tenant={tenant}
+        editable={editable && active}
+      />
       {isAdmin ? (
         <PlanCard key={tenant.plan} tenant={tenant} />
       ) : (
@@ -154,6 +180,7 @@ export function TenantSettingsTab({ tenant, editable }: { tenant: Tenant; editab
       )}
       <TenantStatusCard tenant={tenant} editable={isAdmin} />
       <TenantLimitsCard slug={tenant.slug} editable={isAdmin} />
+      <TenantDangerZone tenant={tenant} owner={owner} />
     </div>
   );
 }

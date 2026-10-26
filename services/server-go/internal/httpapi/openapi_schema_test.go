@@ -34,6 +34,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
 	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
 	"github.com/seanfilimon/worktree/services/server-go/internal/mirror"
 	"github.com/seanfilimon/worktree/services/server-go/internal/policyhist"
@@ -111,6 +112,13 @@ var openAPITypes = map[string]any{
 	"MirrorRefUpdate":     mirror.RefUpdate{},
 	"CreateMirrorRequest": mirror.CreateInput{},
 	"PatchMirrorRequest":  mirror.Patch{},
+	// tenant-lifecycle (§16.4): internal/iam, httpapi/tenant_lifecycle.go
+	"EmailTokenRequest":     emailTokenRequest{},
+	"EmailVerificationSent": iam.VerificationSent{},
+	"RenameTenantRequest":   renameTenantRequest{},
+	"RenameTenantResponse":  renameTenantResponse{},
+	"SlugReservation":       iam.SlugReservation{},
+	"TenantDeletion":        iam.TenantDeletion{},
 
 	// httpapi request and response types.
 	"Error":                       errorBody{},

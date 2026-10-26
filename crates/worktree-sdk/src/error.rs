@@ -92,6 +92,11 @@ pub enum SdkError {
     #[error("background daemon is not running")]
     DaemonNotRunning,
 
+    /// tenant-lifecycle (v0.8 §16.4): the server renamed the tenant; `old`
+    /// is reserved for 90 days and answers this error.
+    #[error("tenant '{old}' was renamed to '{new}'")]
+    TenantMoved { old: String, new: String },
+
     #[error("{0}")]
     Other(String),
 }

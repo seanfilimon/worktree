@@ -269,6 +269,13 @@ func (s *Service) checkAvailable(ctx context.Context, username, email string) er
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return fmt.Errorf("iam: looking up tenant: %w", err)
 	}
+	// tenant-lifecycle (§16.4): slugs of renamed or purged tenants stay
+	// reserved for 90 days.
+	if reserved, err := slugReservedAt(ctx, s.store, username, "", s.now().UTC()); err != nil {
+		return fmt.Errorf("iam: looking up slug reservations: %w", err)
+	} else if reserved {
+		return fmt.Errorf("iam: username %q is reserved by a renamed or deleted tenant: %w", username, domain.ErrAlreadyExists)
+	}
 	accts, err := s.store.ListAccounts(ctx)
 	if err != nil {
 		return fmt.Errorf("iam: listing accounts: %w", err)

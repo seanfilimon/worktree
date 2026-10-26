@@ -435,6 +435,15 @@ func (a *api) validateLicenseGrantee(ctx context.Context, owner *domain.Tenant, 
 	if rule.Grantee == "" {
 		return nil
 	}
+	// tenant-lifecycle (§16.4): a verified tenant email names the tenant
+	// (stored as its slug).
+	if strings.Contains(rule.Grantee, "@") {
+		g, err := a.verifiedEmailTenant(ctx, rule.Grantee)
+		if err != nil {
+			return badRequestf("grantee %q is not the verified email of a tenant", rule.Grantee)
+		}
+		rule.Grantee = g.Slug
+	}
 	if !slugRe.MatchString(rule.Grantee) {
 		return badRequestf("grantee must be a tenant slug")
 	}

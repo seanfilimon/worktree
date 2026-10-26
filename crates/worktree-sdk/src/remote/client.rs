@@ -311,7 +311,11 @@ impl SyncClient {
         let info = match self.inner.resolve_tree(req).await {
             Ok(resp) => resp.into_inner(),
             Err(s) if s.code() == Code::NotFound => {
-                return Err(SdkError::TreeNotFound(format!("{tenant}/{name}")))
+                // tenant-lifecycle (v0.8 §16.4): a renamed tenant's old slug.
+                if let Some(moved) = tenant_moved(&s) {
+                    return Err(moved);
+                }
+                return Err(SdkError::TreeNotFound(format!("{tenant}/{name}")));
             }
             Err(s) => return Err(self.status(s)),
         };
@@ -823,6 +827,9 @@ pub(crate) fn spread_batches<T>(
 /// Map a gRPC status to an [`SdkError`].
 pub(crate) fn status_to_error(server: &str, status: &Status) -> SdkError {
     let message = status.message();
+    if let Some(moved) = tenant_moved(status) {
+        return moved;
+    }
     match status.code() {
         Code::Unauthenticated => SdkError::NotLoggedIn(server.to_string()),
         Code::PermissionDenied => SdkError::PermissionDenied(if message.is_empty() {
@@ -843,6 +850,35 @@ pub(crate) fn status_to_error(server: &str, status: &Status) -> SdkError {
             format!("{message} ({code:?})")
         }),
     }
+}
+
+/// tenant-lifecycle (v0.8 §16.4): a NotFound naming a renamed tenant
+/// carries the slugs in the `wt-tenant-moved-from` / `wt-tenant-moved-to`
+/// trailers (and in the message: `tenant "old" was renamed to "new"`).
+fn tenant_moved(status: &Status) -> Option<SdkError> {
+    if status.code() != Code::NotFound {
+        return None;
+    }
+    let meta = |key: &str| {
+        status
+            .metadata()
+            .get(key)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    if let Some(new) = meta("wt-tenant-moved-to") {
+        let old = meta("wt-tenant-moved-from").unwrap_or_default();
+        return Some(SdkError::TenantMoved { old, new });
+    }
+    let message = status.message();
+    let rest = message.strip_prefix("tenant \"")?;
+    let (old, rest) = rest.split_once('"')?;
+    let rest = rest.strip_prefix(" was renamed to \"")?;
+    let (new, _) = rest.split_once('"')?;
+    Some(SdkError::TenantMoved {
+        old: old.to_string(),
+        new: new.to_string(),
+    })
 }
 
 /// `err` followed by each of its sources, `": "`-separated (transport
@@ -953,6 +989,34 @@ mod tests {
         assert!(
             matches!(status_to_error(s, &Status::internal("")), SdkError::Remote(m) if m == "Internal")
         );
+    }
+
+    #[test]
+    fn tenant_moved_status() {
+        let s = "http://localhost:7420";
+        let msg = r#"tenant "acme" was renamed to "acme-inc"; update the remote (wt tenant switch acme-inc)"#;
+        assert!(matches!(
+            status_to_error(s, &Status::not_found(msg)),
+            SdkError::TenantMoved { old, new } if old == "acme" && new == "acme-inc"
+        ));
+        let mut meta = tonic::metadata::MetadataMap::new();
+        meta.insert("wt-tenant-moved-from", "a".parse().unwrap());
+        meta.insert("wt-tenant-moved-to", "b".parse().unwrap());
+        let st = Status::with_metadata(Code::NotFound, "tree: not found", meta);
+        assert!(matches!(
+            status_to_error(s, &st),
+            SdkError::TenantMoved { old, new } if old == "a" && new == "b"
+        ));
+        // Other errors mentioning a rename are not misread.
+        assert!(matches!(
+            status_to_error(s, &Status::permission_denied(msg)),
+            SdkError::PermissionDenied(_)
+        ));
+        let err = SdkError::TenantMoved {
+            old: "acme".into(),
+            new: "acme-inc".into(),
+        };
+        assert_eq!(err.to_string(), "tenant 'acme' was renamed to 'acme-inc'");
     }
 
     #[test]

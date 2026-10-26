@@ -173,6 +173,16 @@ type Config struct {
 	// WT_CODE_INDEX_BRANCHES (default 10).
 	CodeIndexBranches int
 	// ---- end code search v2 ----
+	// ---- tenant lifecycle (§16.4) ----
+
+	// TenantDeletionWindow is the recovery window of a deleted tenant
+	// (default 30 days). Flag --tenant-deletion-window, env
+	// WT_TENANT_DELETION_WINDOW.
+	TenantDeletionWindow time.Duration
+	// TenantPurgeInterval is the period of the tenant purge job (default
+	// 1h). Flag --tenant-purge-interval, env WT_TENANT_PURGE_INTERVAL.
+	TenantPurgeInterval time.Duration
+	// ---- end tenant lifecycle ----
 	// hardening (§15.10)
 
 	// Pprof serves the Go runtime profiles at /debug/pprof (server admins
@@ -361,6 +371,7 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 	// ---- code search v2 (§15.9) ----
 	errs = append(errs, codeIndexFromEnv(&cfg, lookup)...)
 	// ---- end code search v2 ----
+	errs = append(errs, tenantsFromEnv(&cfg, lookup)...) // tenant lifecycle (§16.4)
 
 	// hardening (§15.10)
 	if v, ok := lookup("WT_PPROF"); ok && v != "" {
@@ -437,6 +448,8 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 	fs.StringVar(&cfg.SMTPFrom, "smtp-from", cfg.SMTPFrom, "From `address` of notification emails, e.g. \"W0rkTree <wt@example.com>\" (env WT_SMTP_FROM)")
 	// Code search v2 (§15.9).
 	codeIndexFlags(fs, cfg)
+	// Tenant lifecycle (§16.4).
+	tenantFlags(fs, cfg)
 	// hardening (§15.10)
 	fs.BoolVar(&cfg.Pprof, "pprof", cfg.Pprof, "serve Go runtime profiles at /debug/pprof to server admins (env WT_PPROF)")
 
@@ -565,6 +578,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateBackends()...)  // storage backends (§15.2)
 	errs = append(errs, c.validateSMTP()...)      // notifications (§15.3)
 	errs = append(errs, c.validateCodeIndex()...) // code search v2 (§15.9)
+	errs = append(errs, c.validateTenants()...)   // tenant lifecycle (§16.4)
 	return errors.Join(errs...)
 }
 

@@ -33,9 +33,9 @@ func (s *Service) ResolveTree(ctx context.Context, req *syncpb.ResolveTreeReques
 	}
 	p := iam.PrincipalFrom(ctx)
 
-	tenant, err := s.d.Store.GetTenantBySlug(ctx, slug)
+	tenant, err := s.tenantBySlug(ctx, slug) // tenant-lifecycle (§16.4): renamed slugs answer TENANT_MOVED
 	if err != nil {
-		return nil, s.toStatus(ctx, err, "tenant")
+		return nil, err
 	}
 
 	if t, err := s.d.Store.GetTreeByName(ctx, tenant.ID, name); err == nil {

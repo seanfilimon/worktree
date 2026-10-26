@@ -206,6 +206,13 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		return err
 	}
 	notifier.Start(ctx)
+	// tenant-lifecycle (§16.4): email verification (through the notify
+	// mailer), renames, deletion and the purge job.
+	lifecycle := iam.NewTenantLifecycle(
+		iam.LifecycleDeps{Store: store, Bus: bus, Audit: auditLog, Mailer: notifier, Logger: log},
+		iam.LifecycleOptions{DeletionWindow: cfg.TenantDeletionWindow, PurgeInterval: cfg.TenantPurgeInterval, PublicURL: cfg.PublicURL},
+	)
+	lifecycle.Start(ctx)
 
 	syncSvc := syncsvc.New(syncsvc.Deps{
 		Store:   store,
@@ -285,7 +292,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Forks:      forks,
 		Scan:       scanner,
 		TreeConfig: treeCfg,
-		Pprof:      cfg.Pprof, // hardening (§15.10): /debug/pprof
+		// tenant-lifecycle (§16.4).
+		TenantLifecycle: lifecycle,
+		Pprof:           cfg.Pprof, // hardening (§15.10): /debug/pprof
 	})
 
 	proxies, _ := config.ParseProxies(cfg.TrustedProxies) // validated by Load

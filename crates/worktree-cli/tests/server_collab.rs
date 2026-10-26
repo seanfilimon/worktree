@@ -272,7 +272,8 @@ fn tenants_and_members() {
 
     assert_eq!(admin.json(&["tenant", "show", "acme"])["name"], "Acme");
     assert_eq!(
-        admin.json(&["tenant", "rename", "acme", "Acme Inc"])["name"],
+        // tenant-lifecycle (§16.4): `rename` changes the slug; `set-name` the display name.
+        admin.json(&["tenant", "set-name", "acme", "Acme Inc"])["name"],
         "Acme Inc"
     );
     assert_eq!(
