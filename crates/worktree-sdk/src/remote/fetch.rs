@@ -194,7 +194,23 @@ async fn download_history(
         .map(|h| hash_from_wire(Some(h)))
         .collect::<Result<Vec<_>>>()?;
     let stubbed: BTreeSet<String> = resp.stubbed_paths.iter().cloned().collect();
-    let objects = ensure_objects(repo, session, &fresh, &hinted, &stubbed, stubs).await?;
+    // ---- pack-delta (§16.1): the hinted objects as one pack, with deltas
+    // against the snapshot we already have; ensure_objects then fetches
+    // whatever is still missing whole (all of it on servers without packs).
+    let mut packed = 0;
+    if stubs.sparse.is_none() {
+        let store = repo.store();
+        let want: Vec<ObjectHash> = hinted.iter().filter(|h| !store.has(h)).copied().collect();
+        let haves = super::pack::download_haves(repo, &have.into_iter().collect::<Vec<_>>());
+        if let Some(stats) =
+            super::pack::download(&mut session.client, store, &session.tree.id, &want, &haves)
+                .await?
+        {
+            packed = stats.objects;
+        }
+    }
+    // ---- end pack-delta ----
+    let objects = packed + ensure_objects(repo, session, &fresh, &hinted, &stubbed, stubs).await?;
     stubs.received.extend(stubbed);
     for snap in &fresh {
         repo.write_snapshot(snap)?;

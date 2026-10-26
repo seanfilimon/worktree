@@ -65,6 +65,7 @@ is authoritative; the spec is a bug.
 | **One-step sync** | [`sync/OneStepSync.md`](./sync/OneStepSync.md) | `wt sync` (fetch, merge or rebase, push; conflicts and `--continue`), the offline outbox (`wt push --queue`, `wt sync queue/flush/drop`), daemon auto-flush and auto-sync |
 | **Review workflow** | [`server/ReviewWorkflow.md`](./server/ReviewWorkflow.md) | Path owners (server config and `OWNERS` file), review requests, owner approval, draft merge requests, suggested changes, storage quotas on server-written snapshots |
 | **Performance** | [`server/Performance.md`](./server/Performance.md) | Measurements (`worktree-bench`, Go benchmarks), parallel transfer and incremental push checks, policy caching, hard limits, tuning flags, admin-only `/debug/pprof` |
+| **Packs** | [`sync/Packs.md`](./sync/Packs.md) | Pack format with copy/insert deltas and zstd payloads, resumable `UploadPack` / `QueryUpload`, `DownloadPack`, base selection, fallback, `WT_NO_PACK`, golden vectors |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

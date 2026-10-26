@@ -3240,6 +3240,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

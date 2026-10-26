@@ -31,6 +31,9 @@ pub mod feature;
 // Coexists with feature::sync_protocol during the WT-PROTO migration.
 pub mod proto;
 
+// pack-delta (ENGINEERING_PLAN §16.1): pack format with binary deltas.
+pub mod pack;
+
 // Re-exports for convenience
 pub use feature::archive;
 pub use feature::audit;

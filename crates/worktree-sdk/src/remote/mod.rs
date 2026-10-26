@@ -31,6 +31,9 @@ mod clone;
 mod convert;
 pub mod credentials;
 mod fetch;
+// pack-delta (§16.1): pack uploads and downloads with binary deltas.
+mod pack;
+pub use pack::{packs_disabled_by_env, TransferStats, NO_PACK_ENV};
 mod push;
 pub mod rest;
 mod server_url;
@@ -204,6 +207,18 @@ pub async fn push(
     branch: Option<&str>,
 ) -> Result<PushReport> {
     push::push(repo, tree, remote, branch).await
+}
+
+/// pack-delta (§16.1): [`push`] that also reports how the objects
+/// travelled — as a pack (with how many deltas and bytes) or, on servers
+/// without the pack RPCs and with `WT_NO_PACK=1`, as whole objects.
+pub async fn push_with_stats(
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    branch: Option<&str>,
+) -> Result<(PushReport, TransferStats)> {
+    push::push_with(repo, tree, remote, branch).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

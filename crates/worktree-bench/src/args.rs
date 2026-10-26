@@ -42,7 +42,8 @@ pub struct Args {
     )]
     pub server_args: Vec<String>,
 
-    /// Comma-separated workloads to run, in this order: push, clone, search.
+    /// Comma-separated workloads to run, in this order: push, clone, search,
+    /// edits (pack-delta §16.1: small edits to a large tree).
     #[arg(long, value_name = "LIST", default_value = "push,clone,search", value_parser = parse_workloads)]
     pub workload: Workloads,
 
@@ -105,6 +106,8 @@ pub enum Workload {
     Push,
     Clone,
     Search,
+    /// pack-delta (§16.1): one large tree per worker, small edits per round.
+    Edits,
 }
 
 impl FromStr for Workload {
@@ -115,8 +118,9 @@ impl FromStr for Workload {
             "push" => Ok(Workload::Push),
             "clone" => Ok(Workload::Clone),
             "search" => Ok(Workload::Search),
+            "edits" => Ok(Workload::Edits), // pack-delta (§16.1)
             other => Err(format!(
-                "unknown workload '{other}' (want push, clone or search)"
+                "unknown workload '{other}' (want push, clone, search or edits)"
             )),
         }
     }
@@ -126,7 +130,8 @@ impl FromStr for Workload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workloads(pub Vec<Workload>);
 
-/// Parse "push,clone,search" (any subset, any order, "all" = every one).
+/// Parse "push,clone,search" (any subset, any order, "all" = push, clone
+/// and search; `edits` must be named).
 pub fn parse_workloads(s: &str) -> Result<Workloads, String> {
     let mut out = Vec::new();
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {

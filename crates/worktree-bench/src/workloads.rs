@@ -40,7 +40,7 @@ pub struct Op {
 }
 
 impl Op {
-    fn new(name: &str, samples: Samples, wall: Duration) -> Op {
+    pub(crate) fn new(name: &str, samples: Samples, wall: Duration) -> Op {
         Op {
             name: name.to_string(),
             samples,
@@ -50,7 +50,7 @@ impl Op {
 }
 
 /// Remote name the bench's worktrees push to.
-const REMOTE: &str = "origin";
+pub(crate) const REMOTE: &str = "origin";
 
 /// Content of file `i` for `round` of `worker`: `size` bytes of text lines;
 /// every tenth file mentions `needle` on its first line.
@@ -112,7 +112,7 @@ fn write_files(
 }
 
 /// Create a worktree named `name` under the work dir with origin set.
-fn init_repo(plan: &Plan, name: &str) -> Result<Repository, String> {
+pub(crate) fn init_repo(plan: &Plan, name: &str) -> Result<Repository, String> {
     let dir = plan.work.join(name);
     let mut repo = Repository::init(
         &dir,
@@ -137,7 +137,7 @@ fn init_repo(plan: &Plan, name: &str) -> Result<Repository, String> {
     Ok(repo)
 }
 
-fn snapshot(repo: &Repository, tree: &str, round: u32) -> Result<(), String> {
+pub(crate) fn snapshot(repo: &Repository, tree: &str, round: u32) -> Result<(), String> {
     repo.snapshot(
         tree,
         SnapshotOptions {

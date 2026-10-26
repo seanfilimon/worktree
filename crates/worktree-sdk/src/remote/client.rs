@@ -171,6 +171,9 @@ pub struct SyncClient {
     // storage (§14.6): gzip message compression for object transfer; turned
     // off for the rest of the session when the server cannot decode it.
     compress: bool,
+    // pack-delta (§16.1): set once the server answered a pack RPC with
+    // Unimplemented (or packs are disabled); remote/pack.rs.
+    pub(super) no_packs: bool,
 }
 
 // --- storage (ENGINEERING_PLAN §14.6): gRPC message compression ---
@@ -257,6 +260,7 @@ impl SyncClient {
             authenticated: token.is_some(),
             inner,
             compress: true,
+            no_packs: false, // pack-delta (§16.1)
         })
     }
 

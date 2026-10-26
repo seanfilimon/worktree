@@ -30,6 +30,11 @@ pub struct PushArgs {
     /// the daemon delivers it automatically with `sync.auto_flush`)
     #[arg(long)]
     pub queue: bool, // sync workstream (§15.5)
+
+    /// Upload whole objects instead of a pack with deltas (for debugging;
+    /// same as WT_NO_PACK=1)
+    #[arg(long)]
+    pub no_pack: bool, // pack-delta (§16.1)
 }
 
 #[derive(Debug, Args)]
@@ -113,6 +118,11 @@ pub struct UnstageArgs {
 }
 
 pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
+    // pack-delta (§16.1): `--no-pack` is WT_NO_PACK=1 for this process (it
+    // also covers `--queue` deliveries).
+    if args.no_pack {
+        std::env::set_var(remote::NO_PACK_ENV, "1");
+    }
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
     // ---- sync workstream (§15.5): `wt push --queue` ----

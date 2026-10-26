@@ -231,6 +231,14 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		// daemon (§13.11): ends WatchBranches streams on shutdown.
 		Done: ctx.Done(),
 	})
+	// ---- pack-delta (§16.1): resumable pack uploads spooled under
+	// <data>/uploads (24 h cleanup), --disable-packs, --max-pack-size ----
+	syncSvc.ConfigurePacks(syncsvc.PackOptions{
+		SpoolDir: filepath.Join(cfg.DataDir, "uploads"), MaxPackSize: cfg.Packs.MaxPackSize,
+		Disabled: cfg.Packs.Disabled, Limits: limiter,
+	})
+	go syncSvc.RunPackJanitor(ctx)
+	// ---- end pack-delta ----
 
 	// ---- gRPC ----
 	grpcServer, healthSrv := newGRPCServer(iamSvc, syncSvc, log, grpcOps{limiter: limiter, audit: auditLog})

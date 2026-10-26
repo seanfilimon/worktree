@@ -134,6 +134,9 @@ SignedSnapshotPayload { record }   // the bytes a signature covers
 | `WatchBranches` | `WatchBranchesRequest{tree_ids[]}` → server stream `BranchEvent` | `tree:read` on every tree | Streams branch updates. |
 | `SyncAccessConfig` | `AccessConfigSyncRequest` → `AccessConfigSyncResponse{accepted, validation_errors[], changes[]}` | tenant or tree IAM admin | Plans or applies a declarative access document. |
 | `GetAccessConfig` | `GetAccessConfigRequest{tenant_id, tree_id?, config_type}` → `GetAccessConfigResponse{found, content, config_hash, updated_at, updated_by}` | IAM read | Reads back the last applied document. |
+| `UploadPack` | client stream `PackChunk{data, upload_id, offset, tree_id}` → `UploadPackResponse{objects_stored, objects_already_present, rejected[], bytes_received}` | authenticated; `tree:write` when `tree_id` is set | v0.8: objects as one resumable pack with deltas. See [Packs.md](./Packs.md). |
+| `QueryUpload` | `QueryUploadRequest{upload_id}` → `QueryUploadResponse{found, offset}` | authenticated (own uploads) | v0.8: bytes of an interrupted pack upload the server kept. |
+| `DownloadPack` | `DownloadPackRequest{tree_id, want[], have[], allow_deltas}` → server stream `PackChunk` | `tree:read` | v0.8: wanted objects (and chunks of wanted chunk lists) as one pack, deltas against `have`. |
 
 Unused optional fields: the request fields `tenant_id` and `account_id` on
 `PushRequest`, `PullRequest` and `StageUploadRequest` are ignored. The tree
@@ -158,8 +161,10 @@ Every flow first opens a session (`worktree_sdk::remote::session::open`):
 
 ### Have/want negotiation
 
-The protocol works on content-addressed objects, with no packs or deltas, so
-negotiation is a set difference:
+The protocol works on content-addressed objects, so negotiation is a set
+difference (since v0.8 the objects themselves usually travel in a pack with
+deltas, see [Packs.md](./Packs.md); `UploadObjects` / `DownloadObjects`
+below remain the fallback for servers without packs and for sparse clones):
 
 - **Upload.** The client sends the hashes it intends to upload as
   `NegotiateRequest.have`, in batches of 2,048. The server answers
@@ -565,6 +570,7 @@ settings.
 | Declarative access sync (`SyncAccessConfig` plan/apply, `GetAccessConfig`) | Built |
 | `PushRejection.ci_checks_failed` / `review_required.current` | Partial: defined on the wire, not produced as described |
 | Legacy `SyncEnvelope` / `feature::wire` framing | Kept for parity only; unused |
+| Pack transfer with binary deltas, resumable uploads (`UploadPack`, `QueryUpload`, `DownloadPack`), fallback to whole objects | Built (v0.8 §16.1, [Packs.md](./Packs.md)) |
 
 ## Roadmap
 
@@ -572,18 +578,21 @@ Described in earlier versions of this spec but not built:
 
 - **QUIC transport** (connection migration, 0-RTT) and the `WT_TRANSPORT`
   switch. Only HTTP/2 (h2c or TLS) exists.
-- **Pack files and delta transfer**: grouping objects, binary deltas between
-  versions, thin packs. Objects travel whole.
-- **Wire compression** (zstd payloads, compression flags). gRPC compression is
-  not enabled.
+- **Thin packs for sparse clones and on-demand fetches** (pack transfer
+  itself is built, see [Packs.md](./Packs.md); partial clones still
+  download whole objects).
+- **Compression flags** negotiated per message (pack payloads are zstd and
+  object transfers use gRPC gzip, Compression.md).
 - **Offline queue**: queuing pushes, stages and access changes while
   disconnected, heartbeat-based offline detection, and replay on reconnect.
   Today operations fail while offline, and the daemon only retries its watch and
   fetch loop with backoff.
 - **Automatic merge on pull of a branch with uncommitted changes.** Pull
   refuses on a dirty working tree.
-- **Resumable uploads**: resuming from the last acknowledged chunk. A failed
-  upload is simply retried, and objects already stored are skipped.
+- **Resuming across processes and resumable downloads**: a pack upload is
+  resumed once within one push ([Packs.md](./Packs.md)); a push restarted
+  later, and an interrupted download, start over (objects already stored
+  are skipped).
 - **Partial or sparse tree sync**: requesting a subset of trees or paths, and
   lazily hydrated stubs. Only the authorization-driven stubbed paths exist.
 - **Server-pushed access-config propagation** to other clients, and local

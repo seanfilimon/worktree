@@ -311,13 +311,17 @@ There are no built-in plan tiers with fixed sizes. `Tenant.plan`
 | Shallow clone and fetch (`.wt/trees/<tree>/shallow`) | Built |
 | Restricted (stubbed) paths (`.wt/trees/<tree>/stubbed`) | Built |
 | Integrity verification on server reads | Partial: verified on upload; clients verify on download and on every local read |
+| Pack transfer with deltas; objects reconstructed and stored whole (v0.8, [`sync/Packs.md`](../sync/Packs.md)) | Built |
 
 ## Roadmap
 
 Described in earlier versions of this spec but not built:
 
-- **Pack files and delta compression**: pack format, delta chains, base
-  selection. Objects are stored and transferred whole.
+- **Packed storage**: keeping objects in pack files with delta chains on
+  disk. Since v0.8 objects *travel* in packs with deltas (format, delta
+  chains up to depth 8 and base selection in
+  [`sync/Packs.md`](../sync/Packs.md)), but both stores keep every object
+  whole (WTZ1) after reconstruction.
 - **Type-specific or dictionary-trained compression** (plain zstd per object
   is built; see Compression.md).
 - **Per-directory tree objects** and symlink entries. Manifests are flat file

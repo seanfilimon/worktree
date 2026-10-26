@@ -502,7 +502,9 @@ fn delta(before: &BTreeMap<String, u64>, after: &BTreeMap<String, u64>, label: &
 #[test]
 fn grpc_gzip_negotiation() {
     require_e2e!();
-    let env = TestEnv::with_server("grpc_gzip");
+    // pack-delta (§16.1): with packs, objects travel in zstd packs; this
+    // scenario checks the gzip negotiation of UploadObjects/DownloadObjects.
+    let env = TestEnv::with_server_args("grpc_gzip", &["--disable-packs"]);
     let alice = env.user("alice");
     let a = publish_tree(&env, &alice, &[("README.md", "# gzip\n")]);
     let big: String = (0..40_000)
