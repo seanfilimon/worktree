@@ -84,6 +84,13 @@ impl TestEnv {
             .expect("this TestEnv has no server (use TestEnv::with_server)")
     }
 
+    /// sync workstream (§15.5): the server, mutably (stop / restart it).
+    pub fn server_mut(&mut self) -> &mut Server {
+        self.server
+            .as_mut()
+            .expect("this TestEnv has no server (use TestEnv::with_server)")
+    }
+
     /// Server base URL.
     pub fn url(&self) -> String {
         self.server().url.clone()

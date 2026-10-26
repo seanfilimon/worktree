@@ -180,6 +180,100 @@ impl Server {
         Api::login(&self.url, &self.admin_user, &self.admin_password)
     }
 
+    // ---- sync workstream (§15.5): restart on the same port and data dir ----
+    /// Whether the server process is running.
+    pub fn is_running(&self) -> bool {
+        self.child.is_some()
+    }
+
+    /// Start the (stopped) server again on the same port with the same data
+    /// directory and admin credentials, so clients configured for
+    /// [`Server::url`] reconnect to the same state. Logs are appended.
+    /// `extra_args` are passed as in [`Server::start_with`].
+    #[track_caller]
+    pub fn restart(&mut self, extra_args: &[&str]) {
+        self.stop();
+        let bin = bins::server_bin();
+        let addr = format!("127.0.0.1:{}", self.port);
+        let open = |p: &Path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .expect("open server log")
+        };
+        let deadline = Instant::now() + START_TIMEOUT;
+        loop {
+            let stdout_len = std::fs::metadata(&self.stdout_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let child = Command::new(&bin)
+                .arg("--addr")
+                .arg(&addr)
+                .arg("--data")
+                .arg(&self.data_dir)
+                .arg("--admin-user")
+                .arg(&self.admin_user)
+                .arg("--admin-password")
+                .arg(&self.admin_password)
+                .args(extra_args)
+                .current_dir(self.data_dir.parent().unwrap_or(&self.data_dir))
+                .env_remove("WT_ADDR")
+                .env_remove("WT_DATA")
+                .env_remove("WT_ADMIN_USER")
+                .env_remove("WT_ADMIN_PASSWORD")
+                .env_remove("WT_ADMIN_DIR")
+                .env_remove("WT_ALLOW_REGISTRATION")
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(open(&self.stdout_path)))
+                .stderr(Stdio::from(open(&self.stderr_path)))
+                .spawn()
+                .unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()));
+            self.child = Some(child);
+            let probe = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .no_proxy()
+                .build()
+                .expect("reqwest client");
+            loop {
+                let exited = self
+                    .child
+                    .as_mut()
+                    .and_then(|c| c.try_wait().ok().flatten());
+                if let Some(status) = exited {
+                    self.child = None;
+                    // The port may linger briefly after the old process died.
+                    assert!(
+                        Instant::now() < deadline,
+                        "server did not restart on {addr} ({status})\n{}",
+                        self.logs()
+                    );
+                    std::thread::sleep(Duration::from_millis(200));
+                    break;
+                }
+                let fresh = std::fs::read(&self.stdout_path).unwrap_or_default();
+                let fresh = fresh
+                    .get(usize::try_from(stdout_len).unwrap_or(usize::MAX)..)
+                    .unwrap_or_default();
+                if String::from_utf8_lossy(fresh).contains(READY_LINE) {
+                    return;
+                }
+                if let Ok(r) = probe.get(format!("{}/healthz", self.url)).send() {
+                    if r.status().as_u16() == 200 {
+                        return;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "server not ready after restart on {addr}\n{}",
+                    self.logs()
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    // ---- end sync workstream ----
+
     /// Kill the process (idempotent).
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {

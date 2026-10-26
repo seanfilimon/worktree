@@ -39,6 +39,13 @@ mod stage;
 // daemon workstream (§13.11): WatchBranches + Unstage.
 mod watch;
 pub use watch::{unstage, watch_trees, BranchEvent, BranchEventStream, TreeWatch};
+// sync workstream (§15.5): one-step sync and the offline outbox.
+mod sync_all;
+pub use sync_all::{
+    flush_outbox, is_unreachable, push_or_queue, sync, sync_abort, sync_all, sync_continue,
+    DeliveredPush, FailedPush, FlushReport, PushOrQueued, SyncIntegration, SyncOptions, SyncReport,
+    SyncStatus, TreeSync,
+};
 
 pub use client::{
     ObjectKind, RemoteBranch, RemoteTree, SyncClient, MAX_MESSAGE_SIZE, TREE_ID_METADATA_KEY,

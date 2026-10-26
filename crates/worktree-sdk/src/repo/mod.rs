@@ -21,6 +21,7 @@
 //!   trees/<tree>/MERGE_STATE.json
 //!   trees/<tree>/REWRITE_STATE.json  stopped cherry-pick / rebase (§14.5)
 //!   trees/<tree>/stash.jsonl         StashEntry per line, oldest first (§14.5)
+//!   trees/<tree>/outbox.jsonl        OutboxEntry per line, oldest first (§15.5)
 //!   trees/<tree>/LOCK           advisory lock held by mutating operations
 //!   conflicts/<tree>.json       machine-readable conflict list during a merge
 //! ```
@@ -70,6 +71,9 @@ pub use rewrite::{
     RewrittenSnapshot,
 };
 pub use stash::{AutoStashSwitch, StashApplyOutcome, StashEntry, StashOptions};
+// sync (§15.5): the offline push queue (`trees/<tree>/outbox.jsonl`).
+mod outbox;
+pub use outbox::OutboxEntry;
 
 pub(crate) use trees::TreeRecord;
 

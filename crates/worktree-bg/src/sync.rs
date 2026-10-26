@@ -10,6 +10,14 @@
 //! Failures back off exponentially (1 s doubling to 5 min, [`Backoff`]).
 //! A server that cannot watch (older server, `Unimplemented`) is polled
 //! every interval instead. Config is re-read on every (re)connect.
+//!
+//! Next to it runs the outbox loop (ENGINEERING_PLAN §15.5,
+//! [`run_outbox`]): with `sync.auto_flush` (default on) pushes queued in
+//! `.wt/trees/<tree>/outbox.jsonl` while the server was unreachable are
+//! retried — immediately when the queue changes, then with the same
+//! exponential backoff — until the server accepts them; with
+//! `sync.auto_sync_secs = N` (default 0 = off) every clean tree gets a full
+//! `wt sync` every N seconds, conflicting integrations being undone.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -64,6 +72,11 @@ pub struct SyncSettings {
     pub recheck: Duration,
     /// A watch stream that lived this long resets the backoff when it ends.
     pub healthy_stream: Duration,
+    /// sync workstream (§15.5): how often the outbox loop re-reads the
+    /// config and looks for queued pushes.
+    pub outbox_poll: Duration,
+    /// sync workstream (§15.5): overrides `sync.auto_sync_secs` (tests).
+    pub auto_sync: Option<Duration>,
 }
 
 impl Default for SyncSettings {
@@ -74,6 +87,8 @@ impl Default for SyncSettings {
             interval: None,
             recheck: Duration::from_secs(60),
             healthy_stream: Duration::from_secs(30),
+            outbox_poll: Duration::from_secs(10),
+            auto_sync: None,
         }
     }
 }
@@ -170,9 +185,25 @@ async fn open_watch(root: &Path, target: &Target) -> Result<Option<remote::TreeW
     }
 }
 
-/// Run the sync loop for the worktree at `root` until `stop` fires (or its
-/// sender is dropped).
+/// Run the sync loops for the worktree at `root` until `stop` fires (or its
+/// sender is dropped): the fetch loop and (sync workstream, §15.5) the
+/// outbox / auto-sync loop ([`run_outbox`]).
 pub async fn run_sync(
+    root: PathBuf,
+    stats: SharedStats,
+    settings: SyncSettings,
+    stop: oneshot::Receiver<()>,
+) {
+    // The outbox loop never ends on its own; it is dropped (cancelled at
+    // its next await point) once the fetch loop sees `stop`.
+    tokio::select! {
+        () = run_fetch(root.clone(), stats, settings.clone(), stop) => {}
+        () = run_outbox(root, settings) => {}
+    }
+}
+
+/// The fetch loop (§13.11).
+async fn run_fetch(
     root: PathBuf,
     stats: SharedStats,
     settings: SyncSettings,
@@ -303,6 +334,179 @@ async fn watch_loop(
                 }
             }
         }
+    }
+}
+
+// --------------------------------------------------------------------
+// sync workstream (§15.5): outbox flushing and periodic auto-sync
+// --------------------------------------------------------------------
+
+/// What the outbox loop should do for one worktree, from its config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutboxPlan {
+    /// `sync.auto_flush`.
+    auto_flush: bool,
+    /// Trees with queued pushes.
+    queued: Vec<String>,
+    /// `(entry id, tip)` of every queued push: a change (new entry, newer
+    /// tip) is retried right away instead of waiting out the backoff.
+    fingerprint: Vec<(String, String)>,
+    /// `sync.auto_sync_secs` (or the test override); `None` = off or no
+    /// sync remote configured.
+    auto_sync: Option<Duration>,
+    remote: String,
+    trees: Vec<String>,
+}
+
+fn load_outbox_plan(root: &Path, settings: &SyncSettings) -> Result<OutboxPlan, SdkError> {
+    let repo = Repository::open(root)?;
+    let sync = &repo.config().sync;
+    let trees: Vec<String> = repo.trees()?.into_iter().map(|t| t.name).collect();
+    let mut queued = Vec::new();
+    let mut fingerprint = Vec::new();
+    for tree in &trees {
+        let entries = repo.outbox(tree)?;
+        if !entries.is_empty() {
+            queued.push(tree.clone());
+        }
+        fingerprint.extend(entries.into_iter().map(|e| (e.id, e.tip)));
+    }
+    let configured = repo.config().remote.contains_key(&sync.remote);
+    let auto_sync = settings
+        .auto_sync
+        .or_else(|| (sync.auto_sync_secs > 0).then(|| Duration::from_secs(sync.auto_sync_secs)))
+        .filter(|_| configured)
+        .map(|d| d.max(Duration::from_millis(100)));
+    Ok(OutboxPlan {
+        auto_flush: sync.auto_flush,
+        queued,
+        fingerprint,
+        auto_sync,
+        remote: sync.remote.clone(),
+        trees,
+    })
+}
+
+/// Deliver the queued pushes of `trees`. Returns `Ok(true)` when every
+/// entry went out, `Ok(false)` when some are still queued.
+async fn flush_trees(root: &Path, trees: &[String]) -> Result<bool, SdkError> {
+    let repo = Repository::open(root)?;
+    let mut all = true;
+    for tree in trees {
+        let report = remote::flush_outbox(&repo, tree).await?;
+        for d in &report.delivered {
+            tracing::info!(root = %root.display(), %tree, branch = %d.entry.branch, remote = %d.entry.remote, tip = %d.push.new_tip, "delivered queued push");
+        }
+        for f in &report.failed {
+            tracing::debug!(root = %root.display(), %tree, branch = %f.entry.branch, error = %f.error, "queued push not delivered");
+        }
+        all &= report.remaining == 0;
+    }
+    Ok(all)
+}
+
+/// A full `wt sync` of every clean tree (conflicting integrations are
+/// undone, never left in the working tree). Returns whether every sync
+/// reached the server.
+async fn auto_sync(root: &Path, plan: &OutboxPlan) -> Result<bool, SdkError> {
+    let repo = Repository::open(root)?;
+    let opts = remote::SyncOptions {
+        abort_on_conflict: true,
+        ..Default::default()
+    };
+    let mut online = true;
+    for tree in &plan.trees {
+        let idle = repo.merge_state(tree)?.is_none() && repo.rewrite_state(tree)?.is_none();
+        if !idle || !repo.status(tree)?.is_clean() {
+            tracing::debug!(root = %root.display(), %tree, "auto-sync skipped: tree is not clean");
+            continue;
+        }
+        match remote::sync(&repo, tree, &plan.remote, opts).await {
+            Ok(r) => {
+                use remote::SyncStatus;
+                match r.status {
+                    SyncStatus::UpToDate => {}
+                    SyncStatus::Queued | SyncStatus::Offline => online = false,
+                    SyncStatus::Aborted => {
+                        tracing::warn!(root = %root.display(), %tree, branch = %r.branch, "auto-sync: integrating the remote branch conflicts; run `wt sync` to resolve")
+                    }
+                    status => {
+                        tracing::info!(root = %root.display(), %tree, branch = %r.branch, ?status, integration = ?r.integration, "auto-synced")
+                    }
+                }
+            }
+            // Not on the server, not logged in, ...: nothing to do here.
+            Err(e) => {
+                tracing::debug!(root = %root.display(), %tree, error = %e, "auto-sync failed")
+            }
+        }
+    }
+    Ok(online)
+}
+
+/// The outbox loop of one worktree: with `sync.auto_flush`, deliver queued
+/// pushes (retrying with exponential backoff while the server is
+/// unreachable or a push is refused); with `sync.auto_sync_secs`, run a full
+/// sync of every clean tree on that schedule. Config is re-read every
+/// `outbox_poll`.
+pub async fn run_outbox(root: PathBuf, settings: SyncSettings) {
+    let mut backoff = Backoff::new(settings.backoff_min, settings.backoff_max);
+    // Flush retries wait until this instant (backoff).
+    let mut retry_at = Instant::now();
+    let mut next_auto_sync: Option<Instant> = None;
+    let mut seen: Vec<(String, String)> = Vec::new();
+    loop {
+        let plan = tokio::task::spawn_blocking({
+            let root = root.clone();
+            let settings = settings.clone();
+            move || load_outbox_plan(&root, &settings)
+        })
+        .await;
+        let mut wake = Instant::now() + settings.outbox_poll;
+        if let Ok(Ok(plan)) = plan {
+            if plan.fingerprint != seen {
+                // New or updated entries: try them now.
+                backoff.reset();
+                retry_at = Instant::now();
+                seen = plan.fingerprint.clone();
+            }
+            if plan.auto_flush && !plan.queued.is_empty() {
+                if Instant::now() >= retry_at {
+                    match flush_trees(&root, &plan.queued).await {
+                        Ok(true) => backoff.reset(),
+                        Ok(false) => retry_at = Instant::now() + backoff.next_delay(),
+                        Err(e) => {
+                            tracing::debug!(root = %root.display(), error = %e, "outbox flush failed");
+                            retry_at = Instant::now() + backoff.next_delay();
+                        }
+                    }
+                }
+                if retry_at > Instant::now() {
+                    wake = wake.min(retry_at);
+                }
+            } else {
+                backoff.reset();
+                retry_at = Instant::now();
+            }
+            match plan.auto_sync {
+                Some(every) => {
+                    let due = *next_auto_sync.get_or_insert_with(|| Instant::now() + every);
+                    if Instant::now() >= due {
+                        let online = auto_sync(&root, &plan).await.unwrap_or(false);
+                        next_auto_sync = Some(Instant::now() + every);
+                        if !online {
+                            // Queued while offline: let the flush back off.
+                            retry_at = retry_at.max(Instant::now() + settings.backoff_min);
+                        }
+                    }
+                    if let Some(at) = next_auto_sync {
+                        wake = wake.min(at);
+                    }
+                }
+                None => next_auto_sync = None,
+            }
+        }
+        tokio::time::sleep_until(wake).await;
     }
 }
 
