@@ -55,7 +55,14 @@ For a local S3 to experiment with, the [Compose `s3` profile](/docs/server/deplo
 
 ## Backups
 
-A backup is one file `<data>/backups/<id>.wtbak`, with an id like `bk-20261025T120000Z-a1b2c3` (UTC creation time plus a random suffix). Backups are taken **online**: writers are not blocked.
+A backup is one archive `<id>.wtbak` in the **backup target**, with an id like `bk-20261025T120000Z-a1b2c3` (UTC creation time plus a random suffix). Backups are taken **online**: writers are not blocked.
+
+| `--backup-target` (`WT_BACKUP_TARGET`) | Archives at |
+|---|---|
+| `disk` (default) | `<data>/backups/<id>.wtbak` |
+| `s3` (v0.8) | `s3://<bucket>/<backup-s3-prefix><id>.wtbak` |
+
+The S3 target reuses the `--s3-*` connection settings (endpoint, bucket, region, credentials, `--s3-insecure`), so it works with `--object-store disk` (objects on the volume, backups off-host) as well as `--object-store s3`. `--backup-s3-prefix` (`WT_BACKUP_S3_PREFIX`) defaults to `<s3-prefix>backups/`; when objects and backups share a bucket it must not lie inside `<s3-prefix>objects/` (checked at startup). Every archive is first written to the local staging file `<data>/backups/<id>.wtbak.partial`; the disk target renames it, the S3 target uploads it (single PUT up to 64 MiB, multipart above) and deletes the staging file. See [Server operations](/docs/server/server-operations#backups-to-object-storage).
 
 ```bash
 wt admin backup create --note "before upgrading to 0.8"
@@ -71,7 +78,7 @@ wt admin backup delete bk-20261025T120000Z-a1b2c3 --yes
 | `wt admin backup download ID [-o FILE]` | Stream the archive to `FILE.part`, then rename it (default `./<id>.wtbak`) |
 | `wt admin backup delete ID [--yes]` | Delete a backup on the server |
 
-All four need server administrator rights. The admin panel's **Backups** page (`/admin/backups`) does the same: the backups table (download, delete), a create dialog with an optional note, the object store details, the schedule and the restore command.
+All four need server administrator rights. The admin panel's **Backups** page (`/admin/backups`) does the same: the backups table (download, delete), a create dialog with an optional note, the object store details, the backup target and location, the schedule and the restore commands. Since v0.8 the page also shows the [email outbox](/docs/server/server-operations#durable-email-outbox) and the [retention settings](/docs/server/server-operations#retention).
 
 ### Scheduled backups
 
@@ -79,11 +86,12 @@ All four need server administrator rights. The admin panel's **Backups** page (`
 |---|---|---|---|
 | `--backup-interval` | `WT_BACKUP_INTERVAL` | `0` (off) | Period of scheduled backups (at least `1m`), for example `24h` |
 | `--backup-keep` | `WT_BACKUP_KEEP` | `7` | Scheduled backups kept; `0` keeps all |
+| `--backup-max-age` | `WT_BACKUP_MAX_AGE` | `0` (no limit) | v0.8: scheduled backups older than this are pruned (`720h`, `30d`; at least `1m`) |
 
-Scheduled backups are created by the `system` actor; beyond the newest `--backup-keep` they are deleted after each scheduled run. Backups created by people are never pruned automatically.
+Scheduled backups are created by the `system` actor; beyond the newest `--backup-keep` or older than `--backup-max-age` they are deleted after each scheduled run and by the hourly retention pass. Backups created by people are never pruned automatically. On Kubernetes, the Helm chart's optional `backup.cronJob` calls `POST /api/v1/admin/backups` on a schedule instead (see [Deployment](/docs/server/deployment#kubernetes-helm)).
 
 <Callout type="warn" title="Copy backups off the host">
-  Backups live in the data directory, on the same volume as the data. Download them (`wt admin backup download`) or copy `<data>/backups/` to other storage on a schedule.
+  With the `disk` target, backups live in the data directory, on the same volume as the data. Use `--backup-target s3`, download them (`wt admin backup download`) or copy `<data>/backups/` to other storage on a schedule.
 </Callout>
 
 ### What is in an archive
@@ -96,26 +104,30 @@ A `.wtbak` file is a zstd-compressed tar stream with, in order:
 | `objects/<2 hex>/<62 hex>` | Every object's uncompressed content |
 | `manifest.json` | Format, version, id, creation time and author, note, server version, object store kind, the size and SHA-256 of `meta.db`, the object count and bytes |
 
-The metadata snapshot is taken first, then the object store is listed. Pushes upload objects before committing metadata, so every object the snapshot references is included; objects written later are harmless extras. An archive is written to `<id>.wtbak.partial` and renamed when complete, and only one backup runs at a time (`409 backup_running`). Archives copied into `<data>/backups/` are listed too.
+The metadata snapshot is taken first, then the object store is listed. Pushes upload objects before committing metadata, so every object the snapshot references is included; objects written later are harmless extras. An archive is written to `<id>.wtbak.partial` and moved into the target when complete, and only one backup runs at a time (`409 backup_running`). Archives in the target without an index entry (copied in, or written after the snapshot a server was restored from) are listed too.
 
 ### REST API
 
 | Method and path | Result |
 |---|---|
 | `POST /api/v1/admin/backups` `{"note"?}` | `201 BackupInfo` once the archive is complete; `409 backup_running` |
-| `GET /api/v1/admin/backups` | Configuration, store, `running`, `next_run_at`, `last_error` and the backups |
-| `GET /api/v1/admin/backups/{id}/download` | The archive (`Range` supported) |
+| `GET /api/v1/admin/backups` | Configuration (`dir`, `target`, `location`, `interval`, `keep`, `max_age`), store, `running`, `next_run_at`, `last_error` and the backups |
+| `GET /api/v1/admin/backups/{id}/download` | The archive (`Range` supported for the disk target; S3 archives stream whole) |
 | `DELETE /api/v1/admin/backups/{id}` | `204` |
 
-`BackupInfo` is `{id, path, size_bytes, objects, created_at, created_by, note?}`. Audit actions: `backup.create`, `backup.download`, `backup.delete`.
+`BackupInfo` is `{id, path, size_bytes, objects, created_at, created_by, note?}`; `path` is the file path or `s3://bucket/key`, and `objects` is `0` for unindexed archives. Audit actions: `backup.create`, `backup.download`, `backup.delete`.
 
 ## Restore
 
 Restore is **offline**: stop the server first (bbolt holds an exclusive lock on `meta.db`).
 
 ```text
-worktree-server restore [--force] --data DIR [--object-store ... --s3-* ...] [--compress-objects] FILE.wtbak
+worktree-server restore [--force] --data DIR [--object-store ... --s3-* ...] [--compress-objects]
+                        [--backup-target disk|s3 --backup-s3-prefix P] FILE.wtbak|BACKUP-ID
+worktree-server restore --list --data DIR [--backup-target disk|s3 --s3-* ... --backup-s3-prefix P]
 ```
+
+`--list` prints the archives in the backup target (id, creation time, size), newest first. A positional argument that is not an existing file but a backup id is read from the backup target: `<DIR>/backups/<id>.wtbak` for `disk`, or streamed straight from the bucket for `s3` without a local copy.
 
 <Steps>
 <Step>
@@ -133,6 +145,11 @@ sudo systemctl stop worktree-server
 
 ```bash
 worktree-server restore --data /var/lib/worktree-restored /backups/bk-20261025T120000Z-a1b2c3.wtbak
+
+# v0.8: by id, straight from an S3 backup target
+WT_S3_ACCESS_KEY=... WT_S3_SECRET_KEY=... worktree-server restore --data /var/lib/worktree-restored \
+  --backup-target s3 --s3-endpoint s3.eu-central-1.amazonaws.com --s3-bucket acme-worktree \
+  bk-20261025T120000Z-a1b2c3
 ```
 
 </Step>
@@ -147,7 +164,7 @@ Point `--data` (or `WT_DATA`) at the restored directory and start the server.
 
 What restore does:
 
-1. It refuses a data directory that exists and is not empty unless `--force`; with `--force`, `meta.db` is replaced and objects are added next to existing ones (stale objects are later collected by GC).
+1. It refuses a data directory that exists and is not empty unless `--force` (a `backups/` subdirectory is ignored, so a disk-target archive can be restored by id into an otherwise empty data directory); with `--force`, `meta.db` is replaced and objects are added next to existing ones (stale objects are later collected by GC).
 2. It streams the archive: `meta.db` goes to `meta.db.restoring`; every object is checked against its BLAKE3 name and written to the selected object store, which verifies it again.
 3. It verifies `meta.db` against the manifest's size and SHA-256 and the object count, opens the restored database (schema check) and only then renames it to `meta.db`.
 
@@ -168,5 +185,5 @@ WT_S3_ACCESS_KEY=... WT_S3_SECRET_KEY=... worktree-server restore \
 ```
 
 <Callout type="info" title="Not built yet">
-  Writing backups directly to a bucket, incremental backups, online archive verification, archive encryption and a local read cache in front of S3 are on the [roadmap](/roadmap).
+  Incremental backups, online archive verification, archive encryption and a local read cache in front of S3 are on the [roadmap](/roadmap). Writing backups to a bucket is built since v0.8 (`--backup-target s3`).
 </Callout>

@@ -32,11 +32,11 @@ This page covers running the server for a team and installing the clients on dev
 - [ ] Encrypt traffic: built-in TLS (`--tls-cert`/`--tls-key`), or listen on loopback behind a TLS-terminating proxy and set `--trusted-proxies`. Never serve cleartext on a public address (the server warns when you do).
 - [ ] Set `WT_ADMIN_PASSWORD` from a secret store or a file readable only by the service user, never on the command line.
 - [ ] Disable self-service registration (`WT_ALLOW_REGISTRATION=false`) unless you want open sign-up.
-- [ ] Set `WT_PUBLIC_URL` (SSO redirects, links in notification email).
-- [ ] Decide retention: `--staged-retention` (default 7 days), `--audit-retention` (default keep forever), `--gc-grace` (default 30 days).
+- [ ] Set `WT_PUBLIC_URL` (SSO redirects, device sign-in links, links in notification and verification email).
+- [ ] Decide retention: `--staged-ttl` (default 30 days since v0.8), `--audit-retention` (default keep forever), `--gc-grace` (default 30 days), and the v0.8 [retention pass](/docs/server/server-operations#retention) (`--policy-version-retention`, `--webhook-delivery-retention`, `--webhook-delivery-keep`).
 - [ ] Review `--rate-limit` (default 1,200 requests per minute per principal) and default quotas.
 - [ ] Restrict `/metrics` to your monitoring network.
-- [ ] Schedule [backups](/docs/server/storage-backends#backups) (`WT_BACKUP_INTERVAL`), copy them off the host, and test a [restore](/docs/server/storage-backends#restore).
+- [ ] Schedule [backups](/docs/server/storage-backends#backups) (`WT_BACKUP_INTERVAL`), keep them off the host (`WT_BACKUP_TARGET=s3` since v0.8, or copy them), and test a [restore](/docs/server/storage-backends#restore).
 - [ ] Optional: [S3 object storage](/docs/server/storage-backends#s3-object-store), [notification email](/docs/server/notifications#email) (`WT_SMTP_URL`), `git` for [Git mirrors](/docs/server/mirrors) (included in the image).
 
 ## Docker
@@ -129,6 +129,10 @@ helm test wt -n worktree
 | `Service` and headless `Service` | Port `http` with `appProtocol: kubernetes.io/h2c` (gRPC and HTTP share it) |
 | `Ingress` (+ optional `-grpc` Ingress) | The second Ingress routes `/worktree.sync.v1.SyncService` with `ingress.grpc.annotations` (default nginx `backend-protocol: GRPC`). Set `ingress.grpc.enabled=false` for controllers that honour `appProtocol` (Traefik, Contour, Envoy Gateway) |
 | `Pod` (`helm test`) | Calls `/healthz` through the Service |
+| `ServiceMonitor` (v0.8, optional) | `metrics.serviceMonitor.enabled` (needs the Prometheus Operator CRDs): scrapes `/metrics` on port `http` |
+| `NetworkPolicy` (v0.8, optional) | `networkPolicy.enabled`: ingress to the server port from `networkPolicy.ingressFrom` (empty = anyone; this release's CronJob and test pod stay allowed); egress all by default, or DNS + `networkPolicy.egress.extra` with `egress.allowAll=false` |
+| `PodDisruptionBudget` (v0.8, optional) | `podDisruptionBudget.enabled`: exactly one of `minAvailable` / `maxUnavailable` (default `maxUnavailable: 1`); with one replica `minAvailable: 1` blocks node drains |
+| `CronJob` `<release>-backup` (v0.8, optional) | `backup.cronJob.enabled`: calls `POST /api/v1/admin/backups` on `backup.cronJob.schedule` (default `0 3 * * *`) with a server-admin token from `backup.cronJob.tokenSecret` (required, passed on stdin); with `backup.target=s3` the archives land in the bucket |
 
 | Value | Default | Notes |
 |---|---|---|
@@ -140,12 +144,18 @@ helm test wt -n worktree
 | `server.tls.enabled`, `server.tls.secretName`, `server.tls.clientCASecretName` | off | TLS from the pod (probes switch to HTTPS); optional mTLS CA (`ca.crt`) |
 | `objectStore`, `s3.*` | `disk` | `s3` needs `s3.bucket` |
 | `smtp.url`, `smtp.from` | empty | Notification email |
-| `backup.interval`, `backup.keep` | `"0"`, `7` | Scheduled backups into `/data/backups` |
+| `backup.interval`, `backup.keep` | `"0"`, `7` | Scheduled backups |
+| `backup.target`, `backup.s3Prefix`, `backup.maxAge` | `disk`, `""`, `"0"` | v0.8: `s3` keeps backups in the `s3.*` bucket (also with `objectStore: disk`; needs `s3.bucket`); prune scheduled backups by age |
+| `backup.cronJob.*` | off | v0.8: see the CronJob row above |
+| `retention.policyVersions`, `retention.webhookDeliveries`, `retention.webhookDeliveryKeep` | `""`, `720h`, `200` | v0.8 [retention](/docs/server/server-operations#retention) |
+| `smtp.deadAfter` | `24h` | v0.8: dead-letter queued email that still fails after this long |
+| `metrics.serviceMonitor.*`, `networkPolicy.*`, `podDisruptionBudget.*` | off | v0.8: see the rows above |
+| `server.stagedRetention` | `168h` | Rendered as `WT_STAGED_RETENTION`. The chart still sets the pre-v0.8 value; set `720h` to match the server's v0.8 default |
 | `persistence.size`, `persistence.storageClass` | `20Gi`, cluster default | Claim templates are immutable: resize the PVC directly |
 | `resources` | 100m / 128Mi requests, 1Gi memory limit | |
 | `extraEnv`, `extraArgs` | `[]` | Anything else (`--gc-interval`, `TZ`, ...) |
 
-The chart refuses inconsistent values when rendering (TLS without a Secret, `objectStore=s3` without a bucket, an unknown object store, an existing claim with persistence disabled) and ships a `values.schema.json`. Validate changes with `helm lint --strict deploy/helm/worktree`, or without Helm with `cd deploy/helm/check && go run .`; `bash deploy/validate.sh` runs every packaging check.
+The chart refuses inconsistent values when rendering (TLS without a Secret, `objectStore=s3` or `backup.target=s3` without a bucket, an unknown object store, an existing claim with persistence disabled, the backup CronJob without `tokenSecret.name`, a PodDisruptionBudget with both or neither bound) and ships a `values.schema.json`. Validate changes with `helm lint --strict deploy/helm/worktree`, or without Helm with `cd deploy/helm/check && go run .`; `bash deploy/validate.sh` runs every packaging check.
 
 ## systemd
 
@@ -337,7 +347,7 @@ bash scripts/release.sh --target aarch64-unknown-linux-gnu --skip-admin
 | `worktree-<version>.tgz` | The Helm chart (release workflow) |
 | `<artifact>.sha256`, `SHA256SUMS` | SHA-256 checksums |
 
-Targets: `x86_64` and `aarch64` of `unknown-linux-gnu`, `apple-darwin` and `pc-windows-msvc`. The version comes from `[workspace.package]` in `Cargo.toml`; the release workflow refuses a tag `v<version>` that differs from it. Targets whose Rust standard library or cross linker is missing are skipped with a warning (`--strict` makes that an error); the Go server always cross-compiles.
+Targets: `x86_64` and `aarch64` of `unknown-linux-gnu`, `apple-darwin` and `pc-windows-msvc`, and since v0.8 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` (static Linux archives; built only when a musl C toolchain such as `<arch>-linux-musl-gcc` or `musl-gcc` is installed). The version comes from `[workspace.package]` in `Cargo.toml`; the release workflow refuses a tag `v<version>` that differs from it. Targets whose Rust standard library or cross linker is missing are skipped with a warning (`--strict` makes that an error); the Go server always cross-compiles.
 
 ## Upgrading
 
@@ -349,5 +359,5 @@ Targets: `x86_64` and `aarch64` of `unknown-linux-gnu`, `apple-darwin` and `pc-w
 The server refuses to open a `meta.db` written by a newer schema, so downgrades are not supported once a newer server has written its data: [restore](/docs/server/storage-backends#restore) the backup instead.
 
 <Callout type="info" title="Not built yet">
-  Signed release artifacts (cosign, SLSA provenance), native packages (Homebrew, Scoop/winget, `.deb`/`.rpm`), musl archives, a distroless image and zero-downtime rolling upgrades are on the [roadmap](/roadmap).
+  Signed release artifacts (cosign, SLSA provenance), native packages (Homebrew, Scoop/winget, `.deb`/`.rpm`), a distroless image and zero-downtime rolling upgrades are on the [roadmap](/roadmap).
 </Callout>

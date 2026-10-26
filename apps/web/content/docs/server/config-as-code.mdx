@@ -1,0 +1,177 @@
+---
+title: Config as Code
+description: Since v0.8 the server applies a tree's .wt-tree/branches.toml, protections.toml and access policies from its default branch, validates every config file on push with located errors, and records the applied configuration.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A tree's shared [`.wt-tree/` files](/docs/cli/configuration#shared-tree-files) are versioned with its code. Since v0.8 some of them are **authoritative server configuration**: when a push or a server-side merge moves the tree's **default branch** and changes one of them, the server
+
+1. validates the files of the new tip; an invalid configuration rejects the push with located errors (`file:line:col CODE message`);
+2. after the branch moved, applies them: branch descriptions and owners, branch protections, and the tree's deny policies;
+3. records the applied state and the outcome of the last attempt, publishes `config.applied` and audits the change.
+
+Pushes to other branches are not checked: a configuration takes effect only once it reaches the default branch, directly or through a merge request. The Rust validator in `wt` and the Go server implement the same rules and report the same codes at the same positions. The [Config-as-code specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/ConfigAsCode.md) is normative.
+
+## Files
+
+Paths are relative to the tree (`.wt-tree/` at the root of the tree; a nested tree's own directory):
+
+| File | Effect on the server | Applied when |
+|---|---|---|
+| `.wt-tree/branches.toml` | Branch descriptions and owners | The file changed |
+| `.wt-tree/protections.toml` | Config-managed branch protections | The file changed |
+| `.wt-tree/config.toml` | None (client settings); validated only | — |
+| `.wt-tree/access/policies.toml` | The tree's declarative access document (deny statements) | The file (or `roles.toml`) changed; other files under `access/` are ignored |
+| `.wt-tree/access/roles.toml` | Not allowed (`E2013`): roles are tenant-level | — |
+
+Removing a file is a change: removing `protections.toml` deletes the config-managed protections, removing `access/policies.toml` deletes the tree's config-managed policies, removing `branches.toml` clears the metadata it had set. Files larger than 256 KiB are refused. All files are TOML 1.0.
+
+### branches.toml
+
+```toml
+[[branch]]
+name = "main"                         # required
+description = "Production web app"    # optional, at most 1000 characters
+owner = "team:platform"               # optional: user:NAME or team:SLUG
+
+[[branch]]
+name = "release/2.x"
+owner = "user:olga"
+```
+
+- Table keys are `name`, `description` and `owner` (an array of inline tables, `branch = [{ name = "a" }, ...]`, works too).
+- `name` must be a valid branch name and appear once; at most 500 branches.
+- `owner` is `user:` plus 1-39 of `[a-z0-9-]` or `team:` plus 1-63 of `[a-z0-9-]`; the server also requires the account, or a team of the tree's tenant, to exist.
+- A declared branch that does not exist yet is a warning (`W3102`); its metadata is applied as soon as the branch is created.
+
+Declared branches are **config-managed**: `PATCH {tree}/branches/{name}` answers `409 config_managed`, and [`wt branch describe` / `wt branch owner`](#cli) explain that the file must be changed instead. `wt trees branches` and the admin panel's **Branches** tab show owners and descriptions.
+
+### protections.toml
+
+```toml
+[[protection]]
+pattern = "release/*"            # required
+no_direct_push = true
+required_approvals = 1           # 0-100
+allowed_pushers = ["alice"]      # usernames (a single string is accepted)
+no_delete = true
+require_ci_pass = true
+required_checks = ["ci/build"]   # at most 50
+require_signed = false
+require_linear = false
+block_on_todos = false
+merge_methods = ["squash"]       # fast-forward | merge | squash | rebase
+no_force_push = true
+require_owner_approval = false
+```
+
+The fields are those of the REST API's [`BranchProtection`](/docs/server/branch-protection#protection-rules); absent booleans are false. At most 100 protections, 100 pushers per rule and 50 checks; each pattern at most once.
+
+**Config-managed protections never clobber API rules.** The server remembers the patterns the configuration created (`managed_patterns`). On apply, a declared pattern that is managed (or new) is created or updated; a declared pattern that already exists **and was set through the REST API** (`wt protect set`) is left untouched with warning `W3101` (delete the API rule to let the file manage it); a managed pattern that is no longer declared is deleted. A managed rule edited through the API is overwritten by the next apply.
+
+### config.toml
+
+The tree-level client settings (`[auto_snapshot]`, `[secret_scanning]`, `[hooks]`) are validated so a broken file cannot reach the default branch: wrong types are `E3002`, out-of-range values `E3007`, a secret pattern without name or regex `E3003`. Other sections (read only at the worktree level) give warning `W3103`, unknown keys `W3104`. Nothing in `config.toml` is applied on the server.
+
+### access/policies.toml
+
+`.wt-tree/access/policies.toml` is the tree's [declarative access document](/docs/server/declarative-access): deny statements only, every resource inside the tree. The server compiles it and applies it exactly like `wt access apply --tree-doc`; the policies are stored as `<tree>/<name>` and marked config-managed.
+
+Changing the access document requires the pusher to hold **`iam:admin`** in the tree's tenant. Otherwise the push is rejected with `E3010` ("ask a tenant admin to push this change"). The document is dry-run before the push is accepted: structural problems use the `E20xx` codes of the access compiler, refusals (unknown principals, privilege escalation, invalid statements) are `E3011`, positioned at the `[[policy]]` or `[[policy.statement]]` header they refer to.
+
+## Diagnostics
+
+```json
+{"code": "E3008", "severity": "error", "file": ".wt-tree/branches.toml",
+ "line": 3, "col": 1, "message": "owner user:ghost does not exist in this tenant"}
+```
+
+Lines and columns are 1-based (columns count characters); `0:0` means "no position". The text form is `file:line:col: CODE message`.
+
+| Code | Severity | Meaning | Checked by |
+|---|---|---|---|
+| `E3001` | error | Not valid TOML | client and server |
+| `E3002` | error | Unknown key or wrong type | client and server |
+| `E3003` | error | Required field missing or empty | client and server |
+| `E3004` | error | Invalid branch name | client and server |
+| `E3005` | error | Invalid protection pattern | client and server |
+| `E3006` | error | Duplicate branch or pattern | client and server |
+| `E3007` | error | Value out of range or not allowed | client and server |
+| `E3008` | error | Owner syntax; on the server, the owner does not exist | client and server |
+| `E3009` | error | Too many entries, text or file too long | client and server |
+| `E3010` | error | `access/` changed without `iam:admin` | server |
+| `E3011` | error | Access document refused by the access service | server |
+| `W3101` | warning | Protection pattern managed through the API; entry ignored | server |
+| `W3102` | warning | Declared branch does not exist yet | server |
+| `W3103` | warning | `config.toml` section not read at tree level | client and server |
+| `W3104` | warning | Unknown key in `config.toml` | client and server |
+| `E20xx` / `W21xx` | | Access files (see [Declarative access](/docs/server/declarative-access)) | client and server |
+
+A `.wt-tree/access/roles.toml` file is refused with `E2013`, and tree documents may only contain deny statements (`E2008` for an allow statement, reported by the local validator).
+
+## Validation on push
+
+The config check runs as a push check after quotas and before secret scanning and signatures. For a push to the default branch whose changed paths include a config-as-code file it reads the files of the new tip, validates them, checks owners and, when `access/` changed, `iam:admin` and the access dry run. Errors reject the push as `access_denied` with the reason `invalid .wt-tree configuration: <up to 10 diagnostics>`; the attempt is recorded as rejected and audited as `config.rejected`.
+
+`wt push` validates the files locally first when you push the tree's default branch and refuses to contact the server on errors; `wt status` lists problems of the working copy's config files (`config_problems` in `--json`).
+
+Server-side merges and suggestion commits do not run push checks. Their configuration is validated when it is applied: an invalid merged configuration is recorded as a rejected attempt and not applied, while the merge itself stands. Validate the files on the source branch before merging (`wt trees config validate --online`).
+
+## Applied configuration
+
+After every push or merge that moved the default branch and changed a config file, the server validates again and applies `branches.toml`, then `protections.toml`, then `access/`, as the pusher (or the account that merged). The state is kept per tree:
+
+```json
+{
+  "tree_id": "…", "default_branch": "main",
+  "applied": {
+    "snapshot_id": "…", "branch": "main", "applied_by": "alice", "applied_at": "…",
+    "files": [{"path": ".wt-tree/branches.toml", "hash": "<blake3>", "size": 120}],
+    "branches": [{"name": "main", "description": "…", "owner": "team:platform"}],
+    "protections": ["…"], "managed_patterns": ["release/*"],
+    "access_hash": "<blake3>",
+    "changes": ["protection release/*: create", "branch main: description set, owner team:platform"],
+    "warnings": []
+  },
+  "last_attempt": {"snapshot_id": "…", "by": "bob", "at": "…", "accepted": false, "errors": ["…"]}
+}
+```
+
+Every apply publishes `config.applied` (payload `snapshot_id`, `branch`, `files`, `changes`, warnings count) and is audited as `config.apply`. Branch metadata is written without touching the branch tip.
+
+## CLI
+
+```bash
+wt trees config validate                       # local check of the current tree's .wt-tree/
+wt trees config validate services/api --online # also ask the server (owners, iam:admin, access dry run)
+wt trees config show acme/web                  # applied configuration and the last rejected attempt
+wt branch describe main "Production web app"   # branches not declared in branches.toml
+wt branch owner release/2.x team:platform      # needs tree:admin
+wt branch owner release/2.x --clear
+```
+
+| Command | Description |
+|---|---|
+| `wt trees config show [TENANT/TREE]` | Applied configuration: source snapshot, declared branches and protections (API-managed ones marked), access hash, changes, warnings, and the errors of a rejected last attempt |
+| `wt trees config validate [PATH] [--online] [--remote-tree T/NAME]` | Validate `.wt-tree/{config,branches,protections}.toml` and `.wt-tree/access/**` of a tree directory (default: the current tree) locally; `--online` also asks the server; exit `1` on errors |
+| `wt branch describe NAME TEXT` | Set a branch's description on the origin tree (`""` clears) |
+| `wt branch owner NAME user:X\|team:Y` / `--clear` | Set or remove a branch's owner (`tree:admin`) |
+
+## REST API
+
+| Method and path | Permission | Description |
+|---|---|---|
+| `GET {tree}/config` | `tree:read` | The applied state; `applied` and `last_attempt` are null without config-as-code |
+| `POST {tree}/config/validate` | `tree:write` | `{"files": {path: content}}` → `{valid, diagnostics, branches, protections, access_changes}`; validates as if pushed and changes nothing |
+| `PATCH {tree}/branches/{name}` | `tree:write` (owner: `tree:admin`) | `{"description"?, "owner"?}`: absent unchanged, `""` clears; `409 config_managed` for declared branches |
+
+`GET {tree}/branches` returns `description` and `owner` (omitted when empty). Without the service the routes answer `501`.
+
+## Admin panel
+
+The tree's **Config** tab shows a rejected last attempt with its located errors, the applied configuration (source snapshot link, files, declared branches, protections marked "config" or "API (ignored)", access document, changes, warnings) and a form that validates pasted files. The **Branches** tab shows and edits owners and descriptions; config-managed branches explain that the file must change.
+
+<Callout type="info" title="Not built yet">
+  Rejecting a merge request whose source branch carries an invalid configuration before it is merged, tag protections, licenses, webhooks and path owners from `.wt-tree/` files, and tenant-level config-as-code are on the [roadmap](/roadmap).
+</Callout>

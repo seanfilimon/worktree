@@ -353,15 +353,15 @@ releases before v0.7) and install `wt` and `worktree-bg` (plus `worktree-server`
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.sh | bash
-bash scripts/install.sh --version v0.7.0 --dir /usr/local/bin --with-server
-bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.7.0   # internal mirror
+bash scripts/install.sh --version v0.8.0 --dir /usr/local/bin --with-server
+bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.8.0   # internal mirror
 bash scripts/install.sh --base-url ./dist                                       # local build
 ```
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.ps1))) -AddToPath
-.\scripts\install.ps1 -Version v0.7.0 -WithServer -AddToPath
-.\scripts\install.ps1 -BaseUrl \\fileserver\worktree\v0.7.0
+.\scripts\install.ps1 -Version v0.8.0 -WithServer -AddToPath
+.\scripts\install.ps1 -BaseUrl \\fileserver\worktree\v0.8.0
 ```
 
 | Option (sh / ps1) | Env | Default |

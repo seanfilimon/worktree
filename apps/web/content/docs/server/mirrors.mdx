@@ -23,6 +23,7 @@ wt mirror sync 7c1e...
 wt mirror update 7c1e... --all-branches --no-tags
 wt mirror update 7c1e... --inactive          # pause
 wt mirror remove 7c1e... --yes
+wt mirror list --in acme/web                # a server tree other than the current worktree's
 ```
 
 | Command | Effect |
@@ -34,7 +35,7 @@ wt mirror remove 7c1e... --yes
 | `wt mirror remove ID [-y]` | Remove the mirror; the remote repository is left as it is |
 | `wt mirror sync ID [--no-wait]` | Export and push now; prints the new commits and the outcome per ref, exits `1` when the sync failed. `--no-wait` starts it and returns |
 
-Every subcommand takes `--tree TENANT/TREE` to name the server tree; without it, the tree of the current worktree is used. `--token-env VAR` reads the credential from an environment variable so it stays out of shell history and process lists. `--json` prints the server responses.
+Every subcommand takes `--in TENANT/TREE` to name the server tree; without it, the server tree of the current worktree is used (or of the local tree selected with the global `--tree NAME`). Before v0.8 the option was spelled `--tree TENANT/TREE`, which shadowed the global flag; a global `--tree` value of the form `TENANT/TREE` is still accepted as the server tree, with a deprecation warning. `--token-env VAR` reads the credential from an environment variable so it stays out of shell history and process lists. `--json` prints the server responses.
 
 Branch globs are `/`-separated: `*`, `?` and `[...]` match within one segment, a `**` segment matches any number of segments. `main` matches only `main`; `release/*` matches `release/1.0` but not `release/1/2`; `feature/**` matches `feature` and everything below it.
 
@@ -64,7 +65,7 @@ Mirroring redistributes the tree outside the platform, so it applies the same ru
 
 After the export the server runs `git push --porcelain` with `--force-with-lease` for every ref this mirror pushed before:
 
-- a rewrite caused by a license change is forced, but a ref someone else moved on the remote is **not** overwritten: the push is rejected and the sync fails with a clear error;
+- a rewrite caused by a license change, or by a [force push](/docs/cli/force-push-and-undo#force-push) to the tree (v0.8), is forced, but a ref someone else moved on the remote is **not** overwritten: the push is rejected and the sync fails with a clear error;
 - a ref pushed for the first time is a normal push and fails if the remote already has unrelated history there;
 - branches and tags deleted in the tree are deleted on the remote when this mirror pushed them; refs that merely stop matching the globs are left alone; nothing else on the remote is touched.
 

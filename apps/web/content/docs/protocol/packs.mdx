@@ -1,0 +1,128 @@
+---
+title: Pack and Delta Transfer
+description: Since v0.8 pushes, fetches and clones move objects as one pack with copy/insert deltas and zstd compression; pack uploads are resumable. The format, the UploadPack, QueryUpload and DownloadPack RPCs, client behaviour, server limits and metrics.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Before v0.8 every object travelled whole: a one-line edit to a 100 KB file re-sent 100 KB (gzip-compressed by gRPC). Since v0.8 the client and the server exchange **packs**: one byte stream carrying many objects, each either whole or as a **copy/insert delta** against an object the receiver already has, each payload optionally zstd-compressed, with a BLAKE3 checksum over the whole stream. The [Packs specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/Packs.md) is normative.
+
+| Flow | RPC | Deltas against |
+|---|---|---|
+| `wt push` | `UploadPack` (client stream), resumable with `QueryUpload` | The snapshot's first parent, when the server already has it, and earlier entries of the same pack |
+| `wt fetch`, `wt pull`, `wt clone` | `DownloadPack` (server stream) | The snapshot the client already has for that branch, and earlier entries of the pack (the versions in a clone's history) |
+
+Packs change nothing in the [object model](/docs/protocol/object-model): object ids stay the BLAKE3 hash of the uncompressed content, and the server reconstructs, verifies and stores every object **whole** (WTZ1 on disk). Deltas exist only on the wire. Clients fall back to `UploadObjects` / `DownloadObjects` when a server answers `Unimplemented` (servers before v0.8, or `--disable-packs`).
+
+## Measurements
+
+From [`docs/performance.md`](https://github.com/seanfilimon/worktree/blob/main/docs/performance.md) §7 (`worktree-bench --workload edits`: a tree of 500 source-like files of 100 KiB, 51.2 MB; then pushes that each insert one line into 10 files). "Before" is the whole-object path selected with `WT_NO_PACK=1` against the same build:
+
+| Push | Objects | Object bytes (whole-object transfer, before gzip) | Pack bytes |
+|---|---:|---:|---:|
+| Initial (500 files + manifest) | 501 | 51,233,000 | 17,213,841 (zstd, no deltas) |
+| One small-edit push (10 files + manifest) | 11 | 1,057,180 | about 1,630 (11 deltas) |
+
+A small-edit push sends about 650 times fewer bytes, and was 25-50 % faster even on loopback (p50 88-149 ms against 187-202 ms); over a real network the byte reduction dominates. The initial push takes about as long as before. Run the benchmark yourself (commands in the performance document) to compare on your hardware; see also [Performance](/docs/server/performance).
+
+## Pack format
+
+```text
+pack    = header entry* end trailer
+header  = "WTPK" version:u8 (=1) reserved:3×u8 (=0)
+entry   = type:u8 kind:u8 codec:u8 hash:32 [base:32 if type = DELTA]
+          size:uvarint raw_len:uvarint pay_len:uvarint payload:pay_len
+end     = 0x00
+trailer = BLAKE3(header .. end):32
+```
+
+| Field | Meaning |
+|---|---|
+| `type` | `1` WHOLE (the decoded payload is the object), `2` DELTA (a delta against `base`), `0` end of entries |
+| `kind` | The object kind: `1` blob, `2` manifest, `3` chunk list |
+| `codec` | `0` raw, `1` one zstd frame that decodes to exactly `raw_len` bytes |
+| `hash` | BLAKE3 of the object content |
+| `size` | Object size; at most 64 MiB |
+
+Integers are unsigned LEB128 varints. Readers reject a bad magic or version, unknown types, kinds or codecs, objects over 64 MiB, inconsistent lengths, delta chains deeper than **8**, a trailer mismatch and any byte after the trailer. A stream that ends before the trailer is *truncated* (an interrupted upload), which is distinct from corrupt. A problem with one entry (a base the receiver does not have, a delta that does not apply, content that does not match its hash) makes only that entry unusable; the rest of the pack is still processed.
+
+Writers compress a payload with zstd level 3 when it is at least 64 bytes and the frame is smaller, try a delta only when the base is at most 16 MiB and the chain stays within depth 8, and keep a delta only when it saves **at least 25 %** of the object.
+
+### Deltas
+
+```text
+delta  = base_len:uvarint target_len:uvarint op*
+op     = 0x00 len:uvarint bytes:len            INSERT
+       | 0x01 offset:uvarint len:uvarint        COPY base[offset .. offset+len]
+```
+
+The encoder indexes 16-byte blocks of the base by a rolling fingerprint, scans the target, extends every match backwards and forwards and emits INSERT and COPY operations. It is specified exactly, so the Rust client and the Go server produce byte-identical deltas; shared golden vectors (`crates/worktree-protocol/testdata/pack/vectors.json`) are checked by both test suites.
+
+## RPCs
+
+```protobuf
+rpc UploadPack(stream PackChunk) returns (UploadPackResponse);
+rpc QueryUpload(QueryUploadRequest) returns (QueryUploadResponse);
+rpc DownloadPack(DownloadPackRequest) returns (stream PackChunk);
+
+message PackChunk { bytes data = 1; string upload_id = 2; uint64 offset = 3; TreeId tree_id = 4; }
+message DownloadPackRequest { TreeId tree_id = 1; repeated ContentHash want = 2;
+                              repeated ContentHash have = 3; bool allow_deltas = 4; }
+```
+
+Chunks carry at most **4 MiB**; `offset` is the byte offset of `data` within the pack. Packs are already compressed, so pack RPCs do not use gRPC gzip.
+
+### UploadPack
+
+- **Authorization.** The caller must be authenticated. When the first chunk names `tree_id`, the caller needs `tree:write` on it, and delta bases outside the pack must be objects reachable from the tree's branches, tags or staged snapshots that the caller may read. Objects merely stored on the server are not valid bases, so a delta cannot probe content the caller cannot read.
+- **Upload id.** Chosen by the client (1-64 characters of `A-Z a-z 0-9 - _`); one stream per id at a time (`Aborted` otherwise).
+- **Spooling and resume.** Received bytes are appended to `<data>/uploads/<upload_id>.pack` and recorded in the `pack_uploads` collection. A stream for an existing upload of the same account may start at any offset up to the bytes kept. When a stream breaks off, the prefix stays for a resume.
+- **Completion.** At a clean end of stream the pack is checked in one pass, then every entry is reconstructed, verified exactly like `UploadObjects` and stored whole by eight workers. The response counts `objects_stored`, `objects_already_present`, lists `rejected` entries and reports `bytes_received`.
+- **Errors.** A pack that ends before its trailer keeps the spool and fails with `FailedPrecondition` (resume at the offset kept); a corrupt pack is discarded with `InvalidArgument`; chunks over 4 MiB are `InvalidArgument`; a pack larger than `--max-pack-size` (default 4 GiB) or than the tenant's remaining storage quota is `ResourceExhausted`.
+- **Cleanup.** Uploads not touched for **24 hours** are removed; an account keeps at most **8** interrupted uploads (a ninth drops the least recently touched one).
+
+`QueryUpload{upload_id}` returns `{found, offset}`: the bytes kept for an upload of the caller.
+
+### DownloadPack
+
+The caller needs read access to the tree (anonymous callers can read public trees). The server sends the objects of `want` that are reachable from the tree and readable by the caller (the `DownloadObjects` rules, license-restricted paths included) plus the chunks of every wanted chunk list, minus `have`. With `allow_deltas`, a blob is sent as a delta against the object at the same path in the previous manifest, a chunk against the chunk at the same index of that path's previous chunk list, and a manifest against the previous manifest; in-pack bases precede their deltas.
+
+## Client behaviour
+
+**Push.** After `Negotiate`, the missing objects are ordered snapshot by snapshot (oldest first) and each gets a base candidate from the snapshot's first parent, used only when the server knows that snapshot. The pack is written to a temporary file and uploaded with a fresh upload id. Then:
+
+- `Unimplemented`: the client uploads whole objects for the rest of the session.
+- A failure that may be transient (`Unavailable`, `Aborted`, `Cancelled`, `DeadlineExceeded`, `Internal`, `Unknown`, `FailedPrecondition`): the client resumes **once**, asking `QueryUpload` for the offset kept.
+- Other errors (`PermissionDenied`, `ResourceExhausted`, `InvalidArgument`, ...) fail the push.
+- Entries the server rejected are uploaded again whole with `UploadObjects`, which reports real corruption.
+
+**Fetch, pull, clone.** For each branch the objects of the `Pull` hint list that are not stored locally are requested with one `DownloadPack`; `have` names the manifest of the snapshot the client already has for that branch, its entries and chunks (at most 100,000 hashes). Objects are verified and stored as they arrive; anything still missing is downloaded with `DownloadObjects`. Sparse (partial) clones and on-demand fetches keep using `DownloadObjects`.
+
+**Switches.** `WT_NO_PACK=1` (also `true` / `yes`) disables packs for push, fetch, pull and clone; [`wt push --no-pack`](/docs/cli/remote#wt-push) disables them for one push. Progress output is unchanged.
+
+## Server settings and metrics
+
+| Flag | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `--disable-packs` | `WT_DISABLE_PACKS` | `false` | Answer the three pack RPCs with `Unimplemented` |
+| `--max-pack-size` | `WT_MAX_PACK_SIZE` | `4GiB` | Largest pack one upload may send (at least `1MiB`) |
+
+`GET /metrics` adds, per `direction` (`upload`, `download`):
+
+| Metric | Meaning |
+|---|---|
+| `worktree_pack_bytes_total` | Pack bytes transferred |
+| `worktree_pack_object_bytes_total` | Size of the objects the packs carried |
+| `worktree_pack_bytes_saved_total` | Object bytes minus pack bytes (deltas plus compression) |
+| `worktree_pack_deltas_total` | Objects transferred as deltas |
+| `worktree_pack_upload_resumes_total` | Uploads continued at a non-zero offset (no `direction` label) |
+
+<Callout type="info" title="Not built yet">
+  Packs for sparse clones and on-demand fetches, resuming an upload across processes (the upload id lives for one `wt push`), resumable downloads, rename-aware base selection and server-side packed storage are on the [roadmap](/roadmap).
+</Callout>
+
+## Related
+
+- [Sync protocol](/docs/protocol/sync-protocol): every RPC and the push and pull flows.
+- [Object model](/docs/protocol/object-model) and [Large files](/docs/protocol/large-files): what the objects are.
+- [Monitoring](/docs/server/monitoring): scraping `/metrics`.

@@ -1,0 +1,114 @@
+---
+title: Undo, Force Push and Remote Tag Deletion
+description: wt undo and wt redo restore refs from the local operation log; wt push --force rewinds a server branch with lease semantics; --bypass-protection, no_force_push, the server reflog, push idempotency and wt tag delete --remote (v0.8).
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Two kinds of mistakes are hard to fix in a version control system: a **local** operation that did something unexpected (a merge into the wrong branch, a rebase onto the wrong base, a deleted branch, a dropped stash entry), and a **shared** branch that holds history that should not be there (a pushed secret, a bad merge). Since v0.8 every local mutation is recorded in an operation log that `wt undo` and `wt redo` replay, and an administrator can **force-push** a rewritten branch. The [Undo specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Undo.md) is normative.
+
+Snapshots are never deleted by any of these operations: undo and force push only move refs, so every state stays reachable through the operation log, the local [reflog](/docs/cli/snapshots#wt-reflog) or the server reflog until garbage collection.
+
+## Undo and redo
+
+```bash
+wt undo --list        # operations that can be undone, newest first (N = position)
+wt undo               # undo the newest operation
+wt undo 3             # undo the newest three
+wt redo               # re-apply the most recently undone operation
+wt redo --list
+wt undo --force       # discard uncommitted changes, or proceed although refs moved outside the log
+```
+
+| Command | Description |
+|---|---|
+| `wt undo [N] [--force]` | Undo the newest `N` operations of the tree (default 1), newest first, and check out the restored head |
+| `wt undo --list` | The operations that can be undone, newest first |
+| `wt redo [N] [--force]` | Re-apply the `N` most recently undone operations |
+| `wt redo --list` | The operations that can be redone, next first |
+
+**What is recorded.** Every operation that changes refs under the tree lock: snapshot, merge and `merge --continue`, revert, cherry-pick, rebase (and their `--continue` / `--abort`), branch switch, create, archive and restore, pull's fast-forward and other tip writes, tag create and delete, and stash push, pop, drop and clear. Operations that change nothing (`wt status`, fetches, sparse checkout changes) are not logged. Each entry stores the before and after value of every ref it changed: `HEAD`, branches (tip and archived flag), tags and the stash. Remote-tracking refs, the reflog, the index and the working tree are not recorded.
+
+**Rules.**
+
+- Both commands refuse while a merge, cherry-pick or rebase is stopped, and when fewer than `N` operations are on the stack.
+- Unless `--force`, every ref an operation touches must still hold the value that operation left (`cannot undo "...": <ref> changed since (use --force)`), and the working tree must be clean (the same `DirtyWorkingTree` error as `wt switch`). With `--force`, uncommitted changes are discarded.
+- A new operation clears the redo stack.
+- **Stash.** Undoing a `stash push` gives the stashed changes back to the working tree; undoing a `stash pop` puts the entry back and resets the working tree to the head; undoing `stash drop` / `stash clear` puts the entries back. `push → undo → redo` and `pop → undo` work without `--force`.
+- **Pushes are not undone on the server.** To rewind a branch you already pushed, use a force push (below).
+
+The log is `.wt/oplog.jsonl`, one JSON object per line, shared by every tree of the worktree (each entry names its tree), trimmed to its newer half when it grows beyond 4 MiB:
+
+```json
+{"id":"7f0c…","at":"2026-10-26T10:00:00Z","tree":"web","kind":"op",
+ "op":"snapshot","description":"fix login",
+ "changes":[{"ref":"branch","name":"main",
+             "old":{"tip":"1a2b…","archived":false},
+             "new":{"tip":"3c4d…","archived":false}}]}
+```
+
+## Force push
+
+```bash
+wt fetch
+wt log origin/main -n 10        # review what you are about to overwrite
+wt rebase --force origin/main~3 # rewrite the local branch (or wt undo, wt revert of a merge, ...)
+wt push --force                 # alias --force-with-lease
+```
+
+`wt push --force` pushes a branch whose server tip is not an ancestor of the local tip. It has **lease semantics**: the server tip must equal the last tip you fetched (`refs/remotes/<remote>/<branch>`), otherwise the push is refused before anything is uploaded:
+
+```text
+refusing to force-push origin/main: the server tip … is not the last tip you fetched (…); run wt fetch and review the remote history before forcing
+```
+
+On success `wt push` prints `old...new main -> origin/main (forced update)` and the local reflog records `force-push`. `wt push --force` without divergence is an ordinary push.
+
+The server accepts a force push only when:
+
+1. its lease still holds: the request's `old_tip` equals the server tip, and the branch moves with compare-and-swap from that tip, so a concurrent push also breaks the lease;
+2. you hold **`branch:force_push`** on the tree (admin role and up), else `force pushing to B requires branch:force_push`;
+3. no matching protection sets **`no_force_push`**: `branch 'B' is protected against force pushes (no_force_push)`. This rule is absolute, even for owners who bypass protection;
+4. no matching protection sets `require_linear` or `required_approvals > 0`, unless you [bypass protection](#protection-bypass).
+
+Set the rule with `wt protect set PATTERN --no-force-push` (or in [`protections.toml`](/docs/server/config-as-code#protectionstoml)), or the **Prevent force pushes** toggle in the admin panel's Protections tab. A successful force push publishes `branch.pushed` (with `forced: true`) and `branch.force_pushed` (`{branch, old_tip, new_tip, bypass}`), is audited as `branch.push` with `forced = true`, and is mirrored to [Git mirrors](/docs/server/mirrors#push) as a forced update.
+
+<Callout type="warn" title="Teammates after a force push">
+  Clones that had the old history keep it locally. Their next `wt pull` merges the old and new history; to follow the rewrite instead, they `wt fetch` and move their branch to `origin/<branch>` (for example `wt undo` of their own merge, or `wt branch create` from `origin/<branch>`).
+</Callout>
+
+## Server reflog
+
+Every accepted push that moves a branch is recorded:
+
+```text
+GET /api/v1/trees/{tenant}/{tree}/reflog?branch=main&limit=50
+```
+
+Entries are `{tree_id, branch, old_tip, new_tip, kind: push|force_push, forced, bypass, bypassed[], actor, actor_id, count, at}`, newest first (`tree:read`, at most 500 per request), kept for 90 days. The admin panel's **History** tab lists the force pushes of the selected branch (who rewound it and from which tip) and marks the snapshots they made the tip. Merge-request merges are not recorded in the reflog yet.
+
+## Protection bypass
+
+`branch:bypass_protection` (owner role, tree-scoped) lets a caller push or merge past branch protection. The bypass is never implicit: owners see protection refusals like everyone else unless they ask for it.
+
+- **Push:** `wt push --bypass-protection` sends the gRPC metadata `x-wt-bypass-protection: true`. It lifts `no_direct_push`, `allowed_pushers`, `require_linear` and the force-push rules of step 4 above, and lets a push through [secret scanning](/docs/server/secret-scanning) in `block` mode. It does not lift `no_force_push`, path policies, quotas, license rules or signatures.
+- **Merge:** `{"bypass": true}` on `POST {tree}/merge-requests/{n}/merge` lifts required approvals, change requests, owner approvals, required CI and blocking TODOs. It does not lift drafts, linked groups, merge-method restrictions or conflicts. `wt mr merge` has no flag for it yet; use [`wt api`](/docs/server/openapi#wt-api).
+
+Every bypass is audited: `branch.push` / `mr.merge` get `bypass = true` and `bypassed` (the lifted rules), and a separate `branch.protection_bypassed` record names the operation (`push`, `force_push`, `merge`).
+
+## Push idempotency
+
+Every push carries an `operation_id` (a fresh UUID). The first response to a push with a given id is kept for 24 hours; a retry by the same account returns that response without running the push again, for acceptances and rejections alike. `wt push` retries once, with the same id, when the connection fails mid-push, so a push that the server accepted but whose answer was lost is not reported as a conflict.
+
+## Remote tag deletion
+
+```bash
+wt tag delete v1.2.0-rc1 --remote            # on the server, then locally
+wt tag delete v1.2.0-rc1 --remote --from company
+```
+
+`wt tag delete NAME --remote [--from R]` deletes the tag on the server with the `DeleteTag` RPC and then deletes the local tag, if there is one, so the next `wt push` does not create it again. It needs `tree:write`; [tag protections](/docs/server/branch-protection#tag-protection) apply (`no_delete` refuses, `allowed_taggers` limits who may delete). Refusals and unknown tags are reported (`deleted = false` with an error) and audited as `tag.delete_rejected`; a deletion publishes `tag.deleted` and is audited as `tag.delete`. A plain `wt tag delete NAME` still deletes only the local tag. The REST endpoint `DELETE {tree}/tags/{name}` and [`wt trees tag-delete`](/docs/cli/administration#wt-trees) (`tree:admin`) remain.
+
+<Callout type="info" title="Not built yet">
+  Undo of working-tree-only operations (`wt restore`, `wt stash apply`, `wt checkout`), grouping composite operations (a `wt switch` with auto-stash records three entries), an oplog-aware `wt gc`, `wt undo` of a push, merge-request merges in the server reflog, restoring a branch from a reflog entry over REST and a `wt mr merge` bypass flag are on the [roadmap](/roadmap).
+</Callout>

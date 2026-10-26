@@ -1,6 +1,6 @@
 ---
 title: Administration
-description: Manage tenants and their members, server trees, license rules, search and code search, webhooks, live events, server administration (accounts, garbage collection, fsck, quotas), the audit log and raw API calls from the wt CLI.
+description: Manage tenants (members, email, renames, deletion), server trees and their config-as-code, license rules and audits, search and code search, webhooks, live events, server administration (accounts, garbage collection, fsck, quotas, backups, email outbox, retention), the audit log and raw API calls from the wt CLI.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -33,13 +33,17 @@ wt tenant deactivate [--reason <TEXT>] <TENANT>
 - `add-member` defaults to `--role developer`; roles are the built-in ones or a [custom role](/docs/cli/iam#wt-role). Only owners can assign `owner`, and removing or demoting the last owner fails (`409 last_owner`). [`wt invite`](/docs/cli/iam#wt-invite) onboards people by code instead.
 - `plan` sets a label (`free`, `pro`, `enterprise`); it changes no limits. Server admins only.
 - **Status** (server admins only): `suspend` makes the tenant read-only (every write is refused with the reason, reads still work) and revokes the tenant's service-account keys; `deactivate` refuses all access; `resume` lifts either. `--reason` is shown to members whose requests are refused. Server admins are never affected. Tenant grants naming a suspended tenant are paused.
-- **Lifecycle** (v0.8): `set-name` changes the display name; `rename` changes the slug (owners) and keeps the old slug reserved for 90 days, where it answers "tenant moved" with the new slug; inside a worktree, `switch` points the remote at the new slug. `email set` stores a contact email and sends a single-use code (24 h; written to the server log without SMTP), `email verify` redeems it; a verified email names the tenant in grants and license rules. `delete` suspends the tenant and purges it after a 30-day recovery window; `restore` cancels it.
+- **Lifecycle** (v0.8): `set-name` changes the display name; `rename` changes the slug (owners) and keeps the old slug reserved for 90 days, where it answers "tenant moved" with the new slug; inside a worktree, `switch` points the remote at the new slug. `email set` stores a contact email and sends a single-use code (24 h; written to the server log without SMTP), `email verify` redeems it; a verified email names the tenant in grants and license rules. `delete` suspends the tenant and purges it after a 30-day recovery window; `restore` cancels it. Before v0.8, `rename` changed the display name; that is now `set-name`. See [Tenant lifecycle](/docs/server/tenant-lifecycle).
 
 ```bash
 wt tenant create acme --name "Acme Corp"
 wt tenant add-member acme bob --role maintainer
 wt tenant suspend acme --reason "Invoice overdue"
+wt tenant rename acme acme-inc && wt tenant switch acme-inc
+wt tenant email set acme-inc ops@acme.io
 ```
+
+Tenant [ABAC attributes](/docs/server/abac) are managed with `wt attr show|set|unset tenant SLUG ...`.
 
 ## `wt trees`
 
@@ -52,23 +56,28 @@ Server-side trees. Local nested trees are managed with [`wt tree`](/docs/cli/rep
 | `show` | `wt trees show [TREE]` (counters: branches, snapshots, staged, open merge requests) |
 | `update` | `wt trees update [--description <D>] [--visibility <V>] [--default-branch <B>] [TREE]` |
 | `delete` | `wt trees delete [--yes] <TREE>` (deletes the tree and everything in it) |
-| `branches` | `wt trees branches [TREE]` |
+| `branches` | `wt trees branches [TREE]` (with owner and description columns since v0.8) |
 | `branch-create` | `wt trees branch-create [--from <REV>] <TREE> <NAME>` (default start: the default branch tip) |
 | `branch-delete` | `wt trees branch-delete [--yes] <TREE> <NAME>` (refused for the default branch and `no_delete` rules) |
 | `tags` | `wt trees tags [TREE]` |
 | `tag-create` | `wt trees tag-create [-m <MSG>] --target <REV> <TREE> <NAME>` |
-| `tag-delete` | `wt trees tag-delete [--yes] <TREE> <NAME>` (needs `tree:admin`; honours tag protection) |
+| `tag-delete` | `wt trees tag-delete [--yes] <TREE> <NAME>` (needs `tree:admin`; honours tag protection). With `tree:write`, [`wt tag delete NAME --remote`](/docs/cli/force-push-and-undo#remote-tag-deletion) deletes a server tag too |
 | `log` | `wt trees log [--branch <B>] [-n <N>] [TREE]` (newest first, server default 50) |
 | `compare` | `wt trees compare [--from <REV>] --to <REV> [--stat] [--patch] [TREE]` (default base: first parent of `--to`) |
 | `stats` | `wt trees stats [--days <N>] [TREE]` (contributors, activity and languages; 1 to 365 days, default 30) |
 | `file-log` | `wt trees file-log <TREE> <PATH>` (snapshots that changed a file) |
-| `staged` | `wt trees staged [TREE]` (the team's staged work in progress) |
+| `staged` | `wt trees staged [TREE]` (the team's staged work in progress; see also [`wt stage list`](/docs/cli/staged-snapshots#listing-and-showing)) |
+| `config show` | `wt trees config show [TREE]` (v0.8: the configuration applied from the tree's `.wt-tree/` files and the errors of the last rejected push) |
+| `config validate` | `wt trees config validate [--online] [--remote-tree <T/NAME>] [PATH]` (v0.8: validate `.wt-tree/` config files locally, optionally also on the server; exit `1` on errors) |
 
 ```bash
 wt trees create acme/payments --visibility internal --description "Payment service"
 wt trees compare acme/payments --from v1.3.0 --to main --stat
 wt trees branch-delete acme/payments feature/old --yes
+wt trees config validate --online
 ```
+
+See [Config as code](/docs/server/config-as-code) for the `.wt-tree/branches.toml` and `protections.toml` files and the diagnostics. Forks of a tree are managed with [`wt fork`](/docs/server/forks), tree attributes with [`wt attr`](/docs/server/abac).
 
 A server branch deletion is a hard delete; snapshots that become unreachable are removed by [garbage collection](/docs/server/operations#garbage-collection) after the grace period. Content of paths you may not read is omitted from `compare`, `file-log` and listings.
 
@@ -81,6 +90,7 @@ wt license list [TREE]
 wt license set [--grant <GRANT>] [--grantee <TENANT>] [--expires <WHEN>] [TREE] <GLOB> <SPDX>
 wt license remove [--yes] [TREE] <GLOB>
 wt license detect [--apply] [--grant <GRANT>] [--yes] [PATH]
+wt license audit [--ref <REF>] [--strict] [TREE]
 ```
 
 | Flag | Meaning |
@@ -97,6 +107,8 @@ wt license detect --apply --yes
 ```
 
 `detect` scans the tree's files: a `LICENSE`, `LICENCE` or `COPYING` file proposes a rule for its directory (several in one directory combine with `OR`), and a file whose `SPDX-License-Identifier` header differs proposes a rule for that file. `--apply` creates the proposed rules on the server, skipping ones that exist. Requires `tree:admin` to change rules.
+
+`audit` (v0.8, `tree:admin`) audits a snapshot (default: the default branch) on the server: files per license, paths no rule covers, proprietary paths other tenants can read through a grant, and a strict check of every rule's SPDX expression against the embedded SPDX License List. `--strict` exits `1` when a rule fails the check or a proprietary path is exposed. See [License audit](/docs/server/secret-scanning#license-audit); server-side secret scanning is managed with [`wt compliance`](/docs/server/secret-scanning).
 
 ## `wt search`
 
@@ -169,6 +181,11 @@ wt admin backup create [--note <TEXT>]
 wt admin backup list
 wt admin backup download [-o <FILE>] <ID>
 wt admin backup delete [--yes] <ID>
+wt admin outbox list [--status <pending|sent|dead>] [--limit <N>]
+wt admin outbox retry <ID> | --all
+wt admin outbox delete [--yes] <ID>
+wt admin retention
+wt admin retention run
 wt admin code-index
 wt admin code-index rebuild [TENANT/TREE]
 ```
@@ -185,10 +202,14 @@ wt admin code-index rebuild [TENANT/TREE]
 | `fsck` | Re-hashes every stored object and checks that every snapshot reachable from a branch or tag has its manifest, blobs and chunks. Exits `1` on problems. See [Server fsck](/docs/cli/maintenance#server-fsck). |
 | `limits` | Without flags, shows the tenant's limits. Flags set tenant-specific limits; `0` unsets one and `--clear` removes them all (back to the server defaults). Sizes accept `500M`, `10GiB` or `1TB` (`K/M/G/T` and `KiB`..`TiB` are powers of 1024, `KB`..`TB` powers of 1000). `--rate` is requests per minute per principal. |
 | `usage` | Trees, branches, members and stored bytes against the effective limits. Needs only `tenant:read`. |
-| `backup create` | Takes a consistent online backup now: a snapshot of the metadata database plus every object, written on the server to `<data>/backups/<id>.wtbak`. Waits until the archive is complete (4-hour timeout); `--note` is stored with it. Only one backup runs at a time (`409 backup_running`). |
-| `backup list` | Backups (newest first) with the schedule (`--backup-interval`, `--backup-keep`), the object store and the last scheduled failure. |
+| `backup create` | Takes a consistent online backup now: a snapshot of the metadata database plus every object, written as `<id>.wtbak` to the server's backup target (`<data>/backups`, or since v0.8 the S3 bucket with `--backup-target s3`). Waits until the archive is complete (4-hour timeout); `--note` is stored with it. Only one backup runs at a time (`409 backup_running`). |
+| `backup list` | Backups (newest first) with the backup target, the schedule (`--backup-interval`, `--backup-keep`, `--backup-max-age`), the object store and the last scheduled failure. |
 | `backup download` | Streams the archive to `FILE` (default `./<id>.wtbak`) through `FILE.part`. |
-| `backup delete` | Deletes a backup file on the server; asks for confirmation unless `--yes`. |
+| `backup delete` | Deletes a backup on the server (file or S3 object); asks for confirmation unless `--yes`. |
+| `outbox list` | v0.8: the durable email outbox, newest first, with the pending, sent and dead counts. `--status` filters. |
+| `outbox retry` | v0.8: requeue an email for an immediate attempt with a fresh deadline, or every dead letter with `--all`. |
+| `outbox delete` | v0.8: delete a queued email; it is not sent. |
+| `retention` | v0.8: the retention settings (policy versions, audit events, webhook deliveries, backups) and the last pass; `run` prunes now and prints what was removed. |
 | `code-index` | Code search index status: format, memory against `--code-index-memory`, disk use, builds and disk loads since start, and per tree its state, branches, segments, files, symbols, memory, disk and build time. |
 | `code-index rebuild` | Discards a tree's index and rebuilds it from stored objects; every indexed tree when `TENANT/TREE` is omitted. |
 
@@ -199,10 +220,13 @@ wt admin usage acme
 wt admin backup create --note "before upgrading to 0.8"
 wt admin backup list
 wt admin backup download bk-20261025T120000Z-a1b2c3 -o /backups/wt.wtbak
+wt admin outbox list --status dead
+wt admin outbox retry --all
+wt admin retention run
 wt admin code-index rebuild acme/web
 ```
 
-Backups are restored offline with `worktree-server restore --data DIR FILE`; see [Backups](/docs/server/storage-backends#backups) and [Restore](/docs/server/storage-backends#restore). The code index is described in [The persistent index](/docs/server/code-search#the-persistent-index). Garbage collection, quotas and rate limits are described in [Operations](/docs/server/operations).
+Backups are restored offline with `worktree-server restore --data DIR FILE|ID` (`--list` lists the backup target); see [Backups](/docs/server/storage-backends#backups) and [Restore](/docs/server/storage-backends#restore). The outbox and retention are described in [Server operations](/docs/server/server-operations). Account [attributes](/docs/server/abac) are set by server admins with `wt attr set account USERNAME KEY=VALUE`. The code index is described in [The persistent index](/docs/server/code-search#the-persistent-index). Garbage collection, quotas and rate limits are described in [Operations](/docs/server/operations).
 
 ## `wt audit`
 

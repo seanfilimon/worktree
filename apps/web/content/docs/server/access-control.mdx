@@ -13,8 +13,8 @@ Every request to the server, over gRPC or REST, is made anonymously or as an aut
 2. Token scopes: a scoped token may only perform actions its scopes cover. This binds server admins too.
 3. A server admin is allowed (policies are not consulted).
 4. Tenant status: a `suspended` tenant denies every write, a `deactivated` tenant denies everything.
-5. Roles are collected: the tenant membership role, the service account's own role, direct tree grants, team grants and tenant grants on the tree. Tree visibility adds `tree:read`.
-6. Enabled policies of the tenant are applied: a matching **deny** overrides every allow; a matching **allow** grants the action even without a role.
+5. Roles are collected: the tenant membership role, the service account's own role, direct tree grants, team grants and tenant grants on the tree (paused while the granted tenant is suspended or deactivated, since v0.8). Tree visibility adds `tree:read`.
+6. Enabled policies of the tenant are applied: a matching **deny** overrides every allow; a matching **allow** grants the action even without a role. A statement applies only when all its conditions hold, including (since v0.8) [attribute conditions](/docs/server/abac) on the caller, the tree and the tenant.
 7. Otherwise the request is denied (`implicit_deny`).
 
 `branch:push` is evaluated as `tree:write` plus a deny pass over the branch, so a policy can block pushes to one branch. Ask the server to explain any decision:
@@ -24,11 +24,11 @@ wt iam simulate --principal user:bob --action branch:push --tenant acme --tree a
 wt iam effective --tenant acme --principal user:bob
 ```
 
-The simulator lists every contributing reason (`tenant_role`, `team_role`, `tree_grant`, `custom_role`, `service_account`, `visibility`, `token_scope`, `policy`, `tenant_suspended`, `owner_protected`, ...). The admin panel has the same as the **Access simulator** page.
+The simulator lists every contributing reason (`tenant_role`, `team_role`, `tree_grant`, `custom_role`, `service_account`, `visibility`, `token_scope`, `policy`, `attribute`, `tenant_suspended`, `owner_protected`, ...) and, since v0.8, the attributes it saw and every attribute condition with its actual value; `--attr principal.clearance=secret` overrides an attribute for the simulation. The admin panel has the same as the **Access simulator** page.
 
 ## Accounts
 
-An account has a unique `username` (`^[a-z0-9][a-z0-9-]{1,38}$`, some names are reserved), an `email` (not verified), a `display_name`, and the flags `is_admin` (server admin) and `disabled`. Passwords are hashed with argon2id.
+An account has a unique `username` (`^[a-z0-9][a-z0-9-]{1,38}$`, some names are reserved), an `email` (verified since v0.8 with `POST /api/v1/me/email/resend` and `/me/email/verify`, see [Tenant lifecycle](/docs/server/tenant-lifecycle#contact-email-and-verification)), a `display_name`, the flags `is_admin` (server admin) and `disabled`, and since v0.8 [ABAC attributes](/docs/server/abac) set by server admins. Passwords are hashed with argon2id.
 
 Accounts are created by:
 
@@ -49,8 +49,9 @@ A tenant owns trees.
 | `org` | `wt tenant create SLUG [--name N]` or `POST /api/v1/tenants`; the caller becomes `owner`. | Lowercase `[a-z0-9-]`, unique. |
 
 - `plan` (`free`, `pro`, `enterprise`) is a label set by a server admin (`wt tenant plan`); it does not change limits.
-- `status` is `active`, `suspended` (read-only: writes are denied with reason `tenant_suspended`; nothing is revoked) or `deactivated` (all access denied). Server admins set it with `wt tenant suspend|resume|deactivate TENANT [--reason TEXT]`. See [Operations](/docs/server/operations#tenant-status).
+- `status` is `active`, `suspended` (read-only: writes are denied with reason `tenant_suspended`) or `deactivated` (all access denied). Server admins set it with `wt tenant suspend|resume|deactivate TENANT [--reason TEXT]`. Since v0.8, suspending or deactivating an active tenant revokes its service-account keys and pauses tree grants that name it. See [Operations](/docs/server/operations#tenant-status).
 - Limits (trees, storage, branches per tree, members, requests per minute) are server defaults plus per-tenant overrides. See [Quotas](/docs/server/operations#quotas).
+- Since v0.8 a tenant has a contact `email` (verified with a code), can be renamed (`wt tenant rename` changes the slug; `wt tenant set-name` the display name) and deleted with a 30-day recovery window. See [Tenant lifecycle](/docs/server/tenant-lifecycle). Tenants and trees also carry [ABAC attributes](/docs/server/abac).
 
 Remotes name the tenant explicitly (`wt remote add origin http://localhost:7420 --tenant acme`) and clones use `TENANT/TREE`. See the [multi-tenancy guide](/guides/multi-tenancy).
 
@@ -80,10 +81,11 @@ The five built-in roles form a strict hierarchy, `owner ⊃ admin ⊃ maintainer
 
 | Action | viewer | developer | maintainer | admin | owner |
 |---|:-:|:-:|:-:|:-:|:-:|
-| `tenant:read`, `tree:read` | yes | yes | yes | yes | yes |
+| `tenant:read`, `tree:read`, `tree:fork` (v0.8) | yes | yes | yes | yes | yes |
 | `tree:write`, `branch:create`, `branch:push`, `mr:create`, `release:create`, `ci:report` | | yes | yes | yes | yes |
 | `branch:delete`, `mr:approve`, `mr:merge`, `tree:create`, `iam:read`, `release:delete` | | | yes | yes | yes |
-| `tree:admin`, `tenant:admin`, `iam:admin` | | | | yes | yes |
+| `tree:admin`, `tenant:admin`, `iam:admin`, `branch:force_push` (v0.8) | | | | yes | yes |
+| `branch:bypass_protection` (v0.8) | | | | | yes |
 | `server:admin` | | | | | |
 
 | Action | Covers |
@@ -91,14 +93,17 @@ The five built-in roles form a strict hierarchy, `owner ⊃ admin ⊃ maintainer
 | `tree:read` | Browse, clone, pull, download; staged snapshots, protections, licenses, merge requests. |
 | `tree:write` | Push, stage, create tags. |
 | `tree:create` | Create trees, by REST or by a first push. |
-| `tree:admin` | Tree settings, branch and tag protection, license rules, tag deletion, tree deletion. |
+| `tree:admin` | Tree settings, branch and tag protection, license rules, tag deletion over REST, tree deletion, tree attributes, secret-scanning settings and allowlist, license audit. |
+| `tree:fork` | v0.8: [fork](/docs/server/forks) the tree (with `tree:create` in the destination tenant), and open merge requests from a fork (with `tree:write` on the fork). Visibility does not grant it. |
+| `branch:force_push` | v0.8: [force-push](/docs/cli/force-push-and-undo#force-push) (rewind) a branch; never past `no_force_push`. |
+| `branch:bypass_protection` | v0.8: push or merge past branch protection when explicitly requested (`wt push --bypass-protection`, `"bypass": true` on a merge) and pushes past secret scanning in `block` mode; always audited. |
 | `mr:merge` | Merge and close merge requests (also linked groups). |
 | `release:create`, `release:delete` | Create and edit releases and assets; delete them. |
 | `ci:report` | Report CI check results. |
 | `iam:read`, `iam:admin` | View or manage teams, roles, policies, grants, service accounts and invitations. |
 | `server:admin` | `/api/v1/admin/*` and server-wide audit queries; server admins only. |
 
-`owner` grants the same actions as `admin`; owners additionally assign the owner role, are protected by the lockout guard and may force edits of config-managed objects. List the catalog with `wt iam actions`.
+`owner` grants the same actions as `admin` plus `branch:bypass_protection`; owners additionally assign the owner role, rename, delete and restore organization tenants, are protected by the lockout guard and may force edits of config-managed objects. List the catalog with `wt iam actions`.
 
 ## Custom roles
 
@@ -168,7 +173,7 @@ A policy is a named list of allow and deny statements for one tenant:
 |---|---|
 | `resources` | `*`, `wt:tenant/<t>`, `wt:tree/<t>/<tree>`, `wt:branch/<t>/<tree>/<branch>`, `wt:path/<t>/<tree>/<path>`. `*` matches within a segment, a `**` segment any depth. A statement on a resource also covers its descendants. |
 | `principals` | `*`, `authenticated`, `anonymous`, `user:<name>`, `team:<slug>`, `role:<role>`, `sa:<name>`, `sa:<tenant>/<name>`, `tenant:<slug>`. Names may contain `*`. |
-| `conditions` | All set conditions must hold: `ip_ranges`, `require_mfa`, `not_before`/`not_after`, `time_window` (`days`, `start`, `end`, `timezone`). Undecidable conditions fail closed. |
+| `conditions` | All set conditions must hold: `ip_ranges`, `require_mfa`, `not_before`/`not_after`, `time_window` (`days`, `start`, `end`, `timezone`) and, since v0.8, `attributes` (`[{key: "principal.department" \| "tree.classification" \| "tenant.region", op, values}]`, see [ABAC](/docs/server/abac)). Undecidable conditions fail closed. |
 
 ```bash
 wt policy validate acme --file protect-main.json
@@ -190,13 +195,13 @@ All authentication uses bearer tokens (`wt_...`), sent as `authorization: Bearer
 
 | Kind | Obtained from | Lifetime |
 |---|---|---|
-| `session` | `wt login`, `POST /api/v1/auth/login` (plus `/auth/login/mfa`), SSO | 30 days |
+| `session` | `wt login` (password or `--device`), `POST /api/v1/auth/login` (plus `/auth/login/mfa`), the device flow, SSO | Since v0.8: 1 hour, renewed with a single-use refresh token (`wtrt_...`, 30 days) at `POST /api/v1/auth/refresh`; SSO sessions 30 days without refresh. See [Device sign-in and refresh tokens](/docs/cli/device-sign-in) |
 | `api` | `wt token create NAME [--ttl-hours N] [--scope S]...`, `POST /api/v1/auth/tokens` | `ttl_hours`, or no expiry |
 | `service` | `wt sa key-create TENANT NAME [--ttl-hours N] [--scope S]...` | `ttl_hours`, or no expiry |
 
 - **Scopes** are action patterns (`tree:read`, `tree:*`, `ci:report`, `*`); a scoped token can do at most what its scopes cover, and only what the identity is allowed anyway.
-- **Sessions** record `last_ip`, `user_agent` and `mfa`: `wt session list`, `wt session revoke ID`, `wt session revoke-others`. `wt logout` forgets the local credential.
-- `wt login` stores its token in `$WT_HOME/credentials.toml` (default `~/.wt`); the daemon uses the same credential to stage and fetch.
+- **Sessions** record `last_ip`, `user_agent` and `mfa`: `wt session list` (with a `via` column, `sign-in` or `device (<client>)`), `wt session revoke ID`, `wt session revoke-others`. Revoking a session also ends its refresh-token family. `wt logout` forgets the local credential.
+- `wt login` stores the token pair in `$WT_HOME/credentials.toml` (default `~/.wt`); the CLI, the SDK and the daemon renew it transparently.
 
 Use a scoped API token or service-account key with a TTL for CI and scripts instead of a session token.
 

@@ -1,0 +1,164 @@
+---
+title: Conflict Resolution and Rebase Merges
+description: Resolve merge-request conflicts on the server from the browser or with wt mr conflicts and wt mr resolve, merge with the rebase method, and delete the source branch after a merge (v0.8).
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Before v0.8 a merge request with conflicts had to be fixed locally: merge the target into the source, resolve, push. Since v0.8 the server can also show the conflicts (base, ours and theirs per path, with a diff3 marker preview) and write a **merge-resolution snapshot** on the source branch from your resolutions, in the admin panel or from the CLI. v0.8 also adds the **rebase** merge method and deleting the source branch after a merge. The [Merging specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Merging.md) is normative; method selection and protection rules are on [Server-side merges](/docs/server/merging).
+
+Conflict reports and resolutions look at the merge the way `wt merge <target>` run on the source branch would: **ours is the source branch** (where the resolution is written) and **theirs is the target branch**.
+
+## In the browser
+
+An open merge request with conflicts shows a banner on its page (the count and the first paths) linking to **Resolve conflicts** (`/admin/trees/<tenant>/<tree>/merge-requests/<n>/resolve`):
+
+- a file list with each file's resolved state and "N of M resolved";
+- per file three panes: **ours** (the source, read-only), the editable **result** (prefilled with the marker preview, else ours) and **theirs** (the target, read-only), with the base collapsible;
+- **Take ours**, **Take theirs**, **Take base** and **Delete file**, previous / next conflict navigation and a count of the marker blocks left;
+- binary, too large and restricted files offer only take and delete.
+
+**Submit** is enabled once every file is resolved and sends the tips of the loaded report; when a branch moved meanwhile the server answers `409 resolve_outdated` and the page offers a reload. Afterwards the merge request merges without conflicts.
+
+## From the CLI
+
+<Steps>
+<Step>
+
+### Look at the conflicts
+
+```bash
+wt mr conflicts 12                  # per path: kind, sizes, which sides exist
+wt mr conflicts 12 --markers        # also print the diff3 preview of every text conflict
+```
+
+</Step>
+<Step>
+
+### Write the previews into your tree and edit them
+
+```bash
+wt mr conflicts 12 --write          # writes the marker previews into the local tree directory
+wt mr conflicts 12 --write --dir /tmp/mr12
+```
+
+Edit each file until no `<<<<<<<` / `=======` / `>>>>>>>` block is left.
+
+</Step>
+<Step>
+
+### Resolve on the server
+
+```bash
+wt mr resolve 12                                        # every conflicting path from the local tree
+wt mr resolve 12 --take theirs assets/logo.png --delete old/config.yaml
+wt mr resolve 12 --dir /tmp/mr12 -m "Merge main into feature (conflicts resolved)"
+```
+
+</Step>
+<Step>
+
+### Merge
+
+```bash
+wt mr merge 12
+```
+
+</Step>
+</Steps>
+
+| Command | Description |
+|---|---|
+| `wt mr conflicts N [TREE] [--markers] [--write [--dir DIR]]` | The conflict report: base, ours (the source) and theirs (the target) per conflicting path. `--markers` prints the diff3 previews; `--write` writes them into the local tree directory (or `DIR`) for editing. JSON: `{"conflicts", "written"}` |
+| `wt mr resolve N [TREE] [--take ours\|theirs\|base PATH]... [--delete PATH]... [--dir DIR] [-m MSG] [--allow-markers]` | Write the merge-resolution snapshot. Every conflicting path not given to `--take` / `--delete` is read from the local tree directory (or `DIR`). Leftover markers exit with code `3` unless `--allow-markers`. The report's tips are sent, so a stale report answers `resolve_outdated` |
+| `wt mr merge N [TREE] [--method M \| --rebase] [--delete-branch] [-m MSG]` | Merge on the server; conflicts exit with code `3` and a hint naming `wt mr conflicts` / `wt mr resolve` |
+
+The default resolution message is `Merge branch '<target>' into <source> (!N, conflicts resolved)`.
+
+## The conflict report
+
+`GET {tree}/merge-requests/{n}/conflicts` (`tree:read`):
+
+```json
+{
+  "number": 3, "state": "open",
+  "source_branch": "feature", "target_branch": "main",
+  "source_tip": "…", "target_tip": "…", "merge_base": "…",
+  "resolvable": true, "reason": "",
+  "total": 1, "truncated": false,
+  "files": [{
+    "path": "a.txt", "kind": "content",
+    "binary": false, "too_large": false, "restricted": false,
+    "base":   {"exists": true, "size": 6, "executable": false, "hash": "…", "text": "1\n2\n3\n"},
+    "ours":   {"exists": true, "size": 8, "executable": false, "hash": "…", "text": "uno\n2\n3\n"},
+    "theirs": {"exists": true, "size": 8, "executable": false, "hash": "…", "text": "ONE\n2\n3\n"},
+    "markers": "<<<<<<< feature\nuno\n||||||| base\n1\n=======\nONE\n>>>>>>> main\n2\n3\n",
+    "regions": [{"start_line": 1, "ours_start": 1, "theirs_start": 1, "ours": ["uno"], "base": ["1"], "theirs": ["ONE"]}]
+  }]
+}
+```
+
+- The text of a side is omitted for absent sides, binary or chunked files (`binary`), sides over 1 MiB or once the report's 8 MiB text budget is spent (`too_large`), and paths you may not read under path policies or license rules (`restricted`: no text, markers or regions).
+- `markers` is the diff3-style preview when both sides are text (`content`, `add_add`); `regions` are its conflicting regions.
+- At most 200 paths are detailed; `total` counts all of them and `truncated` is set when more exist (resolve those locally).
+- `resolvable` is false, with a `reason`, when the merge request is not open, has no conflicts (it can be fast-forwarded, already contains the source, or the clean three-way merge can merge it), the source lives in a [fork](/docs/server/forks), a branch is missing, or the server has no object store.
+
+## The resolution snapshot
+
+`POST {tree}/merge-requests/{n}/resolve` (`tree:write`):
+
+```json
+{
+  "files": [
+    {"path": "a.txt", "content": "uno/ONE\n2\n3\n"},
+    {"path": "logo.png", "take": "theirs"},
+    {"path": "old.txt", "delete": true}
+  ],
+  "message": "optional",
+  "source_tip": "…", "target_tip": "…",
+  "allow_markers": false
+}
+```
+
+The server writes a snapshot **on the source branch** whose files are the clean part of the three-way merge plus your resolutions:
+
+- Every conflicting path is resolved exactly once with one of `content` (UTF-8 text, at most 8 MiB; optional `executable`), `take` (`ours`, `theirs` or `base`; taking a side that deleted the path deletes it) or `delete`. Unresolved, unknown or doubly resolved paths and more than 1000 resolutions answer `400`. Content that still holds a conflict block is refused unless `allow_markers`.
+- `source_tip` / `target_tip` must still be the branch tips, otherwise `409 resolve_outdated`.
+- The snapshot has parents `[source tip, target tip]`, `author` = you, no signature. It is checked like a push of that snapshot by you: `tree:write`, the source's protection must allow your direct push (`403 branch_protection`), path ACLs (`403 path_denied`), the storage quota (`409 quota_exceeded`) and `require_signed` on the source (`403 signature_required`).
+- Afterwards the target is an ancestor of the source, so the merge request fast-forwards (or merges or squashes) cleanly. Approvals of the old source tip become stale like after any push. Because the resolution is a merge snapshot, the `rebase` method is no longer possible for the request.
+
+The answer is `{"merge_request", "snapshot", "paths"}`. The server publishes `branch.pushed` (with `resolution: true`) for the source and `mr.conflicts_resolved` (`{number, source_branch, target_branch, old_tip, target_tip, snapshot_id, paths, resolved_by}`), and audits `mr.resolve_conflicts`.
+
+## Rebase merges
+
+```bash
+wt mr merge 12 --rebase               # same as --method rebase
+wt protect set main --no-direct-push --approvals 1 --merge-methods rebase,squash
+```
+
+`rebase` replays the snapshots reachable from the source tip but not from the target tip (oldest first) onto the target tip, giving a linear history without a merge snapshot:
+
+- Each snapshot's change against its first parent is applied with the three-way merge. A snapshot that does not apply cleanly stops the rebase with `409 merge_conflict` naming that snapshot's conflicts ("snapshot X does not apply on 'main'"); nothing is written.
+- Replayed snapshots get new ids, keep their original `author`, `message` and `created_at`, and record the merger as `pushed_by`; they are not signed. A snapshot whose changes the target already has is dropped.
+- The source must be linear: a merge snapshot among the replayed ones (for example a conflict resolution) makes `rebase` impossible; use `squash` or `merge`. At most 1000 snapshots are replayed.
+- When the target is an ancestor of the source, a rebase is a fast-forward and writes nothing.
+- `merge_method` records `rebase`, and `merged_snapshot` is the last replayed snapshot.
+
+`require_signed` forbids `rebase` (the server cannot sign what it writes); `require_linear` allows it.
+
+## Deleting the source branch
+
+```bash
+wt mr merge 12 --delete-branch
+```
+
+REST: `{"delete_source_branch": true}` on the merge. It is checked **before** merging, so a refusal leaves the merge request open and the target unchanged: you need `branch:delete`; the default branch and `no_delete` branches are refused (`403 branch_protection`); a branch that is the source or target of another open merge request is refused (`409 conflict`); a source branch in a fork is refused (`400`). The deletion publishes `branch.deleted`, is audited as `branch.delete` and adds `source_branch_deleted: true` to the `mr.merge` audit record.
+
+## Merging past protection
+
+Owners holding `branch:bypass_protection` can merge with `{"bypass": true}` in the REST body. It lifts required approvals, change requests, owner approvals, required CI and blocking TODOs; it does not lift drafts, linked groups, merge-method restrictions or conflicts. Without the permission the request answers `403 forbidden`. Every bypass is audited (`bypass = true`, the lifted rules, and a separate `branch.protection_bypassed` record). `wt mr merge` has no flag for it yet; use [`wt api`](/docs/server/openapi#wt-api).
+
+<Callout type="info" title="Not built yet">
+  Resolving conflicts of merge requests from forks and of more than 200 paths in the browser, binary uploads as resolutions, content merges of chunked files, rebasing sources that contain merge snapshots, and signing server-made snapshots are on the [roadmap](/roadmap).
+</Callout>

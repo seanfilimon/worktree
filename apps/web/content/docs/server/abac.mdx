@@ -1,0 +1,174 @@
+---
+title: ABAC Attributes
+description: Attributes on tenants, accounts and trees, and attribute conditions in policy statements, declarative access files and the access simulator (v0.8).
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Attribute-based access control (ABAC, v0.8) lets [policy statements](/docs/server/access-control#policies) depend on facts about the caller, the tree and the tenant instead of only on names and roles. Tenants, accounts and trees carry free-form string **attributes** (`department = "eng"`, `classification = "secret"`, `region = "eu-west"`), and a statement's `conditions.attributes` tests them. The [ABAC specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/ABAC.md) is normative.
+
+Typical uses:
+
+- "Developers without clearance may not touch trees classified `secret`": a deny keyed on `tree.classification` and `principal.clearance`.
+- "Engineers may administer the trees of tenants in the EU": an allow keyed on `principal.department` and `tenant.region`.
+
+Attribute conditions are one more condition kind next to IP ranges, MFA, validity dates and time windows: every condition of a statement must hold for the statement to apply, and deny still overrides allow.
+
+## Attributes
+
+| Object | Set by | Read by |
+|---|---|---|
+| Tenant | `tenant:admin` | `tenant:read` |
+| Account | server admins only | server admins; the account itself (`GET /api/v1/me/attributes`) |
+| Tree | `tree:admin` | `tree:read` (also part of the tree JSON) |
+
+- **Keys** match `^[a-z][a-z0-9_.-]{0,63}$` (dots are allowed: `org.unit`).
+- **Values** are 1-256 bytes of UTF-8 without control characters. Empty values are not allowed: remove the attribute instead.
+- At most **64 attributes** per object. Values are compared exactly (case-sensitive, no trimming).
+
+Accounts cannot change their own attributes: attributes are an input to authorization, so only server administrators set them. Service accounts and anonymous callers have no principal attributes.
+
+```bash
+wt attr set tenant acme region=eu-west cost.center=4711
+wt attr set tree acme/payments classification=secret
+wt attr set account bob department=eng clearance=secret   # server admins
+wt attr show account me
+wt attr unset tree acme/payments classification
+```
+
+| Command | Description |
+|---|---|
+| `wt attr show tenant\|account\|tree TARGET` | Show the attributes. `TARGET` is a tenant slug, a username (or `me` for your own account) or `TENANT/TREE` |
+| `wt attr set tenant\|account\|tree TARGET KEY=VALUE...` | Set attributes, keeping the others |
+| `wt attr unset tenant\|account\|tree TARGET KEY...` | Remove attributes; reports keys that were not set |
+
+The REST API replaces the whole set on every write (`PUT` with `{"attributes": {...}}`; `{"attributes": {}}` clears it); `wt attr set` and `unset` read the current set, change it and write it back.
+
+## Attribute conditions
+
+```json
+{
+  "name": "clearance",
+  "statements": [
+    {
+      "sid": "need-clearance",
+      "effect": "deny",
+      "principals": ["role:developer"],
+      "actions": ["tree:*"],
+      "resources": ["wt:tree/acme/*"],
+      "conditions": {
+        "attributes": [
+          {"key": "tree.classification", "op": "equals", "values": ["secret"]},
+          {"key": "principal.clearance", "op": "not_in", "values": ["secret", "top-secret"]}
+        ]
+      }
+    }
+  ]
+}
+```
+
+`key` is `<scope>.<attribute key>`:
+
+| Scope | Object |
+|---|---|
+| `principal` | The calling account; none for service accounts and anonymous callers |
+| `tree` | The tree of the resource; none for tenant-level requests |
+| `tenant` | The tenant of the resource, which is the policy's tenant |
+
+| Operator | Values | Holds when |
+|---|---|---|
+| `equals` | exactly 1 | The attribute is set and equal |
+| `not_equals` | exactly 1 | The attribute is unset or different |
+| `in` | 1-64 | The attribute is set and equal to one of the values |
+| `not_in` | 1-64 | The attribute is unset or equal to none |
+| `starts_with` | 1-64 prefixes | The attribute is set and starts with one of them |
+| `exists` | none | The attribute is set |
+| `not_exists` | none | The attribute is unset |
+
+Operators are case-insensitive. At most 32 attribute conditions per statement; all of them must hold.
+
+<Callout type="warn" title="Unset attributes">
+  An unset attribute fails `equals`, `in`, `starts_with` and `exists` and satisfies `not_equals`, `not_in` and `not_exists`. Write deny statements with the negative operators ("deny unless cleared": `principal.clearance not_in [...]`) so that a missing attribute is denied.
+</Callout>
+
+Conditions are validated on every policy write (`wt policy create/update` checks them locally first, then the server with field names such as `conditions.attributes[1].values[0]`), on access documents and on simulator candidates. A stored condition that cannot be compiled fails closed: an allow never applies, a deny always applies.
+
+### Who controls the input
+
+A policy keyed on `tree.*` trusts the tree's admins and one keyed on `tenant.*` the tenant's admins, because they can change those attributes. Account attributes can only be changed by server admins, so prefer `principal.*` for denies that must hold against tree admins. Server administrators bypass policies, and therefore attribute conditions; the owner lockout guard still prevents policies from denying tenant owners `iam:*` and `tenant:admin`.
+
+## Declarative access files
+
+`.wt/access/policies.toml` and `<tree>/.wt-tree/access/policies.toml` (see [Declarative access](/docs/server/declarative-access)) accept attribute conditions as an array of tables:
+
+```toml
+[[policy]]
+name = "clearance"
+
+[[policy.statement]]
+sid = "need-clearance"
+effect = "deny"
+principals = ["role:developer"]
+actions = ["tree:*"]
+resources = ["wt:tree/acme/*"]
+
+[[policy.statement.conditions.attributes]]
+key = "tree.classification"
+op = "equals"
+value = "secret"                  # `value` = one value
+
+[[policy.statement.conditions.attributes]]
+key = "principal.clearance"
+op = "not_in"
+values = ["secret", "top-secret"] # `values` = a list
+```
+
+The inline form is equivalent: `conditions = { attributes = [{ key = "tenant.region", op = "starts_with", values = ["eu-"] }] }`. Keys other than `key`, `op`, `value` and `values`, or both `value` and `values`, are `E2002`; invalid keys, operators and value counts are `E2011`, located at `policy[i] (name).statement[j].conditions.attributes[k].<field>`; more than 32 conditions is `E2015`. `wt access pull` writes the inline form. Tree-scope documents may use attribute conditions in their deny statements.
+
+## Simulating
+
+```bash
+wt iam simulate --principal user:bob --action tree:write --tenant acme --tree payments
+wt iam simulate --principal user:bob --action tree:write --tenant acme --tree payments \
+  --attr principal.clearance=secret --attr tree.classification     # bare KEY = unset
+wt policy simulate acme --file clearance.json --principal user:bob --action tree:write --tree payments --attr principal.clearance=secret
+```
+
+`--attr KEY[=VALUE]` overrides an attribute for this evaluation only (`principal.<k>`, `tree.<k>`, `tenant.<k>`; repeatable; a bare key simulates the attribute being unset). The result adds an **Attribute conditions** table (condition, actual value or `(unset)`, met / not met) and reasons with source `attribute`, for example:
+
+```text
+policy "clearance" statement "need-clearance": principal.clearance is unset; principal.clearance not_in ["secret", "top-secret"]: met
+```
+
+A statement that does not apply because of an attribute names the first failing condition in its `policy` reason. Over REST, `POST /api/v1/iam/simulate` takes `context.attributes` (`{"principal.clearance": "secret", "tree.classification": null}`, `null` = unset) and returns `attributes` (what the evaluation saw per scope) and `conditions` (one entry per attribute condition of every statement whose principal, action and resource matched). `wt policy show` and the simulators render conditions as `principal.department in ["eng", "ops"]`.
+
+## Caching and performance
+
+Attribute conditions are compiled and cached with their policies; an attribute change is visible to the very next request (attributes are never cached across requests). The attribute source of an evaluation is built only when an enabled policy of the tenant uses attribute conditions, so tenants without them evaluate exactly as before. The Go benchmarks show unchanged allocations for tenants without attribute conditions and about 150 extra allocations per evaluation of an action that attribute statements match.
+
+## REST API
+
+All under `/api/v1`; bodies and responses are `{"attributes": {"key": "value"}}` (`{}` when empty).
+
+| Method and path | Permission | Notes |
+|---|---|---|
+| `GET /tenants/{t}/attributes` | `tenant:read` | |
+| `PUT /tenants/{t}/attributes` | `tenant:admin` | Full replace; audited `tenant.attributes.update` |
+| `GET /admin/accounts/{username}/attributes` | server admin | |
+| `PUT /admin/accounts/{username}/attributes` | server admin | Audited `account.attributes.update` |
+| `GET /me/attributes` | signed in | Your own account; `{}` for service accounts |
+| `GET /trees/{tenant}/{tree}/attributes` | `tree:read` | |
+| `PUT /trees/{tenant}/{tree}/attributes` | `tree:admin` | Audited `tree.attributes.update` |
+| `POST /iam/simulate` | `iam:read` (or self) | `context.attributes` overrides; the response adds `attributes` and `conditions` |
+
+Invalid bodies are `400 bad_request`. Attribute writes are audited only when something changed, with the changed and removed **keys** and the count; attribute **values are never written to the audit log**, since they may be sensitive. Tree attributes are visible to tree readers, tenant attributes to tenant readers, and account attributes only to server admins and the account itself; member lists strip them.
+
+## Admin panel
+
+- **Attribute editors** (key/value rows with the rules above checked as you type) on tenant settings, on the account sheet (server admins) and on tree settings (tree admins); a read-only **My attributes** card in the user settings.
+- **Policy editor**: an "Attribute conditions" section in the statement builder (scope, key, operator, values), round-tripping with the JSON mode.
+- **Access simulator**: attribute override rows (with "unset") and an explanation card listing the attributes seen per scope and every condition with a Matched / Not met badge.
+
+<Callout type="info" title="Not built yet">
+  Service-account and team attributes, attributes of branches or paths, comparisons between attributes and ordered operators, attributes mapped from SSO claims, partial (`PATCH`) updates and attribute-aware token scopes are on the [roadmap](/roadmap).
+</Callout>

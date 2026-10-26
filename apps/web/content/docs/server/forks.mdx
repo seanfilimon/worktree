@@ -1,0 +1,113 @@
+---
+title: Forks
+description: Fork a server tree into another tenant, keep the fork in sync with its upstream, and propose changes back with merge requests from the fork (v0.8).
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **fork** is a server tree created as a copy of another tree, its **upstream**, usually in another tenant. It starts with the upstream's branches (all or a chosen set) and tags and has its own history from then on. People who may not push to a tree can still work on it: they fork it into their own tenant, push there, and open a **merge request from the fork** in the upstream, which the upstream's maintainers review and merge with their usual permissions. The [Forks specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/Forks.md) is normative.
+
+A fork is an ordinary tree in every other way: it has its own members, protections, license rules, webhooks, mirrors and settings, none of which are copied. Clients clone, pull and push a fork like any other tree. The fork records where it came from in `fork_of` (the upstream's id), and tree headers in the admin panel show a "fork of TENANT/TREE" badge.
+
+## Forking a tree
+
+```bash
+wt fork acme/web                                   # into your personal tenant, same name
+wt fork acme/web --into team --name web-team --branch main --visibility private
+wt clone https://wt.example.com team/web-team      # then work on the fork as usual
+```
+
+| Option | Default | Rule |
+|---|---|---|
+| `--into TENANT` | your personal tenant | You need `tree:create` there; the tenant's `max_trees` quota applies |
+| `--name N` | the upstream's name | Tree-name rules; unique in the tenant (`409` otherwise) |
+| `-b, --branch B` (repeatable) | every branch | Each must exist upstream. Tags are always copied |
+| `--visibility V` | the upstream's | Never wider than the upstream's (`private` < `internal` < `public`) |
+| `--description D` | the upstream's | At most 4096 bytes |
+
+**Who may fork.** `tree:fork` on the upstream (a v0.8 action; role minimum **viewer**, tree scoped) **and** `tree:create` in the destination tenant. Visibility does not grant `tree:fork`: to fork a public tree you need a role or grant on it, or a policy that allows `tree:fork` broadly.
+
+**What is copied.** The chosen branches with their tips and descriptions, every tag (target, message, tagger, date) and the snapshot records of their history. Branch owners, protections, license rules, grants, policies, path owners, webhooks, mirrors, releases, TODOs, CI statuses, merge requests and staged snapshots are **not** copied. The fork's default branch is the upstream's when it is copied, else the first copied branch. A fork of a fork is allowed; its `fork_of` names its direct upstream.
+
+**No objects are copied.** Objects are content-addressed and stored once per server, so a fork costs only metadata. Snapshot records are tree-scoped, so the fork gets its own copies with deterministic ids; history that travels upstream → fork → upstream keeps its original ids, so after a merge request from a fork is merged and the fork syncs, clones of the fork fast-forward. Copied snapshots and tags carry **no signature** (signatures cover ids and parents, which changed).
+
+### Licenses
+
+Forking out of the upstream's tenant redistributes its files, so the [archive rule](/docs/server/licensing) applies: every path of every copied branch tip and tag target must be exportable by you **and** by the destination tenant evaluated as a non-member of the upstream's tenant. Otherwise the fork is refused with `403 license_violation` naming the first offending path and license. Forks within the upstream's tenant are not restricted. Only the tips are checked, not every historical snapshot.
+
+## Following the upstream
+
+```bash
+wt fork upstream                 # upstream of the current worktree's tree and branch relations
+wt fork sync                     # fast-forward every branch both trees have
+wt fork sync --branch release/2  # one branch; created in the fork when it exists only upstream
+wt fork list acme/web            # forks of a tree you may read
+```
+
+`wt fork upstream` (`GET {tree}/fork`) reports the upstream (tenant, name, visibility, default branch), who forked it and when, the last sync, and the relation of every branch to the upstream branch of the same name:
+
+| Status | Meaning |
+|---|---|
+| `up_to_date` | Same content |
+| `ahead` | The fork contains the upstream tip |
+| `behind` | The fork can fast-forward to the upstream tip |
+| `diverged` | Each side has snapshots the other lacks |
+| `fork_only` / `upstream_only` | The branch exists on one side only |
+
+`upstream_missing` means the upstream was deleted; `upstream_hidden` that you may not read it. For a tree that is not a fork the answer is `{"fork": false}`.
+
+`wt fork sync` (`POST {tree}/fork/sync`) only **fast-forwards**: per branch the result is `fast_forwarded`, `created`, `up_to_date`, `ahead`, `diverged` or `moved` (the fork branch moved during the sync; retry). A diverged branch is listed and the command exits `1`: merge the upstream into your branch locally and push. Syncing needs `tree:write` on the fork and `tree:read` on the upstream; the fork's branch protections do not apply, because a sync only moves to content the upstream already has. A fork whose upstream was deleted cannot sync (`409`). Fork sync publishes `branch.pushed` / `branch.created` with `via: fork_sync`.
+
+## Merge requests from a fork
+
+A merge request lives in the tree it merges **into**. Open it in the upstream and name the fork branch with `--from`:
+
+```bash
+wt mr create acme/web --from bob/web:feature --target main --title "Faster startup"
+wt mr show 12 acme/web --diff
+```
+
+- The source tree must be in the same **fork network**: one tree is forked (directly or transitively) from the other, or both come from a common upstream (a deleted upstream still links its forks). You must be able to read the source tree.
+- **Who may open one:** `mr:create` on the upstream, **or** `tree:fork` on the upstream plus `tree:write` on the fork. The second rule lets outside contributors (viewers of the upstream) propose changes from their forks.
+- The review service copies the fork branch's history into the upstream before it evaluates anything, so ancestry, mergeability, every merge method, conflicts, approvals, path owners, CI checks and diffs work on snapshots of the upstream. `GET {tree}/merge-requests/{n}/source` reports the source tree, the tip in the fork (`tip`) and the copied tip (`target_tip`); `wt mr show --diff` and the admin panel diff `target_tip` against the target branch.
+- Merging needs the usual permissions **in the upstream** (`mr:merge`, protections, approvals). A fast-forward moves the target branch to the copied tip; merge, squash and rebase snapshots are written in the upstream.
+- Not supported on merge requests from forks: applying suggested changes from the upstream (apply them in the fork and push; `409`), [resolving conflicts on the server](/docs/server/conflict-resolution) (merge the upstream into the fork branch locally instead), `delete_source_branch` on merge (`400`), and automatic owner review requests on pushes to the fork. When the source tree or branch is deleted, the merge request reports a missing source and cannot be merged.
+
+In the admin panel, the fork's **Forks** tab has **Open merge request upstream** with source and target branch pickers; a merge request from a fork shows `TENANT/TREE:BRANCH` as its source.
+
+## Deletion
+
+Deleting the upstream leaves its forks intact: their snapshot records, branches and tags are their own, and garbage collection keeps the shared objects as long as any tree references them. `fork_of` keeps the deleted upstream's id and `wt fork upstream` reports `upstream_missing`. Deleting a tree removes its fork records and copy origins.
+
+## Admin panel
+
+The tree's **Forks** tab shows, for a fork, an upstream card (link, who forked it and when, last sync, the branch relation table, **Sync with upstream**, **Open merge request upstream**), a note when the upstream was deleted, the list of forks you can see, and a **Fork** dialog (destination tenant, name, visibility limited to the upstream's, branches, description).
+
+## Events and audit
+
+| Event | When | Published in |
+|---|---|---|
+| `tree.forked` | A fork was created; payload `fork_tree_id`, `fork_tenant`, `fork_name`, `upstream_tenant`, `upstream_name`, `branches` | The upstream |
+| `tree.created` | The fork tree, with `fork_of` | The fork |
+| `branch.pushed`, `branch.created` | Fork sync moved or created a branch (`via: fork_sync`) | The fork |
+
+Audit records: `tree.fork` in the destination tenant and, for cross-tenant forks, in the upstream's tenant; `fork.sync` in the fork's tenant.
+
+## REST API
+
+All under `/api/v1/trees/{tenant}/{tree}`.
+
+| Method and path | Permission | Description |
+|---|---|---|
+| `POST forks` | `tree:fork` + `tree:create` in the destination | Body `{"tenant"?, "name"?, "visibility"?, "description"?, "branches"?}`; `201` with the new tree |
+| `GET forks` | `tree:read` | Direct forks you may read |
+| `GET fork` | `tree:read` | Upstream and branch relations |
+| `POST fork/sync` | `tree:write` (+ `tree:read` on the upstream) | Body `{"branches"?}` |
+| `POST merge-requests` | `mr:create`, or `tree:fork` + `tree:write` on the source | With `source_tenant` and `source_tree` for a merge request from a fork |
+| `GET merge-requests/{n}/source` | `tree:read` | Where the source lives, `tip`, `target_tip` |
+
+Servers without the fork service answer `501 not_implemented`. Every command of `wt fork` supports `--json`; `TENANT/TREE` defaults to the tree of the current worktree.
+
+<Callout type="info" title="Not built yet">
+  Forking public trees without a role, network-wide fork graphs, automatic fork sync, re-signing copied snapshots, applying suggestions to a fork branch from the upstream and license checks over the full copied history are on the [roadmap](/roadmap).
+</Callout>

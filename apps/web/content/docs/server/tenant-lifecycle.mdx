@@ -1,0 +1,149 @@
+---
+title: Tenant Lifecycle
+description: Contact email and verification, slug renames with 90-day reservations and "tenant moved" answers, and deletion with a 30-day recovery window, restore and purge (v0.8).
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Since v0.8, organization tenants have a full lifecycle on top of the [tenant model](/docs/server/access-control#tenants). The [Tenant lifecycle specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/iam/TenantLifecycle.md) is normative.
+
+| Stage | What happens |
+|---|---|
+| [Contact email](#contact-email-and-verification) | A tenant admin sets the tenant's email; a single-use code proves the mailbox. A verified address can name the tenant in grants and license rules. |
+| [Rename](#slug-renames) | An owner changes the slug. The old slug is reserved for 90 days and answers "tenant moved" with the new slug. |
+| [Delete](#deletion-and-restore) | An owner schedules the deletion. The tenant is suspended (read-only) and its service-account keys are revoked for a recovery window of 30 days. |
+| Restore | During the window an owner cancels the deletion. |
+| [Purge](#the-purge-job) | After the window a background job deletes the tenant's data and record; the slug stays reserved for 90 days. |
+
+Personal tenants (slug = username) cannot be renamed or deleted.
+
+<Callout type="warn" title="wt tenant rename changed in v0.8">
+  `wt tenant rename TENANT NEW_SLUG` now changes the **slug**. The display name moved to `wt tenant set-name TENANT NAME`. A value that is not a valid slug fails with a hint to use `set-name`.
+</Callout>
+
+## CLI
+
+```bash
+wt tenant email set acme ops@acme.io      # mails a verification code (or logs it without SMTP)
+wt tenant email verify acme wte_Q3x...
+wt tenant email resend acme
+wt tenant email clear acme
+
+wt tenant set-name acme "Acme Corporation" # display name
+wt tenant rename acme acme-inc             # slug (owners); prints the reservation and the switch hint
+wt tenant switch acme-inc                  # point this worktree's remote at the new slug (offline)
+
+wt tenant delete acme-inc --yes            # schedule the deletion; prints the purge date
+wt tenant show acme-inc                    # email (verified or not) and a scheduled deletion
+wt tenant restore acme-inc                 # cancel it during the recovery window
+```
+
+| Command | Who | Description |
+|---|---|---|
+| `wt tenant email set T EMAIL` | `tenant:admin` | Set the contact email; a single-use verification code valid 24 h is mailed to it (or written to the server log without SMTP) |
+| `wt tenant email verify T CODE` | anyone with the code | Verify the contact email |
+| `wt tenant email resend T` | `tenant:admin` | Send a new code; earlier codes stop working |
+| `wt tenant email clear T` | `tenant:admin` | Remove the contact email |
+| `wt tenant set-name T NAME` | `tenant:admin` | Change the display name |
+| `wt tenant rename T NEW_SLUG` | owners | Change the slug |
+| `wt tenant switch SLUG [--remote R]` | local | Set `remote.<R>.tenant` in `.wt/config.toml` (default `[sync].remote`); works offline |
+| `wt tenant delete T [--yes]` | owners | Schedule the deletion (asks for confirmation; `--yes` when stdin is not a terminal) |
+| `wt tenant restore T` | owners | Cancel a scheduled deletion |
+
+Server administrators may always rename, delete and restore. Owner checks respect token scopes: a scoped token without `tenant:admin` cannot rename, delete or restore.
+
+## Contact email and verification
+
+- **Set.** `PATCH /api/v1/tenants/{t} {"email"}` (`tenant:admin`). The address must be a bare `local@domain` address; `""` clears it. Any change clears the verification, deletes outstanding codes and issues a new code.
+- **Code.** `wte_` followed by 32 random bytes; only its SHA-256 is stored. A code is valid for **24 hours** and **single use**, and is bound to the tenant and to the address it was sent to.
+- **Delivery.** Through the notification mailer (`--smtp-url`, via the [durable outbox](/docs/server/server-operations#durable-email-outbox)) as an email with the CLI command and, when `--public-url` is set, a link to `<public-url>/admin/tenants/<slug>?tab=settings&email_token=<code>`. Without SMTP the code is written to the server log at level INFO and the API reports `delivery: "log"`. Operators who ship logs to shared systems should configure SMTP.
+- **Verify.** `POST /api/v1/tenants/{t}/email/verify {"token"}` is public: the code proves control of the mailbox. Every unusable code answers the same `400 invalid_email_token`.
+- **Uniqueness.** A verified address belongs to at most one tenant (`409 email_taken`).
+
+Accounts use the same mechanism: `POST /api/v1/me/email/resend` mails a code to your account's email and `POST /api/v1/me/email/verify {"token"}` marks it verified. Tenant codes do not verify accounts and vice versa; service accounts have no email.
+
+### References by verified email
+
+A verified tenant email can stand for the tenant wherever a tenant is named by reference (slug first, then id, then verified email):
+
+| Where | Example |
+|---|---|
+| REST `{tenant}` path segments | `GET /api/v1/tenants/ops@acme.io` |
+| Tree grants with `subject_type: "tenant"` | `PUT {tree}/grants {"subject_type":"tenant","subject":"ops@acme.io","role":"viewer"}` stores the tenant's id and slug |
+| License-rule grantees | `PUT {tree}/licenses {"grantee":"ops@acme.io", ...}` stores the slug |
+
+Unverified addresses never resolve. Policies and declarative access files still use slugs.
+
+## Slug renames
+
+`POST /api/v1/tenants/{t}/rename {"slug"}` needs `tenant:admin` **and** the owner role. The new slug follows the organization slug rules (lowercase letters, digits and `-`, at most 63 characters, not starting or ending with `-`) and must not be used by another tenant or as a username (`409 slug_taken`) or be reserved for another tenant (`409 slug_reserved`). A tenant may rename back to one of its own reserved slugs. Personal tenants answer `409 personal_tenant`, tenants scheduled for deletion `409 deletion_scheduled`.
+
+Effects:
+
+- **Reservation.** The old slug is reserved for **90 days**: no tenant can be created with it, no account can register it as a username, and other tenants cannot rename to it.
+- **Moved answers.** REST requests naming the old slug answer `301` with `{"error": {"code": "tenant_moved", "details": {"old_slug", "new_slug"}}}` and the header `X-WT-Tenant-Moved: <new slug>`. No `Location` header is sent, so HTTP clients do not follow it. gRPC `ResolveTree` answers `NotFound` with the new slug in an `ErrorInfo` detail (reason `TENANT_MOVED`) and the trailers `wt-tenant-moved-from` / `wt-tenant-moved-to`. Chained renames (a → b → c) all report the current slug.
+- **Rewritten references.** Everything that stores the slug by value is rewritten in the same operation: resources (`wt:tenant/<slug>`, `wt:tree/<slug>/...`, `wt:branch/...`, `wt:path/...`) of the tenant's policies, `tenant:<slug>` principals in every tenant's policies, license-rule grantees on every tree and the display name of tenant grants. Tree ids, tenant ids and memberships do not change.
+- **Clients.** Calls that use tree ids keep working. Commands that resolve a tree by the old slug print `tenant "acme" was renamed to "acme-inc"; update the remote (wt tenant switch acme-inc)`. The daemon does not rewrite remotes.
+
+The rename publishes `tenant.renamed` (`{old_slug, new_slug}`) and is audited as `tenant.rename`.
+
+## Deletion and restore
+
+`DELETE /api/v1/tenants/{t}` (owners and server admins) answers `202` with the deletion record:
+
+```json
+{"tenant_id":"…","slug":"acme","requested_by":"olga","requested_at":"…",
+ "purge_at":"…","previous_status":"","revoked_keys":2}
+```
+
+- `purge_at` is now plus `--tenant-deletion-window` (default **30 days**).
+- The tenant becomes `suspended` with the reason `scheduled for deletion on <date>`: every write (pushes, merges, settings, IAM changes) is refused, reads keep working.
+- The tenant's service-account keys are revoked (`revoked_keys`); they are not restored.
+- A second request answers `409 deletion_scheduled`. `GET /api/v1/tenants/{t}/deletion` returns the record (for countdowns) or `404 deletion_not_scheduled`.
+
+`POST /api/v1/tenants/{t}/restore` (owners and server admins) cancels the deletion during the window: the tenant gets back the status and reason it had before, normally active.
+
+### Suspension effects
+
+Whenever a tenant becomes suspended or deactivated from the active state, by a deletion or by a server admin (`wt tenant suspend`, `wt tenant deactivate`):
+
+- **Service-account keys are revoked.** Resuming does not bring them back; issue new keys.
+- **Cross-tenant grants naming it are paused.** A tree grant to the tenant gives nothing while it is suspended; the access decision explains it ("tenant acme grant on tree "web" is paused: tenant acme is suspended"). Resuming restores the grants.
+
+### The purge job
+
+The purge job runs every `--tenant-purge-interval` (default 1 hour). For every tenant whose `purge_at` has passed it deletes the trees (publishing `tree.deleted` for each, so garbage collection reclaims the objects), teams, service accounts, policies, invitations, memberships, custom roles, tenant grants on other tenants' trees, access documents, linked groups and usage records, reserves the final slug for 90 days, deletes the tenant record, publishes `tenant.deleted` (`{slug, trees}`) and audits `tenant.purge` (actor `system`). A failed purge is retried on the next run; every step is idempotent. **The purge cannot be undone**: take a [backup](/docs/server/storage-backends#backups) first if you may need the data.
+
+| Flag | Environment variable | Default |
+|---|---|---|
+| `--tenant-deletion-window` | `WT_TENANT_DELETION_WINDOW` | `720h` |
+| `--tenant-purge-interval` | `WT_TENANT_PURGE_INTERVAL` | `1h` |
+
+## Admin panel
+
+Tenant → **Settings**:
+
+- **Contact email** card: verified or unverified badge, set or remove the address, verify with the code (prefilled from the email link), resend.
+- **Change slug** dialog from the General card (owners and server admins of active organization tenants), listing the consequences.
+- **Danger zone**: delete with type-the-slug confirmation; while a deletion is scheduled, a live countdown to the purge, who requested it and a **Restore** button.
+- Opening an old slug shows "This tenant was renamed" with a link to the new slug.
+
+## REST API
+
+```text
+PATCH  /api/v1/tenants/{t} {email}              -> tenant               (tenant:admin; "" clears)
+POST   /api/v1/tenants/{t}/email/verify {token} -> tenant               (public)
+POST   /api/v1/tenants/{t}/email/resend         -> 202 {email, delivery, expires_at} (tenant:admin)
+POST   /api/v1/me/email/resend                  -> 202 {email, delivery, expires_at} (signed in)
+POST   /api/v1/me/email/verify {token}          -> account              (signed in)
+POST   /api/v1/tenants/{t}/rename {slug}        -> {tenant, reservation} (tenant:admin + owner)
+DELETE /api/v1/tenants/{t}                      -> 202 TenantDeletion   (owner)
+GET    /api/v1/tenants/{t}/deletion             -> TenantDeletion       (tenant:read)
+POST   /api/v1/tenants/{t}/restore              -> tenant               (owner)
+```
+
+Error codes: `invalid_email_token` (400), `no_email`, `email_already_verified`, `email_taken`, `slug_taken`, `slug_reserved`, `personal_tenant`, `deletion_scheduled` (409), `deletion_not_scheduled` (404), `tenant_moved` (301). Audit actions: `tenant.email`, `tenant.email_verified`, `tenant.email_verification_sent`, `account.email_verified`, `account.email_verification_sent`, `tenant.rename`, `tenant.delete`, `tenant.restore`, `tenant.purge`, `service_account.keys_revoked`.
+
+<Callout type="info" title="Not built yet">
+  Email references in policies and declarative access files, verified account emails for SSO linking and invitations, changing an account's email, automatic remote updates after a rename, personal tenant deletion and a configurable reservation period are on the [roadmap](/roadmap).
+</Callout>

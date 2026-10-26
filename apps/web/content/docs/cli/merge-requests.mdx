@@ -32,7 +32,7 @@ wt mr create --source feature/refunds --target main --title "Add refund endpoint
 wt mr ready 4                         # a draft becomes mergeable; owners are asked for review
 ```
 
-Needs `mr:create` (developer). Source and target must be branches of the same tree. Opening a non-draft merge request (and every later push to its source) requests reviews from the [path owners](/docs/server/review-workflow#path-owners) of the changed paths.
+Needs `mr:create` (developer). Source and target are branches of the same tree, or since v0.8 the source is a branch of a [fork](/docs/server/forks): `wt mr create acme/web --from bob/web:feature --target main --title "..."` (needs `mr:create` on the upstream, or `tree:fork` on it plus `tree:write` on the fork). Opening a non-draft merge request (and every later push to its source) requests reviews from the [path owners](/docs/server/review-workflow#path-owners) of the changed paths.
 
 </Step>
 <Step>
@@ -59,6 +59,7 @@ wt mr review 4 --approve
 wt mr checks 4
 wt mr merge 4                         # fast-forward if possible, else a merge snapshot
 wt mr merge 4 --method squash -m "Add refund endpoint (!4)"
+wt mr merge 4 --rebase --delete-branch   # v0.8: replay onto main, then delete the source branch
 ```
 
 </Step>
@@ -82,17 +83,26 @@ wt mr merge 4 --method squash -m "Add refund endpoint (!4)"
 
 ### Merge methods
 
-The server merges with one of three methods (see [Server-side merges](/docs/server/merging)):
+The server merges with one of four methods (see [Server-side merges](/docs/server/merging)):
 
 | `--method` | Result |
 |---|---|
 | `fast-forward` | The target moves to the source tip; no new snapshot. |
 | `merge` | A merge snapshot with parents `[target tip, source tip]`. |
 | `squash` | One snapshot on the target with all the source's changes. |
+| `rebase` (v0.8; also `--rebase`) | The source snapshots are replayed onto the target tip as new snapshots (linear history; the source must be linear). See [Rebase merges](/docs/server/conflict-resolution#rebase-merges). |
 
-Without `--method` the server fast-forwards when it can and otherwise writes a merge snapshot, whichever branch protection allows first (`wt protect set --merge-methods` restricts the methods; `--require-linear` forbids `merge`, `--require-signed` forbids `merge` and `squash`). `-m` sets the message of a merge or squash snapshot. `wt mr mergeability 4` shows the possible methods, the merge base and any conflicts before you try.
+Without `--method` the server fast-forwards when it can and otherwise writes a merge snapshot, whichever branch protection allows first (`wt protect set --merge-methods` restricts the methods; `--require-linear` forbids `merge`, `--require-signed` forbids `merge`, `squash` and `rebase`). `-m` sets the message of a merge or squash snapshot. `--delete-branch` (v0.8) deletes the source branch after the merge; it needs `branch:delete` and is checked before merging. `wt mr mergeability 4` shows the possible methods, the merge base and any conflicts before you try.
 
-The server never writes conflict markers: a merge with conflicts is refused (`409 merge_conflict` listing the paths, exit code `3`). Bring the target into the source locally, resolve, push and merge again:
+The server never writes conflict markers into the target: a merge with conflicts is refused (`409 merge_conflict` listing the paths, exit code `3`). Since v0.8 you can resolve the conflicts on the server, in the browser (**Resolve conflicts** on the merge request page) or from the CLI, which writes a merge-resolution snapshot on the source branch ([Conflict resolution](/docs/server/conflict-resolution)):
+
+```bash
+wt mr conflicts 4 --write        # write the diff3 previews into the local tree; edit them
+wt mr resolve 4                  # or: wt mr resolve 4 --take theirs assets/logo.png
+wt mr merge 4
+```
+
+Or bring the target into the source locally, resolve, push and merge again:
 
 ```bash
 wt pull --branch main
@@ -106,7 +116,7 @@ A refused merge reports why, in this order of precedence: a draft answers `409 d
 ## `wt mr`
 
 ```text
-wt mr <list|show|create|ready|reviewers|owners|suggest|apply-suggestion|approve|merge|mergeability|close|review|comment|comments|checks|link|merge-group|groups>
+wt mr <list|show|create|ready|reviewers|owners|suggest|apply-suggestion|approve|merge|conflicts|resolve|mergeability|close|review|comment|comments|checks|link|merge-group|groups>
 ```
 
 | Command | Usage | Notes |

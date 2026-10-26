@@ -21,7 +21,9 @@ Usage: wt login [OPTIONS] [SERVER]
 Usage: wt register [OPTIONS] --username <USER> --email <EMAIL> [SERVER]
 ```
 
-`wt login` and `wt register` save a token per server URL (normalized, no trailing slash) in `$WT_HOME/credentials.toml` (default `~/.wt/credentials.toml`). Every remote command sends it as `authorization: Bearer <token>`. Anonymous access works only for reads of public trees.
+`wt login` and `wt register` save a credential per server URL (normalized, no trailing slash) in `$WT_HOME/credentials.toml` (default `~/.wt/credentials.toml`). Every remote command sends its access token as `authorization: Bearer <token>`. Anonymous access works only for reads of public trees.
+
+Since v0.8 a login saves a **token pair**: an access token valid one hour and a single-use refresh token valid 30 days (`token`, `refresh_token`, `expires_at`). The CLI renews the pair transparently before it expires and after an `Unauthenticated` answer, so you stay signed in for 30 days of inactivity; every renewal extends that. See [Device sign-in and refresh tokens](/docs/cli/device-sign-in).
 
 Passwords are never accepted as a flag. They are read, in order of preference, from:
 
@@ -30,7 +32,7 @@ Passwords are never accepted as a flag. They are read, in order of preference, f
 3. an interactive prompt.
 
 <Callout type="warn">
-`credentials.toml` contains bearer tokens. Keep `$WT_HOME` private and never commit it. Session tokens expire (default 30 days); log in again when a command reports you are not logged in. For CI, prefer a scoped API token or service-account key, see [`wt token`](/docs/cli/iam#wt-token) and [`wt sa`](/docs/cli/iam#wt-sa).
+`credentials.toml` contains bearer and refresh tokens (mode `0600` on Unix). Keep `$WT_HOME` private and never commit it. Log in again when a command reports you are not logged in (the refresh token expired or was revoked, for example by `wt session revoke`). For CI, prefer a scoped API token or service-account key in `WT_TOKEN` (never refreshed), see [`wt token`](/docs/cli/iam#wt-token) and [`wt sa`](/docs/cli/iam#wt-sa).
 </Callout>
 
 Server-side commands (`wt mr`, `wt trees`, IAM commands, ...) use the same saved credentials. They pick the server from `--server` / `WT_SERVER`, else this worktree's origin remote, else the only saved login.
@@ -100,7 +102,7 @@ $env:ADA_PASSWORD | wt register http://localhost:7420 -u ada -e ada@example.com 
 Usage: wt login [OPTIONS] [SERVER]
 ```
 
-Log in to a server and save the session token in `$WT_HOME/credentials.toml`.
+Log in to a server and save the token pair in `$WT_HOME/credentials.toml`.
 
 | Argument / flag | Description |
 |---|---|
@@ -108,6 +110,9 @@ Log in to a server and save the session token in `$WT_HOME/credentials.toml`.
 | `-u, --username <USER>` | Account name. Prompted for when omitted. |
 | `--password-stdin` | Read the password from the first line of stdin. |
 | `--mfa-code <CODE>` | TOTP or recovery code for accounts with two-factor authentication. Env `WT_MFA_CODE`. Prompted for when needed. |
+| `--device` | v0.8: sign in through the browser instead of a password (OAuth device flow). Prints a one-time code and a URL, opens the browser when possible and waits until you approve the code in the admin panel. See [Device sign-in](/docs/cli/device-sign-in). |
+| `--scope <ACTION>` | With `--device`: restrict the new session to these actions (for example `tree:read`; repeatable; default full account access). |
+| `--no-browser` | With `--device`: only print the URL, do not open a browser (also `WT_NO_BROWSER`). |
 
 <Tabs items={['bash', 'PowerShell']}>
   <Tab value="bash">
@@ -115,6 +120,7 @@ Log in to a server and save the session token in `$WT_HOME/credentials.toml`.
 wt login http://localhost:7420 -u ada
 printf '%s\n' "$ADA_PASSWORD" | wt login http://localhost:7420 -u ada --password-stdin
 wt login https://wt.example.com -u ada --mfa-code 123456
+wt login https://wt.example.com --device          # approve the code in the browser
 ```
   </Tab>
   <Tab value="PowerShell">
@@ -130,7 +136,8 @@ $env:WT_MFA_CODE = '123456'; wt login https://wt.example.com -u ada
 
 - Logging in again to the same server replaces the saved credential.
 - With two-factor authentication enabled, the password step returns a short-lived challenge; `wt login` then asks for (or reads) the code and exchanges it for a session. Enroll with [`wt mfa enable`](/docs/cli/iam#wt-mfa).
-- Single sign-on (OIDC) logins happen in the browser through the admin panel; see [`wt sso`](/docs/cli/iam#wt-sso).
+- Single sign-on (OIDC) logins happen in the browser through the admin panel; see [`wt sso`](/docs/cli/iam#wt-sso). On a machine without a browser, or when your account signs in only through SSO, use `wt login --device` and approve the code from any signed-in browser.
+- After a tenant [rename](/docs/server/tenant-lifecycle#slug-renames), commands that use the old slug fail with a "tenant moved" hint; run `wt tenant switch NEW_SLUG` to update the remote.
 
 ## `wt logout`
 
@@ -183,19 +190,25 @@ Upload a branch of the selected tree to the server.
 | `--remote <R>` | Remote to push to. Default: `[sync] remote`, usually `origin`. |
 | `--branch <B>` | Branch to push. Default: the current branch. |
 | `--queue` | If the server is unreachable, record the push in the [offline queue](/docs/cli/sync#offline-queue) (`.wt/trees/<tree>/outbox.jsonl`) and exit `0` instead of failing. `wt sync queue` lists it, `wt sync flush` retries it, and the daemon delivers it automatically with `sync.auto_flush`. |
+| `--force` (alias `--force-with-lease`) | v0.8: rewind the server branch when it has snapshots your branch lacks. Needs `branch:force_push`; refused by `no_force_push` rules. Lease semantics: refused unless the server tip is the last remote tip you fetched. See [Force push](/docs/cli/force-push-and-undo#force-push). |
+| `--bypass-protection` | v0.8: push past branch protection (owners, `branch:bypass_protection`; always audited). See [Protection bypass](/docs/cli/force-push-and-undo#protection-bypass). |
+| `--no-pack` | v0.8: upload whole objects instead of a pack with deltas (for debugging; same as `WT_NO_PACK=1`). See [Pack and delta transfer](/docs/protocol/packs). |
 
 What happens:
 
 1. The server tree `<tenant>/<tree>` is resolved, and **created if it does not exist** (private, default branch `main`), when you may create trees.
-2. The client compares the server's tip with the local branch. If the server tip is unknown locally or not an ancestor of your tip, the push is refused locally before anything is uploaded ("fetch and merge first").
-3. Missing objects (manifests, blobs, and for files over 8 MiB the chunk lists and changed chunks) are uploaded, then the push is sent with the old and new tip.
-4. On success `refs/remotes/<remote>/<branch>` is updated, your staged snapshot for that branch is cleared, any queued push of that branch is removed from the offline queue, and local tags whose targets the server knows are pushed too (a refused tag, for example an unsigned one under a `require_signed` tag protection, is logged and does not fail the push; use [`wt tag push`](/docs/cli/branches#wt-tag) to see the reason).
+2. The client compares the server's tip with the local branch. If the server tip is unknown locally or not an ancestor of your tip, the push is refused locally before anything is uploaded ("fetch and merge first"), unless `--force` is given and the server tip is the last remote tip you fetched.
+3. When you push the tree's default branch, the [config-as-code files](/docs/server/config-as-code) of the new tip (`.wt-tree/branches.toml`, `protections.toml`, `config.toml`, `access/`) are validated locally; errors stop the push before the server is contacted.
+4. Missing objects (manifests, blobs, and for files over 8 MiB the chunk lists and changed chunks) are uploaded, since v0.8 as one resumable pack with deltas against what the server already has (whole objects for servers without packs), then the push is sent with the old and new tip and a fresh operation id, so a retry after a dropped connection is answered with the first result.
+5. On success `refs/remotes/<remote>/<branch>` is updated, your staged snapshot for that branch is cleared, any queued push of that branch is removed from the offline queue, and local tags whose targets the server knows are pushed too (a refused tag, for example an unsigned one under a `require_signed` tag protection, is logged and does not fail the push; use [`wt tag push`](/docs/cli/branches#wt-tag) to see the reason).
+6. v0.8: `wt push` asks the server which teammates have [staged changes](/docs/cli/staged-snapshots#push-time-advisory) to the files you just pushed and prints a note for each (`note: alice has staged changes to src/auth.rs (on main, label oauth, 2 minutes ago)`). The advisory never fails a push; `--json` adds `staged_overlaps`.
 
 ```bash
 wt push
 wt push --branch feature/login
 wt --tree frontend push --remote company
 wt push --queue        # on a train: queue the push if the server cannot be reached
+wt push --force        # rewrite the server branch (lease: you must have fetched its tip)
 ```
 
 Pushing from a [sparse checkout or partial clone](/docs/cli/sparse-checkout) works normally: snapshots keep the head entries of paths outside the sparse set, and only objects the server reports missing (always local) are uploaded.
@@ -208,8 +221,11 @@ The server enforces history and policy. A rejected push changes nothing on the s
 
 | Rejection | Cause | What to do |
 |---|---|---|
-| Conflict (non-fast-forward) | The server tip moved since your last pull; your branch does not descend from it. | `wt pull`, resolve any conflicts, then `wt push` again. There is no force push. |
-| Branch protection | A [protection rule](/docs/server/branch-protection) forbids direct pushes by you (`no_direct_push`, `allowed_pushers`), or `require_linear` and the push contains merge snapshots. | Push to another branch and open a merge request with [`wt mr create`](/docs/cli/merge-requests#wt-mr). |
+| Conflict (non-fast-forward) | The server tip moved since your last pull; your branch does not descend from it. With `--force`: the server tip is not the tip you last fetched (the lease). | `wt pull`, resolve any conflicts, then `wt push` again. To replace the server history deliberately, `wt fetch`, review it, then [`wt push --force`](/docs/cli/force-push-and-undo#force-push). |
+| Branch protection | A [protection rule](/docs/server/branch-protection) forbids direct pushes by you (`no_direct_push`, `allowed_pushers`), or `require_linear` and the push contains merge snapshots, or a force push hits `no_force_push` (absolute), `require_linear` or required approvals. | Push to another branch and open a merge request with [`wt mr create`](/docs/cli/merge-requests#wt-mr). Owners may pass `--bypass-protection` (not for `no_force_push`). |
+| Force push denied | `--force` without `branch:force_push` (admin role and up). | Ask a tree admin. |
+| Secrets detected | The tree's [secret scanning](/docs/server/secret-scanning) mode is `block` and a new snapshot contains a possible secret. Reported as access denied with `path:line [rule] excerpt (fingerprint ...)`. | Remove the secret from every new snapshot (for example with `wt rebase` or `wt undo`) and push again; a tree admin can allowlist a false positive with `wt compliance allow FINGERPRINT --reason ...`. |
+| Invalid `.wt-tree` configuration | A push to the default branch carries invalid [config-as-code files](/docs/server/config-as-code#diagnostics), or changes `.wt-tree/access/` without `iam:admin`. Reported as access denied with up to 10 located diagnostics. | Fix the files (`wt trees config validate`), snapshot and push again. |
 | Review required | The branch requires approvals the push does not have. | Merge through an approved merge request. |
 | Access denied | You lack `tree:write` or `branch:push` on the branch, or a policy denies writing one of the changed paths ("writing PATH is denied by policy NAME"). | Ask a tenant admin; see [Access control](/docs/server/access-control). |
 | Signature required | A pushed snapshot carries a signature that does not verify against your registered keys, or the branch requires signed snapshots (`require_signed`). | Register your key with [`wt identity register`](/docs/cli/signing#wt-identity) and sign with `wt snapshot --sign`. Reported as access denied. |
@@ -225,7 +241,7 @@ wt push
 ```
 
 <Callout type="info">
-Server snapshots are immutable and every accepted push must descend from the current server tip. History on the server can only grow.
+Server snapshots are immutable. Every accepted push must descend from the current server tip, except an authorized [force push](/docs/cli/force-push-and-undo#force-push), which only moves the branch tip: the rewound snapshots stay stored and the server reflog (`GET {tree}/reflog`) records the old tip.
 </Callout>
 
 ## `wt fetch`
@@ -248,6 +264,8 @@ wt log origin/main -n 5
 wt diff main origin/main --stat
 wt fetch --deepen 50
 ```
+
+Since v0.8, `wt fetch`, `wt pull` and `wt clone` download each branch's missing objects as one [pack](/docs/protocol/packs) with deltas against the snapshot you already have (whole objects from servers without packs, for sparse clones, or with `WT_NO_PACK=1`).
 
 The daemon runs the same fetch automatically when the server reports branch changes; see [Background fetch](/docs/cli/daemon#background-fetch). Shallow history is explained in [Shallow sync](/docs/protocol/large-files#shallow-sync).
 
@@ -321,19 +339,26 @@ Upload the current working state of the selected tree as a **staged snapshot**: 
 | Flag | Description |
 |---|---|
 | `--remote <R>` | Remote to stage on. Default: `[sync] remote`, usually `origin`. |
-| `--discard` | Remove your staged snapshot of the current branch instead (same as `wt unstage`). |
+| `--label <L>` | v0.8: stage into a named slot (`a-z 0-9 _ . -`; up to 10 per branch) instead of the default one; other slots are kept. |
+| `--discard` | Remove your staged snapshot of the current branch instead (same as `wt unstage`); with `--label`, that slot. |
+
+| Subcommand | Description |
+|---|---|
+| `wt stage list [--branch B] [--mine] [--history]` | v0.8: the team's staged snapshots grouped by user, with labels; `--history` adds ended entries of the last 30 days. |
+| `wt stage show [LABEL] [--user U] [--branch B] [--files]` | v0.8: one staged snapshot (yours by default) with its changed files; `--files` lists every file of the staged working state. |
 
 ```bash
 wt stage
-wt status --team     # see everyone's staged work for this tree
+wt stage --label oauth   # a second, named slot on the same branch
+wt stage list            # everyone's staged work for this tree
 wt stage --discard
 ```
 
 **Notes**
 
-- The server keeps at most one staged snapshot per tree, account and branch; a newer stage replaces the older one, and a successful `wt push` of that branch clears it. Entries older than the server's staged retention (default 7 days) expire.
-- Requires `tree:write` on the server tree. Staged metadata lists paths, never file content.
-- The daemon stages automatically after each auto-snapshot when `sync.auto_stage = true` (default) and a remote and credential exist. See [`wt daemon`](/docs/cli/daemon#wt-daemon) and [Staged visibility](/guides/staged-visibility).
+- The server keeps up to 10 staged snapshots per tree, account and branch, one per label (the unlabeled default slot included); a newer stage of a slot replaces it. A successful `wt push` of that branch ends the default slot, and a labeled slot whose work was pushed. Entries older than the server's staged TTL (default 30 days since v0.8) expire. See [Staged snapshots](/docs/cli/staged-snapshots).
+- Requires `tree:write` on the server tree. The working manifest and the changed file contents are uploaded, so teammates who can read the tree can browse them and check them out with [`wt checkout --staged`](/docs/cli/staged-snapshots#check-out-a-teammates-work).
+- The daemon stages the default slot automatically after each auto-snapshot when `sync.auto_stage = true` (default) and a remote and credential exist. See [`wt daemon`](/docs/cli/daemon#wt-daemon) and [Staged visibility](/guides/staged-visibility).
 
 ## `wt unstage`
 
@@ -341,17 +366,20 @@ wt stage --discard
 Usage: wt unstage [OPTIONS]
 ```
 
-Remove your staged snapshot from the server (the `Unstage` RPC). Teammates stop seeing it in `wt status --team`.
+Remove your staged snapshot from the server. Teammates stop seeing it in `wt stage list` and `wt status --team`; the removal is kept in the staged history as `cleared`.
 
 | Flag | Description |
 |---|---|
 | `--remote <R>` | Remote to unstage from. Default: `[sync] remote`, usually `origin`. |
 | `--branch <B>` | Branch whose staged snapshot to remove. Default: the current branch. |
-| `--all` | Remove your staged snapshots of every branch of the tree. |
+| `--label <L>` | v0.8: remove this labeled slot instead of the default one. |
+| `--all-labels` | v0.8: remove every slot of the branch (default slot included). |
+| `--all` | Remove your staged snapshots of every branch (and label) of the tree. |
 
 ```bash
 wt unstage
-wt unstage --branch feature/login
+wt unstage --label oauth
+wt unstage --branch feature/login --all-labels
 wt unstage --all
 ```
 

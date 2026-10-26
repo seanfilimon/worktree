@@ -15,7 +15,7 @@
 .EXAMPLE
   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.ps1))) -WithServer
 .EXAMPLE
-  .\scripts\install.ps1 -Version v0.7.0 -WithServer -AddToPath
+  .\scripts\install.ps1 -Version v0.8.0 -WithServer -AddToPath
 .EXAMPLE
   .\scripts\install.ps1 -BaseUrl .\dist -InstallDir C:\tools\worktree
 .EXAMPLE

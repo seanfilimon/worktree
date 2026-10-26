@@ -1,11 +1,11 @@
 ---
 title: Server-side Merges
-description: How the server merges a merge request - the fast-forward, merge and squash methods, the default choice, protection restrictions, conflicts and the mergeability endpoint.
+description: How the server merges a merge request - the fast-forward, merge, squash and rebase methods, the default choice, protection restrictions, conflicts, deleting the source branch and the mergeability endpoint.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Since v0.6 the server can merge a merge request whose target has moved on: besides fast-forwarding, it runs a three-way merge and writes a merge or squash snapshot itself. Reviews, CI and the other readiness gates are unchanged and are checked first (see [Branch protection](/docs/server/branch-protection#merge-requests)). The [Merging specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Merging.md) is normative.
+Since v0.6 the server can merge a merge request whose target has moved on: besides fast-forwarding, it runs a three-way merge and writes a merge or squash snapshot itself. Since v0.8 it also replays the source onto the target (`rebase`), resolves conflicts on the server and deletes the source branch on request; see [Conflict resolution and rebase merges](/docs/server/conflict-resolution). Reviews, CI and the other readiness gates are unchanged and are checked first (see [Branch protection](/docs/server/branch-protection#merge-requests)). The [Merging specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Merging.md) is normative.
 
 ## Merge methods
 
@@ -14,16 +14,20 @@ Since v0.6 the server can merge a merge request whose target has moved on: besid
 | `fast-forward` | Moves to the source tip | None |
 | `merge` | Moves to a new merge snapshot | Parents `[target tip, source tip]`, files = three-way merge |
 | `squash` | Moves to a new snapshot | Parent `[target tip]`, files = three-way merge (all changes in one snapshot) |
+| `rebase` (v0.8) | Moves to the last replayed snapshot | One new snapshot per source snapshot the target lacks, replayed in order onto the target tip ([details](/docs/server/conflict-resolution#rebase-merges)) |
 
 ```bash
 wt mr merge 4                                  # default method
 wt mr merge 4 --method squash -m "Add refund endpoint (#4)"
 wt mr merge 4 --method merge
+wt mr merge 4 --rebase --delete-branch         # v0.8: linear history, then delete the source branch
 wt mr merge-group <ID> --method squash         # every member of a linked group
 ```
 
-- **Default.** Without `--method` (REST: an empty body or `{}`) the server uses the first of `fast-forward`, `merge`, `squash` that is allowed and possible: a fast-forward when the target is an ancestor of the source, otherwise a merge snapshot.
-- **Messages.** `-m` sets the message of a merge or squash snapshot (at most 64 KiB). The defaults are `Merge branch '<source>' into <target> (!N)` for `merge` and the merge request title for `squash`. Fast-forwards ignore it.
+- **Default.** Without `--method` (REST: an empty body or `{}`) the server uses the first of `fast-forward`, `merge`, `squash`, `rebase` that is allowed and possible: a fast-forward when the target is an ancestor of the source, otherwise a merge snapshot.
+- **Messages.** `-m` sets the message of a merge or squash snapshot (at most 64 KiB). The defaults are `Merge branch '<source>' into <target> (!N)` for `merge` and the merge request title for `squash`. Fast-forwards and rebases ignore it.
+- **Deleting the source branch** (v0.8): `--delete-branch` (REST `delete_source_branch: true`) deletes the source branch after a successful merge; it is checked before merging, so a refusal leaves everything unchanged. See [Deleting the source branch](/docs/server/conflict-resolution#deleting-the-source-branch).
+- **Bypass** (v0.8): owners with `branch:bypass_protection` can merge with `{"bypass": true}`, which lifts approvals, change requests, owner approvals, CI and TODOs (never drafts, linked groups, method restrictions or conflicts); always audited.
 - **Server-made snapshots** get a new id, `branch_name` = the target, `author` = the merger's username and `pushed_by` = the merger's account. They are not signed. Clients fetch them like any pushed snapshot.
 - `merge` on a fast-forwardable request still writes a merge snapshot (a "no-ff" merge); `squash` writes one snapshot with the source files on top of the target.
 - A target that already contains the source is **up to date**: every allowed method succeeds without moving the branch, and the merge request is marked merged.
@@ -38,11 +42,11 @@ Branch protection decides which methods are **allowed** into a branch:
 | Rule | Effect |
 |---|---|
 | `merge_methods` (`wt protect set --merge-methods`) | Only these methods; empty = all. Several matching rules intersect, and an empty intersection allows nothing. |
-| `require_linear` | Forbids `merge`. A fast-forward that would bring merge snapshots into the branch is refused too. |
-| `require_signed` | Forbids `merge` and `squash`, because the server cannot sign the snapshots it writes. |
+| `require_linear` | Forbids `merge` (squash, rebase and fast-forward keep history linear). A fast-forward that would bring merge snapshots into the branch is refused too. |
+| `require_signed` | Forbids `merge`, `squash` and `rebase`, because the server cannot sign the snapshots it writes. |
 
 ```bash
-wt protect set main --no-direct-push --approvals 1 --merge-methods squash,fast-forward
+wt protect set main --no-direct-push --approvals 1 --merge-methods squash,rebase,fast-forward
 wt protect set "release/*" --no-direct-push --require-linear
 ```
 
@@ -87,7 +91,7 @@ $ wt mr mergeability 5
 | `allowed` | Methods protection admits. |
 | `reasons` | Why a method is not possible. |
 
-The three-way outcome is cached per (source tip, target tip), so repeated calls are cheap. `GET .../checks` also reports `methods` and `conflicts`, and counts a diverged request without conflicts as mergeable when `merge` or `squash` is allowed.
+The three-way outcome and the rebase outcome are cached per (source tip, target tip), so repeated calls are cheap. `GET .../checks` also reports `methods` and `conflicts`, and counts a diverged request without conflicts as mergeable when `merge`, `squash` or `rebase` is allowed. `rebase` is possible when no incoming snapshot is a merge snapshot, there are at most 1000 of them, and every one replays without conflicts.
 
 ## Conflicts
 
@@ -106,7 +110,15 @@ The server never writes conflict markers. A merge with conflicts is refused with
 }
 ```
 
-Resolve locally, push the source and merge again (pushing makes existing approvals stale):
+Since v0.8 you can resolve on the server, in the browser (**Resolve conflicts** on the merge request page) or from the CLI; the server writes a merge-resolution snapshot on the source branch. See [Conflict resolution](/docs/server/conflict-resolution):
+
+```bash
+wt mr conflicts 4 --write            # write the diff3 previews into the local tree, edit them
+wt mr resolve 4                      # resolution snapshot on the source branch
+wt mr merge 4
+```
+
+Or resolve locally, push the source and merge again (either way, the new source tip makes existing approvals stale):
 
 ```bash
 wt pull --branch main
@@ -121,8 +133,10 @@ wt mr merge 4
 
 | Endpoint | Body | Notes |
 |---|---|---|
-| `POST {tree}/merge-requests/{n}/merge` | `{"method"?, "message"?}` (optional) | `mr:merge`. `200` with the merged merge request: `merge_method`, and `merged_snapshot` (the new snapshot, or the source tip for a fast-forward). |
+| `POST {tree}/merge-requests/{n}/merge` | `{"method"?, "message"?, "delete_source_branch"?, "bypass"?}` (optional) | `mr:merge`. `200` with the merged merge request: `merge_method`, and `merged_snapshot` (the new snapshot for merge or squash, the last replayed snapshot for rebase, the source tip for a fast-forward). |
 | `GET {tree}/merge-requests/{n}/mergeability` | | `tree:read`. See above. |
+| `GET {tree}/merge-requests/{n}/conflicts` | | v0.8, `tree:read`: the [conflict report](/docs/server/conflict-resolution#the-conflict-report). |
+| `POST {tree}/merge-requests/{n}/resolve` | `{"files", "message"?, "source_tip", "target_tip", "allow_markers"?}` | v0.8, `tree:write`: the [resolution snapshot](/docs/server/conflict-resolution#the-resolution-snapshot). |
 | `POST /api/v1/tenants/{t}/linked-groups/{id}/merge` | `{"method"?}` (optional) | Every member merges with that method (or its own default), all or nothing. |
 
 ```bash
@@ -133,18 +147,20 @@ curl -s -X POST $WT/api/v1/trees/acme/payments/merge-requests/4/merge \
 
 | Status and code | When |
 |---|---|
-| `400 bad_request` | Unknown `method`, invalid `message`, unknown body fields. |
+| `400 bad_request` | Unknown `method`, invalid `message`, unknown body fields; `delete_source_branch` of a fork source. |
 | `403 review_required` | Missing approvals. |
+| `403 branch_protection` | `delete_source_branch` of the default branch or a `no_delete` branch. |
+| `403 forbidden` | `bypass` without `branch:bypass_protection`. |
 | `409 merge_blocked` | Change requests, missing [owner approvals](/docs/server/review-workflow#owner-approval), CI, blocking TODOs; a fast-forward that would bring merge snapshots under `require_linear`. |
 | `409 draft` | The merge request is a [draft](/docs/server/review-workflow#draft-merge-requests). |
 | `409 linked_group` | A member of an open linked group merged alone. |
 | `409 merge_method_not_allowed` | Protection refuses the method. |
 | `409 quota_exceeded` | The new objects of a merge or squash snapshot would exceed the tenant's storage quota. |
-| `409 merge_conflict` | The three-way merge has conflicts (`conflicts` lists them; linked-group entries carry `tree`). |
-| `409 conflict` | Fast-forward requested on diverged branches; the target moved during the merge; merge or squash into an empty target. |
+| `409 merge_conflict` | The three-way merge (or a rebased snapshot) has conflicts (`conflicts` lists them; linked-group entries carry `tree`). |
+| `409 conflict` | Fast-forward requested on diverged branches; the target moved during the merge; merge or squash into an empty target; rebase of a source with merge snapshots; `delete_source_branch` of a branch another open merge request uses. |
 
-A successful merge publishes `mr.merged` and, when the target moved, `branch.pushed` with `merge_request` and `merge_method` in its payload, so watchers, [code search](/docs/server/code-search) and [webhooks](/docs/server/webhooks) see server-made snapshots. The audit record `mr.merge` carries `old_tip`, `new_tip`, `method` and `approvals`.
+A successful merge publishes `mr.merged` and, when the target moved, `branch.pushed` with `merge_request` and `merge_method` in its payload, so watchers, [code search](/docs/server/code-search) and [webhooks](/docs/server/webhooks) see server-made snapshots; `branch.deleted` follows for `delete_source_branch`. The audit record `mr.merge` carries `old_tip`, `new_tip`, `method` and `approvals` (plus `source_branch_deleted`, and `bypass` with the lifted rules).
 
 <Callout type="info" title="Roadmap">
-  Rebase merges, resolving conflicts in the browser, signing server-made snapshots (so `require_signed` can allow merge and squash), deleting the source branch after a merge and content merges of chunked files are not built. See the [roadmap](/roadmap). Since v0.7, merge and squash snapshots are checked against tenant storage quotas (fast-forwards add no objects).
+  Signing server-made snapshots (so `require_signed` can allow merge, squash and rebase), content merges of chunked files and rebasing sources that contain merge snapshots are not built. See the [roadmap](/roadmap). Since v0.7, merge and squash snapshots are checked against tenant storage quotas (fast-forwards add no objects). Rebase merges, conflict resolution on the server and deleting the source branch are built since v0.8.
 </Callout>

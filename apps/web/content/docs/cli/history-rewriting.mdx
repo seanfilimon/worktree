@@ -13,8 +13,8 @@ Three local tools reshape work before it is shared. They act on the selected tre
 | `wt rebase ONTO` | Replays the branch's own snapshots on top of `ONTO` and moves the branch | New snapshots (new ids) |
 | `wt stash` | Sets uncommitted changes aside and restores them later | Stash entries, no snapshots |
 
-<Callout type="info" title="Server history stays append-only">
-  The server never accepts a push that drops snapshots it already has, and there is no force push. Rebase therefore refuses to rewrite snapshots that are already pushed. The originals of a cherry-pick or rebase are not deleted: they stay reachable through the [reflog](/guides/reflog-and-recovery) until it expires.
+<Callout type="info" title="Pushed history">
+  An ordinary push must descend from the server tip, so rebase refuses to rewrite snapshots that are already pushed unless you pass `--force`; the rewritten branch then needs [`wt push --force`](/docs/cli/force-push-and-undo#force-push) (v0.8, `branch:force_push`, never past `no_force_push`). The originals of a cherry-pick or rebase are not deleted: they stay reachable through the [reflog](/guides/reflog-and-recovery) until it expires, and since v0.8 [`wt undo`](/docs/cli/force-push-and-undo#undo-and-redo) restores the pre-rebase branch in one step.
 </Callout>
 
 ## `wt cherry-pick`
@@ -66,7 +66,7 @@ wt push --branch feature/search
 3. Snapshots whose changes `ONTO` already has are dropped. Merge snapshots are replayed as their change against the first parent, with a single parent.
 4. The branch moves to the result. One reflog entry `rebase` records the old and new tips, so `BRANCH@{1}` is the pre-rebase tip.
 
-**Pushed history is protected.** If a remote-tracking ref of the branch (`origin/BRANCH`) already contains a snapshot that would be rewritten, the rebase is refused with exit code `1`: the rewritten branch would need a force push, which the server refuses. `--force` rewrites anyway, for example when the pushed branch will be abandoned. In a shallow clone, a replay that needs snapshots beyond the boundary asks for `wt fetch --deepen N`.
+**Pushed history is protected.** If a remote-tracking ref of the branch (`origin/BRANCH`) already contains a snapshot that would be rewritten, the rebase is refused with exit code `1`: the rewritten branch would need a force push. `--force` rewrites anyway, for example when the pushed branch will be abandoned or when an admin will force-push it. In a shallow clone, a replay that needs snapshots beyond the boundary asks for `wt fetch --deepen N`.
 
 ## Conflicts
 
@@ -126,6 +126,7 @@ wt stash pop
 - A conflicting apply writes markers into text files (`ours (working tree)` / `theirs (stash@{N}: message)`), keeps the working copy for other conflicts and exits `3`. No merge state is recorded: edit the files, then snapshot.
 - Entries are per tree, in `.wt/trees/<tree>/stash.jsonl`. Their stored files are kept by [`wt gc`](/docs/cli/maintenance#wt-gc) until the entry is dropped. Stashes are local; they are never pushed.
 - Stashing is refused during a merge, cherry-pick or rebase.
+- Since v0.8, `wt undo` reverses a stash push, pop, drop or clear: undoing a push gives the changes back to the working tree, undoing a drop restores the entry. See [Undo and redo](/docs/cli/force-push-and-undo#undo-and-redo).
 
 ### Auto-stash on branch switch
 

@@ -1,0 +1,109 @@
+---
+title: Device Sign-in and Refresh Tokens
+description: wt login --device signs in through the browser with the OAuth 2.0 device flow; since v0.8 every login returns a one-hour access token and a rotating, single-use refresh token that the CLI renews transparently.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Since v0.8 interactive logins produce a **token pair** instead of one 30-day session token, and machines without a browser (or where typing a password is undesirable) can sign in with the **device flow** (OAuth 2.0 device authorization grant, RFC 8628). The [Device authorization specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/security/DeviceAuth.md) is normative.
+
+## wt login --device
+
+```bash
+wt login https://wt.example.com --device
+wt login https://wt.example.com --device --scope tree:read --scope ci:report   # a restricted session
+wt login https://wt.example.com --device --no-browser                          # SSH session: print the URL only
+```
+
+```text
+To sign in, open https://wt.example.com/admin/device and enter the code BCDF-GHJK
+(or open https://wt.example.com/admin/device?code=BCDF-GHJK to have it filled in)
+Opened your browser.
+Waiting for approval (the code expires in 10 minutes)...
+Logged in to https://wt.example.com as ada (device login)
+```
+
+1. `wt` asks the server for a device code (`POST /api/v1/auth/device`) and prints the **user code** (`XXXX-XXXX`) and the verification URL on stderr.
+2. It opens the browser (`$BROWSER`, else the platform opener) when stderr is a terminal and neither `--no-browser` nor `WT_NO_BROWSER` is set.
+3. You open the admin panel's **Device sign-in** page (`/admin/device`), sign in if needed (with SSO or two-factor authentication, as usual), review the request and approve or deny it.
+4. `wt` polls `POST /api/v1/auth/device/token` every 5 seconds and saves the token pair in `$WT_HOME/credentials.toml` once you approve.
+
+| Flag | Description |
+|---|---|
+| `--device` | Use the device flow instead of a password |
+| `--scope <ACTION>` | Restrict the new session to these actions (repeatable; action patterns like scoped API tokens; default full account access) |
+| `--no-browser` | Only print the URL; also `WT_NO_BROWSER=1` |
+
+The codes expire after **10 minutes**. The CLI identifies itself as `wt CLI on <hostname>`; the approving page shows that name, the device's address and user agent, the requested scopes and the expiry.
+
+### Approving a device
+
+The page `/admin/device` (the `verification_uri`; with `?code=` the code is prefilled but you still confirm it) shows the request and offers **Approve** and **Deny**.
+
+- Only user accounts signed in with an unscoped session or token may approve; scoped tokens and service accounts cannot.
+- **MFA is respected.** When your account has two-factor authentication and your browser session was not created with a second factor, approving needs a current TOTP code or an unused recovery code. The device session is marked MFA-verified, so `require_mfa` policies treat it like an MFA login.
+- The device receives your identity with the scopes it requested; the approver cannot widen them.
+
+<Callout type="warn" title="Phishing">
+  Approve only sign-ins you started yourself. Someone who sends you a code and a link is asking for access to your account. The page shows the device's client name, address and user agent so you can recognise your own request.
+</Callout>
+
+## Token pairs and refresh
+
+| Token | Format | Lifetime |
+|---|---|---|
+| Access token | `wt_...`, a session of kind `session` | **1 hour** |
+| Refresh token | `wtrt_<family>.<secret>` | **30 days** from its issue, **single use** |
+
+Password, MFA, registration and device logins all return a pair:
+
+```json
+{"token": "wt_...", "account": {...}, "token_type": "Bearer",
+ "expires_in": 3600, "refresh_token": "wtrt_...", "refresh_expires_in": 2592000}
+```
+
+`POST /api/v1/auth/refresh {"refresh_token": "wtrt_..."}` (no `Authorization` header) returns a new pair; the previous access session is replaced, so a login stays one row in `wt session list`. Every refresh token belongs to a **family** (one per login):
+
+- Presenting a token the family already rotated is **reuse**, a sign that a copy is in someone else's hands: the whole family is revoked (`401 invalid_grant`) and the event is audited as `auth.refresh_reuse`.
+- Exception for races between two processes sharing a credential file: the immediately previous token presented within 10 seconds of its rotation is rejected without revoking anything, and the client re-reads the rotated token.
+- `wt session revoke ID`, `POST /auth/logout` and `DELETE /auth/sessions/{id}` end the session's family, `wt session revoke-others` every other family, and a password reset all of them.
+
+SSO logins and personal API tokens are unchanged: no refresh token, their own lifetimes (SSO sessions 30 days).
+
+### What the CLI does
+
+`credentials.toml` stores `token`, `refresh_token` and `expires_at` per server (mode `0600` on Unix, rewritten atomically). `wt`, the SDK and the daemon renew transparently:
+
+- before connecting, when the access token expires within two minutes;
+- after an `Unauthenticated` / `401` answer (one reconnect or one retried request);
+- when another process already renewed the saved token, that token is used without a request.
+
+`WT_TOKEN` credentials and saved API tokens are never refreshed. A login that is not used for 30 days expires; log in again. `wt session list` shows how each session was created in its `via` column (`sign-in` or `device (<client>)`).
+
+## Limits
+
+| Limit | Value | Answer |
+|---|---|---|
+| Device authorizations started per client address | 30 per 10 minutes | `429 rate_limited` |
+| Pending device authorizations (server-wide) | 10,000 | `429 rate_limited` |
+| Unknown or malformed user codes per account | 10 per 10 minutes | `429 rate_limited` |
+| Polling interval | 5 s, +5 s per `slow_down` | `400 slow_down` |
+| Device and user code lifetime | 10 minutes | `expired_token` |
+| Second-factor failures | the MFA limit (10 per 15 minutes) | `403` |
+
+## REST API
+
+| Method and path | Auth | Answer |
+|---|---|---|
+| `POST /api/v1/auth/device` | public | `{device_code, user_code, verification_uri, verification_uri_complete, expires_in: 600, interval: 5}`; optional body `client_name`, `client_id`, `scopes` |
+| `POST /api/v1/auth/device/token` | public (device code) | A token pair, or `400` with `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, `invalid_grant` or `unsupported_grant_type` |
+| `GET /api/v1/auth/device/{user_code}` | signed-in user | The request: client, scopes, status, device address and user agent, expiry, `mfa_required` |
+| `POST /api/v1/auth/device/{user_code}/approve` | signed-in user | Body `{"code"?}` (TOTP or recovery code when `mfa_required`); audited `auth.device_approve` |
+| `POST /api/v1/auth/device/{user_code}/deny` | signed-in user | Audited `auth.device_deny` |
+| `POST /api/v1/auth/refresh` | public (refresh token) | A token pair or `401 invalid_grant` |
+
+`verification_uri` uses `--public-url` when it is configured, else the scheme and host of the request. User codes are 8 characters from 20 consonants (no vowels, so no words), accepted in any case with or without the hyphen. Only SHA-256 hashes of device codes and refresh tokens are stored. Answers carrying secrets send `Cache-Control: no-store`. A successful device login is audited as `auth.login` with `method=device`.
+
+<Callout type="info" title="Not built yet">
+  Refresh tokens for SSO logins, self-contained (JWT) access tokens, revoking the server-side session on `wt logout`, registered device-flow clients and refreshing a long-running gRPC stream mid-transfer are on the [roadmap](/roadmap).
+</Callout>

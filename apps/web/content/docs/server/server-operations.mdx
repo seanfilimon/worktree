@@ -1,0 +1,99 @@
+---
+title: Server Operations
+description: v0.8 operations features - backups straight to S3 with age and count retention, a durable email outbox with retries and dead letters, the retention pass for policy versions, audit events and webhook deliveries, and the optional Helm resources.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+v0.8 adds three operational features to the server: **backups to object storage**, a **durable email outbox**, and a **retention pass** that keeps operational history bounded. Every setting is a flag with a `WT_*` environment variable; ages accept Go durations (`720h`) or whole days (`30d`). The [Deployment specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Deployment.md) (§11) and the operator guide [`docs/deploy.md`](https://github.com/seanfilimon/worktree/blob/main/docs/deploy.md) are the full references. Server administrators see all three on the admin panel's **Backups** page.
+
+## Backups to object storage
+
+```bash
+worktree-server --backup-target s3 --backup-interval 24h --backup-keep 14 --backup-max-age 30d \
+  --s3-endpoint s3.amazonaws.com --s3-bucket wt-backups --s3-region eu-west-1   # keys via WT_S3_*
+```
+
+| Flag | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `--backup-target` | `WT_BACKUP_TARGET` | `disk` | `disk` keeps archives in `<data>/backups`; `s3` in the `--s3-*` bucket, also with `--object-store disk` |
+| `--backup-s3-prefix` | `WT_BACKUP_S3_PREFIX` | `<s3-prefix>backups/` | Key prefix of the archives; must not lie inside the object store's `objects/` prefix |
+| `--backup-interval` | `WT_BACKUP_INTERVAL` | `0` (off) | Period of scheduled backups |
+| `--backup-keep` | `WT_BACKUP_KEEP` | `7` | Scheduled backups kept (`0` keeps all) |
+| `--backup-max-age` | `WT_BACKUP_MAX_AGE` | `0` (no limit) | Scheduled backups older than this are pruned |
+
+The S3 target reuses the object store's connection settings (endpoint, bucket, region, credentials, `--s3-insecure`); `backup-target s3` requires `--s3-endpoint` and `--s3-bucket`. Archives are staged locally as `<data>/backups/<id>.wtbak.partial` and uploaded when complete. `wt admin backup create|list|download|delete` and the admin panel work on either target; scheduled backups beyond `--backup-keep` or older than `--backup-max-age` are deleted after each scheduled run and by the hourly retention pass, while backups made by people are never pruned.
+
+Restore stays offline and can read a backup id straight from the target:
+
+```bash
+worktree-server restore --list --data /var/lib/worktree --backup-target s3 --s3-bucket wt-backups ...
+worktree-server restore --data /var/lib/worktree --backup-target s3 --s3-bucket wt-backups ... bk-20261026T030000Z-a1b2c3
+```
+
+With the disk target, `worktree-server restore --data DIR ID` reads `DIR/backups/<id>.wtbak` (a data directory that only contains `backups/` counts as empty). See [S3 storage and backups](/docs/server/storage-backends#backups) for the archive format and the restore procedure.
+
+On Kubernetes, the chart's optional `backup.cronJob` (`schedule`, default `0 3 * * *`) calls `POST /api/v1/admin/backups` with a server-admin token from `backup.cronJob.tokenSecret`; with `backup.target: s3` the archives land in the bucket. See [Deployment](/docs/server/deployment#kubernetes-helm).
+
+## Durable email outbox
+
+Every email the server sends (notifications, tenant and account verification codes) is first written to the `outbox` document collection and then delivered by a background worker, so queued email survives restarts and is part of backups.
+
+| Status | Meaning |
+|---|---|
+| `pending` | Waiting for (another) delivery attempt; carries `next_attempt_at`, `attempts`, `last_error` and `deadline_at` |
+| `sent` | Delivered to the SMTP server; deleted after 7 days |
+| `dead` | Still failing after `--email-dead-after` (`WT_EMAIL_DEAD_AFTER`, default `24h`); deleted after 30 days |
+
+- Retries after 30 s, 2 min, 10 min and 30 min, then every 30 min, until the deadline; there is no attempt limit. Dead-lettering logs a warning.
+- The worker wakes when an email is queued, when the earliest attempt is due and at least every 30 seconds; at startup it picks up every pending email. Delivery is at least once.
+- Without `--smtp-url` nothing is sent; the outbox records what an operator can retry once SMTP is configured.
+
+```bash
+wt admin outbox list                     # newest first, with the queue counts
+wt admin outbox list --status dead --limit 20
+wt admin outbox retry em-20261026T101500.000000000Z-1a2b3c4d
+wt admin outbox retry --all              # requeue every dead letter
+wt admin outbox delete em-... --yes      # never send it
+```
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/v1/admin/outbox?status=pending\|sent\|dead&limit=N` | `{"enabled", "dead_after", "dead_after_seconds", "counts": {"pending", "sent", "dead"}, "emails": [...]}`, newest first; bodies are not returned; `limit` default 100, at most 1000 |
+| `POST /api/v1/admin/outbox/{id}/retry` | A pending or dead email becomes pending with an immediate attempt and a fresh deadline; `409 already_sent` for sent ones |
+| `POST /api/v1/admin/outbox/retry` | Requeue every dead letter: `{"retried": n}` |
+| `DELETE /api/v1/admin/outbox/{id}` | Remove an email (`204`) |
+
+Server administrators only; retries and deletions are audited as `outbox.retry` / `outbox.delete`. The admin panel's Backups page has an **Email outbox** card (counts, status filter, retry, retry all dead, delete).
+
+<Callout type="info" title="The client offline queue">
+  `wt status` also shows pushes queued in the **local** offline queue of v0.7 (`2 pushes queued offline (oldest 3 hours ago): main -> origin, feature -> origin; run wt sync flush to deliver them`). That queue lives in the worktree, not on the server; see [Sync and offline queue](/docs/cli/sync#offline-queue).
+</Callout>
+
+## Retention
+
+A background pass runs at startup and every hour and prunes old operational data:
+
+| Data | Flag (env) | Default | Rule |
+|---|---|---|---|
+| Policy versions | `--policy-version-retention` (`WT_POLICY_VERSION_RETENTION`) | keep all | `AGE`, `COUNT` or `AGE,COUNT` per policy, for example `90d,100`; the latest version of every policy is always kept |
+| Audit events | `--audit-retention` (`WT_AUDIT_RETENTION`) | keep all | Older than the age (also applied by garbage collection) |
+| Webhook deliveries | `--webhook-delivery-retention` / `--webhook-delivery-keep` (`WT_WEBHOOK_DELIVERY_RETENTION` / `WT_WEBHOOK_DELIVERY_KEEP`) | `720h` / `200` | Older than the age or beyond the newest N per webhook |
+| Scheduled backups | `--backup-max-age` / `--backup-keep` | none / `7` | Older than the age or beyond the newest N; manual backups are kept |
+
+```bash
+wt admin retention          # the settings and the last pass
+wt admin retention run      # prune now and print what was removed
+```
+
+`GET /api/v1/admin/retention` returns `{interval, config: {policy_versions, audit, webhook_deliveries, backups}, running, last_run_at, last_error, last_report}`, where the report counts `policy_versions_pruned`, `audit_pruned`, `webhook_deliveries_pruned`, `backups_pruned` and `took_ms`; `POST /api/v1/admin/retention/run` runs a pass and returns its report. A pass that deleted anything is audited as `retention.run` (actor `system`, counts in the details).
+
+Other retention that is not part of this pass: staged snapshots (`--staged-ttl`, default 30 days, history 30 days), garbage collection of unreachable objects (`--gc-grace`), the server reflog (90 days), push idempotency keys (24 hours), interrupted pack uploads (24 hours) and tenant deletions (`--tenant-deletion-window`).
+
+## Helm and packaging
+
+The Helm chart maps the settings above to values (`backup.target`, `backup.s3Prefix`, `backup.maxAge`, `retention.policyVersions`, `retention.webhookDeliveries`, `retention.webhookDeliveryKeep`, `smtp.deadAfter`) and adds optional resources, all off by default: a Prometheus Operator `ServiceMonitor` (`metrics.serviceMonitor.enabled`), a `NetworkPolicy` (`networkPolicy.enabled`), a `PodDisruptionBudget` (`podDisruptionBudget.enabled`) and the backup `CronJob`. `scripts/release.sh` builds static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` archives when a musl toolchain is installed. See [Deployment](/docs/server/deployment).
+
+<Callout type="info" title="Not built yet">
+  Incremental backups, archive encryption and online archive verification are on the [roadmap](/roadmap).
+</Callout>

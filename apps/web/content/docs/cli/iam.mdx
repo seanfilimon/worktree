@@ -1,6 +1,6 @@
 ---
 title: Access and Identity
-description: Manage declarative access files, teams, custom roles, policies, tree grants, service accounts, tokens, sessions, two-factor authentication, invitations, the access simulator and single sign-on from the wt CLI.
+description: Manage declarative access files, teams, custom roles, policies (with ABAC attribute conditions), tree grants, service accounts, tokens, sessions, two-factor authentication, invitations, the access simulator and single sign-on from the wt CLI.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -15,12 +15,23 @@ For every request the server evaluates principal, action and resource: disabled 
 
 | Action | viewer | developer | maintainer | admin | owner |
 |---|:-:|:-:|:-:|:-:|:-:|
-| `tenant:read`, `tree:read` | yes | yes | yes | yes | yes |
+| `tenant:read`, `tree:read`, `tree:fork` | yes | yes | yes | yes | yes |
 | `tree:write`, `branch:create`, `branch:push`, `mr:create`, `release:create`, `ci:report` | | yes | yes | yes | yes |
 | `branch:delete`, `mr:approve`, `mr:merge`, `tree:create`, `iam:read`, `release:delete` | | | yes | yes | yes |
-| `tree:admin`, `tenant:admin`, `iam:admin` | | | | yes | yes |
+| `tree:admin`, `tenant:admin`, `iam:admin`, `branch:force_push` | | | | yes | yes |
+| `branch:bypass_protection` | | | | | yes |
 
 Only owners (and server admins) can assign the `owner` role, and a tenant always keeps at least one owner. `server:admin` is never granted by a role. `wt iam actions` lists the full catalog.
+
+The v0.8 actions:
+
+| Action | Minimum role | Allows |
+|---|---|---|
+| `tree:fork` | viewer (tree-scoped) | [Forking](/docs/server/forks) the tree, together with `tree:create` in the destination tenant; opening merge requests from a fork (with `tree:write` on the fork). Visibility does not grant it. |
+| `branch:force_push` | admin | [`wt push --force`](/docs/cli/force-push-and-undo#force-push); never past a `no_force_push` rule. |
+| `branch:bypass_protection` | owner | Pushing (`wt push --bypass-protection`) or merging (`"bypass": true`) past branch protection, and pushing past secret scanning in `block` mode. Never implicit; always audited. |
+
+Deny them with policies like any other action, for example `{"effect": "deny", "actions": ["branch:force_push"], "resources": ["wt:branch/acme/*/main"], "principals": ["*"]}`.
 
 ### Syntax used by policies
 
@@ -28,7 +39,7 @@ Only owners (and server admins) can assign the `owner` role, and a tenant always
 |---|---|
 | Principals | `user:<name>`, `team:<slug>`, `role:<role>`, `sa:<name>`, `sa:<tenant>/<name>`, `tenant:<slug>`, `authenticated`, `anonymous`, `*` (names may contain `*`) |
 | Resources | `*`, `wt:tenant/<t>`, `wt:tree/<t>/<tree>`, `wt:branch/<t>/<tree>/<branch>`, `wt:path/<t>/<tree>/<path>`; `*` within a segment, `**` across segments |
-| Conditions | `ip_ranges`, `require_mfa`, `not_before`, `not_after`, `time_window` |
+| Conditions | `ip_ranges`, `require_mfa`, `not_before`, `not_after`, `time_window`, and since v0.8 `attributes` (`[{"key": "principal.<k>" \| "tree.<k>" \| "tenant.<k>", "op": ..., "values": [...]}]`; operators `equals`, `not_equals`, `in`, `not_in`, `starts_with`, `exists`, `not_exists`). See [ABAC](/docs/server/abac). |
 
 ## `wt access`
 
@@ -101,7 +112,7 @@ wt policy delete [--yes] <TENANT> <ID>
 wt policy validate --file <FILE> <TENANT>
 wt policy enable <TENANT> <ID>
 wt policy disable <TENANT> <ID>
-wt policy simulate [--only] --file <FILE> --principal <PRINCIPAL> --action <ACTION> [--tree <TREE>] [--branch <BRANCH>] [--path <PATH>] [--ip <IP>] [--mfa] <TENANT>
+wt policy simulate [--only] --file <FILE> --principal <PRINCIPAL> --action <ACTION> [--tree <TREE>] [--branch <BRANCH>] [--path <PATH>] [--ip <IP>] [--mfa] [--attr <KEY[=VALUE]>]... <TENANT>
 wt policy history [--tenant <SLUG>] <ID>
 wt policy show-version [--tenant <SLUG>] <ID> <VERSION>
 wt policy diff [--from <V>] [--to <V>] [--tenant <SLUG>] <ID>
@@ -127,7 +138,15 @@ Policy files are JSON (`-` reads stdin):
 }
 ```
 
-`simulate` is a dry run of a policy change: it evaluates the request with and without the file's policies (which replace tenant policies of the same name, or are added) and saves nothing; `--only` evaluates the file's policies alone. Policies created by `wt access apply` are read-only here (`409 managed_by_config`).
+Since v0.8 statements may carry [ABAC attribute conditions](/docs/server/abac#attribute-conditions); all of them must hold:
+
+```json
+"conditions": {"attributes": [{"key": "principal.department", "op": "in", "values": ["eng", "ops"]}]}
+```
+
+`create` and `update` check attribute conditions locally before sending (keys `principal.<k>`, `tree.<k>` or `tenant.<k>`; `equals` and `not_equals` take one value, `in`, `not_in` and `starts_with` one or more, `exists` and `not_exists` none). `show` and the simulators render them as `principal.department in ["eng", "ops"]`.
+
+`simulate` is a dry run of a policy change: it evaluates the request with and without the file's policies (which replace tenant policies of the same name, or are added) and saves nothing; `--only` evaluates the file's policies alone; `--attr` overrides an attribute (`principal.clearance=secret`, or a bare key for "unset"). Policies created by `wt access apply` are read-only here (`409 managed_by_config`).
 
 ```bash
 wt policy validate acme --file protect-main.json
@@ -198,7 +217,7 @@ wt session revoke [--yes] <ID>
 wt session revoke-others [--yes]
 ```
 
-Lists your sign-in sessions with last use, IP, user agent and whether a second factor was used; the session this CLI uses is marked current.
+Lists your sign-in sessions with last use, IP, user agent and whether a second factor was used; the session this CLI uses is marked current. Since v0.8 a `via` column shows how each was created: `sign-in` or `device (<client>)` for [device sign-ins](/docs/cli/device-sign-in). Revoking a session also ends its refresh tokens, so the client holding it must log in again.
 
 ## `wt mfa`
 
@@ -233,19 +252,22 @@ wt invite accept wti_...      # as carol
 ```text
 wt iam actions
 wt iam effective [--principal <PRINCIPAL>] <--tenant <TENANT>|--tree <TREE>>
-wt iam simulate [--tree <TREE>] [--branch <BRANCH>] [--path <PATH>] [--ip <IP>] [--mfa] --principal <PRINCIPAL> --action <ACTION> --tenant <TENANT>
+wt iam simulate [--tree <TREE>] [--branch <BRANCH>] [--path <PATH>] [--ip <IP>] [--mfa] [--attr <KEY[=VALUE]>]... --principal <PRINCIPAL> --action <ACTION> --tenant <TENANT>
 ```
 
 - `actions` lists every action with its area and description.
-- `effective` shows the role, team roles, grants and resulting permissions of a principal (default: you). Statements with IP conditions are skipped because they need a concrete request.
-- `simulate` evaluates one request and explains every contributing reason (`tenant_role`, `team_role`, `tree_grant`, `policy`, `token_scope`, `owner_protected`, ...).
+- `effective` shows the role, team roles, grants and resulting permissions of a principal (default: you). Statements with IP conditions are skipped because they need a concrete request; attribute conditions are evaluated.
+- `simulate` evaluates one request and explains every contributing reason (`tenant_role`, `team_role`, `tree_grant`, `policy`, `attribute`, `token_scope`, `owner_protected`, ...). `--attr` (v0.8, repeatable) overrides an ABAC attribute for this evaluation: `principal.<k>=V`, `tree.<k>=V`, `tenant.<k>=V`, or a bare key to simulate it unset; the output adds an **Attribute conditions** table.
 
 Principals are written `user:<name>` or `sa:<tenant>/<name>`.
 
 ```bash
 wt iam simulate --principal user:bob --action branch:push --tenant acme --tree acme/web --branch main
 wt iam effective --tree acme/web --principal sa:acme/ci
+wt iam simulate --principal user:bob --action tree:write --tenant acme --tree payments --attr principal.clearance=secret
 ```
+
+ABAC attributes themselves are managed with `wt attr show|set|unset tenant|account|tree TARGET ...`; see [ABAC attributes](/docs/server/abac#attributes).
 
 ## `wt sso`
 
@@ -266,7 +288,7 @@ printf '%s' "$CLIENT_SECRET" | wt sso set --enabled true --name Okta --issuer ht
 ```
 
 <Callout type="warn">
-`--link-by-email` is off by default. Turn it on only if local account emails are trustworthy: W0rkTree does not verify them, so linking by email could let an IdP identity take over an existing account.
+`--link-by-email` is off by default. Turn it on only if local account emails are trustworthy: linking does not require a verified email (accounts can verify theirs since v0.8, but SSO linking does not check it yet), so linking by email could let an IdP identity take over an existing account.
 </Callout>
 
 The flow uses PKCE, state and nonce and accepts RS256 and ES256 ID tokens. See [Security](/docs/security).

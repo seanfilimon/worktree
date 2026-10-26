@@ -1,0 +1,136 @@
+---
+title: Staged Snapshots
+description: Team-visible work in progress since v0.8 - up to ten labeled slots per branch, wt stage list and show, browsing and checking out a teammate's staged work with wt checkout --staged, the push-time overlap advisory, lifecycle and history.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **staged snapshot** is your working state, uploaded so that signed-in teammates can see which files you are changing on which branch before anything is pushed, browse that work and check it out. Staged snapshots never enter branch history: *staged is not pushed, visible is not merged*. The [Staged visibility guide](/guides/staged-visibility) explains the idea; the [Staged visibility specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/visibility/StagedVisibility.md) is normative. This page covers the commands, including what changed in v0.8.
+
+| v0.8 change | Before |
+|---|---|
+| Up to **10 labeled slots** per (tree, account, branch), plus the default slot | One staged snapshot per (tree, account, branch) |
+| `wt stage list`, `wt stage show`, `wt checkout --staged` | `wt status --team` and `wt trees staged` only |
+| Status lifecycle `staged` → `pushed` / `cleared` / `expired` with a 30-day history | Entries disappeared |
+| Default time-to-live **30 days** (`--staged-ttl`) | 7 days (`--staged-retention`) |
+| `wt push` prints who has staged changes to the files you pushed | No advisory |
+| Anonymous readers of public trees see no staged metadata | Visible to every `tree:read` caller |
+
+## Staging
+
+```bash
+wt stage                        # the default slot of the current branch
+wt stage --label oauth          # a named slot; the default slot and other labels are kept
+wt stage --label spike-cache
+wt stage --discard --label spike-cache
+```
+
+`wt stage` builds a manifest from your **working directory** (snapshotted or not), compares it with the shared branch head (the server tip, else the last fetched `origin/<branch>`), uploads the manifest and the file contents the server lacks, and records the changed paths and counts. Labels match `[a-z0-9][a-z0-9_.-]{0,63}`; staging an eleventh label of a branch is refused ("max 10 per branch; unstage one first"). A newer stage of a slot replaces it.
+
+The [daemon](/docs/cli/daemon#wt-daemon) stages the **default slot** automatically after each auto-snapshot when `sync.auto_stage = true` (the default); labels are only set explicitly. Staging requires `tree:write`.
+
+## Listing and showing
+
+```bash
+wt stage list                       # every user, branch and label of the tree
+wt stage list --mine --branch main
+wt stage list --history             # also pushed, cleared and expired entries of the last 30 days
+wt stage show                       # your default slot on the current branch
+wt stage show oauth --files         # your slot "oauth", with every file of the staged state
+wt stage show --user alice --branch feature/login
+```
+
+| Command | Description |
+|---|---|
+| `wt stage list [--branch B] [--mine] [--history]` | The team's staged snapshots grouped by user, with labels |
+| `wt stage show [LABEL] [--user U] [--branch B] [--files]` | One staged snapshot (yours by default, on the current branch) with its changed files; `--files` lists every file of the working state |
+| `wt status --team`, `wt trees staged TREE` | The team's staged work, with overlaps |
+
+## Check out a teammate's work
+
+```bash
+wt checkout --staged alice                  # alice's default slot -> local branch staged/alice
+wt checkout --staged alice/oauth -b review-oauth
+wt checkout --staged alice --branch feature/login
+```
+
+`wt checkout --staged USER[/LABEL]` downloads the staged working state (manifest, blobs, chunk lists, chunks), records it as a **local** snapshot (author = the teammate, created at the staging time, parent = the staged branch's tip when it is known locally, unsigned) on a new branch (default `staged/USER[/LABEL]`) and switches to it. Nothing changes on the server.
+
+| Flag | Description |
+|---|---|
+| `--staged USER[/LABEL]` | Whose work, and which slot |
+| `-b, --name NAME` | Name of the new local branch (default `staged/USER[/LABEL]`) |
+| `--branch B` | The branch the work is staged on, when the same user and label staged on several branches |
+| `--remote R` | Remote to read from (default `[sync].remote`) |
+| `--force` | Discard uncommitted local changes when switching |
+
+It refuses a dirty working tree (unless `--force`), an existing branch name and ambiguous matches. Content you may not read (path policies, license rules) makes the checkout fail clearly.
+
+## Push-time advisory
+
+After a successful push, `wt push` computes the pushed paths (old remote tip → new tip), asks the server which **other** accounts have live staged snapshots touching them, on any branch, and prints a note for each:
+
+```text
+note: alice has staged changes to src/auth.rs, src/token.rs (on main, label oauth, 2 minutes ago)
+```
+
+The advisory never blocks or fails a push: an unreachable or older server, or an anonymous remote, simply prints nothing. `wt push --json` adds `staged_overlaps`. The REST call is `GET {tree}/staged/overlaps?paths=a,b&path=c` (sign-in required, at most 5000 paths). Overlaps compare the stored path lists, so paths beyond the first 1000 of a very large staged snapshot are not considered.
+
+## Removing staged work
+
+```bash
+wt unstage                          # the default slot of the current branch
+wt unstage --label oauth
+wt unstage --all-labels             # every slot of the current branch
+wt unstage --all                    # every branch and label of the tree
+```
+
+A tree admin can remove another user's entries over REST (`DELETE {tree}/staged?branch=&label=&account=`). The gRPC `Unstage` call has no label field and removes every label of a branch; the CLI uses REST for single slots.
+
+## Lifecycle and history
+
+Status lifecycle: `staged` → `pushed` | `cleared` | `expired`.
+
+| Transition | Trigger |
+|---|---|
+| `pushed` | You push the branch. The **default slot** always ends; a **labeled slot** ends when its snapshot is the new tip or its working manifest is the new tip's manifest. Other labels stay live. |
+| `cleared` | `wt unstage`, `wt stage --discard`, `DELETE {tree}/staged` |
+| `expired` | Older than the server's time-to-live: `--staged-ttl` / `WT_STAGED_TTL` (alias `--staged-retention`), default `720h`; `0` disables expiry |
+
+Every ended entry is kept in the staged **history** for 30 days (`wt stage list --history`, `GET {tree}/staged/history?branch=&account=&status=&limit=`) with its status, when it ended, who ended it and, for pushes, the pushed tip. History is metadata only: its contents cannot be browsed. Each transition publishes `staged.cleared` with `{tree_id, tenant_id, account_id, author, branch_name, label, snapshot_id, reason: pushed|unstaged|expired, status}`.
+
+## Who can see staged work
+
+Listing, browsing and checking out staged snapshots require `tree:read` **and a signed-in principal**:
+
+| Tree | Can see staged metadata |
+|---|---|
+| `private` | Tenant members and principals with a grant or allow policy |
+| `internal` | Every signed-in principal |
+| `public` | Every signed-in principal; **anonymous readers see none** |
+
+Paths you may not read are left out of listings, history, files and overlaps. Branches have no read permission of their own, so every signed-in reader of a tree sees staged work on every branch. To keep work private, turn off automatic staging (`wt config set sync.auto_stage false`), pause the daemon (`wt daemon pause`), or withdraw it with `wt unstage`.
+
+## REST API
+
+All under `/api/v1/trees/{tenant}/{tree}`.
+
+| Method and path | Description |
+|---|---|
+| `GET staged?branch=` | Live staged snapshots, newest first (with `label`) |
+| `GET staged/summary` | Per-branch activity with one entry per (account, label) and overlaps |
+| `GET staged/history?branch=&account=&status=&limit=` | Ended entries of the last 30 days |
+| `GET staged/overlaps?paths=&path=` | Live staged snapshots of other accounts touching the paths |
+| `GET staged/{snapshot}/files` | The working manifest of a live entry (any author, any branch), with `restricted_count` |
+| `GET staged/{snapshot}/files/{path}` | One file, with the blob endpoint's checks (`403 path_denied`, `451 license_restricted`, `Range`, `ETag`) |
+| `DELETE staged?branch=&label=&account=` | Remove entries: `label` (with `branch`; `label=` is the default slot) one slot, otherwise every label of the branch (or every branch). `account=` needs `tree:admin` |
+
+For anonymous callers the list, summary and history answer empty lists, files answer `404` and overlaps `401`.
+
+## Admin panel
+
+The tree's **Staged** tab groups live entries by user and label, opens a file browser over the staged working state, and shows the history with a status filter. The dashboard shows live activity.
+
+<Callout type="info" title="Not built yet">
+  Labels on the gRPC `Unstage` request, warnings on `PushResponse`, path filtering in the summary endpoint, browsing ended entries, per-branch staged privacy and a per-tree opt-out in `.wt-tree/config.toml` are on the [roadmap](/roadmap).
+</Callout>

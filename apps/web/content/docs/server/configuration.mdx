@@ -6,7 +6,11 @@ description: Every command-line flag and environment variable accepted by worktr
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-The server is configured with command-line flags and `WT_*` environment variables only. There is no configuration file. Run `worktree-server --help` for the list below, and `worktree-server --version` to print the version. `worktree-server restore` is the only subcommand (offline restore of a backup, see [S3 storage and backups](/docs/server/storage-backends#restore)).
+The server is configured with command-line flags and `WT_*` environment variables only. There is no configuration file. Run `worktree-server --help` for the list below, and `worktree-server --version` to print the version. `worktree-server restore` is the only subcommand (offline restore of a backup file or backup id, or `--list` of the backup target; see [S3 storage and backups](/docs/server/storage-backends#restore)).
+
+<Callout type="info" title="New in v0.8">
+  Pack transfer (`--disable-packs`, `--max-pack-size`), the tenant lifecycle (`--tenant-deletion-window`, `--tenant-purge-interval`), `--staged-ttl` (default now 30 days), backups to S3 (`--backup-target`, `--backup-s3-prefix`, `--backup-max-age`), retention (`--policy-version-retention`, `--webhook-delivery-retention`, `--webhook-delivery-keep`) and the email outbox (`--email-dead-after`). Ages of the server-operations flags accept Go durations (`720h`) or whole days (`30d`).
+</Callout>
 
 ## Flags and environment variables
 
@@ -20,7 +24,7 @@ The server is configured with command-line flags and `WT_*` environment variable
 | `--admin-password` | `WT_ADMIN_PASSWORD` | unset | When set, the server ensures the admin account exists at startup: it is created if missing; an existing account is made server admin and its password is reset to this value when it differs (existing tokens stay valid). |
 | `--admin-dir` | `WT_ADMIN_DIR` | unset | Static admin panel build (normally `apps/admin/dist`) served at `/admin/` with `index.html` fallback. When unset, the panel is not served. |
 | `--allow-registration` | `WT_ALLOW_REGISTRATION` | `true` | Allow self-service registration (`POST /api/v1/auth/register`, `wt register`). Server admins can always create accounts with `wt admin account-create`. |
-| `--public-url` | `WT_PUBLIC_URL` | unset | External base URL of the server; the default SSO redirect URL is `<public-url>/api/v1/auth/sso/callback`. |
+| `--public-url` | `WT_PUBLIC_URL` | unset | External base URL of the server. The default SSO redirect URL is `<public-url>/api/v1/auth/sso/callback`; device sign-in codes point at `<public-url>/admin/device` (else the scheme and host of the request); email links (notifications, tenant email verification) point into `<public-url>/admin/`. |
 | `--shutdown-timeout` | `WT_SHUTDOWN_TIMEOUT` | `15s` | Bound on graceful shutdown. |
 
 ### Logging and HTTP
@@ -48,10 +52,31 @@ See [TLS](/docs/server/operations#tls).
 |---|---|---|---|
 | `--gc-interval` | `WT_GC_INTERVAL` | `24h` | Period of automatic garbage collection; `0` disables the ticker (GC can still run on demand). |
 | `--gc-grace` | `WT_GC_GRACE` | `720h` | How long an unreachable object stays marked before it is deleted. |
-| `--staged-retention` | `WT_STAGED_RETENTION` | `168h` | Staged snapshots older than this expire; `0` keeps them. |
-| `--audit-retention` | `WT_AUDIT_RETENTION` | `0` | Audit events older than this are deleted by GC; `0` keeps them forever. |
+| `--staged-ttl` | `WT_STAGED_TTL` | `720h` | Staged snapshots older than this expire (status `expired`, kept 30 days in the staged history); `0` keeps them. `--staged-retention` / `WT_STAGED_RETENTION` is an alias (its default was `168h` before v0.8). See [Staged snapshots](/docs/cli/staged-snapshots#lifecycle-and-history). |
+| `--audit-retention` | `WT_AUDIT_RETENTION` | `0` | Audit events older than this are deleted (by GC and the retention pass); `0` keeps them forever. |
+| `--policy-version-retention` | `WT_POLICY_VERSION_RETENTION` | keep all | v0.8: prune policy versions per policy by `AGE`, `COUNT` or `AGE,COUNT` (for example `90d,100`). The latest version of every policy is always kept. |
+| `--webhook-delivery-retention` | `WT_WEBHOOK_DELIVERY_RETENTION` | `720h` | v0.8: delete webhook deliveries older than this age (at least `1m`). |
+| `--webhook-delivery-keep` | `WT_WEBHOOK_DELIVERY_KEEP` | `200` | v0.8: deliveries kept per webhook (at least 1). |
 
-See [Garbage collection](/docs/server/operations#garbage-collection).
+See [Garbage collection](/docs/server/operations#garbage-collection) and [Retention](/docs/server/server-operations#retention).
+
+### Tenant lifecycle
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--tenant-deletion-window` | `WT_TENANT_DELETION_WINDOW` | `720h` | v0.8: recovery window of a deleted tenant before the purge job deletes its data. |
+| `--tenant-purge-interval` | `WT_TENANT_PURGE_INTERVAL` | `1h` | v0.8: how often tenants past their recovery window are purged. |
+
+See [Tenant lifecycle](/docs/server/tenant-lifecycle).
+
+### Pack transfer
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--disable-packs` | `WT_DISABLE_PACKS` | `false` | v0.8: answer `UploadPack`, `QueryUpload` and `DownloadPack` with `Unimplemented`, so clients transfer whole objects. |
+| `--max-pack-size` | `WT_MAX_PACK_SIZE` | `4GiB` | v0.8: largest pack one upload may send (at least `1MiB`). |
+
+See [Pack and delta transfer](/docs/protocol/packs).
 
 ### Limits
 
@@ -81,10 +106,13 @@ Per-tenant overrides are set with `wt admin limits`. See [Quotas](/docs/server/o
 | `--s3-region` | `WT_S3_REGION` | discovered | Bucket region. |
 | `--s3-access-key`, `--s3-secret-key` | `WT_S3_ACCESS_KEY`, `WT_S3_SECRET_KEY` | unset | Static credentials, given together; prefer the environment variables. When empty, the `AWS_*` / `MINIO_*` environment and then the instance role are used. |
 | `--s3-insecure` | `WT_S3_INSECURE` | `false` | Plain HTTP to the S3 endpoint. |
-| `--backup-interval` | `WT_BACKUP_INTERVAL` | `0` | Period of scheduled backups into `<data>/backups` (at least `1m`); `0` disables them. |
+| `--backup-interval` | `WT_BACKUP_INTERVAL` | `0` | Period of scheduled backups into the backup target (at least `1m`); `0` disables them. |
 | `--backup-keep` | `WT_BACKUP_KEEP` | `7` | Scheduled backups to keep; `0` keeps all. Backups made by people are never pruned. |
+| `--backup-max-age` | `WT_BACKUP_MAX_AGE` | `0` | v0.8: prune scheduled backups older than this age (`720h`, `30d`; at least `1m`); `0` keeps them. |
+| `--backup-target` | `WT_BACKUP_TARGET` | `disk` | v0.8: where archives are kept: `disk` (`<data>/backups`) or `s3` (the `--s3-*` bucket, independently of `--object-store`). `s3` requires `--s3-endpoint` and `--s3-bucket`. |
+| `--backup-s3-prefix` | `WT_BACKUP_S3_PREFIX` | `<s3-prefix>backups/` | v0.8: key prefix of backup archives in the bucket; must not lie inside the object store's `objects/` prefix when both share a bucket. |
 
-See [S3 storage and backups](/docs/server/storage-backends). Restoring is a separate subcommand, `worktree-server restore`, described [there](/docs/server/storage-backends#restore).
+See [S3 storage and backups](/docs/server/storage-backends) and [Server operations](/docs/server/server-operations#backups-to-object-storage). Restoring is a separate subcommand, `worktree-server restore`, described [there](/docs/server/storage-backends#restore).
 
 ### Notifications (SMTP)
 
@@ -92,8 +120,9 @@ See [S3 storage and backups](/docs/server/storage-backends). Restoring is a sepa
 |---|---|---|---|
 | `--smtp-url` | `WT_SMTP_URL` | unset | Send notification email through `smtp://user:pass@host:587` (STARTTLS when offered) or `smtps://user:pass@host:465` (implicit TLS). Without it no email is sent. Prefer the environment variable; the URL is never logged. |
 | `--smtp-from` | `WT_SMTP_FROM` | `"W0rkTree" <noreply@HOST>` | From address; `HOST` is the host of `--public-url`, else `localhost`. |
+| `--email-dead-after` | `WT_EMAIL_DEAD_AFTER` | `24h` | v0.8: dead-letter queued emails that still fail after this age (at least `1s`). |
 
-See [Notifications](/docs/server/notifications#email).
+See [Notifications](/docs/server/notifications#email) and [Email outbox](/docs/server/server-operations#durable-email-outbox).
 
 ### Code search index
 
@@ -125,23 +154,30 @@ See [Performance](/docs/server/performance#profiling-a-running-server). A hidden
 
 - A flag on the command line overrides the matching environment variable, which overrides the default.
 - Durations use Go syntax: `90s`, `15m`, `24h`, `720h`.
-- `--allow-registration`, `--compress-objects`, `--s3-insecure`, `--mirror-allow-local`, `--webhook-allow-private` and `--pprof` are boolean flags; turn them off with an explicit value, `--allow-registration=false`. The environment variables accept `true` or `false`.
+- The v0.8 age flags (`--backup-max-age`, `--webhook-delivery-retention`, `--email-dead-after`, the age part of `--policy-version-retention`) also accept whole days: `30d`, `90d`.
+- `--allow-registration`, `--compress-objects`, `--s3-insecure`, `--mirror-allow-local`, `--webhook-allow-private`, `--disable-packs` and `--pprof` are boolean flags; turn them off with an explicit value, `--allow-registration=false`. The environment variables accept `true` or `false`.
 - Invalid values make the server exit with code `2`; a runtime error exits with `1`.
 
 ### Fixed settings
 
 | Setting | Value |
 |---|---|
-| Session token lifetime (password, MFA or SSO login) | 30 days |
+| Access token lifetime (password, MFA, registration and device logins) | 1 hour, renewed with a single-use refresh token valid 30 days ([Device sign-in and refresh tokens](/docs/cli/device-sign-in)) |
+| SSO session lifetime | 30 days (no refresh token) |
+| Device sign-in codes | 10 minutes; polling every 5 seconds |
 | gRPC maximum message size | 64 MiB, both directions |
+| Pack chunks | 4 MiB; interrupted uploads kept 24 hours, at most 8 per account |
 | REST JSON request body | 1 MiB (`413 payload_too_large`) |
 | Release asset upload | 64 MiB |
 | SSE heartbeat interval | 15 seconds |
 | Audit query page | 100 events by default, at most 1000 (`format=ndjson` has no limit) |
 | Webhook delivery timeout and retries | 10 seconds; retries after 1 m, 5 m, 30 m, 2 h; deactivated after 20 consecutive failures |
-| Webhook delivery log | 200 newest deliveries per hook, at most 30 days |
 | Code search | Text files up to 1 MiB, at most 1000 hits and 5 seconds per query |
-| Notification retention | 1000 per account, 90 days; email retries after 30 s, 2 m, 10 m, 30 m |
+| Notification retention | 1000 per account, 90 days |
+| Email outbox | Retries after 30 s, 2 m, 10 m, 30 m, then every 30 m until `--email-dead-after`; sent emails kept 7 days |
+| Tenant slug reservation after a rename or purge | 90 days |
+| Staged slots | 10 labels per account and branch; history kept 30 days |
+| Server reflog, push idempotency keys | 90 days, 24 hours |
 | Git mirrors | 10 per tree; automatic syncs 5 seconds after a push, retried after 1 m, 5 m, 30 m, 2 h; 10 minute push timeout |
 
 Single sign-on is not a flag: a server admin configures it at runtime with [`wt sso set`](/docs/cli/iam#wt-sso) or `PUT /api/v1/admin/sso`. Encryption at rest is not built yet (see the [roadmap](/roadmap)); use volume encryption or your object store's server-side encryption.

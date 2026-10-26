@@ -85,12 +85,18 @@ export WT_PUBLIC_URL=https://wt.example.com
 |---|---|---|
 | `--smtp-url` | `WT_SMTP_URL` | `smtp://[user:pass@]host[:port]` (default port 587, STARTTLS when offered) or `smtps://[user:pass@]host[:port]` (implicit TLS, default port 465). Prefer the environment variable: the URL may contain a password and is never logged |
 | `--smtp-from` | `WT_SMTP_FROM` | From address. Default `"W0rkTree" <noreply@HOST>` with the host of `--public-url`, else `localhost` |
+| `--email-dead-after` | `WT_EMAIL_DEAD_AFTER` | v0.8: dead-letter a queued email that still fails after this age (default `24h`) |
 
 Without `--smtp-url` no email is sent. Credentials are sent with AUTH PLAIN, which is only allowed over TLS or to localhost. Invalid values stop the server at startup.
 
 A notification is emailed when SMTP is configured, the account has an email address, and either your `email` setting is on (participating reasons; on by default) or the effective watch setting has `email` (any reason). Messages are plain text plus HTML with the subject `[tenant/tree] <title>` and the headers `Auto-Submitted: auto-generated` and `X-WT-Notification: <id>`; with `--public-url` they link to the merge request (or other target) in the admin panel and to the Notifications page.
 
-Email is sent in the background (up to 256 queued). A failed attempt is retried after 30 s, 2 min, 10 min and 30 min, then dropped with a log line. The queue is in memory: email pending at shutdown is lost.
+Since v0.8 every email (notifications and the [tenant and account verification codes](/docs/server/tenant-lifecycle#contact-email-and-verification)) goes through a **durable outbox**: it is written to the `outbox` document collection first and sent by a background worker, so queued email survives restarts and is included in backups.
+
+- A failed attempt is retried after 30 s, 2 min, 10 min and 30 min, then every 30 min. An attempt that still fails after `--email-dead-after` (default 24 h after queueing) dead-letters the email with a warning in the log; there is no attempt limit.
+- Delivery is at least once: a crash between the SMTP `DATA` command and the status write sends the email again.
+- Sent emails are deleted after 7 days, dead letters after 30 days. Without `--smtp-url` nothing is sent and the outbox only records what an operator may retry later.
+- Server administrators list, retry and delete queued email with [`wt admin outbox`](/docs/server/server-operations#durable-email-outbox), `GET /api/v1/admin/outbox` and the **Email outbox** card of the admin panel's Backups page.
 
 To try it locally, the [Compose `smtp` profile](/docs/server/deployment#docker-compose) runs Mailpit, which captures every message in a web UI.
 
@@ -116,5 +122,5 @@ All routes act on the caller's own account.
 A notification is `{id, account_id, reason, event, tenant_id, tree_id, title, body, url, actor, created_at, read_at?}`; `body` is an excerpt of at most 500 bytes and `url` is an admin panel path such as `/trees/acme/web/merge-requests/3`. Unknown levels are `400`; ids of other accounts' notifications are `404`; service accounts get `403`.
 
 <Callout type="info" title="Not built yet">
-  A persistent email queue, digest emails, unsubscribe links, per-reason email preferences and notification threads are on the [roadmap](/roadmap).
+  Digest emails, unsubscribe links, per-reason email preferences and notification threads are on the [roadmap](/roadmap). The v0.8 events (`tree.forked`, `branch.force_pushed`, `secret.detected`, `mr.conflicts_resolved`, `config.applied`, ...) do not create notifications; subscribe to them with [webhooks](/docs/server/webhooks) or the [event stream](/docs/server/events).
 </Callout>

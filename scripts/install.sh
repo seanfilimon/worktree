@@ -2,8 +2,8 @@
 # Install W0rkTree (wt + worktree-bg, optionally worktree-server).
 #
 #   curl -fsSL https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.sh | bash
-#   bash scripts/install.sh --version v0.7.0 --with-server
-#   bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.7.0
+#   bash scripts/install.sh --version v0.8.0 --with-server
+#   bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.8.0
 #   bash scripts/install.sh --base-url ./dist          # archives from scripts/release.sh
 #   bash scripts/install.sh --from-source              # cargo install from this checkout
 #
@@ -25,7 +25,7 @@ usage() {
 Usage: install.sh [OPTIONS]
 
 Options:
-  --version VERSION   release tag to install, e.g. v0.7.0 (default: latest)
+  --version VERSION   release tag to install, e.g. v0.8.0 (default: latest)
   --dir DIR           install directory (default: \$HOME/.local/bin)
   --base-url URL      where the release archives and SHA256SUMS live:
                       https://..., file:///path or a local directory
