@@ -118,6 +118,11 @@ pub(crate) fn staged_from_wire(rec: &wire::StagedInfo) -> StagedInfo {
         files_deleted: rec.files_deleted,
         message: rec.message.clone().filter(|m| !m.is_empty()),
         staged_at: datetime(rec.staged_at.as_ref()),
+        // staged-v2 (§16.8)
+        label: rec.label.clone(),
+        manifest_hash: hash_from_wire(rec.manifest_hash.as_ref())
+            .ok()
+            .map(|h| h.to_hex()),
     }
 }
 
@@ -210,6 +215,20 @@ mod tests {
         assert_eq!(info.branch, "main");
         assert_eq!(info.message, None);
         assert_eq!(info.staged_at.timestamp(), 10);
+        assert_eq!(
+            (info.label.as_str(), info.manifest_hash.as_deref()),
+            ("", None)
+        );
+        let labeled = staged_from_wire(&wire::StagedInfo {
+            label: "exp".into(),
+            manifest_hash: Some(wire_hash(&crate::store::hash_bytes(b"m"))),
+            ..rec
+        });
+        assert_eq!(labeled.label, "exp");
+        assert_eq!(
+            labeled.manifest_hash,
+            Some(crate::store::hash_bytes(b"m").to_hex())
+        );
         assert_eq!(branch_id("dev").value, "dev");
         assert_eq!(tree_id("t").value, "t");
         assert_eq!(tenant_id("x").value, "x");

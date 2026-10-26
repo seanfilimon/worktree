@@ -854,7 +854,7 @@ func (m *Memory) PutStaged(ctx context.Context, s *domain.StagedSnapshot) error 
 		if err := prepareStaged(s); err != nil {
 			return err
 		}
-		inner(m.staged, s.TreeID)[key(s.AccountID, s.BranchName)] = normStaged(*s)
+		inner(m.staged, s.TreeID)[stagedKey(s.AccountID, s.BranchName, s.Label)] = normStaged(*s)
 		return nil
 	})
 }
@@ -876,11 +876,17 @@ func (m *Memory) ListStaged(ctx context.Context, treeID, branch string) ([]domai
 	return out, err
 }
 
-// DeleteStaged implements domain.MetaStore. Deleting a missing entry is a
-// no-op.
+// DeleteStaged implements domain.MetaStore (the default, unlabeled slot).
+// Deleting a missing entry is a no-op.
 func (m *Memory) DeleteStaged(ctx context.Context, treeID, accountID, branch string) error {
+	return m.DeleteStagedLabel(ctx, treeID, accountID, branch, "")
+}
+
+// DeleteStagedLabel implements domain.MetaStore (v0.8, §16.8). Deleting a
+// missing entry is a no-op.
+func (m *Memory) DeleteStagedLabel(ctx context.Context, treeID, accountID, branch, label string) error {
 	return m.write(ctx, func() error {
-		delete(m.staged[treeID], key(accountID, branch))
+		delete(m.staged[treeID], stagedKey(accountID, branch, label))
 		return nil
 	})
 }

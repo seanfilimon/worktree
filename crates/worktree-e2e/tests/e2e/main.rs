@@ -71,3 +71,5 @@ mod conflict_resolution; // conflict-ui (§16.9)
 mod forks; // forks (§16.2)
 // v0.8 build-out (ENGINEERING_PLAN §16).
 mod tenant_lifecycle; // tenant-lifecycle (§16.4)
+// v0.8 build-out (ENGINEERING_PLAN §16).
+mod staged_v2; // staged-v2 (§16.8)

@@ -620,7 +620,8 @@ impl SyncService for Svc {
         st.staged.retain(|s| {
             !(s.tree_id == tree_id
                 && s.username == caller.username
-                && s.info.branch_name == r.branch_name)
+                && s.info.branch_name == r.branch_name
+                && s.info.label == r.label) // staged-v2 (§16.8): one entry per label
         });
         let now = chrono::Utc::now();
         st.staged.push(Staged {
@@ -640,7 +641,7 @@ impl SyncService for Svc {
                     nanos: 0,
                 }),
                 manifest_hash: r.manifest_hash,
-                ..Default::default()
+                label: r.label,
             },
         });
         Ok(Response::new(wire::StageUploadResponse {

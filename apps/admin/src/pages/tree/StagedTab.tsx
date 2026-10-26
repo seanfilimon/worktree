@@ -1,10 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, FileStack, FolderOpen, GitBranch, TriangleAlert, Users } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, FileStack, FolderOpen, GitBranch, History, Tag, TriangleAlert, Undo2, Users } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { keys, useStaged, useStagedSummary } from "@/api/queries";
 import type { StagedBranchActivity, StagedFileOverlap } from "@/api/types";
-import type { StagedSnapshotV06 } from "@/api/v06";
+import { isUnavailable, type StagedSnapshotV06 } from "@/api/v06";
+import { useAuth } from "@/auth/context";
 import { StagedFilesSheet } from "./v06/StagedFilesSheet";
 import { EmptyState, ErrorState, LoadingRows, RelativeTime } from "@/components/files/states";
 import { LiveIndicator } from "@/components/LiveIndicator";
@@ -13,13 +14,29 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { UnavailableNotice } from "@/components/v06/UnavailableNotice";
 import { firstLine, formatNumber, shortId } from "@/lib/format";
 import { treePath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
+import { ConfirmAction } from "@/pages/iam/shared";
+import { useToast } from "@/toast/store";
 import { BranchSelect } from "./BranchSelect";
 import { useTreeContext } from "./context";
+import {
+  isStagedHistoryStatus,
+  labelOf,
+  slotName,
+  stagedV2Keys,
+  STAGED_HISTORY_STATUSES,
+  useStagedHistory,
+  useStagedV2Api,
+  type StagedHistoryStatus,
+} from "./v08/stagedApi";
 
 const PREVIEW_FILES = 5;
+const HISTORY_LIMIT = 100;
 
 function initials(name: string): string {
   const parts = name.split(/[\s._-]+/).filter(Boolean);
@@ -31,6 +48,15 @@ function AuthorAvatar({ name, className }: { name: string; className?: string })
     <Avatar size="sm" className={className}>
       <AvatarFallback className="border bg-background font-semibold text-foreground">{initials(name)}</AvatarFallback>
     </Avatar>
+  );
+}
+
+function LabelBadge({ label }: { label: string }) {
+  return (
+    <Badge variant="outline" className={cn("font-mono", !label && "text-muted-foreground")}>
+      <Tag aria-hidden="true" />
+      {label || "default"}
+    </Badge>
   );
 }
 
@@ -48,6 +74,30 @@ function collectOverlaps(summary: readonly StagedBranchActivity[]): Map<string, 
     }
   }
   return byPath;
+}
+
+interface AuthorGroupData {
+  key: string;
+  author: string;
+  accountId: string;
+  latest: string;
+  items: StagedSnapshotV06[];
+}
+
+/** Live entries grouped by account, newest author first; rows by branch, then label (default first). */
+function groupByAuthor(list: readonly StagedSnapshotV06[]): AuthorGroupData[] {
+  const groups = new Map<string, AuthorGroupData>();
+  for (const s of list) {
+    const key = s.account_id || s.author;
+    const g = groups.get(key) ?? { key, author: s.author, accountId: s.account_id, latest: s.staged_at, items: [] };
+    g.items.push(s);
+    if (s.staged_at > g.latest) g.latest = s.staged_at;
+    groups.set(key, g);
+  }
+  for (const g of groups.values()) {
+    g.items.sort((a, b) => a.branch_name.localeCompare(b.branch_name) || labelOf(a).localeCompare(labelOf(b)));
+  }
+  return [...groups.values()].sort((a, b) => b.latest.localeCompare(a.latest) || a.author.localeCompare(b.author));
 }
 
 function OverlapWarning({ overlaps }: { overlaps: StagedFileOverlap[] }) {
@@ -129,11 +179,15 @@ function BranchCard({ activity, overlaps }: { activity: StagedBranchActivity; ov
 function StagedItem({
   s,
   overlaps,
+  canUnstage,
   onBrowse,
+  onUnstage,
 }: {
   s: StagedSnapshotV06;
   overlaps: Map<string, StagedFileOverlap>;
+  canUnstage: boolean;
   onBrowse: (s: StagedSnapshotV06) => void;
+  onUnstage: (s: StagedSnapshotV06) => void;
 }) {
   const { tenant, tree } = useTreeContext();
   const files = s.files_changed ?? [];
@@ -141,18 +195,19 @@ function StagedItem({
   const shown = open ? files : files.slice(0, PREVIEW_FILES);
   const contested = files.filter((f) => overlaps.has(f)).length;
   const listId = useId();
+  const label = labelOf(s);
+  const slot = slotName(s);
 
   return (
-    <li className="px-4 py-3">
+    <li aria-label={`${s.branch_name} · ${label || "default"}`} className="px-4 py-3">
       <div className="flex flex-wrap items-start gap-3">
-        <AuthorAvatar name={s.author} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="font-semibold">{s.author}</span>
             <Badge variant="outline" className="font-mono">
               <GitBranch aria-hidden="true" />
               {s.branch_name}
             </Badge>
+            <LabelBadge label={label} />
             {contested > 0 && (
               <Badge className="font-semibold">
                 <TriangleAlert aria-hidden="true" />
@@ -160,14 +215,14 @@ function StagedItem({
               </Badge>
             )}
           </p>
-          {s.message && <p className="mt-0.5 truncate text-sm text-muted-foreground">{firstLine(s.message)}</p>}
+          {s.message && <p className="mt-1 truncate text-sm text-muted-foreground">{firstLine(s.message)}</p>}
           <p className="mt-1 flex flex-wrap gap-x-3 font-mono text-xs" aria-label="Change summary">
             <span className="font-semibold">+{s.files_added} added</span>
             <span>~{s.files_modified} modified</span>
             <span className="text-muted-foreground line-through decoration-1">-{s.files_deleted} deleted</span>
           </p>
         </div>
-        <div className="text-right text-xs text-muted-foreground">
+        <div className="flex flex-col items-end gap-1.5 text-right text-xs text-muted-foreground">
           <p>
             staged <RelativeTime value={s.staged_at} />
           </p>
@@ -178,27 +233,37 @@ function StagedItem({
           >
             {shortId(s.snapshot_id)}
           </Link>
-          {s.manifest_hash && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-1.5 flex h-7 text-xs"
-              aria-label={`Browse files staged by ${s.author} on ${s.branch_name}`}
-              onClick={() => onBrowse(s)}
-            >
-              <FolderOpen aria-hidden="true" />
-              Browse files
-            </Button>
-          )}
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {s.manifest_hash && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                aria-label={`Browse files staged by ${s.author} on ${slot}`}
+                onClick={() => onBrowse(s)}
+              >
+                <FolderOpen aria-hidden="true" />
+                Browse files
+              </Button>
+            )}
+            {canUnstage && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                aria-label={`Unstage ${slot} by ${s.author}`}
+                onClick={() => onUnstage(s)}
+              >
+                <Undo2 aria-hidden="true" />
+                Unstage
+              </Button>
+            )}
+          </div>
         </div>
       </div>
       {files.length > 0 && (
-        <div className="mt-2 pl-9">
-          <ul
-            id={listId}
-            aria-label={`Files staged by ${s.author} on ${s.branch_name}`}
-            className="flex flex-col gap-0.5 font-mono text-xs"
-          >
+        <div className="mt-2">
+          <ul id={listId} aria-label={`Files staged by ${s.author} on ${slot}`} className="flex flex-col gap-0.5 font-mono text-xs">
             {shown.map((f) => {
               const o = overlaps.get(f);
               return (
@@ -232,15 +297,166 @@ function StagedItem({
   );
 }
 
+function AuthorGroup({
+  group,
+  overlaps,
+  isSelf,
+  canUnstage,
+  onBrowse,
+  onUnstage,
+}: {
+  group: AuthorGroupData;
+  overlaps: Map<string, StagedFileOverlap>;
+  isSelf: boolean;
+  canUnstage: boolean;
+  onBrowse: (s: StagedSnapshotV06) => void;
+  onUnstage: (s: StagedSnapshotV06) => void;
+}) {
+  const branches = new Set(group.items.map((s) => s.branch_name)).size;
+  return (
+    <li aria-label={`Staged by ${group.author}`}>
+      <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-4 py-2.5">
+        <AuthorAvatar name={group.author} />
+        <span className="font-semibold">{group.author}</span>
+        {isSelf && <Badge variant="outline">you</Badge>}
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+          {group.items.length} {group.items.length === 1 ? "snapshot" : "snapshots"} · {branches} {branches === 1 ? "branch" : "branches"} · latest{" "}
+          <RelativeTime value={group.latest} />
+        </span>
+      </div>
+      <ul aria-label={`Snapshots staged by ${group.author}`} className="divide-y">
+        {group.items.map((s) => (
+          <StagedItem
+            key={`${s.branch_name}\u0000${labelOf(s)}`}
+            s={s}
+            overlaps={overlaps}
+            canUnstage={canUnstage}
+            onBrowse={onBrowse}
+            onUnstage={onUnstage}
+          />
+        ))}
+      </ul>
+    </li>
+  );
+}
+
+type HistoryFilter = "all" | StagedHistoryStatus;
+
+const STATUS_LABEL: Record<HistoryFilter, string> = { all: "All", pushed: "Pushed", cleared: "Cleared", expired: "Expired" };
+
+function StagedHistory({ branch }: { branch: string }) {
+  const { tenant, tree } = useTreeContext();
+  const [status, setStatus] = useState<HistoryFilter>("all");
+  const history = useStagedHistory(tenant, tree, {
+    branch: branch || undefined,
+    status: status === "all" ? undefined : status,
+    limit: HISTORY_LIMIT,
+  });
+  const entries = history.data ?? [];
+
+  return (
+    <section aria-labelledby="staged-history" className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 id="staged-history" className="flex items-center gap-2 text-sm font-semibold">
+          <History aria-hidden="true" className="size-4" />
+          History
+          <span className="font-normal text-muted-foreground">last 30 days</span>
+        </h3>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={status}
+          onValueChange={(v) => {
+            if (v === "all" || isStagedHistoryStatus(v)) setStatus(v);
+          }}
+          aria-label="Filter history by status"
+        >
+          {(["all", ...STAGED_HISTORY_STATUSES] as const).map((f) => (
+            <ToggleGroupItem key={f} value={f} aria-label={STATUS_LABEL[f]}>
+              {STATUS_LABEL[f]}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+      {history.isError && isUnavailable(history.error) ? (
+        <UnavailableNotice feature="Staged history" />
+      ) : (
+        <div className="overflow-hidden rounded-xl border bg-card">
+          {history.isPending ? (
+            <LoadingRows rows={3} label="Loading staged history" />
+          ) : history.isError ? (
+            <ErrorState error={history.error} onRetry={() => void history.refetch()} />
+          ) : entries.length === 0 ? (
+            <EmptyState icon={History} title={status === "all" ? "No staged history" : `No ${status} staged snapshots`}>
+              Staged snapshots that were pushed, cleared or expired{branch ? ` on ${branch}` : ""} in the last 30 days appear here.
+            </EmptyState>
+          ) : (
+            <Table aria-label="Staged history">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Author</TableHead>
+                  <TableHead>Branch</TableHead>
+                  <TableHead>Label</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Ended</TableHead>
+                  <TableHead>Ended by</TableHead>
+                  <TableHead className="text-right">Files</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {entries.map((e) => (
+                  <TableRow key={e.id}>
+                    <TableCell className="font-medium">{e.author}</TableCell>
+                    <TableCell className="font-mono text-xs">{e.branch_name}</TableCell>
+                    <TableCell>
+                      <LabelBadge label={labelOf(e)} />
+                    </TableCell>
+                    <TableCell>
+                      <span className="flex items-center gap-2">
+                        <Badge variant="outline">{e.status}</Badge>
+                        {e.pushed_tip && (
+                          <Link
+                            to={treePath(tenant, tree, `snapshots/${encodeURIComponent(e.pushed_tip)}`)}
+                            className="font-mono text-xs hover:underline"
+                            title={e.pushed_tip}
+                          >
+                            {shortId(e.pushed_tip)}
+                          </Link>
+                        )}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      <RelativeTime value={e.ended_at} />
+                    </TableCell>
+                    <TableCell className="text-xs">{e.ended_by || "—"}</TableCell>
+                    <TableCell className="text-right font-mono text-xs tabular-nums" title={(e.files_changed ?? []).join("\n")}>
+                      {formatNumber((e.files_changed ?? []).length)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function StagedTab() {
-  const { tenant, tree, live } = useTreeContext();
+  const { tenant, tree, live, canManage } = useTreeContext();
+  const { account } = useAuth();
   const [params, setParams] = useSearchParams();
   const branch = params.get("branch") ?? "";
   const staged = useStaged(tenant, tree, branch);
   const summary = useStagedSummary(tenant, tree);
   const queryClient = useQueryClient();
+  const toast = useToast();
+  const api = useStagedV2Api();
   const overlaps = useMemo(() => collectOverlaps(summary.data ?? []), [summary.data]);
   const [browsing, setBrowsing] = useState<StagedSnapshotV06 | null>(null);
+  const [unstaging, setUnstaging] = useState<StagedSnapshotV06 | null>(null);
 
   // The tree layout refreshes the staged list on live events; keep the summary in step.
   const seen = useRef({ branch, at: staged.dataUpdatedAt });
@@ -253,7 +469,21 @@ export function StagedTab() {
   }, [branch, staged.dataUpdatedAt, queryClient, tenant, tree]);
 
   const branchesSorted = useMemo(() => [...(summary.data ?? [])].sort((a, b) => b.latest_at.localeCompare(a.latest_at)), [summary.data]);
-  const list = useMemo(() => [...(staged.data ?? [])].sort((a, b) => b.staged_at.localeCompare(a.staged_at)), [staged.data]);
+  const groups = useMemo(() => groupByAuthor(staged.data ?? []), [staged.data]);
+
+  const isOwn = (s: StagedSnapshotV06) => account !== undefined && s.account_id === account.id;
+
+  const unstage = useMutation({
+    mutationFn: (s: StagedSnapshotV06) =>
+      api.unstage(tenant, tree, { branch: s.branch_name, label: labelOf(s), account: isOwn(s) ? undefined : s.account_id }),
+    meta: { inlineError: true },
+    onSuccess: (_removed, s) => {
+      void queryClient.invalidateQueries({ queryKey: stagedV2Keys.staged(tenant, tree) });
+      void queryClient.invalidateQueries({ queryKey: keys.stagedSummary(tenant, tree) });
+      void queryClient.invalidateQueries({ queryKey: keys.tree(tenant, tree), exact: true });
+      toast.success("Unstaged", `${slotName(s)} by ${s.author}`);
+    },
+  });
 
   return (
     <div className="flex flex-col gap-6">
@@ -269,7 +499,7 @@ export function StagedTab() {
 
       <section aria-labelledby="staged-by-branch" className="flex flex-col gap-3">
         <h3 id="staged-by-branch" className="flex items-center gap-2 text-sm font-semibold">
-          <Users aria-hidden="true" className="size-4" />
+          <GitBranch aria-hidden="true" className="size-4" />
           Activity by branch
         </h3>
         {summary.isPending ? (
@@ -296,8 +526,8 @@ export function StagedTab() {
       <section aria-labelledby="staged-all" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 id="staged-all" className="flex items-center gap-2 text-sm font-semibold">
-            <FileStack aria-hidden="true" className="size-4" />
-            All staged snapshots
+            <Users aria-hidden="true" className="size-4" />
+            Staged snapshots by person
           </h3>
           <BranchSelect
             tenant={tenant}
@@ -313,20 +543,53 @@ export function StagedTab() {
             <LoadingRows label="Loading staged work" />
           ) : staged.isError ? (
             <ErrorState error={staged.error} onRetry={() => void staged.refetch()} />
-          ) : list.length === 0 ? (
+          ) : groups.length === 0 ? (
             <EmptyState icon={FileStack} title={branch ? `Nobody has staged work on ${branch}` : "Nobody has staged work"}>
-              Teammates share WIP with <code className="font-mono">wt stage</code>, or automatically via the background daemon.
+              Teammates share WIP with <code className="font-mono">wt stage</code> (or <code className="font-mono">wt stage --label</code> for
+              a named slot), or automatically via the background daemon.
             </EmptyState>
           ) : (
             <ul aria-label="Staged snapshots" className="divide-y">
-              {list.map((s) => (
-                <StagedItem key={`${s.account_id}-${s.branch_name}`} s={s} overlaps={overlaps} onBrowse={setBrowsing} />
-              ))}
+              {groups.map((g) => {
+                const self = account !== undefined && g.accountId === account.id;
+                return (
+                  <AuthorGroup
+                    key={g.key}
+                    group={g}
+                    overlaps={overlaps}
+                    isSelf={self}
+                    canUnstage={self || canManage}
+                    onBrowse={setBrowsing}
+                    onUnstage={setUnstaging}
+                  />
+                );
+              })}
             </ul>
           )}
         </div>
       </section>
+
+      <StagedHistory branch={branch} />
+
       <StagedFilesSheet staged={browsing} onClose={() => setBrowsing(null)} />
+      <ConfirmAction
+        open={unstaging !== null}
+        onOpenChange={(o) => {
+          if (!o) setUnstaging(null);
+        }}
+        title={unstaging ? `Unstage ${slotName(unstaging)}?` : "Unstage"}
+        description={
+          unstaging && (
+            <>
+              Removes the staged snapshot {isOwn(unstaging) ? "you" : <span className="font-medium text-foreground">{unstaging.author}</span>} shared on{" "}
+              <span className="font-mono">{unstaging.branch_name}</span> in the{" "}
+              <span className="font-mono">{labelOf(unstaging) || "default"}</span> slot. Other labels stay staged and local work is not touched.
+            </>
+          )
+        }
+        confirmLabel="Unstage"
+        onConfirm={() => (unstaging ? unstage.mutateAsync(unstaging) : Promise.resolve())}
+      />
     </div>
   );
 }

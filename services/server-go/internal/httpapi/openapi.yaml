@@ -1284,7 +1284,12 @@ paths:
     get:
       operationId: listStaged
       summary: List staged snapshots
-      description: Staged (work-in-progress) snapshots of the tree, optionally for one branch.
+      description: |
+        Live staged (work-in-progress) snapshots of the tree, newest first,
+        optionally for one branch. v0.8 (§16.8): every (account, branch) has
+        up to 10 labeled slots (`label`, empty for the default slot);
+        anonymous readers of public trees get an empty list, and changed
+        paths the caller may not read are left out of `files_changed`.
       tags: [Staged]
       x-wt-action: tree:read
       security:
@@ -1318,11 +1323,13 @@ paths:
       operationId: unstage
       summary: Remove staged snapshots
       description: |
-        Removes the caller's staged snapshot on `branch` (every branch when
-        omitted). `account` removes another account's entries and requires
-        `tree:admin`. Returns the removed entries; removing nothing is not an
-        error. Audited as `staged.unstage` per entry; publishes
-        `staged.cleared`.
+        Removes the caller's staged snapshots on `branch` (every label; every
+        branch when omitted). v0.8 (§16.8): `label` (with `branch`) removes
+        one slot only; `label=` (empty) is the default slot. `account`
+        removes another account's entries and requires `tree:admin`. Returns
+        the removed entries; removing nothing is not an error. Removed
+        entries enter the staged history with status `cleared`. Audited as
+        `staged.unstage` per entry; publishes `staged.cleared`.
       tags: [Staged]
       x-wt-action: ['tree:read', 'tree:admin']
       parameters:
@@ -1332,6 +1339,14 @@ paths:
           description: Branch name (default every branch).
           schema:
             type: string
+        - name: label
+          in: query
+          required: false
+          description: Remove only this slot of `branch` (empty value = the default slot).
+          allowEmptyValue: true
+          schema:
+            type: string
+            pattern: "^([a-z0-9][a-z0-9_.-]{0,63})?$"
         - name: account
           in: query
           required: false
@@ -1345,6 +1360,114 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UnstageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/staged/history:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: stagedHistory
+      summary: Staged snapshot history
+      description: |
+        v0.8 (§16.8). Ended staged snapshots of the tree, newest first, kept
+        30 days: `pushed` (the author pushed the branch), `cleared`
+        (`wt unstage` or an admin) and `expired` (older than the server's
+        `--staged-ttl`, default 30 days). Anonymous readers get an empty
+        list; paths the caller may not read are left out of `files_changed`.
+      tags: [Staged]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: branch
+          in: query
+          required: false
+          description: Only entries of this branch.
+          schema:
+            type: string
+        - name: account
+          in: query
+          required: false
+          description: Only entries of this account (username or account id).
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          description: Only entries with this final status.
+          schema:
+            type: string
+            enum: [pushed, cleared, expired]
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of entries (default 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: The history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StagedHistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/staged/overlaps:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: stagedOverlaps
+      summary: Staged work touching paths
+      description: |
+        v0.8 (§16.8). Push-time advisory: the live staged snapshots of other
+        accounts (any branch) whose changed files include some of the given
+        paths. `wt push` prints "alice has staged changes to ..." from it and
+        never blocks. Requires sign-in; paths the caller may not read are
+        never reported. At most 5000 paths.
+      tags: [Staged]
+      x-wt-action: tree:read
+      parameters:
+        - name: paths
+          in: query
+          required: false
+          description: Comma-separated paths (repeatable).
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: false
+          description: One path per value (repeatable; for paths containing commas).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The overlapping staged snapshots.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StagedOverlapsResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -11737,9 +11860,107 @@ components:
         restricted_count:
           type: integer
           description: "RestrictedCount is the number of files left out of Files because the caller may not read them (path policies or license rules, §13.1)."
+    StagedHistoryEntry:
+      type: object
+      description: "HistoryEntry is an ended staged snapshot. The embedded snapshot's fields are flattened in JSON."
+      required: [id, snapshot_id, tree_id, tenant_id, account_id, author, branch_name, files_changed, files_added, files_modified, files_deleted, message, staged_at, status, ended_at, ended_by]
+      properties:
+        id:
+          type: string
+        snapshot_id:
+          type: string
+        tree_id:
+          type: string
+        tenant_id:
+          type: string
+        account_id:
+          type: string
+        author:
+          type: string
+        branch_name:
+          type: string
+        files_changed:
+          type: [array, "null"]
+          items:
+            type: string
+        files_added:
+          type: integer
+        files_modified:
+          type: integer
+        files_deleted:
+          type: integer
+        message:
+          type: string
+        staged_at:
+          type: string
+          format: date-time
+        label:
+          type: string
+          description: "Named staged slot (v0.8 §16.8); empty for the default slot."
+        manifest_hash:
+          type: string
+          description: "v0.5: hex BLAKE3 of the staged working manifest (\"\" when the client sent none)."
+        status:
+          type: string
+          enum: [pushed, cleared, expired]
+          description: "Status is the final status: pushed, cleared or expired."
+        ended_at:
+          type: string
+          format: date-time
+        ended_by:
+          type: string
+          description: "EndedBy is the username that pushed or unstaged, or \"system\"."
+        pushed_tip:
+          type: string
+          description: "PushedTip is the branch tip after the push (status pushed)."
+    StagedHistoryResponse:
+      type: object
+      description: "stagedHistoryResponse is the body of GET {tree}/staged/history."
+      required: [history]
+      properties:
+        history:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/StagedHistoryEntry"
+          description: "History holds ended staged snapshots (status pushed, cleared or expired), newest first."
+    StagedOverlap:
+      type: object
+      description: "StagedOverlap is one live staged snapshot of another account that touches some of the queried paths."
+      required: [account_id, author, branch, label, snapshot_id, message, staged_at, paths]
+      properties:
+        account_id:
+          type: string
+        author:
+          type: string
+        branch:
+          type: string
+        label:
+          type: string
+        snapshot_id:
+          type: string
+        message:
+          type: string
+        staged_at:
+          type: string
+          format: date-time
+        paths:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Paths are the queried paths this entry has staged changes to, sorted."
+    StagedOverlapsResponse:
+      type: object
+      description: "stagedOverlapsResponse is the body of GET {tree}/staged/overlaps."
+      required: [overlaps]
+      properties:
+        overlaps:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/StagedOverlap"
+          description: "Overlaps are other accounts' live staged snapshots that touch the queried paths (advisory: pushes are never blocked)."
     StagedSnapshot:
       type: object
-      description: "StagedSnapshot is a WIP snapshot visible to the team but not part of branch history. At most one per (tree, account, branch): a newer stage replaces the older one."
+      description: "StagedSnapshot is a WIP snapshot visible to the team but not part of branch history. At most one per (tree, account, branch, label): a newer stage of the same slot replaces the older one (v0.8, §16.8)."
       required: [snapshot_id, tree_id, tenant_id, account_id, author, branch_name, files_changed, files_added, files_modified, files_deleted, message, staged_at]
       properties:
         label:

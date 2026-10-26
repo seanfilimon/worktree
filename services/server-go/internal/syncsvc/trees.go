@@ -369,6 +369,7 @@ func (s *Service) Stage(ctx context.Context, req *syncpb.StageUploadRequest) (*s
 		FilesModified: req.GetFilesModified(),
 		FilesDeleted:  req.GetFilesDeleted(),
 		Message:       req.GetMessage(),
+		Label:         req.GetLabel(), // staged-v2 (§16.8)
 		StagedAt:      s.now(),
 	}
 	if mh := req.GetManifestHash(); mh != nil {

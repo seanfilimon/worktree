@@ -2,7 +2,7 @@ package staged
 
 // v0.5 (docs/ENGINEERING_PLAN.md §13.11, workstream daemon): explicit
 // removal of a staged snapshot (`wt unstage`, `wt stage --discard`, gRPC
-// Unstage, REST DELETE {tree}/staged).
+// Unstage, REST DELETE {tree}/staged). v0.8 (§16.8): labels and history.
 
 import (
 	"context"
@@ -23,17 +23,42 @@ type Unstager interface {
 	Unstage(ctx context.Context, p *domain.Principal, tree *domain.Tree, accountID, branch string) ([]domain.StagedSnapshot, error)
 }
 
-var _ Unstager = (*Service)(nil)
+// LabelUnstager removes one labeled slot (v0.8, §16.8).
+type LabelUnstager interface {
+	UnstageLabel(ctx context.Context, p *domain.Principal, tree *domain.Tree, accountID, branch, label string) ([]domain.StagedSnapshot, error)
+}
 
-// Unstage removes staged snapshots of accountID in tree: the entry for
-// branch, or every branch when branch is "". accountID "" means the caller.
+var (
+	_ Unstager      = (*Service)(nil)
+	_ LabelUnstager = (*Service)(nil)
+)
+
+// Unstage removes staged snapshots of accountID in tree: every label of
+// branch, or of every branch when branch is "". accountID "" means the
+// caller.
 //
 // Removing one's own entries requires domain.ActTreeRead; removing another
-// account's requires domain.ActTreeAdmin. Each removed entry publishes
-// domain.EventStagedCleared (payload Cleared, Reason "unstaged"). The removed
-// entries are returned (empty, not an error, when nothing matched), sorted by
-// branch.
+// account's requires domain.ActTreeAdmin. Each removed entry is recorded in
+// the history with status "cleared" and publishes domain.EventStagedCleared
+// (payload Cleared, Reason "unstaged"). The removed entries are returned
+// (empty, not an error, when nothing matched), sorted by branch then label.
 func (s *Service) Unstage(ctx context.Context, p *domain.Principal, tree *domain.Tree, accountID, branch string) ([]domain.StagedSnapshot, error) {
+	return s.unstage(ctx, p, tree, accountID, branch, nil)
+}
+
+// UnstageLabel is Unstage restricted to one slot: (branch, label), where
+// label "" is the default slot. branch is required.
+func (s *Service) UnstageLabel(ctx context.Context, p *domain.Principal, tree *domain.Tree, accountID, branch, label string) ([]domain.StagedSnapshot, error) {
+	if branch == "" {
+		return nil, fmt.Errorf("staged: unstage: branch is required with a label: %w", domain.ErrInvalid)
+	}
+	if err := ValidateLabel(label); err != nil {
+		return nil, fmt.Errorf("staged: unstage: %w", err)
+	}
+	return s.unstage(ctx, p, tree, accountID, branch, &label)
+}
+
+func (s *Service) unstage(ctx context.Context, p *domain.Principal, tree *domain.Tree, accountID, branch string, label *string) ([]domain.StagedSnapshot, error) {
 	if tree == nil {
 		return nil, fmt.Errorf("staged: unstage: nil tree: %w", domain.ErrInvalid)
 	}
@@ -55,41 +80,36 @@ func (s *Service) Unstage(ctx context.Context, p *domain.Principal, tree *domain
 	if err != nil {
 		return nil, fmt.Errorf("staged: unstage: %w", err)
 	}
-	var removed []domain.StagedSnapshot
+	removed := []domain.StagedSnapshot{}
 	for _, e := range all {
-		if e.AccountID != accountID || (branch != "" && e.BranchName != branch) {
+		if e.AccountID != accountID || (branch != "" && e.BranchName != branch) || (label != nil && e.Label != *label) {
 			continue
 		}
 		mu := s.lockFor(tree.ID, e.AccountID, e.BranchName)
 		mu.Lock()
-		err := s.store.DeleteStaged(ctx, tree.ID, e.AccountID, e.BranchName)
+		cur, err := s.find(ctx, tree.ID, e.AccountID, e.BranchName, e.Label)
+		if err == nil && cur == nil {
+			err = domain.ErrNotFound // removed concurrently
+		}
+		if err == nil {
+			e = *cur
+			err = s.store.DeleteStagedLabel(ctx, tree.ID, e.AccountID, e.BranchName, e.Label)
+		}
 		mu.Unlock()
 		if errors.Is(err, domain.ErrNotFound) {
-			continue // removed concurrently
+			continue
 		}
 		if err != nil {
 			return removed, fmt.Errorf("staged: unstage: %w", err)
 		}
 		removed = append(removed, e)
-		s.publish(domain.Event{
-			Type:     domain.EventStagedCleared,
-			TenantID: tree.TenantID,
-			TreeID:   tree.ID,
-			Actor:    p.Username,
-			Payload: Cleared{
-				TreeID:     tree.ID,
-				TenantID:   tree.TenantID,
-				AccountID:  e.AccountID,
-				Author:     e.Author,
-				BranchName: e.BranchName,
-				SnapshotID: e.SnapshotID,
-				Reason:     ReasonUnstaged,
-			},
-		})
+		s.ended(ctx, tree, e, StatusCleared, ReasonUnstaged, p.Username, "")
 	}
-	sort.Slice(removed, func(i, j int) bool { return removed[i].BranchName < removed[j].BranchName })
-	if removed == nil {
-		removed = []domain.StagedSnapshot{}
-	}
+	sort.Slice(removed, func(i, j int) bool {
+		if removed[i].BranchName != removed[j].BranchName {
+			return removed[i].BranchName < removed[j].BranchName
+		}
+		return removed[i].Label < removed[j].Label
+	})
 	return removed, nil
 }

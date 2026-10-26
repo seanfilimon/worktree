@@ -190,8 +190,8 @@ type Tag struct {
 }
 
 // StagedSnapshot is a WIP snapshot visible to the team but not part of
-// branch history. At most one per (tree, account, branch): a newer stage
-// replaces the older one.
+// branch history. At most one per (tree, account, branch, label): a newer
+// stage of the same slot replaces the older one (v0.8, §16.8).
 type StagedSnapshot struct {
 	SnapshotID    string    `json:"snapshot_id"`
 	TreeID        string    `json:"tree_id"`

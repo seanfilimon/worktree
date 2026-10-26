@@ -10,6 +10,7 @@ use worktree_sdk::Repository;
 
 use crate::commands::merge::{conflict_status, render_outcome};
 use crate::commands::remote::{normalize_server, remote_name};
+use crate::commands::staged; // staged-v2 (§16.8)
 use crate::context::{block_on, Context};
 use crate::error::{CliError, Result};
 use crate::output::format::{plural, short, short_or};
@@ -87,7 +88,12 @@ pub struct CloneArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct StageArgs {
+    /// staged-v2 (§16.8): `wt stage list`, `wt stage show [LABEL]`
+    #[command(subcommand)]
+    pub command: Option<staged::StageCommand>,
+
     /// Remote to stage on (default: [sync].remote, usually origin)
     #[arg(long, value_name = "R")]
     pub remote: Option<String>,
@@ -95,6 +101,11 @@ pub struct StageArgs {
     /// Remove your staged snapshot of the current branch instead (same as `wt unstage`)
     #[arg(long)]
     pub discard: bool,
+
+    /// Stage into a named slot (a-z 0-9 _ . -; up to 10 per branch) instead
+    /// of the default one; other slots are kept
+    #[arg(long, value_name = "L")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -107,9 +118,17 @@ pub struct UnstageArgs {
     #[arg(long, value_name = "B", conflicts_with = "all")]
     pub branch: Option<String>,
 
-    /// Remove your staged snapshots of every branch of the tree
+    /// Remove your staged snapshots of every branch (and label) of the tree
     #[arg(long)]
     pub all: bool,
+
+    /// Remove this labeled slot instead of the default one
+    #[arg(long, value_name = "L", conflicts_with_all = ["all", "all_labels"])]
+    pub label: Option<String>,
+
+    /// Remove every labeled slot of the branch (default slot included)
+    #[arg(long, conflicts_with = "all")]
+    pub all_labels: bool,
 }
 
 pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
@@ -134,7 +153,7 @@ pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
             });
         }
         if let Some(report) = out.push {
-            return render_push(ctx, &remote, &report);
+            return render_push(ctx, &repo, &tree.name, &remote, &report);
         }
         return Ok(());
     }
@@ -154,32 +173,58 @@ pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
         }
     })?;
     // ---- end sync workstream ----
-    render_push(ctx, &remote, &report)
+    render_push(ctx, &repo, &tree.name, &remote, &report)
 }
 
-fn render_push(ctx: &Context, remote: &str, report: &remote::PushReport) -> Result<()> {
-    ctx.out.emit(&report, |t| {
-        if report.up_to_date {
-            t.line(format_args!(
-                "Everything up to date ({remote}/{} at {})",
-                report.branch,
-                short(&report.new_tip).yellow()
-            ));
-            return;
-        }
-        t.line(format_args!(
-            "  {}..{}  {} -> {remote}/{}",
-            short_or(report.old_tip.as_deref(), "(new)"),
-            short(&report.new_tip),
-            report.branch.green(),
-            report.branch
-        ));
-        t.line(format_args!(
-            "Pushed {} and {}.",
-            plural(report.snapshots_sent, "snapshot", "snapshots"),
-            plural(report.objects_sent, "object", "objects")
-        ));
+/// `wt push` JSON: the push report plus the staged-v2 (§16.8) advisory.
+#[derive(Serialize)]
+struct PushOutput<'a> {
+    #[serde(flatten)]
+    report: &'a remote::PushReport,
+    staged_overlaps: &'a [remote::StagedOverlap],
+}
+
+fn render_push(
+    ctx: &Context,
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    report: &remote::PushReport,
+) -> Result<()> {
+    // staged-v2 (§16.8): who else has staged changes to the pushed paths
+    // (advisory only; any failure yields no warnings).
+    let overlaps = block_on(remote::push_overlaps(repo, tree, remote, report)).unwrap_or_default();
+    let out = PushOutput {
+        report,
+        staged_overlaps: &overlaps,
+    };
+    ctx.out.emit(&out, |t| {
+        render_push_text(t, remote, report);
+        staged::render_overlaps(t, &overlaps);
     })
+}
+
+fn render_push_text(t: &mut Text, remote: &str, report: &remote::PushReport) {
+    if report.up_to_date {
+        t.line(format_args!(
+            "Everything up to date ({remote}/{} at {})",
+            report.branch,
+            short(&report.new_tip).yellow()
+        ));
+        return;
+    }
+    t.line(format_args!(
+        "  {}..{}  {} -> {remote}/{}",
+        short_or(report.old_tip.as_deref(), "(new)"),
+        short(&report.new_tip),
+        report.branch.green(),
+        report.branch
+    ));
+    t.line(format_args!(
+        "Pushed {} and {}.",
+        plural(report.snapshots_sent, "snapshot", "snapshots"),
+        plural(report.objects_sent, "object", "objects")
+    ));
 }
 
 pub fn fetch(ctx: &Context, args: FetchArgs) -> Result<()> {
@@ -365,10 +410,17 @@ struct UnstageResult<'a> {
     remote: &'a str,
     /// `None` = every branch.
     branch: Option<&'a str>,
+    /// staged-v2 (§16.8): the slot (`None` = every label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
     removed: bool,
+    /// staged-v2 (§16.8): the removed entries.
+    removed_entries: &'a [remote::StagedInfo],
 }
 
-/// `wt unstage` / `wt stage --discard`: remove the caller's staged snapshot.
+/// `wt unstage` / `wt stage --discard`: remove the caller's staged snapshot
+/// (staged-v2, §16.8: the default slot of the branch, `--label L` one slot,
+/// `--all-labels` every slot of the branch, `--all` everything).
 pub fn unstage(ctx: &Context, args: UnstageArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
@@ -377,34 +429,48 @@ pub fn unstage(ctx: &Context, args: UnstageArgs) -> Result<()> {
         (false, Some(b)) => Some(b),
         (false, None) => Some(repo.current_branch(&tree.name)?),
     };
-    let removed = block_on(remote::unstage(
-        &repo,
-        &tree.name,
-        &remote,
-        branch.as_deref(),
-    ))??;
+    let label = (!args.all && !args.all_labels).then(|| args.label.unwrap_or_default());
+    let scope = match (&branch, &label) {
+        (None, _) => remote::UnstageScope::All,
+        (Some(b), None) => remote::UnstageScope::Branch(b.clone()),
+        (Some(b), Some(l)) => remote::UnstageScope::Slot {
+            branch: b.clone(),
+            label: l.clone(),
+        },
+    };
+    let removed = block_on(remote::unstage_slot(&repo, &tree.name, &remote, &scope))??;
     let result = UnstageResult {
         tree: &tree.name,
         remote: &remote,
         branch: branch.as_deref(),
-        removed,
+        label: label.as_deref(),
+        removed: !removed.is_empty(),
+        removed_entries: &removed,
     };
     ctx.out.emit(&result, |t| {
-        let scope = match &branch {
+        let mut scope = match &branch {
             Some(b) => format!("on {}", b.green()),
             None => "on any branch".to_string(),
         };
-        if removed {
-            t.line(format_args!(
-                "Removed your staged snapshot {scope} from {remote}"
-            ));
-        } else {
+        match label.as_deref() {
+            Some("") | None => {}
+            Some(l) => scope.push_str(&format!(" in slot {l}")),
+        }
+        if removed.is_empty() {
             t.line(format_args!("Nothing staged {scope} on {remote}"));
+        } else {
+            t.line(format_args!(
+                "Removed your {} {scope} from {remote}",
+                plural(removed.len(), "staged snapshot", "staged snapshots")
+            ));
         }
     })
 }
 
 pub fn stage(ctx: &Context, args: StageArgs) -> Result<()> {
+    if let Some(command) = args.command {
+        return staged::run(ctx, command); // staged-v2 (§16.8)
+    }
     if args.discard {
         return unstage(
             ctx,
@@ -412,15 +478,23 @@ pub fn stage(ctx: &Context, args: StageArgs) -> Result<()> {
                 remote: args.remote,
                 branch: None,
                 all: false,
+                label: args.label,
+                all_labels: false,
             },
         );
     }
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
-    let staged = block_on(remote::stage(&repo, &tree.name, &remote))??;
+    let label = args.label.unwrap_or_default();
+    let staged = block_on(remote::stage_label(&repo, &tree.name, &remote, &label))??;
     ctx.out.emit(&staged, |t| {
+        let slot = if staged.label.is_empty() {
+            String::new()
+        } else {
+            format!(" (slot {})", staged.label)
+        };
         t.line(format_args!(
-            "Staged {} on {} to {remote} as {}",
+            "Staged {} on {}{slot} to {remote} as {}",
             plural(staged.files_changed.len(), "changed file", "changed files"),
             staged.branch.green(),
             short(&staged.snapshot_id).yellow()

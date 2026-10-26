@@ -329,6 +329,13 @@ pub struct StagedInfo {
     pub files_deleted: u32,
     pub message: Option<String>,
     pub staged_at: chrono::DateTime<chrono::Utc>,
+    /// staged-v2 (§16.8): named slot ("" = the default slot).
+    #[serde(default)]
+    pub label: String,
+    /// staged-v2 (§16.8): hex hash of the staged working manifest, when the
+    /// client uploaded one (needed by `wt checkout --staged`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
 }
 
 /// Upload the working state as a staged snapshot: builds a manifest from
@@ -341,8 +348,29 @@ pub struct StagedInfo {
 /// server tree if needed. When the working tree matches the local branch
 /// tip, that snapshot's id is staged; otherwise a fresh id names the WIP.
 pub async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result<StagedInfo> {
-    stage::stage(repo, tree, remote).await
+    stage::stage(repo, tree, remote, "").await
 }
+
+/// staged-v2 (§16.8): [`stage`] into the named slot `label` ("" = the
+/// default slot; `[a-z0-9][a-z0-9_.-]{0,63}`, at most 10 per branch).
+pub async fn stage_label(
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    label: &str,
+) -> Result<StagedInfo> {
+    stage_v2::validate_label(label)?;
+    stage::stage(repo, tree, remote, label).await
+}
+
+// staged-v2 (§16.8): labeled slots, history, overlaps, `wt checkout --staged`.
+mod stage_v2;
+pub use stage_v2::{
+    checkout_staged, push_overlaps, staged_branch_name, staged_files, staged_history,
+    staged_overlaps, unstage_slot, validate_label, CheckoutStaged, CheckoutStagedReport,
+    StagedFile, StagedFiles, StagedHistoryEntry, StagedOverlap, UnstageScope,
+    MAX_LABELS_PER_BRANCH,
+};
 
 /// Team-wide staged snapshots for `tree` (optionally one branch).
 pub async fn list_staged(

@@ -4,9 +4,16 @@
 // A staged snapshot is uploaded by a developer's client (manually with
 // `wt stage` or automatically by worktree-bg) so that teammates can see what
 // is being worked on before it is pushed. Staged snapshots are not part of
-// branch history; at most one exists per (tree, account, branch) and a newer
-// stage replaces the older one. Entries are removed when the author pushes
-// the branch (ClearOnPush) or when they become older than Service.MaxAge.
+// branch history.
+//
+// v0.8 (docs/ENGINEERING_PLAN.md §16.8): every (tree, account, branch) has up
+// to MaxLabelsPerBranch named slots keyed by a label ("" is the default slot,
+// the only one before v0.8, so older entries need no migration). A newer
+// stage of the same slot replaces the older one. An entry ends when its
+// author pushes it (status "pushed"), removes it (`wt unstage`, status
+// "cleared") or when it is older than Service.MaxAge (the --staged-ttl,
+// status "expired"); ended entries are kept as history for
+// Service.HistoryRetention (collection "staged_history").
 //
 // See crates/worktree-protocol/specs/visibility/StagedVisibility.md.
 package staged
@@ -16,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"path"
 	"sort"
 	"strings"
@@ -27,9 +35,9 @@ import (
 )
 
 const (
-	// DefaultMaxAge is the default retention of a staged snapshot that is
-	// never pushed or re-staged.
-	DefaultMaxAge = 7 * 24 * time.Hour
+	// DefaultMaxAge is the default time-to-live of a staged snapshot that is
+	// never pushed or re-staged (server flag --staged-ttl).
+	DefaultMaxAge = 30 * 24 * time.Hour
 
 	// MaxFilesListed is the maximum number of changed paths a client may list
 	// in one staged snapshot; larger requests are rejected with ErrInvalid.
@@ -63,7 +71,10 @@ type Cleared struct {
 	Author     string `json:"author"`
 	BranchName string `json:"branch_name"`
 	SnapshotID string `json:"snapshot_id"`
-	Reason     string `json:"reason"` // ReasonPushed | ReasonExpired
+	Reason     string `json:"reason"` // ReasonPushed | ReasonExpired | ReasonUnstaged
+	// v0.8 (§16.8).
+	Label  string `json:"label,omitempty"`
+	Status string `json:"status"` // StatusPushed | StatusExpired | StatusCleared
 }
 
 // Service manages team-visible staged snapshots. It implements
@@ -73,16 +84,29 @@ type Service struct {
 	authz domain.Authorizer
 	bus   domain.EventBus // may be nil: events are then not published
 
-	// MaxAge is the retention window: entries whose StagedAt is older than
-	// MaxAge are hidden from List/Summary and lazily deleted. A value <= 0
-	// disables expiry. It defaults to DefaultMaxAge and must only be changed
-	// before the Service is used concurrently.
+	// MaxAge is the time-to-live: entries whose StagedAt is older than
+	// MaxAge are hidden from List/Summary, expired by the sweeper (Start)
+	// and lazily on reads. A value <= 0 disables expiry. It defaults to
+	// DefaultMaxAge and must only be changed before the Service is used
+	// concurrently.
 	MaxAge time.Duration
+
+	// HistoryRetention is how long ended entries stay in the history
+	// (default DefaultHistoryRetention; <= 0 keeps none).
+	HistoryRetention time.Duration
+
+	// SweepInterval is the period of the Start ticker (default
+	// DefaultSweepInterval).
+	SweepInterval time.Duration
+
+	// Logger receives sweeper warnings (default slog.Default()).
+	Logger *slog.Logger
 
 	now func() time.Time
 
 	// locks serializes the store writes for a given (tree, account, branch)
-	// so that lazy expiry can never delete an entry re-staged concurrently.
+	// so that lazy expiry can never delete an entry re-staged concurrently
+	// and the per-branch label limit holds.
 	locks [lockStripes]sync.Mutex
 }
 
@@ -93,11 +117,13 @@ var _ domain.StagedService = (*Service)(nil)
 // may be nil, in which case no events are published.
 func New(store domain.MetaStore, authz domain.Authorizer, bus domain.EventBus) *Service {
 	return &Service{
-		store:  store,
-		authz:  authz,
-		bus:    bus,
-		MaxAge: DefaultMaxAge,
-		now:    time.Now,
+		store:            store,
+		authz:            authz,
+		bus:              bus,
+		MaxAge:           DefaultMaxAge,
+		HistoryRetention: DefaultHistoryRetention,
+		SweepInterval:    DefaultSweepInterval,
+		now:              time.Now,
 	}
 }
 
@@ -117,13 +143,22 @@ func (s *Service) publish(e domain.Event) {
 	}
 }
 
-// Stage records st as the principal's staged snapshot for st.BranchName in
-// tree, replacing any previous entry for the same (tree, account, branch).
+func (s *Service) logger() *slog.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	return slog.Default()
+}
+
+// Stage records st as the principal's staged snapshot for (st.BranchName,
+// st.Label) in tree, replacing any previous entry of the same slot.
 //
 // It requires domain.ActTreeWrite (the authorizer's error is returned as is).
-// st.SnapshotID and st.BranchName must be non-empty and at most
-// MaxFilesListed paths may be listed (ErrInvalid otherwise). Paths are
-// normalized ('/'-separated, cleaned, de-duplicated, sorted) and truncated to
+// st.SnapshotID and st.BranchName must be non-empty, st.Label must be ""
+// or match LabelPattern, at most MaxFilesListed paths may be listed and a
+// new label is refused when the branch already has MaxLabelsPerBranch
+// entries of the principal (ErrInvalid otherwise). Paths are normalized
+// ('/'-separated, cleaned, de-duplicated, sorted) and truncated to
 // MaxFilesStored; counters are kept. TreeID, TenantID, AccountID, Author and
 // StagedAt are set by the server, overriding client values. On success st is
 // updated to the stored record and domain.EventSnapshotStaged is published
@@ -147,6 +182,9 @@ func (s *Service) Stage(ctx context.Context, p *domain.Principal, tree *domain.T
 	if strings.TrimSpace(st.BranchName) == "" {
 		return fmt.Errorf("staged: stage: branch is required: %w", domain.ErrInvalid)
 	}
+	if err := ValidateLabel(st.Label); err != nil {
+		return fmt.Errorf("staged: stage: %w", err)
+	}
 	if n := len(st.FilesChanged); n > MaxFilesListed {
 		return fmt.Errorf("staged: stage: %d files listed (max %d): %w", n, MaxFilesListed, domain.ErrInvalid)
 	}
@@ -162,7 +200,10 @@ func (s *Service) Stage(ctx context.Context, p *domain.Principal, tree *domain.T
 
 	mu := s.lockFor(rec.TreeID, rec.AccountID, rec.BranchName)
 	mu.Lock()
-	err := s.store.PutStaged(ctx, &rec)
+	err := s.checkLabelLimit(ctx, &rec)
+	if err == nil {
+		err = s.store.PutStaged(ctx, &rec)
+	}
 	mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("staged: stage: %w", err)
@@ -182,17 +223,44 @@ func (s *Service) Stage(ctx context.Context, p *domain.Principal, tree *domain.T
 	return nil
 }
 
+// checkLabelLimit refuses a new slot when the account already has
+// MaxLabelsPerBranch live entries on the branch (caller holds the lock).
+// Replacing an existing slot is always allowed.
+func (s *Service) checkLabelLimit(ctx context.Context, rec *domain.StagedSnapshot) error {
+	mine, err := s.findAll(ctx, rec.TreeID, rec.AccountID, rec.BranchName)
+	if err != nil {
+		return err
+	}
+	live := 0
+	for _, e := range mine {
+		if e.Label == rec.Label {
+			return nil
+		}
+		if !s.isExpired(e) {
+			live++
+		}
+	}
+	if live >= MaxLabelsPerBranch {
+		return fmt.Errorf("%d staged snapshots on branch %q already (max %d per branch); unstage one first: %w",
+			live, rec.BranchName, MaxLabelsPerBranch, domain.ErrInvalid)
+	}
+	return nil
+}
+
 // List returns the live staged snapshots of tree, optionally restricted to
 // branch ("" = all branches), newest first. It requires domain.ActTreeRead.
-// Entries older than MaxAge are omitted and lazily deleted during the call
-// (best effort; deletion errors are ignored), publishing
-// domain.EventStagedCleared with Reason "expired".
+// Anonymous callers (readers of public trees) get an empty list: staged
+// metadata is only shown to signed-in readers (§16.8). Entries older than
+// MaxAge are omitted and lazily expired during the call (best effort).
 func (s *Service) List(ctx context.Context, p *domain.Principal, tree *domain.Tree, branch string) ([]domain.StagedSnapshot, error) {
 	if tree == nil {
 		return nil, fmt.Errorf("staged: list: nil tree: %w", domain.ErrInvalid)
 	}
 	if err := s.authz.Authorize(ctx, p, domain.ActTreeRead, tree.TenantID, tree); err != nil {
 		return nil, err
+	}
+	if p == nil {
+		return []domain.StagedSnapshot{}, nil
 	}
 	live, err := s.listLive(ctx, tree, branch)
 	if err != nil {
@@ -202,10 +270,13 @@ func (s *Service) List(ctx context.Context, p *domain.Principal, tree *domain.Tr
 	return live, nil
 }
 
-// ClearOnPush removes the principal's staged entry for branch after a
-// successful push. It requires domain.ActTreeWrite. If an entry existed it
-// publishes domain.EventStagedCleared (payload Cleared, Reason "pushed");
-// if none existed it is a no-op and returns nil.
+// ClearOnPush ends the principal's staged entries of branch after a
+// successful push: the default slot always, and every labeled slot whose
+// snapshot is the new branch tip or whose working manifest is the tip's
+// manifest (that work is now pushed). It requires domain.ActTreeWrite. Each
+// ended entry is recorded in the history with status "pushed" and publishes
+// domain.EventStagedCleared (payload Cleared, Reason "pushed"); nothing to
+// clear is a no-op returning nil.
 func (s *Service) ClearOnPush(ctx context.Context, p *domain.Principal, tree *domain.Tree, branch string) error {
 	if tree == nil {
 		return fmt.Errorf("staged: clear: nil tree: %w", domain.ErrInvalid)
@@ -219,72 +290,116 @@ func (s *Service) ClearOnPush(ctx context.Context, p *domain.Principal, tree *do
 	if branch == "" {
 		return fmt.Errorf("staged: clear: branch is required: %w", domain.ErrInvalid)
 	}
+	tipID, tipManifest := s.branchTip(ctx, tree.ID, branch)
 
 	mu := s.lockFor(tree.ID, p.AccountID, branch)
 	mu.Lock()
-	existing, err := s.find(ctx, tree.ID, p.AccountID, branch)
-	if err == nil && existing != nil {
-		err = s.store.DeleteStaged(ctx, tree.ID, p.AccountID, branch)
-		if errors.Is(err, domain.ErrNotFound) {
-			err = nil
+	mine, err := s.findAll(ctx, tree.ID, p.AccountID, branch)
+	var ended []domain.StagedSnapshot
+	if err == nil {
+		for _, e := range mine {
+			pushed := e.Label == "" ||
+				(tipID != "" && e.SnapshotID == tipID) ||
+				(tipManifest != "" && e.ManifestHash == tipManifest)
+			if !pushed {
+				continue
+			}
+			if derr := s.store.DeleteStagedLabel(ctx, tree.ID, p.AccountID, branch, e.Label); derr != nil && !errors.Is(derr, domain.ErrNotFound) {
+				err = derr
+				break
+			}
+			ended = append(ended, e)
 		}
 	}
 	mu.Unlock()
+	for _, e := range ended {
+		s.ended(ctx, tree, e, StatusPushed, ReasonPushed, p.Username, tipID)
+	}
 	if err != nil {
 		return fmt.Errorf("staged: clear: %w", err)
 	}
-	if existing == nil {
-		return nil
+	return nil
+}
+
+// branchTip returns the tip snapshot id and its manifest hash ("" when
+// unknown; best effort).
+func (s *Service) branchTip(ctx context.Context, treeID, branch string) (string, string) {
+	b, err := s.store.GetBranch(ctx, treeID, branch)
+	if err != nil || b == nil || b.Tip == "" {
+		return "", ""
 	}
+	snap, err := s.store.GetSnapshot(ctx, b.Tip)
+	if err != nil || snap == nil {
+		return b.Tip, ""
+	}
+	return b.Tip, snap.ManifestHash.Hex()
+}
+
+// ended records e in the history and publishes domain.EventStagedCleared.
+func (s *Service) ended(ctx context.Context, tree *domain.Tree, e domain.StagedSnapshot, status, reason, actor, pushedTip string) {
+	s.recordHistory(ctx, e, status, actor, pushedTip)
 	s.publish(domain.Event{
 		Type:     domain.EventStagedCleared,
 		TenantID: tree.TenantID,
 		TreeID:   tree.ID,
-		Actor:    p.Username,
+		Actor:    actor,
 		Payload: Cleared{
 			TreeID:     tree.ID,
 			TenantID:   tree.TenantID,
-			AccountID:  p.AccountID,
-			Author:     p.Username,
-			BranchName: branch,
-			SnapshotID: existing.SnapshotID,
-			Reason:     ReasonPushed,
+			AccountID:  e.AccountID,
+			Author:     e.Author,
+			BranchName: e.BranchName,
+			SnapshotID: e.SnapshotID,
+			Reason:     reason,
+			Label:      e.Label,
+			Status:     status,
 		},
 	})
-	return nil
 }
 
-// find returns the stored entry for (tree, account, branch) or nil.
-func (s *Service) find(ctx context.Context, treeID, accountID, branch string) (*domain.StagedSnapshot, error) {
-	all, err := s.store.ListStaged(ctx, treeID, branch)
+// find returns the stored entry for (tree, account, branch, label) or nil.
+func (s *Service) find(ctx context.Context, treeID, accountID, branch, label string) (*domain.StagedSnapshot, error) {
+	all, err := s.findAll(ctx, treeID, accountID, branch)
 	if err != nil {
 		return nil, err
 	}
 	for i := range all {
-		if all[i].AccountID == accountID && all[i].BranchName == branch {
+		if all[i].Label == label {
 			return &all[i], nil
 		}
 	}
 	return nil, nil
 }
 
+// findAll returns every stored entry (any label) of (tree, account, branch).
+func (s *Service) findAll(ctx context.Context, treeID, accountID, branch string) ([]domain.StagedSnapshot, error) {
+	all, err := s.store.ListStaged(ctx, treeID, branch)
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, e := range all {
+		if e.AccountID == accountID && e.BranchName == branch {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) isExpired(e domain.StagedSnapshot) bool {
+	return s.MaxAge > 0 && e.StagedAt.Before(s.now().Add(-s.MaxAge))
+}
+
 // listLive lists tree's staged entries, filters out expired ones and lazily
-// deletes them.
+// expires them.
 func (s *Service) listLive(ctx context.Context, tree *domain.Tree, branch string) ([]domain.StagedSnapshot, error) {
 	all, err := s.store.ListStaged(ctx, tree.ID, branch)
 	if err != nil {
 		return nil, err
 	}
-	if s.MaxAge <= 0 {
-		if all == nil {
-			all = []domain.StagedSnapshot{}
-		}
-		return all, nil
-	}
-	cutoff := s.now().Add(-s.MaxAge)
 	live := make([]domain.StagedSnapshot, 0, len(all))
 	for _, e := range all {
-		if e.StagedAt.Before(cutoff) {
+		if s.isExpired(e) {
 			s.expire(ctx, tree, e)
 			continue
 		}
@@ -293,36 +408,23 @@ func (s *Service) listLive(ctx context.Context, tree *domain.Tree, branch string
 	return live, nil
 }
 
-// expire deletes stale entry e, unless it was replaced since it was read.
-// Errors are ignored: expiry is best effort and retried on the next read.
-func (s *Service) expire(ctx context.Context, tree *domain.Tree, e domain.StagedSnapshot) {
+// expire deletes stale entry e (recording it as "expired"), unless it was
+// replaced since it was read. It reports whether e was removed. Errors are
+// ignored: expiry is best effort and retried on the next read or sweep.
+func (s *Service) expire(ctx context.Context, tree *domain.Tree, e domain.StagedSnapshot) bool {
 	mu := s.lockFor(tree.ID, e.AccountID, e.BranchName)
 	mu.Lock()
-	cur, err := s.find(ctx, tree.ID, e.AccountID, e.BranchName)
+	cur, err := s.find(ctx, tree.ID, e.AccountID, e.BranchName, e.Label)
 	deleted := false
 	if err == nil && cur != nil && cur.SnapshotID == e.SnapshotID && cur.StagedAt.Equal(e.StagedAt) {
-		err = s.store.DeleteStaged(ctx, tree.ID, e.AccountID, e.BranchName)
+		err = s.store.DeleteStagedLabel(ctx, tree.ID, e.AccountID, e.BranchName, e.Label)
 		deleted = err == nil
 	}
 	mu.Unlock()
-	if !deleted {
-		return
+	if deleted {
+		s.ended(ctx, tree, e, StatusExpired, ReasonExpired, "system", "")
 	}
-	s.publish(domain.Event{
-		Type:     domain.EventStagedCleared,
-		TenantID: tree.TenantID,
-		TreeID:   tree.ID,
-		Actor:    "system",
-		Payload: Cleared{
-			TreeID:     tree.ID,
-			TenantID:   tree.TenantID,
-			AccountID:  e.AccountID,
-			Author:     e.Author,
-			BranchName: e.BranchName,
-			SnapshotID: e.SnapshotID,
-			Reason:     ReasonExpired,
-		},
-	})
+	return deleted
 }
 
 // normalizePaths converts paths to clean '/'-separated relative form, drops
@@ -364,8 +466,8 @@ func truncateUTF8(s string, n int) string {
 	return s[:n]
 }
 
-// sortNewestFirst orders entries by StagedAt descending, then branch, then
-// author, for deterministic output.
+// sortNewestFirst orders entries by StagedAt descending, then branch,
+// author and label, for deterministic output.
 func sortNewestFirst(es []domain.StagedSnapshot) {
 	sort.SliceStable(es, func(i, j int) bool {
 		a, b := es[i], es[j]
@@ -375,6 +477,9 @@ func sortNewestFirst(es []domain.StagedSnapshot) {
 		if a.BranchName != b.BranchName {
 			return a.BranchName < b.BranchName
 		}
-		return a.Author < b.Author
+		if a.Author != b.Author {
+			return a.Author < b.Author
+		}
+		return a.Label < b.Label
 	})
 }

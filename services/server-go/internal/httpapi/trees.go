@@ -84,6 +84,9 @@ func (a *api) handleListTrees(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
+		if p == nil { // staged-v2 (§16.8): hidden from anonymous readers
+			s.StagedCount = 0
+		}
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Tree.Name < out[j].Tree.Name })
@@ -165,6 +168,9 @@ func (a *api) handleGetTree(w http.ResponseWriter, r *http.Request) error {
 	s, err := a.summarize(r.Context(), tree)
 	if err != nil {
 		return err
+	}
+	if principal(r) == nil { // staged-v2 (§16.8): hidden from anonymous readers
+		s.StagedCount = 0
 	}
 	writeJSON(w, http.StatusOK, s)
 	return nil
@@ -279,6 +285,10 @@ func (a *api) handleListStaged(w http.ResponseWriter, r *http.Request) error {
 	staged = nonNil(staged)
 	for i := range staged {
 		staged[i].FilesChanged = nonNil(staged[i].FilesChanged)
+	}
+	// staged-v2 (§16.8): paths the caller may not read are not listed.
+	if err := a.filterStagedFiles(r.Context(), principal(r), tree, len(staged), func(i int) *[]string { return &staged[i].FilesChanged }); err != nil {
+		return err
 	}
 	writeJSON(w, http.StatusOK, staged)
 	return nil

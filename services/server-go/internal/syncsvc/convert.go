@@ -233,6 +233,7 @@ func stagedToPB(s *domain.StagedSnapshot) *syncpb.StagedInfo {
 		FilesModified: s.FilesModified,
 		FilesDeleted:  s.FilesDeleted,
 		StagedAt:      tsToPB(s.StagedAt),
+		Label:         s.Label, // staged-v2 (§16.8)
 	}
 	if s.Message != "" {
 		info.Message = proto.String(s.Message)
