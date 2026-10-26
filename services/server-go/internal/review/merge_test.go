@@ -254,7 +254,7 @@ func TestServerMergeOfDivergedBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Mergeable || len(c.Blockers) != 0 || !slices.Equal(c.Methods, []string{domain.MergeCommit, domain.MergeSquash}) {
+	if !c.Mergeable || len(c.Blockers) != 0 || !slices.Equal(c.Methods, []string{domain.MergeCommit, domain.MergeSquash, MergeRebase}) {
 		t.Fatalf("checks = %+v", c)
 	}
 	mb, err := e.svc.Mergeability(ctx, eve, e.tree, 1)
@@ -262,7 +262,7 @@ func TestServerMergeOfDivergedBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	if mb.FastForward || mb.UpToDate || mb.Default != domain.MergeCommit || len(mb.Conflicts) != 0 ||
-		!slices.Equal(mb.Methods, []string{domain.MergeCommit, domain.MergeSquash}) ||
+		!slices.Equal(mb.Methods, []string{domain.MergeCommit, domain.MergeSquash, MergeRebase}) ||
 		!slices.Equal(mb.Allowed, AllMergeMethods) || mb.MergeBase != "c01" || mb.Reasons[domain.MergeFastForward] == "" {
 		t.Fatalf("mergeability = %+v", mb)
 	}
@@ -459,7 +459,7 @@ func TestServerMergeMethodRestrictions(t *testing.T) {
 		_, mainTip, _ := e.diverged(t)
 		e.protect(t, domain.BranchProtection{Pattern: "main", RequireLinear: true})
 		c := mustChecks(t, e)
-		if !c.Mergeable || !slices.Equal(c.Methods, []string{domain.MergeSquash}) {
+		if !c.Mergeable || !slices.Equal(c.Methods, []string{domain.MergeSquash, MergeRebase}) {
 			t.Fatalf("checks = %+v", c)
 		}
 		_, err := e.svc.MergeWith(ctx, carol, e.tree, 1, MergeOptions{Method: domain.MergeCommit})
@@ -528,7 +528,7 @@ func TestServerMergeEdgeCases(t *testing.T) {
 	t.Run("invalid options", func(t *testing.T) {
 		e := newMergeEnv(t)
 		e.diverged(t)
-		for _, opts := range []MergeOptions{{Method: "rebase"}, {Message: strings.Repeat("x", MaxMergeMessage+1)}, {Message: "a\x00b"}} {
+		for _, opts := range []MergeOptions{{Method: "octopus"}, {Message: strings.Repeat("x", MaxMergeMessage+1)}, {Message: "a\x00b"}} {
 			if _, err := e.svc.MergeWith(ctx, carol, e.tree, 1, opts); !errors.Is(err, domain.ErrInvalid) {
 				t.Fatalf("%+v: err = %v", opts.Method, err)
 			}

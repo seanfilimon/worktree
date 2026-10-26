@@ -81,7 +81,7 @@ func TestMergeMethodsREST(t *testing.T) {
 	divergedMR(t, f, objs, false)
 
 	mb := f.expect("GET", divMR+"/mergeability", "vic", nil, 200, "")
-	if mb["fast_forward"] != false || fmt.Sprint(mb["methods"]) != "[merge squash]" || mb["default"] != "merge" ||
+	if mb["fast_forward"] != false || fmt.Sprint(mb["methods"]) != "[merge squash rebase]" || mb["default"] != "merge" ||
 		mb["merge_base"] != "d0" || fmt.Sprint(mb["conflicts"]) != "[]" {
 		t.Fatalf("mergeability = %v", mb)
 	}
@@ -90,11 +90,11 @@ func TestMergeMethodsREST(t *testing.T) {
 
 	// Readiness agrees: a non-fast-forwardable MR is mergeable with merge.
 	c := f.expect("GET", divMR+"/checks", "vic", nil, 200, "")
-	if c["mergeable"] != true || fmt.Sprint(c["methods"]) != "[merge squash]" || fmt.Sprint(c["blockers"]) != "[]" {
+	if c["mergeable"] != true || fmt.Sprint(c["methods"]) != "[merge squash rebase]" || fmt.Sprint(c["blockers"]) != "[]" {
 		t.Fatalf("checks = %v", c)
 	}
 
-	f.expect("POST", divMR+"/merge", "carol", map[string]any{"method": "rebase"}, 400, "bad_request")
+	f.expect("POST", divMR+"/merge", "carol", map[string]any{"method": "octopus"}, 400, "bad_request")
 	f.expect("POST", divMR+"/merge", "carol", map[string]any{"method": "squash", "extra": 1}, 400, "bad_request")
 	f.expect("POST", divMR+"/merge", "carol", map[string]any{"method": "fast-forward"}, 409, "conflict")
 

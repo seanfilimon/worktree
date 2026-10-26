@@ -78,6 +78,9 @@ type Service struct {
 	// on the source branch (nil = quota only).
 	quota      domain.PushChecker
 	pushChecks []domain.PushChecker
+
+	// v0.8 (§16.9, rebase.go): cached rebase outcomes per (source, target).
+	rebases rebaseCache
 }
 
 // SetObjects gives the service the object store, enabling the server-side

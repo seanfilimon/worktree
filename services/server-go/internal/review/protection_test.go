@@ -198,7 +198,7 @@ func TestNormalizeMergeMethods(t *testing.T) {
 	if got, err := NormalizeMergeMethods(nil); err != nil || got != nil {
 		t.Fatalf("empty: %v, %v", got, err)
 	}
-	if _, err := NormalizeMergeMethods([]string{"rebase"}); !errors.Is(err, domain.ErrInvalid) {
+	if _, err := NormalizeMergeMethods([]string{"octopus"}); !errors.Is(err, domain.ErrInvalid) {
 		t.Fatalf("unknown: %v", err)
 	}
 	if !ValidMergeMethod(domain.MergeCommit) || ValidMergeMethod("") {

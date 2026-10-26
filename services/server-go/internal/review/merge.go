@@ -51,6 +51,9 @@ type MergeOptions struct {
 	// "Merge branch '<src>' into <tgt> (!N)" / the merge request title).
 	// Ignored by fast-forward merges.
 	Message string
+	// DeleteSourceBranch deletes the source branch after the merge (v0.8
+	// §16.9, rebase.go); checked before merging.
+	DeleteSourceBranch bool
 }
 
 // Conflict is one path a server-side merge cannot resolve. Tree is set for
@@ -212,6 +215,14 @@ func (s *Service) MergeWith(ctx context.Context, p *domain.Principal, tree *doma
 	if err != nil {
 		return nil, err
 	}
+	// v0.8 (§16.9, rebase.go): delete_source_branch is validated up front.
+	var extra map[string]string
+	if opts.DeleteSourceBranch {
+		if err := s.checkDeleteSource(ctx, p, tree, mr); err != nil {
+			return nil, err
+		}
+		extra = map[string]string{"source_branch_deleted": "true"}
+	}
 	plan, err := s.prepareMerge(ctx, p, tree, mr, ev, method, opts.Message)
 	if err != nil {
 		return nil, err
@@ -223,7 +234,10 @@ func (s *Service) MergeWith(ctx context.Context, p *domain.Principal, tree *doma
 	if err := s.markMerged(ctx, mr, plan); err != nil {
 		return nil, err
 	}
-	s.announceMerge(ctx, p, tree, mr, ev, plan, moved, nil)
+	s.announceMerge(ctx, p, tree, mr, ev, plan, moved, extra)
+	if opts.DeleteSourceBranch {
+		s.deleteSource(ctx, p, tree, mr)
+	}
 	return mr, nil
 }
 
@@ -359,6 +373,10 @@ func (s *Service) analyzeMethods(ctx context.Context, tree *domain.Tree, ev *eva
 		switch {
 		case ev.upToDate:
 			st.possible = true
+		case m == MergeRebase: // v0.8 (§16.9, rebase.go)
+			if err := s.analyzeRebase(ctx, tree, ev, st); err != nil {
+				return err
+			}
 		case m == domain.MergeFastForward && ev.diverged:
 			st.kind, st.err = BlockerDiverged, ev.divergedErr
 		case m == domain.MergeFastForward && ev.linearErr != nil:
@@ -386,7 +404,7 @@ func (s *Service) analyzeMethods(ctx context.Context, tree *domain.Tree, ev *eva
 	// No method can merge: report the most useful reason.
 	var b Blocker
 	switch {
-	case len(ev.conflicts) > 0 && (ev.methods[domain.MergeCommit].allowed || ev.methods[domain.MergeSquash].allowed):
+	case len(ev.conflicts) > 0 && (ev.methods[domain.MergeCommit].allowed || ev.methods[domain.MergeSquash].allowed || ev.methods[MergeRebase].allowed):
 		b = Blocker{Kind: BlockerConflicts, Message: conflictSummary(ev.conflicts)}
 		ev.summaryErr = s.conflictError(mr, ev.conflicts)
 	case ev.diverged:
@@ -604,6 +622,8 @@ func (s *Service) prepareMerge(ctx context.Context, p *domain.Principal, tree *d
 		return &mergePlan{method: method, newTip: ev.targetTip, merged: ev.sourceTip}, nil
 	case method == domain.MergeFastForward:
 		return &mergePlan{method: method, newTip: ev.sourceTip, merged: ev.sourceTip}, nil
+	case method == MergeRebase: // v0.8 (§16.9, rebase.go)
+		return s.prepareRebase(ctx, p, tree, mr, ev)
 	}
 
 	var manifestHash hash.Hash
