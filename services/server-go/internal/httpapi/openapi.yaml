@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: W0rkTree REST API
-  version: 0.6.0
+  version: 0.7.0
   summary: JSON REST API of the W0rkTree server (`/api/v1`).
   description: |
     The REST API of the W0rkTree Go server (`services/server-go`). It serves
