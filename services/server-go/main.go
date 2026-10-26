@@ -22,7 +22,7 @@ import (
 // version is overridden at build time:
 //
 //	go build -ldflags "-X main.version=1.2.3"
-var version = "0.6.0"
+var version = "0.7.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
