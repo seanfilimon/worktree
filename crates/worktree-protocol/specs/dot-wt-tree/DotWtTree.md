@@ -1,6 +1,6 @@
 # `.wt-tree/` Nested Tree Directory Specification
 
-> **Version:** 0.5 — describes the marker directory as built (`crates/worktree-sdk/src/repo/trees.rs`, `docs/ENGINEERING_PLAN.md` §13.7, §13.9).
+> **Version:** 0.7 — describes the marker directory as built (`crates/worktree-sdk/src/repo/trees.rs`, `docs/ENGINEERING_PLAN.md` §13.7, §13.9, §15.10).
 > Features described but not built are listed under [Roadmap](#roadmap).
 
 ---
@@ -11,26 +11,36 @@ A `.wt-tree/` directory turns the directory containing it into a **nested
 tree** of the enclosing worktree. It is written by `wt tree add NAME PATH`
 and holds:
 
-- the tree's identity (`name`, `id`) — the marker proper;
-- tree-level configuration overrides (`[auto_snapshot]`,
-  `[secret_scanning]`, `[hooks]`);
-- tree-level ignore patterns;
-- tree-level snapshot hooks;
-- tree-scoped declarative access policies (deny statements only).
+- the tree's identity (`name`, `id`) in `local.toml` — the marker proper,
+  **local only**;
+- tree-level configuration overrides (`config.toml`: `[auto_snapshot]`,
+  `[secret_scanning]`, `[hooks]`) — **shared**;
+- tree-level ignore patterns (`ignore`) — **shared**;
+- tree-level snapshot hooks (`hooks/`) — **shared**;
+- tree-scoped declarative access policies (`access/`, deny statements
+  only) — **shared**.
 
-The root tree has no `.wt-tree/`; its equivalents are `.wt/config.toml`,
-`.wt/ignore`, `.wt/hooks/` and `.wt/access/`.
+The root tree of a worktree created with `wt init` has no `.wt-tree/`; its
+equivalents are `.wt/config.toml`, `.wt/ignore`, `.wt/hooks/` and
+`.wt/access/`. A worktree created by `wt clone` of a tree that shares
+`.wt-tree/` files has them at its root (see [§10](#10-sharing)).
 
-Two facts shape everything below:
+Three facts shape everything below:
 
 1. **The registry is in `.wt/`, not here.** A tree exists because
    `.wt/trees/<name>/tree.toml` exists; the marker records the same name and
    id so tools can identify the directory. Copying a directory with a
    `.wt-tree/` into a worktree does not register it.
-2. **`.wt-tree/` is never snapshotted.** Manifest paths with a `.wt-tree`
-   component are rejected, so the contents of this directory are local to the
-   worktree; they are not pushed, fetched or cloned. Server-side effects
-   happen only through explicit commands (`wt access apply`).
+2. **The shared files travel with the tree** (v0.7, §15.10).
+   `.wt-tree/config.toml`, `.wt-tree/ignore`, `.wt-tree/hooks/**` and
+   `.wt-tree/access/**` of a tree are snapshotted, pushed, fetched and
+   cloned like any other file of that tree, so configuration, hooks and
+   policies are reviewed and versioned with the code.
+3. **Everything else in `.wt-tree/` stays local** — in particular
+   `local.toml`. Manifest paths inside `.wt/`, a `.wt-tree/` path that is
+   not one of the shared files, and any `.wt-tree/` below the tree root (a
+   nested tree's marker) are rejected by the SDK and by the server. Applying
+   access policies to the server still needs an explicit `wt access apply`.
 
 ---
 
@@ -39,29 +49,38 @@ Two facts shape everything below:
 ```
 services/auth/
 ├── .wt-tree/
-│   ├── config.toml          marker identity + tree-level overrides (required)
-│   ├── ignore               tree-level ignore patterns (optional)
-│   ├── hooks/
+│   ├── local.toml           marker identity: name + id (local only, required)
+│   ├── config.toml          tree-level overrides (shared, optional)
+│   ├── ignore               tree-level ignore patterns (shared, optional)
+│   ├── hooks/               (shared)
 │   │   ├── pre-snapshot     (optional; also .cmd/.bat/.ps1 on Windows)
 │   │   └── post-snapshot
-│   └── access/
+│   └── access/              (shared)
 │       └── policies.toml    tree-scope deny policies (optional)
-├── .wtignore                tracked ignore file (shared with the team)
+├── .wtignore                tracked ignore file
 └── src/...
 ```
 
-`wt tree add` creates only `config.toml`. `wt tree init-config` scaffolds
-the full set (`config.toml`, `ignore`, `hooks/`, `access/`).
+`wt tree add` creates only `local.toml`. `wt tree init-config` scaffolds
+the shared set (`config.toml`, `ignore`, `hooks/`, `access/`).
+
+### `local.toml`
+
+```toml
+# Local identity of this nested tree (written by wt; never snapshotted).
+name = "auth"
+id = "0b7f3c9e-5d2a-4e61-8f0c-6a1d2e3b4c5d"
+```
+
+`name` and `id` must match `.wt/trees/<name>/tree.toml`; the SDK maintains
+them (the id is rewritten when the tree adopts the server id on first
+contact).
 
 ---
 
 ## 3. `config.toml`
 
 ```toml
-# Marker identity (written by wt tree add; rewritten when the tree adopts the server id)
-name = "auth"
-id = "0b7f3c9e-5d2a-4e61-8f0c-6a1d2e3b4c5d"
-
 # Overrides of .wt/config.toml for this tree (all optional)
 [auto_snapshot]
 enabled = true
@@ -84,7 +103,6 @@ timeout_secs = 120
 
 | Key / section | Effect |
 |---|---|
-| `name`, `id` | Must match `.wt/trees/<name>/tree.toml`; maintained by the SDK |
 | `[auto_snapshot]` | Overrides the worktree values for this tree |
 | `[secret_scanning]` | Overrides the worktree/user values for snapshots of this tree |
 | `[hooks]` | Hook settings for this tree's snapshots |
@@ -119,8 +137,8 @@ coverage/
 !keep.snap
 ```
 
-Because this file is not shared, prefer a tracked `.wtignore` in the tree
-directory for rules the team needs.
+This file is shared with the tree (v0.7). Ignore rules never apply to the
+tree's own shared `.wt-tree/` files themselves.
 
 ---
 
@@ -140,6 +158,11 @@ Hooks run outermost first: the worktree's `.wt/hooks/`, then each enclosing
 parent tree's `.wt-tree/hooks/`, then the tree's own. Environment: `WT_HOOK`,
 `WT_TREE`, `WT_TREE_PATH`, `WT_BRANCH`, `WT_ROOT`, `WT_SNAPSHOT` (post); the
 working directory is the tree root; timeout from `[hooks] timeout_secs`.
+
+Hook scripts are tracked with their executable bit (manifest
+`executable`), which checkout, clone and pull restore on Unix. On Windows,
+where files have no executable bit, a newly added file below
+`.wt-tree/hooks/` is recorded executable so that it runs on Unix clones.
 
 ---
 
@@ -221,10 +244,21 @@ services/auth/                    tree "auth"
 
 `wt tree validate [NAME]` (all trees when omitted) reports:
 
-1. a missing `.wt-tree/` marker;
-2. a `config.toml` that does not parse;
-3. an `ignore` file that does not parse;
-4. a nested `.wt/` directory inside the tree.
+1. a missing `.wt-tree/` marker (nested trees);
+2. a missing or mismatching identity in `local.toml` (warning; it is
+   rewritten on the next scan), and legacy `name`/`id` keys still in
+   `config.toml` (warning);
+3. a `config.toml` that does not parse, or sections not read at tree level;
+4. an `ignore` file that does not parse;
+5. a nested `.wt/` directory inside the tree.
+
+Manifest path rules (SDK `validate_manifest_path`, server
+`validateManifestPath` in `syncsvc`): no `.wt` component anywhere; a
+`.wt-tree` component only as the first component and only for
+`.wt-tree/config.toml`, `.wt-tree/ignore`, `.wt-tree/hooks/<path>` and
+`.wt-tree/access/<path>` (with no further reserved component). A push whose
+manifest breaks these rules is refused (`FailedPrecondition`, invalid
+manifest).
 
 `wt access validate` checks `access/policies.toml`. Other commands treat an
 unparsable tree config as an error for that tree.
@@ -235,10 +269,48 @@ unparsable tree config as an error for that tree.
 
 | Action | Effect on `.wt-tree/` |
 |---|---|
-| `wt tree add NAME PATH` | Creates `PATH/.wt-tree/config.toml` with `name` and a new `id` |
-| First push / fetch / clone contact | `id` rewritten to the server tree id |
-| `wt tree init-config` | Scaffolds `ignore`, `hooks/`, `access/` |
-| `wt tree remove NAME` | Deletes `.wt-tree/` and `.wt/trees/NAME/`; files are kept and fall back to the enclosing tree |
+| `wt tree add NAME PATH` | Creates `PATH/.wt-tree/local.toml` with `name` and a new `id` |
+| First push / fetch / clone contact | `id` in `local.toml` rewritten to the server tree id |
+| `wt tree init-config` | Scaffolds `config.toml`, `ignore`, `hooks/`, `access/` |
+| `wt status` / `wt snapshot` | Shared files show up as changes and are snapshotted; legacy identity lines are migrated first |
+| `wt checkout` / `switch` / `pull` / `clone` | Shared files are written (and removed) like any tracked file; `local.toml` is never touched |
+| `wt tree remove NAME` | Deletes `.wt-tree/` and `.wt/trees/NAME/`; files are kept and fall back to the enclosing tree (the shared files stay in the tree's history) |
+
+---
+
+## 10. Sharing
+
+Since v0.7 (§15.10) the shared files are ordinary tracked files of the tree
+they configure, with paths relative to the tree root
+(`.wt-tree/config.toml`, …):
+
+- **Parents never see them.** A parent tree's scans stop at the nested
+  tree's directory, so a nested tree's `.wt-tree/` is never part of the
+  parent's manifest (and is rejected there).
+- **Clone.** `wt clone TENANT/TREE` makes the tree the root tree of a new
+  worktree, so its shared files land in `<root>/.wt-tree/`. A root
+  `.wt-tree/` applies like an enclosing tree's: `config.toml` is a `tree`
+  level of the configuration stack (above `.wt/config.toml`), `ignore` is an
+  additive tree ignore file for the worktree, and `hooks/` run after
+  `.wt/hooks/`. Such a root has no `local.toml` (its identity is in
+  `.wt/trees/`).
+- **Daemon.** Changes to shared files are working changes (they can trigger
+  auto-snapshots) and also reload the configuration.
+
+### Migration
+
+Before v0.7 the identity lived in `config.toml` (`name`/`id` keys) and the
+whole directory was local. On the first scan of a tree (any `wt status`,
+`snapshot`, `diff`, `checkout`, …) after upgrading, the SDK:
+
+1. writes `local.toml` with the identity (unless it exists);
+2. removes the top-level `name = …` / `id = …` lines (and the old
+   "Marker identity" comment) from `config.toml` textually, keeping
+   comments and layout, and deletes the file when nothing else is left.
+
+Existing worktrees therefore start tracking the shared files on their next
+snapshot; nothing else changes. Older clients ignore (and never write)
+`local.toml`.
 
 ---
 
@@ -246,8 +318,11 @@ unparsable tree config as an error for that tree.
 
 | Item | Status |
 |---|---|
-| Marker `config.toml` with `name`/`id`, registry in `.wt/trees/` | Built |
-| `.wt-tree/` excluded from scans and manifests | Built |
+| Marker identity in `local.toml`, registry in `.wt/trees/` | Built (v0.7 §15.10; `config.toml` before) |
+| Shared `.wt-tree/{config.toml,ignore,hooks/**,access/**}` snapshotted, pushed, cloned | Built (v0.7 §15.10) |
+| Manifest validation (SDK + server): `.wt-tree/` only at the tree root, never `.wt/` | Built (v0.7 §15.10) |
+| Migration of legacy identity lines | Built (v0.7 §15.10) |
+| Root `.wt-tree/` (from a clone) applies to the root tree | Built (v0.7 §15.10) |
 | Tree-level `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` overrides | Built (v0.5 §13.9) |
 | `.wt-tree/ignore` | Built (v0.5 §13.9) |
 | `.wt-tree/hooks/` | Built (v0.5 §13.9) |
@@ -256,11 +331,12 @@ unparsable tree config as an error for that tree.
 
 ## Roadmap
 
-Described in earlier drafts, not built and not in v0.5:
+Described in earlier drafts, not built:
 
-- **Versioning `.wt-tree/` with the tree** (so configuration and policies are
-  pushed, reviewed and cloned with the code), and server-side rejection of
-  invalid tree configuration during sync.
+- Server-side rejection of invalid tree configuration (unparsable
+  `config.toml`, invalid `access/policies.toml`) during sync, and applying
+  pushed `access/` documents automatically.
+- A multi-tree clone that registers a tree's nested trees.
 - `[tree]` section keys `branch_strategy`, `parent`, `created_by`,
   `description`.
 - `[large_files]` (threshold, chunk size, lazy loading, preload patterns) and
@@ -280,9 +356,11 @@ Described in earlier drafts, not built and not in v0.5:
 
 ## References
 
-- `crates/worktree-sdk/src/repo/trees.rs` — `add_tree`, `remove_tree`, marker writing, `set_tree_id`
+- `crates/worktree-sdk/src/repo/trees.rs` — `add_tree`, `remove_tree`, marker writing (`local.toml`), `set_tree_id`, identity migration
+- `crates/worktree-sdk/src/repo/working.rs` — scanning the tree's own shared `.wt-tree/` files
 - `crates/worktree-sdk/src/repo/mod.rs` — `TREE_MARKER_DIR`, layout
-- `crates/worktree-sdk/src/model.rs` — `validate_manifest_path` (reserved components)
+- `crates/worktree-sdk/src/model.rs` — `validate_manifest_path`, `is_shared_tree_config_path`
+- `services/server-go/internal/syncsvc/{objects,convert}.go` — server manifest path validation
 - `crates/worktree-sdk/src/config.rs` — config sections and hierarchy
 - `crates/worktree-sdk/src/repo/ignore_rules.rs` — ignore evaluation
 - `crates/worktree-sdk/src/hooks.rs` — hook discovery and execution

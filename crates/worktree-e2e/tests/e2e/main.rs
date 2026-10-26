@@ -54,3 +54,4 @@ mod webhooks;
 
 // v0.7 hardening (ENGINEERING_PLAN §15.10).
 mod hardening_gaps;
+mod wt_tree_sharing;

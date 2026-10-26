@@ -118,7 +118,10 @@ impl Manifest {
 
 /// Check that a manifest path is a safe, normalized, '/'-separated relative
 /// path: non-empty, no leading '/', no empty, `.` or `..` components, no
-/// backslashes or NUL bytes, and never inside `.wt/` or a `.wt-tree/` marker.
+/// backslashes or NUL bytes, and never inside `.wt/`. A `.wt-tree/`
+/// component is only allowed as the first component, for the tree's own
+/// shared configuration ([`is_shared_tree_config_path`]); a `.wt-tree/`
+/// deeper down belongs to a nested tree and is rejected.
 pub fn validate_manifest_path(path: &str) -> Result<()> {
     let bad = |why: &str| {
         Err(SdkError::InvalidArgument(format!(
@@ -131,15 +134,49 @@ pub fn validate_manifest_path(path: &str) -> Result<()> {
     if path.contains('\\') || path.contains('\0') {
         return bad("contains a backslash or NUL byte");
     }
-    for component in path.split('/') {
+    for (i, component) in path.split('/').enumerate() {
         match component {
             "" => return bad("empty component or leading/trailing '/'"),
             "." | ".." => return bad("relative component"),
-            ".wt" | ".wt-tree" => return bad("reserved directory"),
+            ".wt" => return bad("reserved directory"),
+            // hardening (§15.10): the tree's own `.wt-tree/` is shared.
+            ".wt-tree" if i == 0 && is_shared_tree_config_path(path) => {}
+            ".wt-tree" if i == 0 => {
+                return bad("only .wt-tree/{config.toml,ignore,hooks/**,access/**} are tracked")
+            }
+            ".wt-tree" => return bad("reserved directory (a nested tree's marker)"),
             _ => {}
         }
     }
     Ok(())
+}
+
+// ---- hardening (ENGINEERING_PLAN §15.10): shared `.wt-tree/` files ----
+
+/// Whether a tree-relative path names one of the tree's shared `.wt-tree/`
+/// files: `.wt-tree/config.toml`, `.wt-tree/ignore`, or anything below
+/// `.wt-tree/hooks/` or `.wt-tree/access/`. These are snapshotted, pushed
+/// and cloned with the tree; everything else in `.wt-tree/` (the local
+/// identity file `local.toml`) stays local. Components are not otherwise
+/// validated here (see [`validate_manifest_path`]).
+pub fn is_shared_tree_config_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix(".wt-tree/") else {
+        return false;
+    };
+    match rest.split_once('/') {
+        None => rest == "config.toml" || rest == "ignore",
+        Some((dir, sub)) => {
+            (dir == "hooks" || dir == "access")
+                && !sub.is_empty()
+                && !sub.split('/').any(|c| c == ".wt" || c == ".wt-tree")
+        }
+    }
+}
+
+/// Whether a tree-relative path is a shared hook script
+/// (`.wt-tree/hooks/...`).
+pub fn is_shared_tree_hook_path(path: &str) -> bool {
+    is_shared_tree_config_path(path) && path.starts_with(".wt-tree/hooks/")
 }
 
 fn hash_to_wire(hash: &ObjectHash) -> wire::ContentHash {
@@ -797,6 +834,40 @@ mod tests {
         ] {
             assert!(validate_manifest_path(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn shared_tree_config_paths() {
+        // hardening (§15.10): the tree's own `.wt-tree/` files are tracked.
+        for ok in [
+            ".wt-tree/config.toml",
+            ".wt-tree/ignore",
+            ".wt-tree/hooks/pre-snapshot",
+            ".wt-tree/hooks/lib/common.sh",
+            ".wt-tree/access/policies.toml",
+        ] {
+            assert!(is_shared_tree_config_path(ok), "{ok}");
+            assert!(validate_manifest_path(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            ".wt-tree",
+            ".wt-tree/",
+            ".wt-tree/local.toml",
+            ".wt-tree/other/x",
+            ".wt-tree/hooks",
+            ".wt-tree/hooks/",
+            ".wt-tree/hooks/.wt/x",
+            ".wt-tree/access/.wt-tree/x",
+            ".wt-tree/.wt-tree/config.toml",
+            "a/.wt-tree/config.toml",
+            "a/.wt-tree/hooks/pre-snapshot",
+            ".wt/config.toml",
+        ] {
+            assert!(validate_manifest_path(bad).is_err(), "{bad}");
+        }
+        assert!(is_shared_tree_hook_path(".wt-tree/hooks/post-snapshot"));
+        assert!(!is_shared_tree_hook_path(".wt-tree/access/policies.toml"));
+        assert!(!is_shared_tree_hook_path("hooks/x"));
     }
 
     #[test]

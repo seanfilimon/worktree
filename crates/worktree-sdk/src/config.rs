@@ -1363,20 +1363,31 @@ impl Repository {
     }
 
     /// Nested trees enclosing `tree` (outermost first, `tree` last) as
-    /// (name, directory). Empty for the root tree.
+    /// (name, directory). Empty for the root tree, unless the worktree
+    /// root has a `.wt-tree/` directory: hardening (§15.10) — a clone of a
+    /// tree that shares `.wt-tree/` files materializes them at the root, and
+    /// they then apply like an enclosing tree's.
     pub(crate) fn tree_ancestry(&self, tree: &str) -> Result<Vec<(String, PathBuf)>> {
         let rec = self.load_tree(tree)?;
-        if rec.path.is_empty() {
+        let root_marker = self.root().join(TREE_MARKER_DIR).is_dir();
+        if rec.path.is_empty() && !root_marker {
             return Ok(Vec::new());
         }
         let mut out: Vec<_> = self
             .tree_records()?
             .into_iter()
             .filter(|r| {
-                !r.path.is_empty() && crate::repo::names::path_has_prefix(&rec.path, &r.path)
+                (!r.path.is_empty() || root_marker)
+                    && crate::repo::names::path_has_prefix(&rec.path, &r.path)
             })
             .collect();
-        out.sort_by_key(|r| r.path.split('/').count());
+        out.sort_by_key(|r| {
+            if r.path.is_empty() {
+                0
+            } else {
+                r.path.split('/').count()
+            }
+        });
         Ok(out
             .into_iter()
             .map(|r| {
@@ -1557,9 +1568,11 @@ impl Repository {
             return Ok(out);
         }
         let mut ignore_files = vec![dir.join(crate::repo::IGNORE_FILE_NAME)];
+        let marker = dir.join(TREE_MARKER_DIR);
+        // hardening (§15.10): the identity (`name`, `id`) lives in the
+        // local-only `.wt-tree/local.toml`; `config.toml` is shared and
+        // optional, and the root tree may have one too (from a clone).
         if !rec.path.is_empty() {
-            let marker = dir.join(TREE_MARKER_DIR);
-            let config_path = marker.join(CONFIG_FILE_NAME);
             if !marker.is_dir() {
                 problem(
                     Severity::Error,
@@ -1567,67 +1580,75 @@ impl Repository {
                     "missing .wt-tree/ marker directory (run `wt tree init-config`)".into(),
                 );
             } else {
-                match fsutil::read_string_opt(&config_path)? {
+                let identity_path = marker.join(crate::repo::TREE_IDENTITY_FILE);
+                match crate::repo::read_marker_identity(&dir)? {
                     None => problem(
-                        Severity::Error,
-                        &config_path,
-                        "missing .wt-tree/config.toml (run `wt tree init-config`)".into(),
+                        Severity::Warning,
+                        &identity_path,
+                        "the tree identity (name, id) is not set (rewritten on the next scan)"
+                            .into(),
                     ),
-                    Some(text) => match text.parse::<Table>() {
-                        Err(e) => problem(Severity::Error, &config_path, e.message().to_string()),
-                        Ok(table) => {
-                            for (key, want) in [("name", &rec.name), ("id", &rec.id)] {
-                                match table.get(key).and_then(Value::as_str) {
-                                    Some(v) if v == want.as_str() => {}
-                                    Some(v) => problem(
-                                        Severity::Warning,
-                                        &config_path,
-                                        format!(
-                                            "{key} is {v:?} but the tree is registered as {want:?}"
-                                        ),
+                    Some((name, id)) => {
+                        for (key, v, want) in [("name", &name, &rec.name), ("id", &id, &rec.id)] {
+                            if v != want {
+                                problem(
+                                    Severity::Warning,
+                                    &identity_path,
+                                    format!(
+                                        "{key} is {v:?} but the tree is registered as {want:?}"
                                     ),
-                                    None => problem(
-                                        Severity::Warning,
-                                        &config_path,
-                                        format!("{key} is not set"),
-                                    ),
-                                }
-                            }
-                            for (k, v) in &table {
-                                if v.is_table() && !TREE_SECTIONS.contains(&k.as_str()) {
-                                    problem(
-                                        Severity::Warning,
-                                        &config_path,
-                                        format!(
-                                            "[{k}] is not read at tree level (allowed: {})",
-                                            TREE_SECTIONS.join(", ")
-                                        ),
-                                    );
-                                }
-                            }
-                            let filtered = filter_sections(table, TREE_SECTIONS, &config_path);
-                            let mut normalized = filtered;
-                            normalize(&mut normalized);
-                            if let Err(e) = validate_layer(&normalized, &config_path) {
-                                problem(Severity::Error, &config_path, e.to_string());
-                            } else if let Ok(c) = WorktreeConfig::from_table({
-                                let mut probe = WorktreeConfig::new("probe", "main").to_table()?;
-                                overlay(&mut probe, &normalized, None);
-                                probe
-                            }) {
-                                if let Err(e) = crate::scan::SecretScanner::new(&c.secret_scanning)
-                                {
-                                    problem(Severity::Error, &config_path, e);
-                                }
+                                );
                             }
                         }
-                    },
+                    }
                 }
             }
-            ignore_files.push(marker.join(TREE_IGNORE_FILE));
-        } else {
+        }
+        let config_path = marker.join(CONFIG_FILE_NAME);
+        if let Some(text) = fsutil::read_string_opt(&config_path)? {
+            match text.parse::<Table>() {
+                Err(e) => problem(Severity::Error, &config_path, e.message().to_string()),
+                Ok(table) => {
+                    if table.contains_key("name") || table.contains_key("id") {
+                        problem(
+                                    Severity::Warning,
+                                    &config_path,
+                                    "legacy identity keys name/id (moved to .wt-tree/local.toml on the next scan)".into(),
+                                );
+                    }
+                    for (k, v) in &table {
+                        if v.is_table() && !TREE_SECTIONS.contains(&k.as_str()) {
+                            problem(
+                                Severity::Warning,
+                                &config_path,
+                                format!(
+                                    "[{k}] is not read at tree level (allowed: {})",
+                                    TREE_SECTIONS.join(", ")
+                                ),
+                            );
+                        }
+                    }
+                    let filtered = filter_sections(table, TREE_SECTIONS, &config_path);
+                    let mut normalized = filtered;
+                    normalize(&mut normalized);
+                    if let Err(e) = validate_layer(&normalized, &config_path) {
+                        problem(Severity::Error, &config_path, e.to_string());
+                    } else if let Ok(c) = WorktreeConfig::from_table({
+                        let mut probe = WorktreeConfig::new("probe", "main").to_table()?;
+                        overlay(&mut probe, &normalized, None);
+                        probe
+                    }) {
+                        if let Err(e) = crate::scan::SecretScanner::new(&c.secret_scanning) {
+                            problem(Severity::Error, &config_path, e);
+                        }
+                    }
+                }
+            }
+        }
+        if rec.path.is_empty() {
             ignore_files.push(self.wt_dir().join("ignore"));
         }
+        ignore_files.push(marker.join(TREE_IGNORE_FILE));
         for file in ignore_files {
             if let Some(text) = fsutil::read_string_opt(&file)? {
                 for (line, message) in ignore_file_problems(&text) {
@@ -1660,13 +1681,13 @@ impl Repository {
         }
         let marker = self.tree_dir_of(&rec).join(TREE_MARKER_DIR);
         let mut created = Vec::new();
+        // hardening (§15.10): config.toml is shared (tracked); the identity
+        // goes to the local-only `local.toml`.
+        std::fs::create_dir_all(&marker)?;
+        self.migrate_tree_marker(&rec)?;
         let config_path = marker.join(CONFIG_FILE_NAME);
         if !config_path.exists() {
-            let mut table = Table::new();
-            table.insert("name".into(), Value::String(rec.name.clone()));
-            table.insert("id".into(), Value::String(rec.id.clone()));
-            let text = format!("{}{TREE_CONFIG_TEMPLATE}", toml::to_string_pretty(&table)?);
-            fsutil::write_atomic(&config_path, text.as_bytes())?;
+            fsutil::write_atomic(&config_path, TREE_CONFIG_TEMPLATE.trim_start().as_bytes())?;
             created.push(config_path);
         }
         let ignore_path = marker.join(TREE_IGNORE_FILE);

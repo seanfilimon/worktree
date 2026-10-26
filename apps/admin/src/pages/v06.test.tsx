@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "@/api/client";
 import { defaultMergeMessage, isUnavailable, mergeConflictsOf } from "@/api/v06";
-import { blameRunStarts } from "@/components/files/blame";
+import { blameRunStarts, compactAge } from "@/components/files/blame";
 import { lineDiff } from "@/lib/lineDiff";
 import { codeHitHref, groupHits, highlightParts } from "@/pages/search/codeSearch";
 import { applyMergeability, defaultMethod } from "@/pages/tree/v06/mergeUtil";
@@ -330,6 +330,40 @@ describe("blame", () => {
     expect(within(rows[2]!).getByRole("link", { name: /snap3/ })).toBeInTheDocument();
     expect(rows[2]).toHaveTextContent("bob");
     expect(fetchMock.find(`GET ${T}/blame/snap-3/src/app.ts`)).toHaveLength(1);
+
+    // hardening (§15.10): narrow-screen layout — a pinned, fixed-width
+    // gutter whose metadata truncates, author/full age only from `sm` up,
+    // a compact age below it, and the code scrolls horizontally.
+    expect(region.className).toMatch(/overflow-auto/);
+    const gutter = rows[0]!.querySelector("[data-blame-gutter]")!;
+    expect(gutter.className).toMatch(/sticky/);
+    expect(gutter.className).toMatch(/left-0/);
+    const box = gutter.firstElementChild!;
+    expect(box.className).toMatch(/overflow-hidden/);
+    expect(box.className).toMatch(/w-\[7\.5rem\]/);
+    const author = rows[0]!.querySelector("[data-blame-author]")!;
+    expect(author).toHaveTextContent("alice");
+    expect(author.className).toMatch(/\btruncate\b/);
+    expect(author.className).toMatch(/\bhidden\b/);
+    expect(author.className).toMatch(/sm:block/);
+    expect(rows[0]).toHaveTextContent("3d");
+    expect(within(rows[0]!).getByText("alice").closest("[title]")).toHaveAttribute("title", expect.stringContaining("Initial import"));
+    expect(rows[0]!.querySelector("td:last-child")!.className).toMatch(/whitespace-pre/);
+  });
+
+  it("formats compact ages for the narrow gutter", () => {
+    const now = Date.parse("2026-01-31T12:00:00Z");
+    const ago = (secs: number) => new Date(now - secs * 1000).toISOString();
+    expect(compactAge(ago(10), now)).toBe("now");
+    expect(compactAge(ago(5 * 60), now)).toBe("5m");
+    expect(compactAge(ago(3 * 3600), now)).toBe("3h");
+    expect(compactAge(ago(2 * 86_400), now)).toBe("2d");
+    expect(compactAge(ago(15 * 86_400), now)).toBe("2w");
+    expect(compactAge(ago(70 * 86_400), now)).toBe("2mo");
+    expect(compactAge(ago(800 * 86_400), now)).toBe("2y");
+    expect(compactAge(undefined, now)).toBe("—");
+    expect(compactAge("nope", now)).toBe("—");
+    expect(compactAge(new Date(now + 60_000).toISOString(), now)).toBe("now");
   });
 
   it("explains when blame is not available", async () => {

@@ -26,8 +26,10 @@
 //! ```
 //!
 //! Nested trees are directories containing a `.wt-tree/` marker; a tree's
-//! snapshot excludes nested trees' paths. `.wt/`, `.wt-tree/` and ignored
-//! paths are never snapshotted.
+//! snapshot excludes nested trees' paths. `.wt/` and ignored paths are never
+//! snapshotted; of a tree's own `.wt-tree/` only the shared files
+//! (`config.toml`, `ignore`, `hooks/**`, `access/**`) are, never the local
+//! identity `local.toml` (hardening §15.10).
 //!
 //! The implementation is split by concern:
 //!
@@ -72,6 +74,9 @@ pub use rewrite::{
 pub use stash::{AutoStashSwitch, StashApplyOutcome, StashEntry, StashOptions};
 
 pub(crate) use trees::TreeRecord;
+// hardening (§15.10): shared `.wt-tree/` files; identity in `local.toml`.
+pub(crate) use trees::read_marker_identity;
+pub use trees::TREE_IDENTITY_FILE;
 
 use std::fs;
 use std::path::{Path, PathBuf};

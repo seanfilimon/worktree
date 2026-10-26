@@ -166,7 +166,8 @@ func validateManifestPath(p string) error {
 	case p == ".." || strings.HasPrefix(p, "../"):
 		return fmt.Errorf("path %q escapes the tree", p)
 	}
-	return nil
+	// hardening (§15.10): `.wt/` never, `.wt-tree/` only at the tree root.
+	return validateReservedComponents(p)
 }
 
 // loadManifest reads and decodes the manifest stored under h.
