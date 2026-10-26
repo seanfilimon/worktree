@@ -63,7 +63,38 @@ pub enum IamCommand {
         /// Treat the session as MFA-verified, for require_mfa conditions
         #[arg(long)]
         mfa: bool,
+        /// Override an ABAC attribute for this simulation:
+        /// `principal.<k>=V`, `tree.<k>=V`, `tenant.<k>=V`; `KEY` without
+        /// `=` simulates the attribute being unset (repeatable)
+        #[arg(long = "attr", value_name = "KEY[=VALUE]")]
+        attrs: Vec<String>,
     },
+}
+
+/// Parse `--attr` overrides into the simulator's `context.attributes`
+/// (`KEY=VALUE` sets, a bare `KEY` unsets: JSON null).
+pub fn attr_overrides(attrs: &[String]) -> Result<Option<serde_json::Map<String, Value>>> {
+    use worktree_sdk::remote::access::attributes;
+    if attrs.is_empty() {
+        return Ok(None);
+    }
+    let mut out = serde_json::Map::new();
+    for a in attrs {
+        let (key, value) = match a.split_once('=') {
+            Some((k, v)) => (k.trim(), Some(v)),
+            None => (a.trim(), None),
+        };
+        attributes::split_ref(key).map_err(|e| CliError::usage(format!("--attr: {e}")))?;
+        if let Some(v) = value {
+            attributes::check_value(v)
+                .map_err(|e| CliError::usage(format!("--attr {key}: {e}")))?;
+        }
+        out.insert(
+            key.to_string(),
+            value.map_or(Value::Null, |v| Value::String(v.into())),
+        );
+    }
+    Ok(Some(out))
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +140,64 @@ struct Decision {
     effect: String,
     #[serde(default)]
     reasons: Vec<Reason>,
+    /// v0.8 ABAC: the outcome of every attribute condition.
+    #[serde(default)]
+    conditions: Vec<AttributeCheck>,
+}
+
+/// One attribute condition decided by the simulator (`authz.AttributeCheck`).
+#[derive(Debug, Deserialize)]
+pub struct AttributeCheck {
+    #[serde(default)]
+    pub policy: String,
+    #[serde(default)]
+    pub statement: String,
+    #[serde(default)]
+    pub effect: String,
+    pub key: String,
+    pub op: String,
+    #[serde(default)]
+    pub values: Vec<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub matched: bool,
+}
+
+/// The attribute conditions of a simulation as a table.
+pub fn attribute_checks_text(t: &mut Text, checks: &[AttributeCheck]) {
+    use worktree_sdk::remote::access::attributes::{self, AttributeCondition};
+    if checks.is_empty() {
+        return;
+    }
+    t.blank();
+    t.line("Attribute conditions:");
+    let mut table = Table::new(&[
+        "policy",
+        "statement",
+        "effect",
+        "condition",
+        "value",
+        "result",
+    ]);
+    for c in checks {
+        let cond = AttributeCondition {
+            key: c.key.clone(),
+            op: c.op.clone(),
+            values: c.values.clone(),
+        };
+        table.row([
+            c.policy.clone(),
+            c.statement.clone(),
+            c.effect.clone(),
+            attributes::describe(&cond),
+            c.value
+                .as_deref()
+                .map_or_else(|| "(unset)".to_string(), |v| format!("{v:?}")),
+            if c.matched { "met" } else { "not met" }.to_string(),
+        ]);
+    }
+    table.render(t, "");
 }
 
 #[derive(Debug, Serialize)]
@@ -143,6 +232,8 @@ struct SimContext<'a> {
     ip: Option<&'a str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     mfa: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attributes: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -218,11 +309,13 @@ pub fn run(ctx: &Context, args: IamArgs) -> Result<()> {
             path,
             ip,
             mfa,
+            attrs,
         } => {
             let tree = tree
                 .as_deref()
                 .map(|t| tree_in_tenant(&tenant, t))
                 .transpose()?;
+            let attributes = attr_overrides(&attrs)?;
             let request = SimRequest {
                 principal: SimPrincipal::from(&principal),
                 action: &action,
@@ -233,6 +326,7 @@ pub fn run(ctx: &Context, args: IamArgs) -> Result<()> {
                 context: SimContext {
                     ip: ip.as_deref(),
                     mfa,
+                    attributes,
                 },
             };
             let decision: Value = call(client.post("/api/v1/iam/simulate", &request))?;
@@ -321,6 +415,7 @@ fn decision_text(
         table.row([r.source.clone(), r.effect.clone(), r.detail.clone()]);
     }
     table.render(t, "No reasons given.");
+    attribute_checks_text(t, &d.conditions);
 }
 
 #[cfg(test)]
@@ -415,6 +510,7 @@ mod tests {
             context: SimContext {
                 ip: Some("10.0.0.1"),
                 mfa: false,
+                attributes: None,
             },
         };
         assert_eq!(
@@ -429,12 +525,83 @@ mod tests {
         let ctx = SimContext {
             ip: None,
             mfa: true,
+            attributes: None,
         };
         assert_eq!(
             serde_json::to_value(SimPrincipal::from(&user)).unwrap(),
             json!({"type": "user", "name": "ada"})
         );
         assert_eq!(serde_json::to_value(ctx).unwrap(), json!({"mfa": true}));
+    }
+
+    #[test]
+    fn attribute_overrides() {
+        assert!(attr_overrides(&[]).unwrap().is_none());
+        let m = attr_overrides(&[
+            "principal.department=eng".into(),
+            "tree.classification".into(),
+            "tenant.region=eu=west".into(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            Value::Object(m),
+            json!({"principal.department": "eng", "tree.classification": null, "tenant.region": "eu=west"})
+        );
+        for bad in ["department=eng", "account.x=1", "tree.X=1", "tree.x="] {
+            assert!(attr_overrides(&[bad.into()]).is_err(), "{bad}");
+        }
+        assert!(matches!(
+            iam(&["simulate", "--principal", "user:ada", "--action", "tree:read", "--tenant", "acme",
+                  "--attr", "principal.department=eng", "--attr", "tree.classification"]),
+            IamCommand::Simulate { attrs, .. } if attrs.len() == 2
+        ));
+        let ctx = SimContext {
+            ip: None,
+            mfa: false,
+            attributes: attr_overrides(&["tree.c".into()]).unwrap(),
+        };
+        assert_eq!(
+            serde_json::to_value(ctx).unwrap(),
+            json!({"attributes": {"tree.c": null}})
+        );
+    }
+
+    #[test]
+    fn renders_attribute_conditions() {
+        let d: Decision = serde_json::from_value(json!({
+            "allowed": false, "effect": "deny", "reasons": [],
+            "attributes": {"principal": {}, "tree": {"classification": "secret"}, "tenant": {}},
+            "conditions": [
+                {"policy": "clearance", "policy_id": "p1", "statement": "need", "effect": "deny",
+                 "key": "tree.classification", "op": "equals", "values": ["secret"], "value": "secret", "matched": true},
+                {"policy": "clearance", "policy_id": "p1", "statement": "need", "effect": "deny",
+                 "key": "principal.clearance", "op": "not_in", "values": ["secret"], "value": null, "matched": true}
+            ]
+        }))
+        .unwrap();
+        let mut t = Text::default();
+        decision_text(
+            &mut t,
+            &PrincipalRef::User("ada".into()),
+            "tree:read",
+            "acme/vault",
+            &d,
+        );
+        let out = t.as_str();
+        assert!(out.contains("Attribute conditions:"), "{out}");
+        assert!(
+            out.contains("POLICY     STATEMENT  EFFECT  CONDITION"),
+            "{out}"
+        );
+        assert!(
+            out.contains("tree.classification equals \"secret\"    \"secret\"  met"),
+            "{out}"
+        );
+        assert!(
+            out.contains("principal.clearance not_in [\"secret\"]  (unset)   met"),
+            "{out}"
+        );
     }
 
     #[test]

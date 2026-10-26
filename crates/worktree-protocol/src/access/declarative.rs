@@ -29,7 +29,10 @@
 //! Conditions: `mfa` (alias `require_mfa`), `ip_ranges` (CIDRs),
 //! `not_before` / `not_after` (RFC 3339, TOML date-times accepted) and
 //! `time_window = { days = ["mon"], start = "09:00", end = "18:00",
-//! timezone = "Europe/Berlin" }`.
+//! timezone = "Europe/Berlin" }` and (v0.8) ABAC attribute conditions,
+//! `[[policy.statement.conditions.attributes]]` tables with `key`
+//! (`principal.<k>`, `tree.<k>`, `tenant.<k>`), `op` and `value` / `values`
+//! (see [`super::attributes`]).
 //!
 //! The canonical JSON is `{"roles":[CustomRole],"policies":[Policy]}` with
 //! the Go server's JSON field names (`internal/domain/iam.go`). Validation
@@ -47,6 +50,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+use super::attributes::{self, AttributeCondition};
 
 /// Directory of the tenant-scope access files, relative to the worktree root.
 pub const TENANT_ACCESS_DIR: &str = ".wt/access";
@@ -196,6 +201,13 @@ pub struct Conditions {
     pub not_after: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_window: Option<TimeWindow>,
+    /// v0.8 ABAC attribute conditions (all must hold).
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "null_as_empty_vec"
+    )]
+    pub attributes: Vec<AttributeCondition>,
 }
 
 impl Conditions {
@@ -663,6 +675,7 @@ fn parse_conditions(t: &toml::Table, at: &str, sink: &mut Sink) -> Conditions {
             "not_before",
             "not_after",
             "time_window",
+            "attributes",
         ],
         at,
         sink,
@@ -711,7 +724,44 @@ fn parse_conditions(t: &toml::Table, at: &str, sink: &mut Sink) -> Conditions {
         not_before: time("not_before", sink),
         not_after: time("not_after", sink),
         time_window,
+        attributes: parse_attribute_conditions(t, at, sink),
     }
+}
+
+/// `attributes = [{ key, op, value | values }]` (v0.8 ABAC): structure
+/// only; the rules are checked by [`check_conditions`].
+fn parse_attribute_conditions(
+    t: &toml::Table,
+    at: &str,
+    sink: &mut Sink,
+) -> Vec<AttributeCondition> {
+    let aat = join(at, "");
+    table_array(t, "attributes", &aat, sink)
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let cat = format!("{aat}attributes[{i}]");
+            unknown_keys(c, &["key", "op", "value", "values"], &cat, sink);
+            let mut values = get_strings(c, "values", &cat, sink).unwrap_or_default();
+            if let Some(v) = get_string(c, "value", &cat, sink) {
+                if c.contains_key("values") {
+                    sink.err(
+                        codes::E_STRUCTURE,
+                        &join(&cat, "value"),
+                        "use either value or values, not both",
+                    );
+                }
+                values.insert(0, v);
+            }
+            AttributeCondition {
+                key: get_string(c, "key", &cat, sink).unwrap_or_default(),
+                op: get_string(c, "op", &cat, sink)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+                values,
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -955,6 +1005,26 @@ fn check_conditions(c: &Conditions, at: &str, sink: &mut Sink) {
                 codes::E_BAD_CONDITION,
                 &join(&wat, "timezone"),
                 format!("\"{}\" is not an IANA time zone name", w.timezone),
+            );
+        }
+    }
+    // v0.8 ABAC attribute conditions (same rules as authz.ValidateStatements).
+    if c.attributes.len() > attributes::MAX_CONDITIONS {
+        sink.err(
+            codes::E_LIMIT,
+            &join(at, "attributes"),
+            format!(
+                "at most {} attribute conditions are allowed",
+                attributes::MAX_CONDITIONS
+            ),
+        );
+    }
+    for (i, a) in c.attributes.iter().enumerate() {
+        for (field, msg) in attributes::check_condition(a) {
+            sink.err(
+                codes::E_BAD_CONDITION,
+                &format!("{at}.attributes[{i}].{field}"),
+                msg,
             );
         }
     }
@@ -1327,6 +1397,23 @@ fn conditions_toml(c: &Conditions) -> String {
             wp.push(format!("timezone = {}", toml_str(&w.timezone)));
         }
         parts.push(format!("time_window = {{ {} }}", wp.join(", ")));
+    }
+    if !c.attributes.is_empty() {
+        let items: Vec<String> = c
+            .attributes
+            .iter()
+            .map(|a| {
+                let mut ap = vec![
+                    format!("key = {}", toml_str(&a.key)),
+                    format!("op = {}", toml_str(&a.op)),
+                ];
+                if !a.values.is_empty() {
+                    ap.push(format!("values = {}", toml_list(&a.values)));
+                }
+                format!("{{ {} }}", ap.join(", "))
+            })
+            .collect();
+        parts.push(format!("attributes = [{}]", items.join(", ")));
     }
     format!("{{ {} }}", parts.join(", "))
 }
@@ -1718,6 +1805,140 @@ description = "no name"
         assert_eq!(
             codes_of(&compile(None, Some(&src), &Scope::Tenant).unwrap_err()),
             vec![codes::E_STRUCTURE]
+        );
+    }
+
+    #[test]
+    fn attribute_conditions_compile() {
+        let src = one_statement(&format!(
+            "{OK_STMT}\n\
+             [[policy.statement.conditions.attributes]]\n\
+             key = \"tree.classification\"\n\
+             op = \"EQUALS\"\n\
+             value = \"secret\"\n\
+             [[policy.statement.conditions.attributes]]\n\
+             key = \"principal.clearance\"\n\
+             op = \"not_in\"\n\
+             values = [\"secret\", \"top-secret\"]\n\
+             [[policy.statement.conditions.attributes]]\n\
+             key = \"tenant.region\"\n\
+             op = \"exists\"\n"
+        ));
+        let c = compile(None, Some(&src), &Scope::Tenant).unwrap();
+        let attrs = &c.document.policies[0].statements[0].conditions.attributes;
+        assert_eq!(attrs.len(), 3);
+        assert_eq!(attrs[0].op, "equals");
+        assert_eq!(attrs[0].values, vec!["secret"]);
+        let v: serde_json::Value = serde_json::from_str(&c.json).unwrap();
+        assert_eq!(
+            v["policies"][0]["statements"][0]["conditions"]["attributes"],
+            serde_json::json!([
+                {"key": "tree.classification", "op": "equals", "values": ["secret"]},
+                {"key": "principal.clearance", "op": "not_in", "values": ["secret", "top-secret"]},
+                {"key": "tenant.region", "op": "exists"}
+            ])
+        );
+        // The inline form is equivalent and decompiles to TOML that compiles
+        // back to the same document.
+        let inline = one_statement(&format!(
+            "{OK_STMT}\nconditions = {{ mfa = true, attributes = [{{ key = \"tree.classification\", op = \"equals\", values = [\"secret\"] }}] }}"
+        ));
+        let c = compile(None, Some(&inline), &Scope::Tenant).unwrap();
+        let toml = policies_to_toml(&c.document.policies);
+        assert!(toml.contains("attributes = [{ key = \"tree.classification\", op = \"equals\", values = [\"secret\"] }]"), "{toml}");
+        assert_eq!(
+            compile(None, Some(&toml), &Scope::Tenant).unwrap().document,
+            c.document
+        );
+        // Tree-scope deny documents may use attribute conditions too.
+        let tree_doc = "[[policy]]\nname = \"p\"\n[[policy.statement]]\neffect = \"deny\"\nactions = [\"tree:read\"]\nresources = [\"wt:tree/acme/web\"]\nprincipals = [\"*\"]\nconditions = { attributes = [{ key = \"principal.clearance\", op = \"not_exists\" }] }\n";
+        let scope = Scope::Tree {
+            tenant: Some("acme".into()),
+            tree: Some("web".into()),
+        };
+        assert!(compile(None, Some(tree_doc), &scope).is_ok());
+    }
+
+    #[test]
+    fn attribute_condition_validation() {
+        let cases = [
+            (
+                "{ key = \"department\", op = \"equals\", value = \"eng\" }",
+                codes::E_BAD_CONDITION,
+                "attributes[0].key",
+            ),
+            (
+                "{ key = \"account.x\", op = \"exists\" }",
+                codes::E_BAD_CONDITION,
+                "attributes[0].key",
+            ),
+            (
+                "{ key = \"tree.x\", op = \"like\", value = \"a\" }",
+                codes::E_BAD_CONDITION,
+                "attributes[0].op",
+            ),
+            (
+                "{ key = \"tree.x\", op = \"equals\" }",
+                codes::E_BAD_CONDITION,
+                "attributes[0].values",
+            ),
+            (
+                "{ key = \"tree.x\", op = \"exists\", value = \"a\" }",
+                codes::E_BAD_CONDITION,
+                "attributes[0].values",
+            ),
+            (
+                "{ key = \"tree.x\", op = \"in\", values = [\"\"] }",
+                codes::E_BAD_CONDITION,
+                "attributes[0].values[0]",
+            ),
+            (
+                "{ key = \"tree.x\", op = \"in\", colour = \"red\" }",
+                codes::E_STRUCTURE,
+                "attributes[0].colour",
+            ),
+            (
+                "{ key = \"tree.x\", op = \"in\", value = \"a\", values = [\"b\"] }",
+                codes::E_STRUCTURE,
+                "attributes[0].value",
+            ),
+            (
+                "{ key = 1, op = \"exists\" }",
+                codes::E_STRUCTURE,
+                "attributes[0].key",
+            ),
+        ];
+        for (cond, code, at) in cases {
+            let src = one_statement(&format!(
+                "{OK_STMT}\nconditions = {{ attributes = [{cond}] }}"
+            ));
+            let errs = compile(None, Some(&src), &Scope::Tenant).unwrap_err();
+            assert!(
+                errs.iter()
+                    .any(|d| d.code == code && d.location.ends_with(at)),
+                "{cond}: {errs:?}"
+            );
+        }
+        let src = one_statement(&format!("{OK_STMT}\nconditions = {{ attributes = \"x\" }}"));
+        assert_eq!(
+            codes_of(&compile(None, Some(&src), &Scope::Tenant).unwrap_err()),
+            vec![codes::E_STRUCTURE]
+        );
+        let many = vec!["{ key = \"tree.x\", op = \"exists\" }"; 33].join(", ");
+        let src = one_statement(&format!(
+            "{OK_STMT}\nconditions = {{ attributes = [{many}] }}"
+        ));
+        assert_eq!(
+            codes_of(&compile(None, Some(&src), &Scope::Tenant).unwrap_err()),
+            vec![codes::E_LIMIT]
+        );
+        // Server documents with attribute conditions parse.
+        let json = br#"{"policies":[{"name":"p","statements":[{"effect":"deny","actions":["tree:read"],"resources":["*"],"principals":["*"],
+            "conditions":{"attributes":[{"key":"tree.c","op":"exists","values":null}]}}]}]}"#;
+        let doc = Document::from_json(json).unwrap();
+        assert_eq!(
+            doc.policies[0].statements[0].conditions.attributes[0].key,
+            "tree.c"
         );
     }
 

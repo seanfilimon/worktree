@@ -35,7 +35,8 @@ func TestPolicyCacheCoversEveryField(t *testing.T) {
 		// compilation.
 		{domain.Policy{}, []string{"ID", "TenantID", "Name", "Description", "Enabled", "Statements", "Version", "ManagedBy", "TreeID", "CreatedBy", "CreatedAt", "UpdatedAt"}},
 		{domain.PolicyStatement{}, []string{"Sid", "Effect", "Actions", "Resources", "Principals", "Conditions"}},
-		{domain.PolicyConditions{}, []string{"IPRanges", "RequireMFA", "NotBefore", "NotAfter", "TimeWindow"}},
+		{domain.PolicyConditions{}, []string{"IPRanges", "RequireMFA", "NotBefore", "NotAfter", "TimeWindow", "Attributes"}},
+		{domain.AttributeCondition{}, []string{"Key", "Op", "Values"}},
 		{domain.TimeWindow{}, []string{"Days", "Start", "End", "Timezone"}},
 	}
 	for _, c := range cases {

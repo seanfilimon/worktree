@@ -39,6 +39,7 @@ type compiledPolicy struct {
 	statements  []compiledStatement
 	usesTeams   bool // some statement has a "team:" principal
 	usesTenants bool // some statement has a "tenant:" principal
+	usesAttrs   bool // some statement has attribute conditions (attributes.go)
 }
 
 // compiledStatement is a PolicyStatement ready for matching.
@@ -65,6 +66,7 @@ type compiledConditions struct {
 	notBefore  *time.Time
 	notAfter   *time.Time
 	window     *compiledWindow
+	attrs      []attrCond // v0.8 ABAC (attributes.go)
 	err        error
 }
 
@@ -96,6 +98,7 @@ func compilePolicies(pols []domain.Policy) []compiledPolicy {
 		cp := compiledPolicy{id: p.ID, name: p.Name, statements: make([]compiledStatement, 0, len(p.Statements))}
 		for i, st := range p.Statements {
 			cp.statements = append(cp.statements, compileStatement(i, st))
+			cp.usesAttrs = cp.usesAttrs || len(st.Conditions.Attributes) > 0
 			for _, pr := range st.Principals {
 				if strings.HasPrefix(strings.TrimSpace(pr), prefixTeam) {
 					cp.usesTeams = true
@@ -152,6 +155,11 @@ func compileConditions(c domain.PolicyConditions) compiledConditions {
 		} else {
 			cc.window = w
 		}
+	}
+	if attrs, err := compileAttrConds(c.Attributes); err != nil {
+		cc.err = err
+	} else {
+		cc.attrs = attrs
 	}
 	return cc
 }
@@ -276,13 +284,24 @@ func parseRemoteIP(s string) (netip.Addr, bool) {
 // condResult is the outcome of checking a statement's conditions.
 type condResult struct {
 	holds  bool
-	detail string // why the conditions do not hold (or how a broken one was treated)
+	detail string       // why the conditions do not hold (or how a broken one was treated)
+	attrs  []attrResult // v0.8: outcome of each attribute condition (attributes.go)
 }
 
 // check evaluates the conditions for a request. failClosed selects how
 // conditions that cannot be decided (broken condition, unknown client IP)
-// are treated: true for deny statements, so they still apply.
+// are treated: true for deny statements, so they still apply. Attribute
+// conditions (v0.8) are decided once the others hold.
 func (c *compiledConditions) check(env evalEnv, failClosed bool) condResult {
+	cr := c.checkBase(env, failClosed)
+	if !cr.holds || len(c.attrs) == 0 || c.err != nil {
+		return cr
+	}
+	return c.checkAttributes(env, cr)
+}
+
+// checkBase evaluates the MFA, time and IP conditions.
+func (c *compiledConditions) checkBase(env evalEnv, failClosed bool) condResult {
 	if c.err != nil {
 		if failClosed {
 			return condResult{holds: true, detail: "invalid condition (" + c.err.Error() + ") treated as satisfied"}

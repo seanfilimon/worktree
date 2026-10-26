@@ -641,6 +641,7 @@ Action filters also accept a `<prefix>.*` form, for example
 | Lockout guard (`owner_protected`, `last_owner`); tenant status | Built (v0.5) |
 | Service accounts and scoped keys; scoped personal tokens; sessions; TOTP; invitations; password resets; OIDC SSO | Built |
 | Simulator (including `candidate_policies`) and effective permissions | Built |
+| ABAC attribute conditions (`conditions.attributes` on `principal.*`, `tree.*`, `tenant.*`), simulator attribute overrides and explanation | Built (v0.8), see [ABAC](./ABAC.md) |
 | Declarative access files (`wt access`) | Built (v0.5), see [Declarative Access](./DeclarativeAccess.md) |
 | Token scopes for the v0.5 actions | Partial: `iam.ValidateScopes` still lists only the v0.4 actions, so `release:*` and `ci:report` scopes are rejected when a token or key is created. A `*` scope works. |
 | Rust `worktree_protocol::iam` (`engine`, `role`, `permission`, `policy`, `scope`) and `access::{tree_access, branch_access}` | Legacy protocol model from v1. The server does not consult it. Its names (`sync:push`, `snapshot:create`, …) survive only as declarative-TOML aliases. |
@@ -660,9 +661,10 @@ built, and are not part of the v0.5 contract:
 - **Branch-scoped and path-scoped role assignment.** For example, "Maintainer
   on `main` only". Roles are assigned per tenant (membership) or per tree
   (grant). Per-branch restrictions are expressed as denies.
-- **Custom ABAC attributes** on tenants or accounts (`department`,
-  `clearance_level`, …) and generic condition operators (`Equals`, `In`,
-  `StartsWith`, `GreaterThan`, …). Only the fixed conditions of §8.4 exist.
+- **Ordered ABAC operators** (`GreaterThan`, clearance levels as ordered
+  sets), comparisons between attributes and service-account attributes.
+  Attributes on tenants, accounts and trees and the equality, set, prefix
+  and existence operators are built (v0.8): see [ABAC](./ABAC.md#14-roadmap).
 - **Additional fine-grained actions**: `branch:read`, `branch:protect`,
   `snapshot:create`, `snapshot:read`, `snapshot:restore`, `sync:pull`,
   `tag:create`, `tag:delete`, `merge_request:*` and the `*Manage` permissions.

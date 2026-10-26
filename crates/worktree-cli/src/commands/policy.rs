@@ -41,6 +41,13 @@ pub enum PolicyCommand {
         id: String,
     },
     /// Create a policy from a JSON file
+    ///
+    /// Statements may carry ABAC attribute conditions (all must hold):
+    /// `"conditions": {"attributes": [{"key": "principal.department", "op":
+    /// "in", "values": ["eng", "ops"]}]}` with keys `principal.<k>`,
+    /// `tree.<k>` or `tenant.<k>` and op equals, not_equals (one value), in,
+    /// not_in, starts_with (one or more) or exists, not_exists (none).
+    /// Attributes are managed with `wt attr`.
     Create {
         /// Tenant slug
         tenant: String,
@@ -126,6 +133,10 @@ pub enum PolicyCommand {
         /// Treat the session as MFA-verified, for require_mfa conditions
         #[arg(long)]
         mfa: bool,
+        /// Override an ABAC attribute: `principal.<k>=V`, `tree.<k>=V`,
+        /// `tenant.<k>=V`; a bare `KEY` simulates it unset (repeatable)
+        #[arg(long = "attr", value_name = "KEY[=VALUE]")]
+        attrs: Vec<String>,
     },
     /// List the versions of a policy, oldest first
     ///
@@ -267,6 +278,9 @@ struct SimDecision {
     effect: String,
     #[serde(default)]
     reasons: Vec<SimReason>,
+    /// v0.8 ABAC: attribute conditions decided with the candidate policies.
+    #[serde(default)]
+    conditions: Vec<crate::commands::iam::AttributeCheck>,
 }
 
 fn simulation_text(t: &mut Text, request: &str, current: &SimDecision, candidate: &SimDecision) {
@@ -290,6 +304,71 @@ fn simulation_text(t: &mut Text, request: &str, current: &SimDecision, candidate
         table.row([r.source.clone(), r.effect.clone(), r.detail.clone()]);
     }
     table.render(t, "No reasons given.");
+    crate::commands::iam::attribute_checks_text(t, &candidate.conditions);
+}
+
+/// v0.8 ABAC: check the attribute conditions of a policy file locally (the
+/// server repeats the check), naming `statements[i].conditions.attributes[j].field`.
+fn check_attribute_conditions(statements: &[Value]) -> Result<()> {
+    use worktree_sdk::remote::access::attributes::{self, AttributeCondition};
+    let mut problems = Vec::new();
+    for (i, st) in statements.iter().enumerate() {
+        let Some(list) = st.pointer("/conditions/attributes") else {
+            continue;
+        };
+        if list.is_null() {
+            continue;
+        }
+        let conds: Vec<AttributeCondition> = serde_json::from_value(list.clone()).map_err(|e| {
+            CliError::failure(format!(
+                "statements[{i}].conditions.attributes: expected [{{key, op, values}}]: {e}"
+            ))
+        })?;
+        if conds.len() > attributes::MAX_CONDITIONS {
+            problems.push(format!(
+                "statements[{i}].conditions.attributes: at most {} attribute conditions are allowed",
+                attributes::MAX_CONDITIONS
+            ));
+        }
+        for (j, c) in conds.iter().enumerate() {
+            for (field, msg) in attributes::check_condition(c) {
+                problems.push(format!(
+                    "statements[{i}].conditions.attributes[{j}].{field}: {msg}"
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::failure(format!(
+            "invalid attribute conditions: {}",
+            problems.join("; ")
+        ))
+        .with_hint("see `wt help policy` and specs/iam/ABAC.md for the condition syntax"))
+    }
+}
+
+/// `principal.department in ["eng"] and tree.x exists` for a statement's
+/// attribute conditions ("" when it has none).
+fn attribute_summary(conditions: &Value) -> String {
+    use worktree_sdk::remote::access::attributes::{self, AttributeCondition};
+    let conds: Vec<AttributeCondition> = conditions
+        .get("attributes")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    conds
+        .iter()
+        .map(attributes::describe)
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+/// The statement's conditions without `attributes` (rendered separately).
+fn other_conditions(conditions: &Value) -> Option<Value> {
+    let mut c = conditions.as_object()?.clone();
+    c.remove("attributes");
+    (!c.is_empty()).then_some(Value::Object(c))
 }
 
 /// A policy document as sent to the server. Statements are passed through
@@ -489,8 +568,12 @@ fn statement_summary(s: &Statement) -> String {
         s.resources.join(", "),
         s.principals.join(", ")
     );
-    if s.conditions.as_object().is_some_and(|c| !c.is_empty()) {
-        out.push_str(&format!(" if {}", s.conditions));
+    if let Some(other) = other_conditions(&s.conditions) {
+        out.push_str(&format!(" if {other}"));
+    }
+    let attrs = attribute_summary(&s.conditions);
+    if !attrs.is_empty() {
+        out.push_str(&format!(" where {attrs}"));
     }
     out
 }
@@ -618,6 +701,7 @@ pub fn run(ctx: &Context, args: PolicyArgs) -> Result<()> {
         }
         PolicyCommand::Create { tenant, file } => {
             let doc = PolicyDocument::read(&file)?;
+            check_attribute_conditions(&doc.statements)?;
             let path = tenant_path(&tenant, "/policies");
             let policy: Value = call(ctx.rest()?.post(&path, &doc))?;
             show(&ctx.out, &policy, |t, p: &Policy| {
@@ -626,6 +710,7 @@ pub fn run(ctx: &Context, args: PolicyArgs) -> Result<()> {
         }
         PolicyCommand::Update { tenant, id, file } => {
             let doc = PolicyDocument::read(&file)?;
+            check_attribute_conditions(&doc.statements)?;
             let policy: Value = call(ctx.rest()?.put(&policy_path(&tenant, &id), &doc))?;
             show(&ctx.out, &policy, |t, p: &Policy| {
                 t.line(format_args!(
@@ -668,7 +753,9 @@ pub fn run(ctx: &Context, args: PolicyArgs) -> Result<()> {
             path,
             ip,
             mfa,
+            attrs,
         } => {
+            let overrides = crate::commands::iam::attr_overrides(&attrs)?;
             let client = ctx.rest()?;
             let candidates = candidate_policies(&read_input(&file)?, &file)?;
             let candidates = if only {
@@ -703,6 +790,10 @@ pub fn run(ctx: &Context, args: PolicyArgs) -> Result<()> {
                 "context": {"ip": ip, "mfa": mfa},
             });
             strip_nulls(&mut body);
+            if let Some(o) = overrides {
+                // After strip_nulls: null overrides mean "unset".
+                body["context"]["attributes"] = Value::Object(o);
+            }
             let current: Value = call(client.post("/api/v1/iam/simulate", &body))?;
             body["candidate_policies"] = Value::Array(candidates);
             let candidate: Value = call(client.post("/api/v1/iam/simulate", &body))?;
@@ -814,8 +905,12 @@ fn policy_detail(t: &mut Text, p: &Policy) {
             ("  resources", s.resources.join(", ")),
             ("  principals", s.principals.join(", ")),
         ];
-        if s.conditions.as_object().is_some_and(|c| !c.is_empty()) {
-            pairs.push(("  conditions", s.conditions.to_string()));
+        if let Some(other) = other_conditions(&s.conditions) {
+            pairs.push(("  conditions", other.to_string()));
+        }
+        let attrs = attribute_summary(&s.conditions);
+        if !attrs.is_empty() {
+            pairs.push(("  attributes", attrs));
         }
         fields(t, &pairs);
     }
@@ -951,6 +1046,47 @@ mod tests {
     }
 
     #[test]
+    fn renders_and_checks_attribute_conditions() {
+        let st = json!({"sid": "c", "effect": "deny", "actions": ["tree:*"], "resources": ["*"], "principals": ["*"],
+            "conditions": {"require_mfa": true, "attributes": [
+                {"key": "tree.classification", "op": "equals", "values": ["secret"]},
+                {"key": "principal.clearance", "op": "not_exists"}]}});
+        let policy: Policy = serde_json::from_value(json!({
+            "id": "p1", "name": "clearance", "enabled": true, "statements": [st.clone()]
+        }))
+        .unwrap();
+        let mut t = Text::default();
+        policy_detail(&mut t, &policy);
+        let out = t.as_str();
+        assert!(
+            out.contains("  conditions: {\"require_mfa\":true}\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "  attributes: tree.classification equals \"secret\" and principal.clearance not_exists\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(
+            statement_summary(&policy.statements[0]),
+            "DENY tree:* on * for * if {\"require_mfa\":true} where tree.classification equals \"secret\" and principal.clearance not_exists"
+        );
+        assert!(check_attribute_conditions(&[st, json!({"effect": "allow"})]).is_ok());
+        let bad = json!({"conditions": {"attributes": [
+            {"key": "department", "op": "equals", "values": ["x"]},
+            {"key": "tree.x", "op": "exists", "values": ["y"]}]}});
+        let err = check_attribute_conditions(&[bad]).unwrap_err().to_string();
+        assert!(
+            err.contains("statements[0].conditions.attributes[0].key")
+                && err.contains("statements[0].conditions.attributes[1].values"),
+            "{err}"
+        );
+        let shape = json!({"conditions": {"attributes": "x"}});
+        assert!(check_attribute_conditions(&[shape]).is_err());
+    }
+
+    #[test]
     fn parses_simulate() {
         let cmd = policy(&[
             "simulate",
@@ -1038,6 +1174,7 @@ mod tests {
             allowed: true,
             effect: "allow".into(),
             reasons: vec![],
+            conditions: vec![],
         };
         let deny = SimDecision {
             allowed: false,
@@ -1047,6 +1184,7 @@ mod tests {
                 detail: "policy \"x\" denies".into(),
                 effect: "deny".into(),
             }],
+            conditions: vec![],
         };
         let mut t = Text::default();
         simulation_text(&mut t, "user:ada tree:write on acme/web", &allow, &deny);

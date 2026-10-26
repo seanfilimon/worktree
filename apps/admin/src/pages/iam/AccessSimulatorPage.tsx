@@ -14,6 +14,7 @@ import {
 } from "@/api/iam";
 import { useTenants, useTenantTrees } from "@/api/queries";
 import { useAuth } from "@/auth/context";
+import { overridesToContext, validateOverrides, type OverrideRow } from "@/components/abac/abac";
 import { EmptyState, FormError } from "@/components/people/states";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { AttributeExplanation } from "./AttributeExplanation";
+import { AttributeOverridesInput } from "./AttributeOverridesInput";
 import { DecisionCard, EffectivePanel } from "./DecisionCard";
 import { FieldErrors } from "./shared";
 
@@ -54,6 +57,7 @@ export function AccessSimulatorPage() {
   const [path, setPath] = useState("");
   const [ip, setIp] = useState("");
   const [mfa, setMfa] = useState(false);
+  const [overrides, setOverrides] = useState<OverrideRow[]>([]);
   const [touched, setTouched] = useState(false);
   const [submitted, setSubmitted] = useState<Submitted | null>(null);
 
@@ -83,6 +87,8 @@ export function AccessSimulatorPage() {
     e.preventDefault();
     setTouched(true);
     if (errors.principal.length || errors.tenant.length || errors.ip.length) return;
+    if (validateOverrides(overrides).some((r) => r.key || r.value)) return;
+    const attributes = overridesToContext(overrides);
     const [saTenant, saName] = name.includes("/") ? (name.split("/") as [string, string]) : [tenant, name];
     const principal =
       ptype === "user" ? { type: ptype, name } : { type: ptype, name: saName, tenant: saTenant };
@@ -93,7 +99,7 @@ export function AccessSimulatorPage() {
       ...(hasTree ? { tree } : {}),
       ...(hasTree && branch.trim() ? { branch: branch.trim() } : {}),
       ...(hasTree && path.trim() ? { path: path.trim() } : {}),
-      context: { ...(ip.trim() ? { ip: ip.trim() } : {}), ...(mfa ? { mfa: true } : {}) },
+      context: { ...(ip.trim() ? { ip: ip.trim() } : {}), ...(mfa ? { mfa: true } : {}), ...(attributes ? { attributes } : {}) },
     };
     const principalRef = ptype === "user" ? `user:${name}` : `sa:${saTenant}/${saName}`;
     const scope = hasTree ? `${tenant}/${tree}` : tenant;
@@ -276,6 +282,7 @@ export function AccessSimulatorPage() {
                   <Label htmlFor={`${id}-mfa`}>Signed in with MFA</Label>
                   <Switch id={`${id}-mfa`} checked={mfa} onCheckedChange={setMfa} />
                 </div>
+                <AttributeOverridesInput id={id} rows={overrides} onChange={setOverrides} showErrors={touched} />
               </fieldset>
 
               <Button type="submit" disabled={simulate.isPending}>
@@ -290,7 +297,10 @@ export function AccessSimulatorPage() {
           {simulate.isError ? (
             <FormError error={simulate.error} />
           ) : simulate.data && submitted ? (
-            <DecisionCard decision={simulate.data} summary={submitted.summary} />
+            <>
+              <DecisionCard decision={simulate.data} summary={submitted.summary} />
+              <AttributeExplanation decision={simulate.data} />
+            </>
           ) : (
             <Card>
               <EmptyState icon={ShieldQuestionMark} title="No simulation yet">

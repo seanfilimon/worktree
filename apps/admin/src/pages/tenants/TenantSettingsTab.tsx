@@ -16,6 +16,7 @@ import { tenantStatus } from "@/api/v05ops";
 import type { TenantV08 } from "@/api/tenantLifecycle";
 import { TenantDangerZone } from "./TenantDangerZone";
 import { TenantEmailCard } from "./TenantEmailCard";
+import { TenantAttributesCard } from "./TenantAttributesCard";
 import { TenantLimitsCard } from "./TenantLimitsCard";
 import { TenantRenameDialog } from "./TenantRenameDialog";
 import { TenantStatusCard } from "./TenantStatusCard";
@@ -180,6 +181,7 @@ export function TenantSettingsTab({ tenant, editable, owner = false }: { tenant:
       )}
       <TenantStatusCard tenant={tenant} editable={isAdmin} />
       <TenantLimitsCard slug={tenant.slug} editable={isAdmin} />
+      <TenantAttributesCard slug={tenant.slug} editable={editable} />
       <TenantDangerZone tenant={tenant} owner={owner} />
     </div>
   );

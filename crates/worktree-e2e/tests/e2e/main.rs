@@ -67,6 +67,7 @@ mod hardening_gaps;
 mod wt_tree_sharing;
 
 // v0.8 build-out (ENGINEERING_PLAN §16).
+mod abac; // abac (§16.5)
 mod config_as_code; // config-as-code (§16.3)
 mod conflict_resolution; // conflict-ui (§16.9)
 mod device_auth; // device-auth (§16.6)

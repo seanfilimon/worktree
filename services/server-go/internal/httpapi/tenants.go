@@ -134,7 +134,7 @@ func (a *api) handleListMembers(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		out = append(out, memberView{Account: *acct, Role: m.Role})
+		out = append(out, memberView{Account: memberAccount(*acct), Role: m.Role}) // abac: no attributes
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Account.Username < out[j].Account.Username })
 	writeJSON(w, http.StatusOK, out)
@@ -229,7 +229,7 @@ func (a *api) handlePutMember(w http.ResponseWriter, r *http.Request) error {
 	}
 	a.audit(r, "member.update", t.ID, "account", acct.ID,
 		map[string]string{"username": acct.Username, "role": req.Role, "previous_role": prev})
-	writeJSON(w, http.StatusOK, memberView{Account: *acct, Role: m.Role})
+	writeJSON(w, http.StatusOK, memberView{Account: memberAccount(*acct), Role: m.Role}) // abac: no attributes
 	return nil
 }
 

@@ -26,6 +26,7 @@ import { useToast } from "@/toast/store";
 import { WebhooksPanel } from "@/pages/webhooks/WebhooksPanel";
 import { BranchSelect } from "./BranchSelect";
 import { useTreeContext } from "./context";
+import { TreeAttributesCard } from "./TreeAttributesCard";
 
 const VISIBILITY: Record<Visibility, { icon: typeof Lock; description: string }> = {
   private: { icon: Lock, description: "Only tenant members" },
@@ -241,6 +242,7 @@ export function TreeSettingsTab() {
           </div>
         )}
       </form>
+      <TreeAttributesCard />
       <section aria-labelledby={`${id}-webhooks`} className="flex flex-col gap-3">
         <div>
           <h2 id={`${id}-webhooks`} className="flex items-center gap-2 font-semibold">

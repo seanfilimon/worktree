@@ -2,6 +2,7 @@ import { useQueries } from "@tanstack/react-query";
 import { Building2 } from "lucide-react";
 import { Link } from "react-router";
 import { useApi } from "@/api/context";
+import { AccountAttributesSection } from "@/components/abac/AccountAttributesSection";
 import { keys, useTenants } from "@/api/queries";
 import type { Account, Role, Tenant } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -105,6 +106,8 @@ export function AccountSheet({ account, onClose }: { account: Account | null; on
                   </ul>
                 )}
               </section>
+              <Separator />
+              <AccountAttributesSection username={account.username} />
             </div>
           </>
         )}

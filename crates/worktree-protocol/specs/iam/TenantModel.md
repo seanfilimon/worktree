@@ -329,6 +329,7 @@ wt remote add NAME URL --tenant T        # binds a worktree remote to a tenant
 | Deletion with a recovery window, restore, purge job | Built (v0.8) |
 | Service-account key revocation and paused tenant grants on suspension | Built (v0.8) |
 | `wt tenant switch` | Built (v0.8) |
+| ABAC attributes on tenants, accounts and trees (`/attributes` endpoints, `wt attr`) | Built (v0.8), see [ABAC](./ABAC.md) |
 | Rust `worktree_protocol::iam::tenant` types | Legacy model, not used by the server |
 
 ## 15. Roadmap
@@ -342,7 +343,6 @@ built:
   [Tenant Lifecycle §16](./TenantLifecycle.md#16-roadmap).
 - **Plan-driven limits.** Fixed quotas per plan, `max_snapshot_size`, and a
   billing integration. Limits are server defaults plus per-tenant overrides.
-- **Tenant attributes for ABAC** (`department`, `location`, `clearance`, …).
 - **`shared` visibility** with discovery lists.
 - **`[[tenant_access]]` shorthand** in `.wt/config.toml`.
 - **Revoking account sessions on suspension.** Only service-account keys are

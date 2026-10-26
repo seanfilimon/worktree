@@ -11,6 +11,7 @@
 use chrono::{DateTime, Utc};
 use worktree_protocol::proto::sync as wire;
 
+pub use worktree_protocol::access::attributes; // v0.8 ABAC (§16.5)
 pub use worktree_protocol::access::declarative;
 use worktree_protocol::access::declarative::Document;
 

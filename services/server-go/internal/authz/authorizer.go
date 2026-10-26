@@ -156,7 +156,8 @@ type evalEnv struct {
 	remoteIP  string
 	now       time.Time
 	mfa       bool
-	effective bool // EffectivePermissions: skip statements that need a request
+	effective bool        // EffectivePermissions: skip statements that need a request
+	attrs     *attrSource // v0.8 ABAC: set by applyPolicies when a policy uses attributes
 }
 
 func (a *Authorizer) envFor(p *domain.Principal, env domain.RequestEnv, effective bool) evalEnv {
@@ -822,9 +823,13 @@ func (a *Authorizer) applyPolicies(ctx context.Context, c *requestCache, s *subj
 	// Lockout guard: tenant owners can always manage IAM and the tenant,
 	// whatever the policies say.
 	protected := owner && (areaOf(string(target)) == AreaIAM || target == domain.ActTenantAdmin)
-	needTenants := false
+	needTenants, needAttrs := false, false
 	for _, p := range pols {
 		needTenants = needTenants || p.usesTenants
+		needAttrs = needAttrs || p.usesAttrs
+	}
+	if needAttrs { // v0.8 ABAC (attributes.go)
+		env.attrs = attributeSource(ctx, s, tenant, res)
 	}
 	if needTenants && !s.anonymous {
 		if facts.tenants, err = a.memberTenantSlugs(ctx, c, s); err != nil {
@@ -880,6 +885,9 @@ func (a *Authorizer) applyPolicies(ctx context.Context, c *requestCache, s *subj
 			}
 			label := st.label(pol)
 			cr := st.cond.check(env, st.effect == domain.EffectDeny)
+			if len(cr.attrs) > 0 { // v0.8 ABAC: explain each attribute condition
+				recordAttributeChecks(env, e, pol, st, cr.attrs)
+			}
 			if !cr.holds {
 				e.info(SourcePolicy, "%s (%s) does not apply: %s", label, st.effect, cr.detail)
 				continue

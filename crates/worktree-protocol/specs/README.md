@@ -72,6 +72,7 @@ is authoritative; the spec is a bug.
 | **Undo and force push** | [`tree/Undo.md`](./tree/Undo.md) | Local operation log (`.wt/oplog.jsonl`), `wt undo [N]` / `--list` / `wt redo`, `wt push --force` with lease, server reflog, protection bypass, `DeleteTag` and `wt tag delete --remote` |
 | **Packs** | [`sync/Packs.md`](./sync/Packs.md) | Pack format with copy/insert deltas and zstd payloads, resumable `UploadPack` / `QueryUpload`, `DownloadPack`, base selection, fallback, `WT_NO_PACK`, golden vectors |
 | **Config-as-code** | [`dot-wt-tree/ConfigAsCode.md`](./dot-wt-tree/ConfigAsCode.md) | `.wt-tree/{branches,protections,config}.toml` and `access/` on the default branch: server-side validation with located errors (shared Rust/Go codes), branch metadata, config-managed protections, tree access documents (iam:admin), `tree_config`, `GET {tree}/config`, `wt trees config` |
+| **ABAC attributes** | [`iam/ABAC.md`](./iam/ABAC.md) | Attributes on tenants, accounts and trees; `principal.*` / `tree.*` / `tenant.*` policy conditions (equals, in, starts_with, exists, …); TOML syntax; simulator explanation and overrides; `wt attr` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →
