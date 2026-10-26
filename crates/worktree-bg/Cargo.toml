@@ -30,7 +30,7 @@ worktree-protocol = { path = "../worktree-protocol" }
 axum = { version = "0.7", default-features = false, features = ["http1", "http2", "json", "tokio"] }
 tonic = "0.12"
 prost = "0.13"
-prost-types = "0.13"
+prost-types = "0.14"
 tokio-stream = "0.1"
 blake3 = "1"
 uuid = { version = "1", features = ["v4"] }
