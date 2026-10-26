@@ -33,7 +33,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Worktree structure and configuration",
-        &["tree", "ignore", "config"],
+        &["tree", "sparse", "ignore", "config"],
     ),
     (
         "Servers and sync",
@@ -47,18 +47,19 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "push",
             "fetch",
             "pull",
+            "sync",
             "clone",
             "stage",
             "unstage",
         ],
     ),
-    ("Export and interop", &["archive", "git"]),
+    ("Export and interop", &["archive", "git", "mirror"]),
     ("Background daemon", &["daemon"]),
     (
         "Collaboration",
         &[
-            "tenant", "trees", "mr", "ci", "protect", "license", "todo", "deps", "release",
-            "search", "events", "webhook", "open",
+            "tenant", "trees", "mr", "owners", "ci", "protect", "license", "todo", "deps",
+            "release", "search", "events", "webhook", "inbox", "open",
         ],
     ),
     ("Administration", &["admin", "audit", "api"]),
