@@ -31,6 +31,8 @@ import { useToast } from "@/toast/store";
 import { useTreeContext } from "./context";
 import { RevisionSelect } from "./history/RevisionSelect";
 import { EmptyState, LoadingRows, QueryError, RelativeTime } from "./history/shared";
+import type { SignedTag } from "./trust";
+import { VerifiedBadge } from "./TrustBadges";
 
 function tagNameError(name: string): string | null {
   if (!name) return "Enter a tag name.";
@@ -216,7 +218,7 @@ export function TagsTab() {
           <QueryError error={tags.error} onRetry={() => void tags.refetch()} />
         ) : tags.data.length === 0 ? (
           <EmptyState title="No tags" icon={<TagIcon aria-hidden="true" />}>
-            Create one here or with <code className="font-mono">wt tag create NAME</code> and push.
+            Create one here or with <code className="font-mono">wt tag NAME --sign</code> and <code className="font-mono">wt tag push NAME</code>.
           </EmptyState>
         ) : (
           <Table aria-label="Tags">
@@ -237,12 +239,14 @@ export function TagsTab() {
             <TableBody>
               {[...tags.data]
                 .sort((a, b) => b.created_at.localeCompare(a.created_at))
-                .map((t) => (
+                .map((t: SignedTag) => (
                   <TableRow key={t.name}>
                     <TableCell>
-                      <span className="flex items-center gap-1.5 font-mono font-medium">
+                      <span className="flex flex-wrap items-center gap-1.5 font-mono font-medium">
                         <TagIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
                         {t.name}
+                        {/* v0.7 trust (§15.8): signature verified by the server. */}
+                        <VerifiedBadge verified={t.verified} signer={t.signer} keyId={t.signing_key_id} className="font-sans" />
                       </span>
                     </TableCell>
                     <TableCell>
@@ -257,7 +261,14 @@ export function TagsTab() {
                     <TableCell className="hidden max-w-xs truncate md:table-cell">
                       {firstLine(t.message) || <span className="text-muted-foreground">—</span>}
                     </TableCell>
-                    <TableCell>{t.tagger}</TableCell>
+                    <TableCell>
+                      {t.tagger}
+                      {t.verified && t.signed_tagger && t.signed_tagger !== t.tagger && (
+                        <span className="block text-xs text-muted-foreground" title="Tagger covered by the signature">
+                          {t.signed_tagger}
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <RelativeTime value={t.created_at} className="text-muted-foreground" />
                     </TableCell>

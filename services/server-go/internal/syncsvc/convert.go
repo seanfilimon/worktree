@@ -209,6 +209,15 @@ func tagToPB(t *domain.Tag) *syncpb.TagRecord {
 	if t.Message != "" {
 		rec.Message = proto.String(t.Message)
 	}
+	// v0.7 trust (§15.8): signed tags carry their signature and the tagger
+	// value it covers, so clients can verify them.
+	if len(t.Signature) > 0 || t.SigningKeyID != "" {
+		rec.Signature = append([]byte(nil), t.Signature...)
+		rec.SigningKeyId = t.SigningKeyID
+		if t.SignedTagger != "" {
+			rec.Tagger = t.SignedTagger
+		}
+	}
 	return rec
 }
 

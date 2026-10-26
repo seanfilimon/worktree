@@ -241,6 +241,7 @@ async fn remote_tags_round_trip_and_duplicates_are_rejected() {
         message: Some("release".into()),
         tagger: "alice".into(),
         created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        signature: None,
     };
     c.push_tag(&tree, &tag).await.unwrap();
     assert_eq!(c.list_tags(&tree).await.unwrap(), vec![tag.clone()]);
@@ -249,6 +250,17 @@ async fn remote_tags_round_trip_and_duplicates_are_rejected() {
         SdkError::Remote(m) => assert!(m.contains("v1.0") && m.contains("already exists"), "{m}"),
         other => panic!("{other:?}"),
     }
+    // v0.7 trust (§15.8): a signed tag keeps its signature over the wire.
+    let mut signed = TagInfo {
+        name: "v1.1".into(),
+        ..tag.clone()
+    };
+    worktree_sdk::signing::LocalKey::from_seed("k", &[4; 32]).sign_tag(&mut signed);
+    c.push_tag(&tree, &signed).await.unwrap();
+    let listed = c.list_tags(&tree).await.unwrap();
+    assert_eq!(listed[1], signed);
+    assert!(listed[1].signature.is_some());
+
     let dangling = TagInfo {
         name: "v2".into(),
         target: "missing".into(),

@@ -270,6 +270,7 @@ impl Repository {
             message: message.map(str::to_string),
             tagger: self.author(),
             created_at: Utc::now(),
+            signature: None,
         };
         fsutil::write_json(&path, &tag)?;
         self.append_reflog(&ReflogEntry {

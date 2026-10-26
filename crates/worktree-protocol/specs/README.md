@@ -61,6 +61,7 @@ is authoritative; the spec is a bug.
 | **Storage backends and backups** | [`storage/Backends.md`](./storage/Backends.md) | Disk and S3 object stores (`--object-store`, `--s3-*`), `.wtbak` backups (REST, schedule, keep), offline `worktree-server restore`, `wt admin backup` |
 | **Git mirrors** | [`server/Mirrors.md`](./server/Mirrors.md) | Push mirrors to Git remotes: deterministic fast-import export, incremental re-sync, license filter + NOTICE, `--force-with-lease`, credentials, SSRF guard, `wt mirror` |
 | **Notifications** | [`server/Notifications.md`](./server/Notifications.md) | Per-account inbox from bus events (reviews, mentions, CI, TODOs, merges, watched trees), watch levels, SSE, SMTP email, `wt inbox` |
+| **Release integrity** | [`security/ReleaseIntegrity.md`](./security/ReleaseIntegrity.md) | Signed tags (canonical TagRecord payload, verification on push and REST, `require_signed`), asset SHA-256 and SHA256SUMS, verified releases, SPDX 2.3 SBOMs, `wt tag verify`, `wt release verify` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

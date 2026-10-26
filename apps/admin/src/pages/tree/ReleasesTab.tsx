@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Download, FileArchive, FlaskConical, Package, PencilLine, Plus, Tag as TagIcon, Trash2, Upload } from "lucide-react";
+import { Download, FileArchive, FlaskConical, Package, PencilLine, Plus, ShieldCheck, Tag as TagIcon, Trash2, Upload } from "lucide-react";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { errorMessage, isApiError } from "@/api/client";
@@ -34,6 +34,8 @@ import { useTreeContext } from "./context";
 import { Markdown } from "./history/Markdown";
 import { RevisionSelect } from "./history/RevisionSelect";
 import { EmptyState, LoadingRows, QueryError, RelativeTime } from "./history/shared";
+import { SBOM_ASSET, type TrustedAsset, type TrustedRelease } from "./trust";
+import { ChecksumsButton, GenerateSbomButton, ShortChecksum, VerifiedBadge } from "./TrustBadges";
 import { FeatureUnavailable } from "./v05/shared";
 import { saveBlob, useCanWrite } from "./v05/util";
 
@@ -294,6 +296,15 @@ function AssetRow({ release, asset, canWrite, canDelete }: { release: Release; a
       <TableCell className="hidden text-xs text-muted-foreground sm:table-cell">
         <RelativeTime value={asset.uploaded_at} />
       </TableCell>
+      {/* v0.7 trust: recorded checksum; verified when the release's tag is. */}
+      <TableCell className="hidden lg:table-cell">
+        <span className="inline-flex items-center gap-1.5">
+          <ShortChecksum value={(asset as TrustedAsset).sha256} />
+          {(release as TrustedRelease).verified && (asset as TrustedAsset).sha256 && (
+            <ShieldCheck aria-label="Checksum of a verified release" className="size-3.5 text-muted-foreground" />
+          )}
+        </span>
+      </TableCell>
       <TableCell className="text-right whitespace-nowrap">
         <Button
           variant="ghost"
@@ -331,6 +342,13 @@ function ReleaseCard({ release: r, canWrite, canDelete, onEdit }: { release: Rel
       await invalidate();
     },
   });
+  // v0.7 trust (§15.8): verified releases, checksums and the SBOM.
+  const trust = r as TrustedRelease;
+  const sbom = r.assets.find((a) => a.name === SBOM_ASSET);
+  const downloadSbom = useMutation({
+    mutationFn: () => api.releases.downloadAsset(tenant, tree, r.tag, SBOM_ASSET),
+    onSuccess: (blob) => saveBlob(blob, SBOM_ASSET),
+  });
 
   return (
     <article aria-label={`Release ${r.name || r.tag}`} className="rounded-xl border bg-card">
@@ -349,6 +367,7 @@ function ReleaseCard({ release: r, canWrite, canDelete, onEdit }: { release: Rel
                 pre-release
               </Badge>
             )}
+            <VerifiedBadge verified={trust.verified} signer={trust.signer} keyId={trust.signing_key_id} />
           </h3>
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1 font-mono text-foreground">
@@ -418,6 +437,7 @@ function ReleaseCard({ release: r, canWrite, canDelete, onEdit }: { release: Rel
                 <TableHead className="text-right">Size</TableHead>
                 <TableHead className="hidden md:table-cell">Type</TableHead>
                 <TableHead className="hidden sm:table-cell">Uploaded</TableHead>
+                <TableHead className="hidden lg:table-cell">SHA-256</TableHead>
                 <TableHead>
                   <span className="sr-only">Actions</span>
                 </TableHead>
@@ -432,6 +452,27 @@ function ReleaseCard({ release: r, canWrite, canDelete, onEdit }: { release: Rel
         ) : (
           <p className="text-xs text-muted-foreground">No assets.</p>
         )}
+        <div className="flex flex-wrap items-center gap-1" aria-label={`Integrity of ${r.tag}`} role="group">
+          {r.assets.length > 0 && <ChecksumsButton tenant={tenant} tree={tree} tag={r.tag} />}
+          {sbom && (
+            <Button variant="ghost" size="sm" disabled={downloadSbom.isPending} onClick={() => downloadSbom.mutate()}>
+              <Download aria-hidden="true" />
+              Download SBOM
+            </Button>
+          )}
+          {canWrite && (
+            <GenerateSbomButton
+              tenant={tenant}
+              tree={tree}
+              tag={r.tag}
+              exists={sbom !== undefined}
+              onDone={async () => {
+                toast.success("SBOM attached", SBOM_ASSET);
+                await invalidate();
+              }}
+            />
+          )}
+        </div>
       </div>
     </article>
   );

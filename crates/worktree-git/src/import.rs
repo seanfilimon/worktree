@@ -582,6 +582,7 @@ fn import_tags(
             created_at: ident::git_time_to_utc(
                 tagger.as_ref().map_or_else(|| commit.time(), |t| t.when()),
             ),
+            signature: None,
         };
         repo.put_tag(tree, &info)?;
         count += 1;

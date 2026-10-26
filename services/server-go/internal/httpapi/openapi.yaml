@@ -3376,6 +3376,90 @@ paths:
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/releases/{tag}/checksums:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: tag
+        in: path
+        required: true
+        description: Tag name of the release (a '/' in the tag is passed percent-encoded as %2F).
+        schema:
+          type: string
+    get:
+      operationId: getReleaseChecksums
+      summary: SHA256SUMS of a release's assets
+      description: |
+        v0.7 (§15.8). One `<hex sha256>  <name>` line per asset, sorted by
+        name (the `sha256sum -c` format). Checksums of assets uploaded
+        before v0.7 are computed from the stored bytes.
+      tags: [Releases]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The SHA256SUMS text.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/releases/{tag}/sbom:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: tag
+        in: path
+        required: true
+        description: Tag name of the release (a '/' in the tag is passed percent-encoded as %2F).
+        schema:
+          type: string
+    post:
+      operationId: createReleaseSbom
+      summary: Generate and attach an SPDX SBOM
+      description: |
+        v0.7 (§15.8). Generates an SPDX 2.3 JSON document of the release's
+        snapshot — every file the caller may read with SHA1, SHA256 and
+        BLAKE3 checksums and the SPDX id of the license rule covering it —
+        and attaches it as the asset `sbom.spdx.json` (replacing an earlier
+        one). Paths the caller may not read are omitted (counted in the
+        package comment).
+      tags: [Releases]
+      x-wt-action: release:create
+      responses:
+        "201":
+          description: The stored SBOM asset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseAsset"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`conflict`: the release already holds the maximum number of assets."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/trees/{tenant}/{tree}/ci/status:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -8060,6 +8144,20 @@ components:
         force:
           type: boolean
           description: "Force replaces an existing tag (requires tree:admin; refused by NoMove tag protections)."
+        signature:
+          type: string
+          format: byte
+          description: "v0.7: Ed25519 signature (base64) of the TagRecord {name, target, message, tagger, created_at}; target must then be the snapshot id."
+        signing_key_id:
+          type: string
+          description: "v0.7: id or fingerprint of a registered signing key (required with signature)."
+        tagger:
+          type: string
+          description: "v0.7: the signed tagger value (signed tags only)."
+        created_at:
+          type: string
+          format: date-time
+          description: "v0.7: the signed creation time (required with signature)."
     CreateTeamRequest:
       type: object
       properties:
@@ -9332,7 +9430,7 @@ components:
     Release:
       type: object
       description: "Release is a named, annotated version of a tree pointing at a tag."
-      required: [id, tree_id, tag, snapshot_id, name, assets, created_by, author, created_at]
+      required: [id, tree_id, tag, snapshot_id, name, assets, created_by, author, created_at, verified]
       properties:
         id:
           type: string
@@ -9365,6 +9463,15 @@ components:
         published_at:
           type: string
           format: date-time
+        verified:
+          type: boolean
+          description: "v0.7 (computed): the release's tag carries a verified signature and still points at the release's snapshot."
+        signing_key_id:
+          type: string
+          description: "v0.7 (computed): the tag's signing key when verified."
+        signer:
+          type: string
+          description: "v0.7 (computed): username owning the tag's signing key when verified."
     ReleaseAsset:
       type: object
       description: "ReleaseAsset is a file attached to a release (bytes in the object store)."
@@ -9382,6 +9489,9 @@ components:
         uploaded_at:
           type: string
           format: date-time
+        sha256:
+          type: string
+          description: "v0.7: hex SHA-256 of the asset bytes (computed on upload; absent for assets uploaded before v0.7, see the checksums endpoint)."
     ReleaseList:
       type: object
       required: [releases]
@@ -10030,7 +10140,7 @@ components:
           format: int64
     Tag:
       type: object
-      required: [tree_id, name, target, message, tagger, created_at]
+      required: [tree_id, name, target, message, tagger, created_at, verified]
       properties:
         tree_id:
           type: string
@@ -10043,9 +10153,26 @@ components:
           type: string
         tagger:
           type: string
+          description: "The authenticated account that created the tag."
         created_at:
           type: string
           format: date-time
+        signature:
+          type: string
+          format: byte
+          description: "v0.7: Ed25519 signature (base64) over the TagRecord with signature fields cleared (see specs/security/ReleaseIntegrity.md)."
+        signing_key_id:
+          type: string
+          description: "v0.7: id or fingerprint of the signing key."
+        verified:
+          type: boolean
+          description: "v0.7: the signature verified against a registered, unrevoked key when the tag was stored."
+        signer:
+          type: string
+          description: "v0.7: username of the account owning the signing key."
+        signed_tagger:
+          type: string
+          description: "v0.7: the tagger value covered by the signature (the record's tagger as signed by the client)."
     TagProtection:
       type: object
       description: "TagProtection applies to tags matching Pattern (path.Match glob)."
@@ -10064,6 +10191,9 @@ components:
           items:
             type: string
           description: "usernames; empty = tree:write"
+        require_signed:
+          type: boolean
+          description: "v0.7: matching tags must carry a verified signature (unsigned tags are refused with `signature_required`)."
     Team:
       type: object
       description: "Team is a named group of accounts inside a tenant."

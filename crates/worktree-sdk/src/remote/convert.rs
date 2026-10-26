@@ -58,6 +58,8 @@ pub(crate) fn opt_snapshot_id(id: Option<&wire::SnapshotId>) -> Option<String> {
     id.map(|s| s.value.clone()).filter(|v| !v.is_empty())
 }
 
+// Tag records build their timestamp in `signing::tag_record` (§15.8).
+#[cfg(test)]
 pub(crate) fn timestamp(at: DateTime<Utc>) -> prost_types::Timestamp {
     prost_types::Timestamp {
         seconds: at.timestamp(),
@@ -71,15 +73,16 @@ pub(crate) fn datetime(ts: Option<&prost_types::Timestamp>) -> DateTime<Utc> {
         .unwrap_or(DateTime::UNIX_EPOCH)
 }
 
+/// The wire record of a tag, signature included (§15.8). The signed
+/// payload is this record with the signature fields cleared
+/// (`signing::tag_signed_payload`).
 pub(crate) fn tag_to_record(tag: &TagInfo) -> wire::TagRecord {
-    wire::TagRecord {
-        name: tag.name.clone(),
-        target: Some(snapshot_id(&tag.target)),
-        message: tag.message.clone(),
-        tagger: tag.tagger.clone(),
-        created_at: Some(timestamp(tag.created_at)),
-        ..Default::default()
+    let mut rec = crate::signing::tag_record(tag);
+    if let Some(sig) = &tag.signature {
+        rec.signature = sig.signature.clone();
+        rec.signing_key_id = sig.key_id.clone();
     }
+    rec
 }
 
 pub(crate) fn tag_from_record(rec: &wire::TagRecord) -> Result<TagInfo> {
@@ -91,6 +94,12 @@ pub(crate) fn tag_from_record(rec: &wire::TagRecord) -> Result<TagInfo> {
         message: rec.message.clone(),
         tagger: rec.tagger.clone(),
         created_at: datetime(rec.created_at.as_ref()),
+        signature: (!rec.signature.is_empty() || !rec.signing_key_id.is_empty()).then(|| {
+            crate::model::SnapshotSignature {
+                key_id: rec.signing_key_id.clone(),
+                signature: rec.signature.clone(),
+            }
+        }),
     })
 }
 
@@ -149,11 +158,23 @@ mod tests {
             message: Some("first release".into()),
             tagger: "alice".into(),
             created_at: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            signature: None,
         };
         assert_eq!(tag_from_record(&tag_to_record(&tag)).unwrap(), tag);
         let mut rec = tag_to_record(&tag);
         rec.target = None;
         assert!(tag_from_record(&rec).is_err());
+
+        // Signed tags carry their signature on the wire.
+        let mut signed = tag.clone();
+        signed.signature = Some(crate::model::SnapshotSignature {
+            key_id: "key-1".into(),
+            signature: vec![7; 64],
+        });
+        let rec = tag_to_record(&signed);
+        assert_eq!(rec.signing_key_id, "key-1");
+        assert_eq!(rec.signature.len(), 64);
+        assert_eq!(tag_from_record(&rec).unwrap(), signed);
     }
 
     #[test]

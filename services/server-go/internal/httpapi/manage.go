@@ -203,6 +203,25 @@ type createTagRequest struct {
 	// Force replaces an existing tag (requires tree:admin; refused by
 	// NoMove tag protections).
 	Force bool `json:"force,omitempty"`
+
+	// v0.7 trust (§15.8): a signed tag. The signature covers the TagRecord
+	// {name, target, message, tagger, created_at}, so target must then be
+	// the snapshot id, and tagger/created_at the signed values.
+	Signature    []byte     `json:"signature,omitempty"` // base64
+	SigningKeyID string     `json:"signing_key_id,omitempty"`
+	Tagger       string     `json:"tagger,omitempty"`
+	CreatedAt    *time.Time `json:"created_at,omitempty"`
+}
+
+// tagSignatureCheck runs the v0.7 trust checks (§15.8) on a tag about to
+// be stored: signed tags must verify, RequireSigned tag protections refuse
+// unsigned ones. Without the signing service signatures are dropped.
+func (a *api) tagSignatureCheck(r *http.Request, tree *domain.Tree, tag *domain.Tag) error {
+	if a.d.Signing == nil {
+		tag.Signature, tag.SigningKeyID, tag.SignedTagger = nil, "", ""
+		return nil
+	}
+	return a.d.Signing.CheckTagSignature(r.Context(), principal(r), tree, tag)
 }
 
 // checkTag enforces tag protections (§13.4) when the review service
@@ -247,6 +266,18 @@ func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 	if target == "" {
 		return badRequestf("target %q has no snapshots", req.Target)
 	}
+	// v0.7 trust (§15.8): signed tags name their exact record.
+	signed := len(req.Signature) > 0 || req.SigningKeyID != ""
+	if signed {
+		switch {
+		case target != req.Target:
+			return badRequestf("a signed tag's target must be the snapshot id (%s)", target)
+		case req.CreatedAt == nil || req.CreatedAt.IsZero():
+			return badRequestf("created_at is required for a signed tag")
+		case len(req.Tagger) > maxRefNameLen*2 || !utf8.ValidString(req.Tagger):
+			return badRequestf("tagger must be valid UTF-8 of at most %d bytes", maxRefNameLen*2)
+		}
+	}
 	var replaced *domain.Tag
 	switch old, err := a.d.Store.GetTag(ctx, tree.ID, req.Name); {
 	case err == nil:
@@ -267,11 +298,6 @@ func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 	default:
 		return err
 	}
-	if replaced != nil {
-		if err := a.d.Store.DeleteTag(ctx, tree.ID, req.Name); err != nil && !errors.Is(err, domain.ErrNotFound) {
-			return err
-		}
-	}
 	tag := &domain.Tag{
 		TreeID:    tree.ID,
 		Name:      req.Name,
@@ -280,6 +306,19 @@ func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 		Tagger:    p.Username,
 		CreatedAt: time.Now().UTC(),
 	}
+	if signed {
+		tag.Signature, tag.SigningKeyID = req.Signature, req.SigningKeyID
+		tag.SignedTagger = req.Tagger
+		tag.CreatedAt = req.CreatedAt.UTC()
+	}
+	if err := a.tagSignatureCheck(r, tree, tag); err != nil {
+		return err
+	}
+	if replaced != nil {
+		if err := a.d.Store.DeleteTag(ctx, tree.ID, req.Name); err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+	}
 	if err := a.d.Store.PutTag(ctx, tag); err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
 			return conflictf("tag %q already exists", req.Name)
@@ -287,6 +326,10 @@ func (a *api) handleCreateTag(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	details := map[string]string{"tag": tag.Name, "target": tag.Target}
+	if tag.Verified {
+		details["verified"] = "true"
+		details["signing_key_id"] = tag.SigningKeyID
+	}
 	if replaced != nil {
 		details["previous_target"] = replaced.Target
 	}

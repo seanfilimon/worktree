@@ -328,6 +328,7 @@ fn tags_and_remote_refs_resolve() {
         message: None,
         tagger: "git".into(),
         created_at: Utc::now(),
+        signature: None,
     };
     fx.repo.put_tag(&fx.tree, &imported).unwrap();
     assert_eq!(fx.repo.resolve(&fx.tree, "imported").unwrap().id, two.id);

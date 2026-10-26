@@ -41,6 +41,9 @@ mod watch;
 pub use watch::{unstage, watch_trees, BranchEvent, BranchEventStream, TreeWatch};
 // sparse (§15.4): the lazy object fetcher of partial clones.
 pub(crate) use fetch::lazy_fetcher;
+// v0.7 trust (§15.8): push one (signed) tag, list server tags.
+mod tags;
+pub use tags::{push_tag, remote_tags};
 
 pub use client::{
     ObjectKind, RemoteBranch, RemoteTree, SyncClient, MAX_MESSAGE_SIZE, TREE_ID_METADATA_KEY,

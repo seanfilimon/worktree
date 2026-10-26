@@ -377,6 +377,10 @@ pub struct TagInfo {
     pub message: Option<String>,
     pub tagger: String,
     pub created_at: DateTime<Utc>,
+    // v0.7 trust (ENGINEERING_PLAN §15.8): Ed25519 signature over the
+    // canonical TagRecord (`signing::tag_signed_payload`); None = unsigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<SnapshotSignature>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

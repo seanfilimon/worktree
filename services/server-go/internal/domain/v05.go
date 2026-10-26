@@ -160,6 +160,9 @@ type TagProtection struct {
 	NoDelete       bool     `json:"no_delete"`
 	NoMove         bool     `json:"no_move"`
 	AllowedTaggers []string `json:"allowed_taggers,omitempty"` // usernames; empty = tree:write
+
+	// v0.7 trust (§15.8): matching tags must carry a verified signature.
+	RequireSigned bool `json:"require_signed,omitempty"`
 }
 
 // Release is a named, annotated version of a tree pointing at a tag.
@@ -177,6 +180,12 @@ type Release struct {
 	Author      string         `json:"author"`
 	CreatedAt   time.Time      `json:"created_at"`
 	PublishedAt *time.Time     `json:"published_at,omitempty"`
+
+	// v0.7 trust (§15.8), computed on read (never stored): a release is
+	// verified when its tag carries a verified signature.
+	Verified     bool   `json:"verified"`
+	SigningKeyID string `json:"signing_key_id,omitempty"`
+	Signer       string `json:"signer,omitempty"`
 }
 
 // ReleaseAsset is a file attached to a release (bytes in the object store).
@@ -186,6 +195,10 @@ type ReleaseAsset struct {
 	Hash        hash.Hash `json:"hash"`
 	ContentType string    `json:"content_type"`
 	UploadedAt  time.Time `json:"uploaded_at"`
+
+	// v0.7 trust (§15.8): hex SHA-256 of the asset bytes, computed on
+	// upload (filled in on read for assets uploaded before v0.7).
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // SigningKey is an account's registered Ed25519 public key.

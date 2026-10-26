@@ -5,13 +5,16 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 use colored::Colorize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use worktree_sdk::remote::rest::seg;
+use worktree_sdk::signing::{self, KeyStore, Verification};
+use worktree_sdk::{SnapshotSignature, TagInfo};
 
+use crate::commands::identity::{account_keys, describe};
 use crate::commands::server_common::{
-    bytes, confirm, decode, fields, nullable, or_dash, render, tree_or_default, when, yes_no, Api,
-    Cell, Table, TreeRef,
+    bytes, confirm, decode, fields, nullable, or_dash, render, timestamp, tree_or_default, when,
+    yes_no, Api, Cell, Table, TreeRef,
 };
 use crate::context::Context;
 use crate::error::{CliError, Result};
@@ -54,6 +57,9 @@ pub enum ReleaseCommand {
         /// Snapshot (id, branch or tag) to tag when TAG does not exist yet
         #[arg(long, value_name = "REV")]
         snapshot: Option<String>,
+        /// Also generate an SPDX 2.3 SBOM of the snapshot and attach it as sbom.spdx.json
+        #[arg(long)]
+        sbom: bool,
     },
     /// Show a release and its assets
     Show {
@@ -114,6 +120,45 @@ pub enum ReleaseCommand {
         #[arg(id = "tree_ref", long = "in", value_name = "TENANT/TREE")]
         tree: Option<TreeRef>,
     },
+    // v0.7 trust (ENGINEERING_PLAN §15.8).
+    /// Print the SHA256SUMS of a release's assets
+    Checksums {
+        tag: String,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+    },
+    /// Generate an SPDX 2.3 SBOM of the release's snapshot and attach it as sbom.spdx.json
+    Sbom {
+        tag: String,
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+    },
+    /// Check downloaded assets against the release checksums and verify the tag signature
+    Verify {
+        tag: String,
+        /// Directory holding the downloaded assets
+        // (id differs from the global -C `dir`)
+        #[arg(
+            id = "assets_dir",
+            short = 'd',
+            long = "dir",
+            value_name = "DIR",
+            default_value = "."
+        )]
+        dir: PathBuf,
+        /// Server tree (default: the tree of the current worktree)
+        #[arg(id = "tree_ref", long = "in", value_name = "TENANT/TREE")]
+        tree: Option<TreeRef>,
+        /// Also trust the registered keys of this account (the signer's are always trusted)
+        #[arg(long, value_name = "USERNAME")]
+        account: Option<String>,
+        /// Accept a release whose tag is not signed (checksums are still checked)
+        #[arg(long)]
+        allow_unsigned: bool,
+        /// Skip assets that were not downloaded instead of failing
+        #[arg(long)]
+        ignore_missing: bool,
+    },
 }
 
 /// `domain.Release`.
@@ -131,6 +176,9 @@ struct Release {
     author: String,
     created_at: String,
     published_at: Option<String>,
+    // v0.7 trust: computed by the server from the tag.
+    verified: bool,
+    signer: String,
 }
 
 /// `domain.ReleaseAsset`.
@@ -141,6 +189,8 @@ struct Asset {
     size: u64,
     content_type: String,
     uploaded_at: String,
+    /// v0.7: hex SHA-256 ("" for assets uploaded before v0.7).
+    sha256: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -170,6 +220,7 @@ pub fn run(ctx: &Context, args: ReleaseArgs) -> Result<()> {
             draft,
             prerelease,
             snapshot,
+            sbom,
         } => {
             let tree = tree_or_default(ctx, tree)?;
             let notes = read_notes(ctx, notes, notes_file)?;
@@ -181,15 +232,89 @@ pub fn run(ctx: &Context, args: ReleaseArgs) -> Result<()> {
                 "prerelease": prerelease,
                 "snapshot": snapshot.unwrap_or_default(),
             });
-            let value = api.post(&releases_path(&tree), &body)?;
+            let mut value = api.post(&releases_path(&tree), &body)?;
+            let sbom_asset = if sbom {
+                let asset = api.post(&format!("{}/sbom", release_path(&tree, &tag)), &json!({}))?;
+                if let Value::Object(map) = &mut value {
+                    map.insert("sbom".into(), asset.clone());
+                }
+                Some(decode::<Asset>(&asset)?)
+            } else {
+                None
+            };
             render(out, &value, |t, r: Release| {
                 t.line(format_args!(
-                    "Created {}release {} at {} on {tree}",
+                    "Created {}release {} at {} on {tree}{}",
                     if r.draft { "draft " } else { "" },
                     r.tag.green().bold(),
-                    short(&r.snapshot_id).yellow()
+                    short(&r.snapshot_id).yellow(),
+                    if r.verified { " (verified tag)" } else { "" }
+                ));
+                if let Some(a) = &sbom_asset {
+                    t.line(format_args!(
+                        "Attached SBOM {} ({})",
+                        a.name.green(),
+                        bytes(a.size)
+                    ));
+                }
+            })
+        }
+        ReleaseCommand::Checksums { tag, tree } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let text = checksums(&api, &tree, &tag)?;
+            let pairs = signing::parse_checksums(&text)?;
+            let report: Vec<Value> = pairs
+                .iter()
+                .map(|(n, s)| json!({ "name": n, "sha256": s }))
+                .collect();
+            out.emit(&report, |t| {
+                if pairs.is_empty() {
+                    t.line(format!("Release {tag} has no assets.").dimmed());
+                }
+                for line in text.lines() {
+                    t.line(line);
+                }
+            })
+        }
+        ReleaseCommand::Sbom { tag, tree } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let value = api.post(&format!("{}/sbom", release_path(&tree, &tag)), &json!({}))?;
+            render(out, &value, |t, a: Asset| {
+                t.line(format_args!(
+                    "Attached SBOM {} ({}) to release {}",
+                    a.name.green(),
+                    bytes(a.size),
+                    tag.bold()
                 ));
             })
+        }
+        ReleaseCommand::Verify {
+            tag,
+            dir,
+            tree,
+            account,
+            allow_unsigned,
+            ignore_missing,
+        } => {
+            let tree = tree_or_default(ctx, tree)?;
+            let report = verify_release(
+                ctx,
+                &api,
+                &tree,
+                &tag,
+                &ctx.absolute(&dir),
+                account.as_deref(),
+            )?;
+            let failures = report.failures(allow_unsigned, ignore_missing);
+            out.emit(&report, |t| render_verify(t, &report))?;
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(CliError::failure(format!(
+                    "release {tag} did not verify: {}",
+                    failures.join("; ")
+                )))
+            }
         }
         ReleaseCommand::Show { tag, tree } => {
             let tree = tree_or_default(ctx, tree)?;
@@ -307,6 +432,234 @@ pub fn run(ctx: &Context, args: ReleaseArgs) -> Result<()> {
     }
 }
 
+// ---- v0.7 trust (ENGINEERING_PLAN §15.8): checksums and verification ----
+
+/// The SHA256SUMS text of a release.
+fn checksums(api: &Api, tree: &TreeRef, tag: &str) -> Result<String> {
+    let data = api.block_on(
+        api.client()
+            .get_bytes(&format!("{}/checksums", release_path(tree, tag))),
+    )?;
+    String::from_utf8(data)
+        .map_err(|_| CliError::failure("the server sent checksums that are not UTF-8"))
+}
+
+/// `domain.Tag` as the REST API returns it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ServerTag {
+    name: String,
+    target: String,
+    message: String,
+    tagger: String,
+    created_at: String,
+    signature: String,
+    signing_key_id: String,
+    verified: bool,
+    signer: String,
+    signed_tagger: String,
+}
+
+impl ServerTag {
+    /// The tag record its signature covers.
+    fn to_tag_info(&self) -> Result<TagInfo> {
+        let created_at = timestamp(&self.created_at).ok_or_else(|| {
+            CliError::failure(format!("tag {} has a malformed created_at", self.name))
+        })?;
+        let signature = if self.signature.is_empty() && self.signing_key_id.is_empty() {
+            None
+        } else {
+            Some(SnapshotSignature {
+                key_id: self.signing_key_id.clone(),
+                signature: signing::decode_base64(&self.signature)?,
+            })
+        };
+        let tagger = if signature.is_some() && !self.signed_tagger.is_empty() {
+            self.signed_tagger.clone()
+        } else {
+            self.tagger.clone()
+        };
+        Ok(TagInfo {
+            name: self.name.clone(),
+            target: self.target.clone(),
+            message: (!self.message.is_empty()).then(|| self.message.clone()),
+            tagger,
+            created_at,
+            signature,
+        })
+    }
+}
+
+/// One asset checked by `wt release verify`.
+#[derive(Debug, Serialize)]
+struct AssetCheck {
+    name: String,
+    expected: String,
+    actual: Option<String>,
+    /// "ok" | "mismatch" | "missing" | "unlisted"
+    status: &'static str,
+}
+
+/// The `wt release verify` report.
+#[derive(Debug, Serialize)]
+struct VerifyReport {
+    tag: String,
+    snapshot_id: String,
+    tag_target: String,
+    signer: String,
+    server_verified: bool,
+    signature: Verification,
+    assets: Vec<AssetCheck>,
+}
+
+impl VerifyReport {
+    /// Why the release does not verify (empty = it does).
+    fn failures(&self, allow_unsigned: bool, ignore_missing: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        match &self.signature {
+            Verification::Valid { .. } => {}
+            Verification::Unsigned if allow_unsigned => {}
+            Verification::Unsigned => out.push("the tag is not signed".to_string()),
+            Verification::UnknownKey { key_id } => {
+                out.push(format!("the tag is signed by unknown key {key_id}"))
+            }
+            Verification::Invalid { .. } => out.push("the tag signature is invalid".to_string()),
+        }
+        if self.tag_target != self.snapshot_id {
+            out.push(format!(
+                "the tag points at {} but the release at {}",
+                short(&self.tag_target),
+                short(&self.snapshot_id)
+            ));
+        }
+        for a in &self.assets {
+            match a.status {
+                "ok" => {}
+                "missing" if ignore_missing => {}
+                status => out.push(format!("{} {status}", a.name)),
+            }
+        }
+        out
+    }
+}
+
+fn verify_release(
+    ctx: &Context,
+    api: &Api,
+    tree: &TreeRef,
+    tag: &str,
+    dir: &Path,
+    account: Option<&str>,
+) -> Result<VerifyReport> {
+    let release: Release = decode(&api.get(&release_path(tree, tag))?)?;
+    let sums = signing::parse_checksums(&checksums(api, tree, tag)?)?;
+    let tags: Vec<ServerTag> = decode(&api.get(&format!("{}/tags", tree.api()))?)?;
+    let server_tag = tags
+        .into_iter()
+        .find(|t| t.name == tag)
+        .ok_or_else(|| CliError::failure(format!("tag {tag} does not exist on {tree}")))?;
+    let info = server_tag.to_tag_info()?;
+
+    // Trust local keys plus the registered keys of the signer (and --account).
+    let mut trusted = KeyStore::default_location().trusted()?;
+    let mut accounts: Vec<&str> = Vec::new();
+    if !server_tag.signer.is_empty() {
+        accounts.push(&server_tag.signer);
+    }
+    if let Some(a) = account {
+        if !accounts.contains(&a) {
+            accounts.push(a);
+        }
+    }
+    if info.signature.is_some() {
+        for a in accounts {
+            trusted.extend(account_keys(ctx, a)?);
+        }
+    }
+    let signature = signing::verify_tag_with_keys(&info, &trusted);
+
+    let mut assets = Vec::new();
+    for (name, expected) in &sums {
+        let local = file_name(Path::new(name))
+            .ok()
+            .map(|n| dir.join(n))
+            .filter(|p| p.is_file());
+        let check = match local {
+            None => AssetCheck {
+                name: name.clone(),
+                expected: expected.clone(),
+                actual: None,
+                status: "missing",
+            },
+            Some(path) => {
+                let data = std::fs::read(&path).map_err(|e| {
+                    CliError::failure(format!("cannot read '{}': {e}", path.display()))
+                })?;
+                let actual = signing::sha256_hex(&data);
+                let status = if &actual == expected {
+                    "ok"
+                } else {
+                    "mismatch"
+                };
+                AssetCheck {
+                    name: name.clone(),
+                    expected: expected.clone(),
+                    actual: Some(actual),
+                    status,
+                }
+            }
+        };
+        assets.push(check);
+    }
+    // Assets the release lists without a checksum line are suspicious.
+    for a in &release.assets {
+        if !sums.iter().any(|(n, _)| n == &a.name) {
+            assets.push(AssetCheck {
+                name: a.name.clone(),
+                expected: a.sha256.clone(),
+                actual: None,
+                status: "unlisted",
+            });
+        }
+    }
+    Ok(VerifyReport {
+        tag: release.tag,
+        snapshot_id: release.snapshot_id,
+        tag_target: info.target,
+        signer: server_tag.signer,
+        server_verified: server_tag.verified,
+        signature,
+        assets,
+    })
+}
+
+fn render_verify(t: &mut Text, r: &VerifyReport) {
+    t.line(format_args!(
+        "release {} ({})",
+        r.tag.bold(),
+        short(&r.snapshot_id).yellow()
+    ));
+    let sig = describe(&r.signature);
+    t.line(format_args!(
+        "  tag signature: {}",
+        if r.signature.is_valid() {
+            sig.green()
+        } else {
+            sig.red()
+        }
+    ));
+    for a in &r.assets {
+        let status = match a.status {
+            "ok" => "OK".green(),
+            other => other.to_uppercase().red(),
+        };
+        t.line(format_args!("  {status}  {}", a.name));
+    }
+    if r.assets.is_empty() {
+        t.line("  (no assets)".dimmed());
+    }
+}
+
 fn releases_path(tree: &TreeRef) -> String {
     format!("{}/releases", tree.api())
 }
@@ -392,12 +745,13 @@ fn content_type(name: &str) -> &'static str {
 }
 
 fn kind(r: &Release) -> Cell {
+    let verified = if r.verified { ", verified" } else { "" };
     if r.draft {
-        Cell::from("draft").yellow()
+        Cell::from(format!("draft{verified}")).yellow()
     } else if r.prerelease {
-        Cell::from("pre-release").cyan()
+        Cell::from(format!("pre-release{verified}")).cyan()
     } else {
-        Cell::from("release").green()
+        Cell::from(format!("release{verified}")).green()
     }
 }
 
@@ -439,6 +793,14 @@ fn show(t: &mut Text, r: &Release) {
                     .map_or_else(|| "-".to_string(), when),
             ),
             ("pre-release", yes_no(r.prerelease).to_string()),
+            (
+                "verified",
+                if r.verified {
+                    format!("yes (tag signed by {})", or_dash(&r.signer))
+                } else {
+                    "no".to_string()
+                },
+            ),
         ],
     );
     if !r.notes.is_empty() {
@@ -448,13 +810,14 @@ fn show(t: &mut Text, r: &Release) {
         }
     }
     t.blank();
-    let mut table = Table::new(&["ASSET", "SIZE", "TYPE", "UPLOADED"]);
+    let mut table = Table::new(&["ASSET", "SIZE", "TYPE", "UPLOADED", "SHA256"]);
     for a in &r.assets {
         table.row([
             Cell::from(a.name.as_str()).bold(),
             bytes(a.size).into(),
             a.content_type.as_str().into(),
             when(&a.uploaded_at).into(),
+            or_dash(a.sha256.get(..16).unwrap_or(&a.sha256)).into(),
         ]);
     }
     table.render(t, "No assets.");
@@ -618,5 +981,136 @@ mod tests {
         let mut t = Text::default();
         list_releases(&mut t, &[]);
         assert_eq!(t.as_str(), "No releases.\n");
+    }
+
+    // ---- v0.7 trust ----
+
+    #[test]
+    fn parses_trust_subcommands() {
+        assert!(matches!(
+            release(&["create", "v1", "--sbom"]),
+            ReleaseCommand::Create { sbom: true, .. }
+        ));
+        assert!(matches!(
+            release(&["checksums", "v1", "acme/web"]),
+            ReleaseCommand::Checksums { tree: Some(_), .. }
+        ));
+        assert!(matches!(
+            release(&["sbom", "v1"]),
+            ReleaseCommand::Sbom { .. }
+        ));
+        let ReleaseCommand::Verify {
+            tag,
+            dir,
+            account,
+            allow_unsigned,
+            ignore_missing,
+            ..
+        } = release(&[
+            "verify",
+            "v1",
+            "-d",
+            "dist",
+            "--account",
+            "ada",
+            "--allow-unsigned",
+            "--ignore-missing",
+        ])
+        else {
+            panic!()
+        };
+        assert_eq!(tag, "v1");
+        assert_eq!(dir, PathBuf::from("dist"));
+        assert_eq!(account.as_deref(), Some("ada"));
+        assert!(allow_unsigned && ignore_missing);
+        assert!(matches!(
+            release(&["verify", "v1"]),
+            ReleaseCommand::Verify { dir, .. } if dir == Path::new(".")
+        ));
+    }
+
+    #[test]
+    fn server_tags_rebuild_the_signed_record() {
+        let key = signing::LocalKey::from_seed("k", &[3; 32]);
+        let mut info = TagInfo {
+            name: "v1".into(),
+            target: "s1".into(),
+            message: Some("Release v1".into()),
+            tagger: "Ada <ada@example.com>".into(),
+            created_at: timestamp("2026-01-02T03:04:05.000000123Z").expect("ts"),
+            signature: None,
+        };
+        key.sign_tag(&mut info);
+        let sig = info.signature.clone().expect("signed");
+        // Go's encoding/json writes []byte as standard base64.
+        let b64 = signing::encode_base64(&sig.signature);
+        let server: ServerTag = serde_json::from_value(json!({
+            "name": "v1", "target": "s1", "message": "Release v1", "tagger": "ada",
+            "created_at": "2026-01-02T03:04:05.000000123Z", "signature": b64,
+            "signing_key_id": sig.key_id, "verified": true, "signer": "ada",
+            "signed_tagger": "Ada <ada@example.com>"
+        }))
+        .expect("tag");
+        let rebuilt = server.to_tag_info().expect("info");
+        assert_eq!(rebuilt, info);
+        assert!(signing::verify_tag_signature(&rebuilt, &key.public_key()));
+
+        let plain: ServerTag = serde_json::from_value(json!({
+            "name": "v0", "target": "s0", "message": "", "tagger": "bob",
+            "created_at": "2026-01-02T03:04:05Z", "verified": false
+        }))
+        .expect("plain");
+        let plain = plain.to_tag_info().expect("info");
+        assert!(plain.signature.is_none() && plain.message.is_none());
+        assert_eq!(plain.tagger, "bob");
+    }
+
+    #[test]
+    fn verify_report_failures() {
+        let ok = |name: &str| AssetCheck {
+            name: name.into(),
+            expected: "e".into(),
+            actual: Some("e".into()),
+            status: "ok",
+        };
+        let mut r = VerifyReport {
+            tag: "v1".into(),
+            snapshot_id: "s1".into(),
+            tag_target: "s1".into(),
+            signer: "ada".into(),
+            server_verified: true,
+            signature: Verification::Valid {
+                key_id: "k".into(),
+                key: "ada/laptop".into(),
+                fingerprint: "SHA256:x".into(),
+            },
+            assets: vec![ok("a.zip")],
+        };
+        assert!(r.failures(false, false).is_empty());
+        r.assets.push(AssetCheck {
+            name: "b.bin".into(),
+            expected: "e".into(),
+            actual: None,
+            status: "missing",
+        });
+        assert_eq!(r.failures(false, false), ["b.bin missing"]);
+        assert!(r.failures(false, true).is_empty());
+        r.assets[0].status = "mismatch";
+        r.signature = Verification::Unsigned;
+        r.tag_target = "s2".into();
+        let f = r.failures(false, true);
+        assert_eq!(f.len(), 3, "{f:?}");
+        assert!(
+            f[0].contains("not signed") && f[1].contains("points at") && f[2] == "a.zip mismatch"
+        );
+        assert_eq!(r.failures(true, true).len(), 2);
+
+        colored::control::set_override(false);
+        let mut t = Text::default();
+        render_verify(&mut t, &r);
+        assert!(t.as_str().contains("MISMATCH  a.zip"), "{}", t.as_str());
+        let v = serde_json::to_value(&r).expect("json");
+        assert_eq!(v["signature"]["status"], "unsigned");
+        assert_eq!(v["assets"][1]["status"], "missing");
     }
 }

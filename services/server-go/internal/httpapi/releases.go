@@ -7,8 +7,10 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 )
 
@@ -27,6 +29,9 @@ func (a *api) registerReleaseRoutes(tree string) {
 	a.handle("PUT "+tree+"/releases/{tag}/assets/{name}", a.handlePutReleaseAsset)
 	a.handle("GET "+tree+"/releases/{tag}/assets/{name}", a.handleGetReleaseAsset)
 	a.handle("DELETE "+tree+"/releases/{tag}/assets/{name}", a.handleDeleteReleaseAsset)
+	// v0.7 trust (§15.8): SHA256SUMS and SPDX SBOM generation.
+	a.handle("GET "+tree+"/releases/{tag}/checksums", a.handleReleaseChecksums)
+	a.handle("POST "+tree+"/releases/{tag}/sbom", a.handleCreateReleaseSBOM)
 }
 
 func (a *api) releases() (*release.Service, error) {
@@ -106,7 +111,9 @@ func (a *api) handleCreateRelease(w http.ResponseWriter, r *http.Request) error 
 			return err
 		}
 	}
-	in := release.CreateInput{Tag: req.Tag, Name: req.Name, Notes: req.Notes, Draft: req.Draft, Prerelease: req.Prerelease}
+	in := release.CreateInput{Tag: req.Tag, Name: req.Name, Notes: req.Notes, Draft: req.Draft, Prerelease: req.Prerelease,
+		// v0.7 trust (§15.8): a tag the release creates obeys RequireSigned.
+		CheckTag: func(tag *domain.Tag) error { return a.tagSignatureCheck(r, tree, tag) }}
 	if req.Snapshot != "" {
 		s, err := a.snapshotForRev(ctx, tree, req.Snapshot)
 		if err != nil {
@@ -254,6 +261,154 @@ func (a *api) handleGetReleaseAsset(w http.ResponseWriter, r *http.Request) erro
 	h.Set("Cache-Control", "private, no-cache")
 	http.ServeContent(w, r, "", asset.UploadedAt, bytes.NewReader(data))
 	return nil
+}
+
+// ---- v0.7 trust (§15.8) ----
+
+// handleReleaseChecksums answers GET {tree}/releases/{tag}/checksums with
+// the SHA256SUMS text of the release's assets ("<sha256>  <name>" lines).
+func (a *api) handleReleaseChecksums(w http.ResponseWriter, r *http.Request) error {
+	svc, err := a.releases()
+	if err != nil {
+		return err
+	}
+	_, tree, err := a.treeFor(r, domain.ActTreeRead)
+	if err != nil {
+		return err
+	}
+	tag := r.PathValue("tag")
+	sums, err := svc.Checksums(r.Context(), tree.ID, tag, a.canSeeDrafts(r, tree))
+	if err != nil {
+		return err
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "private, no-cache")
+	h.Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": "SHA256SUMS"}))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(sums))
+	return nil
+}
+
+// handleCreateReleaseSBOM answers POST {tree}/releases/{tag}/sbom: it
+// generates an SPDX 2.3 JSON SBOM of the release's snapshot (the files the
+// caller may read, with SHA1/SHA256/BLAKE3 checksums and license rule
+// SPDX ids) and attaches it as asset "sbom.spdx.json" -> 201 ReleaseAsset.
+func (a *api) handleCreateReleaseSBOM(w http.ResponseWriter, r *http.Request) error {
+	svc, err := a.releases()
+	if err != nil {
+		return err
+	}
+	p, err := requireLogin(r)
+	if err != nil {
+		return err
+	}
+	t, tree, err := a.treeFor(r, domain.ActReleaseCreate)
+	if err != nil {
+		return err
+	}
+	ctx := r.Context()
+	tag := r.PathValue("tag")
+	rel, err := svc.Get(ctx, tree.ID, tag, true)
+	if err != nil {
+		return err
+	}
+	snap, err := a.treeSnapshot(ctx, tree, rel.SnapshotID)
+	if err != nil {
+		return err
+	}
+	m, err := a.loadManifest(ctx, snap)
+	if err != nil {
+		return err
+	}
+	all := m.GetEntries()
+	ok, err := a.sbomReadable(r, t, tree, all)
+	if err != nil {
+		return err
+	}
+	entries := make([]*syncpb.ManifestEntry, 0, len(all))
+	for i, e := range all {
+		if ok[i] {
+			entries = append(entries, e)
+		}
+	}
+	rules, err := a.d.Store.ListLicenseRules(ctx, tree.ID)
+	if err != nil {
+		return err
+	}
+	scheme := "http"
+	if ssoSecureRequest(r) {
+		scheme = "https"
+	}
+	data, err := svc.GenerateSBOM(ctx, release.SBOMInput{
+		Tenant: t.Slug, Tree: tree.Name, Tag: rel.Tag, SnapshotID: rel.SnapshotID,
+		Namespace: scheme + "://" + r.Host + "/spdx",
+		Creator:   p.Username,
+		Tool:      "W0rkTree-" + strings.TrimPrefix(a.d.Version, "v"),
+		Entries:   entries, Omitted: len(all) - len(entries),
+		Rules: activeLicenseRules(rules, time.Now()),
+	})
+	if err != nil {
+		return err
+	}
+	asset, err := svc.AttachSBOM(ctx, p, t, tree, rel.Tag, data)
+	if err != nil {
+		var tle *release.TooLargeError
+		if errors.As(err, &tle) {
+			return errAssetTooLarge()
+		}
+		return err
+	}
+	writeJSON(w, http.StatusCreated, asset)
+	return nil
+}
+
+// sbomReadable reports, per entry, whether the caller may read it (license
+// read rights and tree:read path policies). An SBOM lists names and hashes,
+// not content, so the redistribute grant of archive exports is not needed.
+func (a *api) sbomReadable(r *http.Request, t *domain.Tenant, tree *domain.Tree, entries []*syncpb.ManifestEntry) ([]bool, error) {
+	ctx := r.Context()
+	p := principal(r)
+	out := make([]bool, len(entries))
+	for i := range out {
+		out[i] = true
+	}
+	if a.d.License != nil && len(entries) > 0 {
+		paths := make([]string, len(entries))
+		for i, e := range entries {
+			paths[i] = e.GetPath()
+		}
+		var denied *domain.PushDenied
+		if err := a.d.License.CheckRead(ctx, p, tree, paths); err != nil {
+			if !errors.As(err, &denied) {
+				return nil, err
+			}
+			for i, path := range paths {
+				switch err := a.d.License.CheckRead(ctx, p, tree, []string{path}); {
+				case err == nil:
+				case errors.As(err, &denied):
+					out[i] = false
+				default:
+					return nil, err
+				}
+			}
+		}
+	}
+	if a.d.Access != nil {
+		env := domain.RequestEnv{RemoteIP: remoteHost(r), Now: time.Now()}
+		for i, e := range entries {
+			if !out[i] {
+				continue
+			}
+			d, err := a.d.Access.Evaluate(ctx, p, domain.ActTreeRead, domain.Resource{TenantID: t.ID, Tree: tree, Path: e.GetPath()}, env)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = d.Allowed
+		}
+	}
+	return out, nil
 }
 
 // handleDeleteReleaseAsset answers DELETE {tree}/releases/{tag}/assets/{name}.
