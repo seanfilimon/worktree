@@ -357,6 +357,18 @@ async fn running_status() -> Result<Option<DaemonStatus>> {
         Ok(IpcResponse::Error { message }) => Err(CliError::failure(message)),
         Ok(other) => Err(unexpected(&other)),
         Err(SdkError::DaemonNotRunning) => Ok(None),
+        // A daemon that is shutting down may reset the connection mid-request.
+        Err(SdkError::Io(e))
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            ) =>
+        {
+            Ok(None)
+        }
         Err(e) => Err(e.into()),
     }
 }
