@@ -142,7 +142,7 @@ pub fn validate_manifest_path(path: &str) -> Result<()> {
             // hardening (§15.10): the tree's own `.wt-tree/` is shared.
             ".wt-tree" if i == 0 && is_shared_tree_config_path(path) => {}
             ".wt-tree" if i == 0 => {
-                return bad("only .wt-tree/{config.toml,ignore,hooks/**,access/**} are tracked")
+                return bad("only .wt-tree/{config.toml,ignore,branches.toml,protections.toml,hooks/**,access/**} are tracked")
             }
             ".wt-tree" => return bad("reserved directory (a nested tree's marker)"),
             _ => {}
@@ -154,7 +154,8 @@ pub fn validate_manifest_path(path: &str) -> Result<()> {
 // ---- hardening (ENGINEERING_PLAN §15.10): shared `.wt-tree/` files ----
 
 /// Whether a tree-relative path names one of the tree's shared `.wt-tree/`
-/// files: `.wt-tree/config.toml`, `.wt-tree/ignore`, or anything below
+/// files: `.wt-tree/config.toml`, `.wt-tree/ignore`, `.wt-tree/branches.toml`,
+/// `.wt-tree/protections.toml` (config-as-code, §16.3), or anything below
 /// `.wt-tree/hooks/` or `.wt-tree/access/`. These are snapshotted, pushed
 /// and cloned with the tree; everything else in `.wt-tree/` (the local
 /// identity file `local.toml`) stays local. Components are not otherwise
@@ -164,7 +165,11 @@ pub fn is_shared_tree_config_path(path: &str) -> bool {
         return false;
     };
     match rest.split_once('/') {
-        None => rest == "config.toml" || rest == "ignore",
+        // config-as-code (§16.3): branches.toml and protections.toml too.
+        None => matches!(
+            rest,
+            "config.toml" | "ignore" | "branches.toml" | "protections.toml"
+        ),
         Some((dir, sub)) => {
             (dir == "hooks" || dir == "access")
                 && !sub.is_empty()
@@ -924,5 +929,17 @@ mod tests {
         let mut rec = snap.to_record();
         rec.created_at = None;
         assert!(Snapshot::from_record(&rec).is_err());
+    }
+
+    #[test]
+    fn config_as_code_paths_are_shared() {
+        // config-as-code (§16.3): branch metadata and protections travel too.
+        for ok in [".wt-tree/branches.toml", ".wt-tree/protections.toml"] {
+            assert!(is_shared_tree_config_path(ok), "{ok}");
+            assert!(validate_manifest_path(ok).is_ok(), "{ok}");
+        }
+        for bad in [".wt-tree/branches.toml/x", "a/.wt-tree/protections.toml"] {
+            assert!(validate_manifest_path(bad).is_err(), "{bad}");
+        }
     }
 }

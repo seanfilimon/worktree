@@ -166,6 +166,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	forks := fork.New(fork.Deps(v5))
 	scanner := scan.New(scan.Deps(v5))
 	treeCfg := treeconfig.New(treeconfig.Deps(v5))
+	// config-as-code (§16.3): access/ files are applied through accesscfg;
+	// applies run on branch.pushed (bus subscriber).
+	treeCfg.SetAccessConfig(accessCfg)
+	treeCfg.Start(ctx)
 	// storage-backends (§15.2): backups in <data>/backups, optional schedule.
 	backups.Configure(backup.Options{
 		Dir: filepath.Join(cfg.DataDir, "backups"), Interval: cfg.BackupInterval, Keep: cfg.BackupKeep, Version: cfg.Version,

@@ -1,0 +1,14 @@
+[[branch]]
+name = "main"
+owner = "group:x"
+colour = "red"
+
+[[branch]]
+description = "no name"
+
+[[branch]]
+name = "bad name"
+
+[[branch]]
+name = "main"
+description = 42

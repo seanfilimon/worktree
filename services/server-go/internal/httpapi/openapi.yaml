@@ -2306,6 +2306,122 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: patchBranch
+      summary: Set a branch's description or owner
+      description: |
+        v0.8 config-as-code (§16.3). Absent fields stay unchanged, `""`
+        clears. Changing the description needs tree:write, changing the
+        owner tree:admin; owners are `user:<name>` or `team:<slug>` and must
+        exist in the tree's tenant. Branches declared in the applied
+        `.wt-tree/branches.toml` answer 409 `config_managed` (change the file
+        and push it instead). Audited as `branch.update`.
+      tags: [Trees]
+      x-wt-action: tree:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchBranchRequest"
+      responses:
+        "200":
+          description: The updated branch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Branch"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`config_managed`: the branch is declared in .wt-tree/branches.toml."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/config:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getTreeConfig
+      summary: Get the applied .wt-tree configuration
+      description: |
+        v0.8 config-as-code (§16.3). The configuration applied from the
+        `.wt-tree/` files of the default branch (`applied`: source snapshot,
+        files, declared branches and protections, managed patterns, access
+        document hash, changes and warnings of the apply) and the outcome of
+        the last attempt (`last_attempt`, with the located errors of a
+        rejected push or merge). Both are null for a tree without
+        config-as-code files.
+      tags: [Trees]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The configuration state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeConfigState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/config/validate:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    post:
+      operationId: validateTreeConfig
+      summary: Validate .wt-tree files without pushing
+      description: |
+        v0.8 config-as-code (§16.3). Validates the uploaded files as if they
+        were pushed to the default branch: syntax and structure (located
+        diagnostics with the Rust validator's codes), owners that must exist,
+        and — for `.wt-tree/access/` files — the iam:admin requirement
+        (E3010) and a dry run of the access document (E3011, plan in
+        `access_changes`). Nothing is changed. Paths other than the
+        config-as-code files are refused with 400.
+      tags: [Trees]
+      x-wt-action: tree:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateTreeConfigRequest"
+      responses:
+        "200":
+          description: The validation result (`valid` is false when there are errors).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigValidation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/trees/{tenant}/{tree}/tags/{name}:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -11846,6 +11962,179 @@ components:
         active:
           type: boolean
     # ---- end mirrors ----
+    # ---- config-as-code (§16.3) ----
+    ConfigDiagnostic:
+      type: object
+      description: "A problem found in a .wt-tree file. Codes E30xx/W31xx (config, branches, protections) and E20xx/W21xx (access files) are shared with the Rust validator; see specs/dot-wt-tree/ConfigAsCode.md."
+      required: [code, severity, file, line, col, message]
+      properties:
+        code:
+          type: string
+          example: E3008
+        severity:
+          type: string
+          enum: [error, warning]
+        file:
+          type: string
+          description: "Tree-relative path, e.g. .wt-tree/branches.toml."
+        line:
+          type: integer
+          description: "1-based line; 0 when the problem has no position."
+        col:
+          type: integer
+          description: "1-based column in characters; 0 when the problem has no position."
+        message:
+          type: string
+    ConfigFileInfo:
+      type: object
+      required: [path, hash, size]
+      properties:
+        path:
+          type: string
+        hash:
+          type: string
+          description: "Hex BLAKE3 of the content."
+        size:
+          type: integer
+    BranchDecl:
+      type: object
+      description: "One [[branch]] entry of .wt-tree/branches.toml."
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        owner:
+          type: string
+          description: "user:<name> or team:<slug>."
+    TreeConfigApplied:
+      type: object
+      description: "The configuration in effect: the snapshot it was read from and what it declares."
+      required: [snapshot_id, branch, applied_by, applied_at, files, branches, protections, managed_patterns, changes, warnings]
+      properties:
+        snapshot_id:
+          type: string
+        branch:
+          type: string
+        applied_by:
+          type: string
+        applied_at:
+          type: string
+          format: date-time
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigFileInfo"
+        branches:
+          type: array
+          items:
+            $ref: "#/components/schemas/BranchDecl"
+        protections:
+          type: array
+          items:
+            $ref: "#/components/schemas/BranchProtection"
+        managed_patterns:
+          type: array
+          description: "Protection patterns owned by the configuration (declared minus those managed through the API)."
+          items:
+            type: string
+        access_hash:
+          type: string
+          description: "Hex BLAKE3 of the applied access document; absent when none."
+        changes:
+          type: array
+          description: "What the last apply changed."
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigDiagnostic"
+    TreeConfigAttempt:
+      type: object
+      description: "The outcome of the last validation of a configuration pushed (or merged) to the default branch."
+      required: [snapshot_id, branch, by, at, accepted, errors, warnings]
+      properties:
+        snapshot_id:
+          type: string
+        branch:
+          type: string
+        by:
+          type: string
+        at:
+          type: string
+          format: date-time
+        accepted:
+          type: boolean
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigDiagnostic"
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigDiagnostic"
+    TreeConfigState:
+      type: object
+      description: "The tree_config document of a tree; applied and last_attempt are null until a configuration was pushed."
+      required: [tree_id, default_branch, applied, last_attempt]
+      properties:
+        tree_id:
+          type: string
+        default_branch:
+          type: string
+        applied:
+          anyOf:
+            - $ref: "#/components/schemas/TreeConfigApplied"
+            - type: "null"
+        last_attempt:
+          anyOf:
+            - $ref: "#/components/schemas/TreeConfigAttempt"
+            - type: "null"
+    ValidateTreeConfigRequest:
+      type: object
+      description: "files is required (at least one entry)."
+      properties:
+        files:
+          type: object
+          description: "Tree-relative paths (.wt-tree/config.toml, .wt-tree/branches.toml, .wt-tree/protections.toml, .wt-tree/access/**) to their content."
+          additionalProperties:
+            type: string
+    ConfigValidation:
+      type: object
+      required: [valid, diagnostics, branches, protections, access_changes]
+      properties:
+        valid:
+          type: boolean
+        diagnostics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigDiagnostic"
+        branches:
+          type: array
+          items:
+            $ref: "#/components/schemas/BranchDecl"
+        protections:
+          type: array
+          items:
+            $ref: "#/components/schemas/BranchProtection"
+        access_changes:
+          type: array
+          description: "Plan of the access document (dry run)."
+          items:
+            type: string
+    PatchBranchRequest:
+      type: object
+      description: "Absent fields are unchanged; \"\" clears."
+      properties:
+        description:
+          type: string
+          maxLength: 1000
+        owner:
+          type: string
+          description: "user:<name> or team:<slug> of this tenant (needs tree:admin)."
+    # ---- end config-as-code ----
     # ---- notifications (§15.3) ----
     Notification:
       type: object

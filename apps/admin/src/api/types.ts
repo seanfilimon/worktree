@@ -78,6 +78,10 @@ export interface Branch {
   protected: boolean;
   created_at: ISODateString;
   updated_at: ISODateString;
+  /** v0.8 config-as-code (§16.3): set via PATCH or .wt-tree/branches.toml. */
+  description?: string;
+  /** "user:<name>" | "team:<slug>". */
+  owner?: string;
 }
 
 export interface Snapshot {

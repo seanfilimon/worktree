@@ -165,6 +165,10 @@ pub enum TreesCommand {
         #[arg(id = "tree_ref", value_name = "TREE")]
         tree: Option<TreeRef>,
     },
+    /// Config-as-code: show the configuration applied from the tree's
+    /// .wt-tree/ files, or validate them
+    #[command(subcommand)]
+    Config(crate::commands::config_as_code::ConfigCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -205,6 +209,9 @@ pub struct Branch {
     pub tip: String,
     pub protected: bool,
     pub updated_at: String,
+    /// config-as-code (§16.3).
+    pub description: String,
+    pub owner: String,
 }
 
 /// `domain.Snapshot`.
@@ -330,9 +337,14 @@ pub enum CompareView {
 }
 
 pub fn run(ctx: &Context, args: TreesArgs) -> Result<()> {
+    // config-as-code (§16.3): local validation needs no server connection.
+    let command = match args.command {
+        TreesCommand::Config(c) => return crate::commands::config_as_code::run(ctx, c),
+        other => other,
+    };
     let api = Api::connect(ctx)?;
     let out = &ctx.out;
-    match args.command {
+    match command {
         TreesCommand::List { tenant } => list(ctx, &api, tenant),
         TreesCommand::Create {
             tree,
@@ -405,7 +417,14 @@ pub fn run(ctx: &Context, args: TreesArgs) -> Result<()> {
             let tree = tree_or_default(ctx, tree)?;
             let value = api.get(&format!("{}/branches", tree.api()))?;
             render(out, &value, |t, branches: Vec<Branch>| {
-                let mut table = Table::new(&["BRANCH", "TIP", "PROTECTED", "UPDATED"]);
+                let mut table = Table::new(&[
+                    "BRANCH",
+                    "TIP",
+                    "PROTECTED",
+                    "OWNER",
+                    "UPDATED",
+                    "DESCRIPTION",
+                ]);
                 for b in &branches {
                     let protected = Cell::from(yes_no(b.protected));
                     table.row([
@@ -416,7 +435,9 @@ pub fn run(ctx: &Context, args: TreesArgs) -> Result<()> {
                         } else {
                             protected
                         },
+                        or_dash(&b.owner).into(), // config-as-code (§16.3)
                         when(&b.updated_at).into(),
+                        subject(&b.description).into(),
                     ]);
                 }
                 table.render(t, "No branches.");
@@ -573,6 +594,7 @@ pub fn run(ctx: &Context, args: TreesArgs) -> Result<()> {
                 table.render(t, "Nothing staged.");
             })
         }
+        TreesCommand::Config(_) => unreachable!("handled before connecting"),
     }
 }
 

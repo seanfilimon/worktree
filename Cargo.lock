@@ -3191,6 +3191,7 @@ dependencies = [
  "tracing-subscriber",
  "windows-sys 0.59.0",
  "worktree-git",
+ "worktree-protocol",
  "worktree-sdk",
  "zip",
 ]
@@ -3237,6 +3238,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "toml",
+ "toml_edit",
  "tonic",
  "tonic-build",
  "uuid",

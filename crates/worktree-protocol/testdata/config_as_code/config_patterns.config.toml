@@ -1,0 +1,3 @@
+[secret_scanning]
+patterns = [{ name = "x" }, 3]
+exclude = "fixtures/"

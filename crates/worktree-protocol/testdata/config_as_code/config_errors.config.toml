@@ -1,0 +1,14 @@
+name = "legacy"
+
+[auto_snapshot]
+enabled = "yes"
+inactivity_secs = -1
+max_changed_bytes = "50 parsecs"
+on_branch_switch = "merge"
+colour = 1
+
+[large_files]
+threshold_bytes = 10
+
+[hooks]
+timeout_secs = 30

@@ -115,6 +115,13 @@ pub struct UnstageArgs {
 pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
+    // config-as-code (§16.3): refuse locally a .wt-tree configuration the
+    // server would reject on the default branch.
+    let branch = match &args.branch {
+        Some(b) => b.clone(),
+        None => repo.current_branch(&tree.name)?,
+    };
+    crate::commands::config_as_code::check_before_push(&repo, &tree, &branch)?;
     // ---- sync workstream (§15.5): `wt push --queue` ----
     if args.queue {
         let out = block_on(remote::push_or_queue(

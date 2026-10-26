@@ -39,6 +39,9 @@ struct LocalStatus<'a> {
     /// sparse (§15.4): sparse checkout state (absent when off).
     #[serde(skip_serializing_if = "Option::is_none")]
     sparse: Option<SparseStatus>,
+    /// config-as-code (§16.3): problems in the tree's .wt-tree files.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    config_problems: Vec<worktree_protocol::config::as_code::Diagnostic>,
 }
 
 pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
@@ -55,6 +58,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<()> {
         restricted: &restricted,
         shallow: repo.is_shallow(&tree.name)?,
         sparse: repo.sparse_status(&tree.name)?,
+        config_problems: crate::commands::config_as_code::status_problems(&repo, &tree),
     };
 
     // daemon workstream (§13.11): hint when auto-snapshot is on but the
@@ -126,6 +130,11 @@ fn render(t: &mut Text, local: &LocalStatus<'_>, head_line: &str) {
     if let Some(state) = &report.merge {
         t.blank();
         render_merge(t, state);
+    }
+    if !local.config_problems.is_empty() {
+        t.blank();
+        t.line(".wt-tree configuration problems (see `wt trees config validate`):");
+        crate::commands::config_as_code::render_diagnostics(t, &local.config_problems);
     }
     if !local.restricted.is_empty() {
         t.blank();
