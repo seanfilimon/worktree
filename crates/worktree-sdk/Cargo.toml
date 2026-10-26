@@ -40,4 +40,4 @@ url = "2"
 [dev-dependencies]
 tempfile = "3"
 # --- sdk-remote: in-process fake server for tests/remote_*.rs ---
-axum = { version = "0.7", default-features = false, features = ["http1", "http2", "json", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "tokio"] }
