@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Deploy the W0rkTree website and docs (apps/web) to Railway.
+# Railway helpers for the W0rkTree website and docs (apps/web).
+#
+# Normal deploys need none of this: Railway's GitHub integration deploys
+# pushes to main (after the "Docs site checks" workflow passes, with Wait
+# for CI on). Use `deploy` only for manual or emergency deploys.
 #
 #   bash scripts/deploy-docs.sh setup    # one-time: service, variables, domain
 #   bash scripts/deploy-docs.sh check    # lint (incl. link check) and build locally
-#   bash scripts/deploy-docs.sh deploy   # check, then upload and deploy
+#   bash scripts/deploy-docs.sh deploy   # manual: check, then upload and deploy
 #   bash scripts/deploy-docs.sh deploy --no-check
 #
 # Railway builds apps/web/Dockerfile from the repository root, configured by
@@ -11,7 +15,7 @@
 #
 # Env: RAILWAY_DOCS_SERVICE (default "docs"), RAILWAY_ENVIRONMENT (default:
 #      the linked environment, or the one a project token belongs to),
-#      RAILWAY_TOKEN (project token, for CI) or a prior `railway login` and
+#      RAILWAY_TOKEN (project token) or a prior `railway login` and
 #      `railway link`, RAILWAY_CLI_VERSION (used when `railway` is not on
 #      PATH; default 5.66.0).
 set -euo pipefail
@@ -24,7 +28,7 @@ CLI_VERSION="${RAILWAY_CLI_VERSION:-5.66.0}"
 PORT=8080
 
 usage() {
-  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -83,10 +87,12 @@ setup() {
 
   cat <<EOF
 
-One manual step remains (Railway dashboard, service '$SERVICE' > Settings):
-  Config-as-code > Railway Config File:  /apps/web/railway.json
+Finish in the Railway dashboard (service '$SERVICE' > Settings):
+  Source:                                connect seanfilimon/worktree, branch main
   Source > Root Directory:               leave empty (the repository root)
-Then deploy with: bash scripts/deploy-docs.sh deploy
+  Config-as-code > Railway Config File:  /apps/web/railway.json
+  Wait for CI:                           on, once the CI workflow is green
+Railway then deploys every push to main that changes the site.
 EOF
 }
 

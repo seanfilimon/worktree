@@ -11,7 +11,7 @@ are not implemented yet) live in [`crates/worktree-protocol/specs/`](../crates/w
 | [Getting started](./getting-started.md) | Everyone | Build, run a server, first worktree, branches, nested trees, sharing, team workflow |
 | [Git compatibility](./git-compatibility.md) | Teams migrating from Git | `wt git import` / `export`, mapping, determinism, limits |
 | [Admin panel](./admin-panel.md) | Server operators | Running, building and using `apps/admin` |
-| [Deploying the website](./deploy-docs-site.md) | Maintainers | Deploying `apps/web` (website and docs) to Railway: setup, `scripts/deploy-docs.sh`, GitHub Actions |
+| [Deploying the website](./deploy-docs-site.md) | Maintainers | Deploying `apps/web` (website and docs) through Railway's GitHub integration, the docs-site check workflow, manual deploys |
 
 ## Reference
 

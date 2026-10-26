@@ -1,0 +1,54 @@
+name: Docs site checks (does not deploy)
+
+# Lint, link check and production build of the website and docs (apps/web).
+#
+# THIS WORKFLOW DOES NOT DEPLOY ANYTHING. Railway deploys the site through its
+# own GitHub integration (project "legionedge", service connected to this
+# repository). With "Wait for CI" enabled on that service, Railway only
+# deploys a commit after the checks on it pass. See docs/deploy-docs-site.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".npmrc"
+      - ".github/workflows/docs-site-checks.yml"
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".npmrc"
+      - ".github/workflows/docs-site-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-site-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  check:
+    name: lint, link check and build (no deploy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: lint and link check
+        run: npm run lint --workspace=apps/web
+      - name: build
+        run: npm run build --workspace=apps/web
+      - name: note
+        run: echo "::notice title=No deploy::This workflow only checks the docs site. Railway deploys it through its GitHub integration once checks pass."

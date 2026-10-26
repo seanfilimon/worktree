@@ -1,18 +1,21 @@
 # Deploying the website and docs to Railway
 
 The public website and documentation (`apps/web`, Next.js + Fumadocs) deploy to
-[Railway](https://railway.com) as one Docker service. The W0rkTree server itself
-is deployed separately; see [Deployment](./deploy.md).
+[Railway](https://railway.com) as one Docker service. **Railway's GitHub
+integration is the deployer**: the service is connected to this repository and
+deploys `main` itself. GitHub Actions only checks the site and never deploys.
+The W0rkTree server is deployed separately; see [Deployment](./deploy.md).
 
 ## How it fits together
 
 | Piece | Role |
 |---|---|
 | [`apps/web/Dockerfile`](../apps/web/Dockerfile) | Multi-stage build from the repository root (npm workspaces): installs the `apps/web` workspace, runs `npm run build`, ships the Next.js standalone server on `node:24-alpine` as a non-root user. Listens on `PORT` (default 8080). |
-| [`apps/web/railway.json`](../apps/web/railway.json) | Railway config-as-code: Dockerfile builder, watch patterns (`apps/web/**`, root `package.json`, `package-lock.json`, `.npmrc`), health check on `/`, restart on failure. |
-| [`.railwayignore`](../.railwayignore) | Keeps `railway up` uploads small: only the root manifests and `apps/` are needed by the build. |
-| [`scripts/deploy-docs.sh`](../scripts/deploy-docs.sh) | `setup` (service, variables, domain), `check` (lint, link check, build), `deploy` (check, then `railway up --ci`). |
-| [`.github/workflows/deploy-docs.yml`](../.github/workflows/deploy-docs.yml) | On every push to `main` that touches the site: lint + link check + build, then deploy with the Railway CLI. Skipped when `RAILWAY_TOKEN` is not set. |
+| [`apps/web/railway.json`](../apps/web/railway.json) | Railway config-as-code: Dockerfile builder, watch patterns (`apps/web/**`, root `package.json`, `package-lock.json`, `.npmrc`; other commits do not redeploy), health check on `/`, restart on failure. |
+| Railway GitHub integration | Deploys every push to `main` that matches the watch patterns. With **Wait for CI**, it first waits for the GitHub checks on the commit. |
+| [`.github/workflows/docs-site-checks.yml`](../.github/workflows/docs-site-checks.yml) | **Docs site checks (does not deploy).** Lint, link check and production build on pushes to `main` and pull requests that touch the site. The check Railway waits for. |
+| [`scripts/deploy-docs.sh`](../scripts/deploy-docs.sh) | `setup` (service, variables, domain), `check` (the same checks locally), `deploy` (manual `railway up --ci`, for emergencies only). |
+| [`.railwayignore`](../.railwayignore) | Keeps manual `railway up` uploads small. Not used by the GitHub integration. |
 
 The service is built from the **repository root** (the Dockerfile needs the
 root `package-lock.json`); only the config file lives under `apps/web`.
@@ -34,45 +37,42 @@ root `package-lock.json`); only the config file lives under `apps/web`.
    `NEXT_TELEMETRY_DISABLED=1`, and generates a `*.up.railway.app` domain
    routed to port 8080.
 4. In the Railway dashboard, open the service > **Settings**:
+   - **Source**: connect the GitHub repository `seanfilimon/worktree`, branch
+     `main`, and leave **Root Directory** empty (repository root).
    - **Config-as-code > Railway Config File**: `/apps/web/railway.json`
-   - **Source > Root Directory**: leave empty (repository root).
+   - **Wait for CI**: on (see the caveat below).
 5. Optional custom domain: `railway domain docs.example.com --service docs --port 8080`,
    then add the DNS records it prints.
 
+No Railway token is needed in GitHub.
+
 ## Deploying
 
-From a checkout (runs lint, the link checker and a production build first):
+Merge or push to `main`. For a commit that changes the site:
+
+1. GitHub runs **Docs site checks (does not deploy)**: lint, link check, build.
+2. Railway sees the push through its GitHub integration. With Wait for CI on,
+   it waits for the commit's checks and deploys only if they pass; otherwise it
+   marks the deployment skipped.
+3. Railway builds `apps/web/Dockerfile`, health-checks `/`, then switches
+   traffic, so a broken build never replaces the running site.
+
+Railway reports each deployment back to GitHub as the `legionedge / production`
+environment (repository > Deployments), with a link to the build logs.
+
+**Wait for CI caveat.** Railway waits for *every* check on the commit, not only
+the docs checks. While the main **CI** workflow fails on `main`, docs deploys
+with Wait for CI on are skipped. Keep Wait for CI off until CI is green, or fix
+CI first; the docs checks still run on every change either way.
+
+**Manual deploy** (emergencies, e.g. GitHub is down) from a checkout:
 
 ```bash
 bash scripts/deploy-docs.sh deploy
 ```
 
-Skip the local checks with `--no-check`. The deploy streams Railway's build
-logs and fails when the image build fails; Railway then health-checks `/`
-before switching traffic, so a broken build never replaces the running site.
-
-### Continuous deployment from GitHub
-
-The **Deploy docs** workflow deploys `main` automatically:
-
-1. In Railway, create a **project token** for the production environment
-   (project > Settings > Tokens).
-2. In GitHub (repository > Settings > Secrets and variables > Actions), add the
-   secret `RAILWAY_TOKEN`. If the service is not called `docs`, add the
-   variable `RAILWAY_DOCS_SERVICE`.
-3. Optional: create the GitHub environment `docs-production` to require
-   approval before deploys.
-
-The workflow runs on pushes to `main` that change `apps/web/**`, the root npm
-manifests, `.railwayignore`, the deploy script or the workflow itself, and can
-be started by hand (**Run workflow**). Deploys never overlap (one concurrency
-group).
-
-**Choose one trigger.** Railway can also deploy on its own when the service is
-connected to the GitHub repository (Source > Connect repo); it then uses the
-watch patterns in `railway.json`. Use either that or the workflow, not both,
-or every push deploys twice. The workflow has the advantage of running the link
-checker before deploying.
+It runs the same checks locally, then `railway up --ci` (needs `railway login`
+and `railway link`, or a project token in `RAILWAY_TOKEN`).
 
 ## Troubleshooting "Application failed to respond"
 
@@ -98,6 +98,9 @@ Railway's proxy reached the service but nothing answered on the domain's port.
 - Logs: `railway logs --service docs`; deployments: `railway deployment list --service docs`.
 - Roll back: redeploy an earlier deployment from the dashboard, or `git revert`
   and push.
+- A commit did not deploy? Check that it touched a watch pattern
+  (`apps/web/**`, root npm manifests), then the commit's checks (Wait for CI
+  skips deploys when any check fails), then the service's Deployments tab.
 - The image is stateless: no volumes or databases are needed, and it can run
   more than one replica.
 - Local check of the production image (Docker required):
