@@ -67,7 +67,7 @@ func (s *Service) Review(ctx context.Context, p *domain.Principal, tree *domain.
 		return nil, fmt.Errorf("merge request !%d: authors cannot %s their own merge request: %w",
 			number, verb, domain.ErrForbidden)
 	}
-	tip, err := s.branchTip(ctx, tree.ID, mr.SourceBranch)
+	tip, err := s.mrSourceTip(ctx, tree, mr) // forks (§16.2)
 	if err != nil {
 		return nil, fmt.Errorf("merge request !%d: %w", number, err)
 	}
@@ -128,10 +128,7 @@ func (s *Service) Review(ctx context.Context, p *domain.Principal, tree *domain.
 // commentReview stores a "commented" review as a merge request comment.
 // The caller holds the tree lock.
 func (s *Service) commentReview(ctx context.Context, p *domain.Principal, tree *domain.Tree, mr *domain.MergeRequest, body string) (*domain.MergeRequest, error) {
-	tip := ""
-	if b, err := s.store.GetBranch(ctx, tree.ID, mr.SourceBranch); err == nil {
-		tip = b.Tip
-	}
+	tip := s.currentSourceTip(ctx, tree, mr) // forks (§16.2)
 	c, err := s.storeComment(ctx, p, tree, mr, CommentInput{Body: body, SnapshotID: tip}, nil)
 	if err != nil {
 		return nil, err

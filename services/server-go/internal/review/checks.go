@@ -216,7 +216,7 @@ func (s *Service) evaluate(ctx context.Context, tree *domain.Tree, mr *domain.Me
 	}
 
 	// Source and target tips.
-	ev.sourceTip, err = s.branchTip(ctx, tree.ID, mr.SourceBranch)
+	ev.sourceTip, err = s.mrSourceTip(ctx, tree, mr) // forks (§16.2): a fork's tip, copied into tree
 	if err != nil {
 		if !errors.Is(err, domain.ErrNotFound) && !errors.Is(err, domain.ErrInvalid) {
 			return nil, err

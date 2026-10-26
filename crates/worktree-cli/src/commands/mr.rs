@@ -53,8 +53,11 @@ pub enum MrCommand {
         #[arg(id = "tree_ref", value_name = "TREE")]
         tree: Option<TreeRef>,
         /// Branch with the changes
-        #[arg(long, value_name = "B")]
-        source: String,
+        #[arg(long, value_name = "B", required_unless_present = "from")]
+        source: Option<String>,
+        /// Open it from a branch of a fork of this tree (v0.8): TENANT/TREE:BRANCH
+        #[arg(long, value_name = "TENANT/TREE:BRANCH", conflicts_with = "source")]
+        from: Option<crate::commands::fork::ForkSource>,
         /// Branch to merge into
         #[arg(long, value_name = "B")]
         target: String,
@@ -455,6 +458,8 @@ struct MergeRequest {
     draft: bool,
     #[serde(deserialize_with = "nullable")]
     reviewers: Vec<String>,
+    // v0.8 forks (§16.2): the fork the source branch lives in.
+    source_tree_id: String,
 }
 
 /// `review.MROwners`: the owners of every path a merge request changes.
@@ -644,6 +649,7 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
         MrCommand::Create {
             tree,
             source,
+            from,
             target,
             title,
             description,
@@ -651,7 +657,12 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
             reviewers,
         } => {
             let tree = tree_or_default(ctx, tree)?;
-            let body = create_body(
+            // forks (§16.2): --from TENANT/TREE:BRANCH names the source.
+            let source = match &from {
+                Some(f) => f.branch.clone(),
+                None => source.unwrap_or_default(),
+            };
+            let mut body = create_body(
                 &title,
                 description.as_deref(),
                 &source,
@@ -659,6 +670,13 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
                 draft,
                 &reviewers,
             );
+            let label = match &from {
+                Some(f) => {
+                    f.add_to(&mut body);
+                    f.to_string()
+                }
+                None => source.clone(),
+            };
             let value = api.post(&mrs_path(&tree), &body)?;
             render(out, &value, |t, mr: MergeRequest| {
                 t.line(format_args!(
@@ -666,7 +684,7 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
                     if mr.draft { "draft " } else { "" },
                     format!("!{}", mr.number).green().bold(),
                     mr.title,
-                    mr.source_branch.green(),
+                    label.green(),
                     mr.target_branch.green()
                 ));
                 reviewer_line(t, &mr);
@@ -1243,9 +1261,15 @@ fn mr_diff(api: &Api, tree: &TreeRef, mr: &MergeRequest) -> Result<Value> {
     if let Some(merged) = mr.merged_snapshot.as_deref().filter(|s| !s.is_empty()) {
         return compare(api, tree, None, merged);
     }
-    let direct = compare(api, tree, Some(&mr.target_branch), &mr.source_branch)?;
+    // forks (§16.2): a fork's source tip, as a snapshot of this tree.
+    let source = if mr.source_tree_id.is_empty() {
+        mr.source_branch.clone()
+    } else {
+        crate::commands::fork::target_tip(api, tree, mr.number)?
+    };
+    let direct = compare(api, tree, Some(&mr.target_branch), &source)?;
     match decode::<CompareResult>(&direct)?.merge_base {
-        Some(base) => compare(api, tree, Some(&base), &mr.source_branch),
+        Some(base) => compare(api, tree, Some(&base), &source),
         None => Ok(direct),
     }
 }
@@ -1587,6 +1611,7 @@ mod tests {
         let MrCommand::Create {
             tree,
             source,
+            from,
             target,
             title,
             description,
@@ -1599,9 +1624,10 @@ mod tests {
             panic!()
         };
         assert!(tree.is_none() && description.is_none() && !draft && reviewers.is_empty());
+        assert!(from.is_none());
         assert_eq!(
-            (source.as_str(), target.as_str(), title.as_str()),
-            ("feat", "main", "Add feat")
+            (source.as_deref(), target.as_str(), title.as_str()),
+            (Some("feat"), "main", "Add feat")
         );
         assert!(matches!(
             mr(&["approve", "1"]),

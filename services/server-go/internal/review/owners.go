@@ -617,9 +617,7 @@ func (s *Service) MROwners(ctx context.Context, p *domain.Principal, tree *domai
 
 // tips returns the current source and target tips of mr ("" when missing).
 func (s *Service) tips(ctx context.Context, tree *domain.Tree, mr *domain.MergeRequest) (source, target string) {
-	if b, err := s.store.GetBranch(ctx, tree.ID, mr.SourceBranch); err == nil {
-		source = b.Tip
-	}
+	source = s.currentSourceTip(ctx, tree, mr) // forks (§16.2)
 	if b, err := s.store.GetBranch(ctx, tree.ID, mr.TargetBranch); err == nil {
 		target = b.Tip
 	}

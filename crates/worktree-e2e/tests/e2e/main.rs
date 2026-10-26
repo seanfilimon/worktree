@@ -68,3 +68,4 @@ mod wt_tree_sharing;
 
 // v0.8 build-out (ENGINEERING_PLAN §16).
 mod conflict_resolution; // conflict-ui (§16.9)
+mod forks; // forks (§16.2)

@@ -25,6 +25,11 @@ type createMRRequest struct {
 	// v0.7 (§15.7): open as a draft; request reviewers ("user:x", "team:y").
 	Draft     bool     `json:"draft,omitempty"`
 	Reviewers []string `json:"reviewers,omitempty"`
+
+	// v0.8 forks (§16.2, forks.go): the tree the source branch lives in (a
+	// fork in the same fork network); both or neither.
+	SourceTenant string `json:"source_tenant,omitempty"`
+	SourceTree   string `json:"source_tree,omitempty"`
 }
 
 func normalizeMR(mr *domain.MergeRequest) { mr.Approvals = nonNil(mr.Approvals) }
@@ -179,7 +184,11 @@ func (a *api) handleCreateMR(w http.ResponseWriter, r *http.Request) error {
 	if err := validateBranchName(req.TargetBranch); err != nil {
 		return badRequestf("target_branch: %v", err)
 	}
-	if req.SourceBranch == req.TargetBranch {
+	srcTree, err := a.mrSourceTree(r, &req) // forks (§16.2)
+	if err != nil {
+		return err
+	}
+	if req.SourceBranch == req.TargetBranch && (srcTree == nil || srcTree.ID == tree.ID) {
 		return badRequestf("source_branch and target_branch must differ")
 	}
 	var mr *domain.MergeRequest
@@ -189,11 +198,11 @@ func (a *api) handleCreateMR(w http.ResponseWriter, r *http.Request) error {
 		}
 		mr, err = dr.OpenWith(r.Context(), p, tree, review.OpenInput{
 			Title: req.Title, Description: req.Description, Source: req.SourceBranch, Target: req.TargetBranch,
-			Draft: req.Draft, Reviewers: req.Reviewers,
+			Draft: req.Draft, Reviewers: req.Reviewers, SourceTree: srcTree,
 		})
-	} else if req.Draft || len(req.Reviewers) > 0 {
+	} else if req.Draft || len(req.Reviewers) > 0 || srcTree != nil {
 		return &apiError{status: http.StatusNotImplemented, code: "not_implemented",
-			msg: "draft merge requests and review requests are not available on this server"}
+			msg: "draft merge requests, review requests and merge requests from forks are not available on this server"}
 	} else {
 		mr, err = a.d.Review.Open(r.Context(), p, tree, req.Title, req.Description, req.SourceBranch, req.TargetBranch)
 	}

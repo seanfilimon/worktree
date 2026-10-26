@@ -164,6 +164,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	backups := backup.New(backup.Deps(v5))
 	// v0.8 components (docs/ENGINEERING_PLAN.md §16).
 	forks := fork.New(fork.Deps(v5))
+	// forks (§16.2): MaxTrees and the license redistribution rule apply to forks.
+	forks.Configure(fork.Options{Quota: limiter, License: lic})
+	forks.Start(ctx) // drops fork records and snapshot origins of deleted trees
 	scanner := scan.New(scan.Deps(v5))
 	treeCfg := treeconfig.New(treeconfig.Deps(v5))
 	// storage-backends (§15.2): backups in <data>/backups, optional schedule.

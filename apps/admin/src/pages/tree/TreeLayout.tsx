@@ -39,6 +39,8 @@ import { tenantPath, treePath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { WatchControl } from "@/pages/notifications/WatchControl";
 import type { TreeContext } from "./context";
+import { ForkBadge } from "./ForksTab"; // forks (§16.2)
+import type { ForkTree } from "./forksApi";
 import { LoadingRows, QueryError } from "./history/shared";
 
 type CountKey = "branch_count" | "snapshot_count" | "staged_count" | "open_mr_count";
@@ -211,6 +213,7 @@ export function TreeLayout() {
             {tree}
           </h1>
           {s && <VisibilityBadge visibility={s.tree.visibility} />}
+          {s && <ForkBadge tenant={tenant} tree={tree} forkOf={(s.tree as ForkTree).fork_of} /> /* forks (§16.2) */}
           {s && <div className="ml-auto"><WatchControl scope={{ tenant, tree }} /></div> /* notifications (§15.3) */}
         </div>
         {s ? (

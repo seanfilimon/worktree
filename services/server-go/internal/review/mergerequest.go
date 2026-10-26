@@ -23,12 +23,13 @@ func (s *Service) open(ctx context.Context, p *domain.Principal, tree *domain.Tr
 	if err := checkTree(tree); err != nil {
 		return nil, err
 	}
-	if err := s.authz.Authorize(ctx, p, domain.ActMRCreate, tree.TenantID, tree); err != nil {
+	if err := s.authorizeOpen(ctx, p, tree, in); err != nil { // forks (§16.2): mr:create, or a fork's contributor
 		return nil, err
 	}
 	if err := requirePrincipal(p); err != nil {
 		return nil, err
 	}
+	srcTree := sourceTreeID(tree, in) // forks (§16.2)
 	title = strings.TrimSpace(title)
 	source = strings.TrimSpace(source)
 	target = strings.TrimSpace(target)
@@ -37,13 +38,14 @@ func (s *Service) open(ctx context.Context, p *domain.Principal, tree *domain.Tr
 		return nil, fmt.Errorf("merge request title must not be empty: %w", domain.ErrInvalid)
 	case source == "" || target == "":
 		return nil, fmt.Errorf("merge request source and target branches are required: %w", domain.ErrInvalid)
-	case source == target:
+	case source == target && srcTree == tree.ID:
 		return nil, fmt.Errorf("merge request source and target must differ (both '%s'): %w", source, domain.ErrInvalid)
 	}
-	for _, name := range []string{source, target} {
-		if _, err := s.branchTip(ctx, tree.ID, name); err != nil {
-			return nil, err
-		}
+	if _, err := s.branchTip(ctx, srcTree, source); err != nil {
+		return nil, err
+	}
+	if _, err := s.branchTip(ctx, tree.ID, target); err != nil {
+		return nil, err
 	}
 	// v0.7 (§15.7): explicit review requests.
 	reviewers, err := s.normalizeReviewers(ctx, tree, p.Username, in.Reviewers)
@@ -59,7 +61,7 @@ func (s *Service) open(ctx context.Context, p *domain.Principal, tree *domain.Tr
 		return nil, fmt.Errorf("review: list merge requests: %w", err)
 	}
 	for i := range open {
-		if open[i].SourceBranch == source && open[i].TargetBranch == target {
+		if open[i].SourceBranch == source && open[i].TargetBranch == target && mrSourceTreeID(&open[i]) == srcTree {
 			return nil, fmt.Errorf("merge request !%d from '%s' into '%s' is already open: %w",
 				open[i].Number, source, target, domain.ErrAlreadyExists)
 		}
@@ -79,6 +81,9 @@ func (s *Service) open(ctx context.Context, p *domain.Principal, tree *domain.Tr
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		Draft:        in.Draft,
+	}
+	if srcTree != tree.ID { // forks (§16.2)
+		mr.SourceTreeID = srcTree
 	}
 	// v0.7 (§15.7): explicit reviewers, plus the owners of the changed
 	// paths unless the merge request is a draft (requested when ready).

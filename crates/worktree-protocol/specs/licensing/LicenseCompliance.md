@@ -283,6 +283,7 @@ only as stubs.
 | License-aware archives (server and local), `LICENSES/NOTICE`, `wt git export` | Built (v0.5) |
 | `wt license detect [--apply]` | Built (v0.5) |
 | `license.CheckExport` | Built, used by the export tooling |
+| Redistribution rule on forks out of the tree's tenant (caller and destination tenant) | Built (v0.8, [Forks](../tree/Forks.md) §6) |
 
 ## 14. Roadmap
 
@@ -302,8 +303,13 @@ built:
   derivatives, and warnings on violations. License categories (permissive,
   copyleft, attribution, public domain) are not modelled: only "proprietary or
   not" matters.
-- **`wt git mirror`** with public and private remotes, **forks or copies**
-  across tenants, and checks on **cross-tenant merges**.
+- **License checks on cross-tenant merges** (merge requests from a fork in
+  another tenant carry no license evaluation of the incoming paths) and
+  copying license rules into forks. Forks across tenants are built (v0.8):
+  forking out of the tree's tenant applies the export rule of §8 to the
+  copied branch and tag tips for the caller and the destination tenant
+  ([Forks](../tree/Forks.md) §6); push mirrors are built in v0.7
+  ([Mirrors](../server/Mirrors.md)).
 - **`wt license audit`**, `wt archive --include-all`, `--license-report`, and
   a license compliance dashboard. Use `wt audit` and the admin tree Licenses
   view.

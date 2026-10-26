@@ -98,9 +98,7 @@ func (s *Service) AddComment(ctx context.Context, p *domain.Principal, tree *dom
 		return nil, err
 	}
 	if in.SnapshotID == "" && (in.Suggestion == nil || in.Suggestion.SnapshotID == "") {
-		if b, err := s.store.GetBranch(ctx, tree.ID, mr.SourceBranch); err == nil {
-			in.SnapshotID = b.Tip
-		}
+		in.SnapshotID = s.currentSourceTip(ctx, tree, mr) // forks (§16.2)
 	}
 	sg, err := s.suggestionFor(ctx, tree, &in) // v0.7 (§15.7)
 	if err != nil {
