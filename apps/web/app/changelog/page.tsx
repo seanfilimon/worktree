@@ -24,6 +24,67 @@ interface Release {
 
 const releases: Release[] = [
   {
+    version: "v0.8.0",
+    date: "2026",
+    title: "Scale, governance and safety nets",
+    description:
+      "Pack and delta transfer, forks, config-as-code, the tenant lifecycle, ABAC attributes, device sign-in, server-side secret scanning, labeled staged snapshots, browser conflict resolution, force push and undo, and server operations.",
+    changes: [
+      {
+        type: "Added",
+        text: "Pack files with binary deltas for push, fetch and clone (resumable uploads; wt push --no-pack to opt out). Small-edit pushes send hundreds of times fewer bytes.",
+      },
+      {
+        type: "Added",
+        text: "Forks across tenants (wt fork), fork sync and merge requests from forks (wt mr create --from).",
+      },
+      {
+        type: "Added",
+        text: "Config-as-code: .wt-tree/branches.toml and protections.toml validated on push with located errors and applied after it; wt trees config, wt branch describe/owner.",
+      },
+      {
+        type: "Added",
+        text: "Tenant email verification, slug renames with reservations, deletion with a 30-day recovery window and restore; wt tenant switch.",
+      },
+      {
+        type: "Added",
+        text: "ABAC attributes on tenants, accounts and trees with attribute conditions in policies and the simulator (wt attr).",
+      },
+      {
+        type: "Added",
+        text: "Device sign-in (wt login --device) and rotating refresh tokens with reuse detection.",
+      },
+      {
+        type: "Added",
+        text: "Server-side secret scanning on push (off, warn or block, allowlists) and a license audit with strict SPDX checks (wt compliance, wt license audit).",
+      },
+      {
+        type: "Added",
+        text: "Labeled staged snapshots with history and expiry, wt checkout --staged and overlap notices on push.",
+      },
+      {
+        type: "Added",
+        text: "Conflict resolution in the admin panel and wt mr resolve; rebase merges and deleting the source branch on merge.",
+      },
+      {
+        type: "Added",
+        text: "Force push with leases (branch:force_push, no_force_push protections), audited protection bypass, wt undo/redo and wt tag delete --remote.",
+      },
+      {
+        type: "Added",
+        text: "Backups to S3, a durable email outbox (wt admin outbox) and retention for policy versions, audit events and webhook deliveries.",
+      },
+      {
+        type: "Breaking",
+        text: "Logins return a one-hour access token plus a refresh token; clients that ignore refresh_token must sign in again after an hour. wt tenant rename now changes the slug (the display name moved to wt tenant set-name).",
+      },
+      {
+        type: "Changed",
+        text: "wt mirror takes the tree with --in (the old --tree still works with a warning); staged snapshots expire after 30 days by default.",
+      },
+    ],
+  },
+  {
     version: "v0.7.0",
     date: "2026",
     title: "Deployable and team-ready",

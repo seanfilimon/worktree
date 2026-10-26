@@ -5,7 +5,7 @@ import { ISSUES_URL } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Roadmap - W0rkTree",
-  description: "What shipped in W0rkTree up to v0.7 and what is planned next.",
+  description: "What shipped in W0rkTree up to v0.8 and what is planned next.",
 };
 
 interface Milestone {
@@ -76,6 +76,21 @@ const milestones: Milestone[] = [
     ],
   },
   {
+    title: "v0.8 — scale, governance and safety nets",
+    status: "shipped",
+    summary: "Faster transfer, forks, configuration in the tree and a stronger access model.",
+    items: [
+      "Pack files with binary deltas for push, fetch and clone, resumable uploads",
+      "Forks across tenants and merge requests from forks",
+      "Config-as-code: branches and protections declared in .wt-tree/, validated on push",
+      "Tenant email verification, slug renames, deletion with a recovery window",
+      "ABAC attributes in policy conditions; device sign-in and rotating refresh tokens",
+      "Server-side secret scanning and license audit; resolving conflicts in the admin panel and rebase merges",
+      "Force push with leases, protection bypass, wt undo/redo; labeled staged snapshots",
+      "Backups to S3, a durable email outbox and retention settings",
+    ],
+  },
+  {
     title: "Distribution",
     status: "planned",
     summary: "Publish what the release pipeline already builds.",
@@ -89,7 +104,6 @@ const milestones: Milestone[] = [
     status: "planned",
     summary: "Bigger repositories and more servers.",
     items: [
-      "Pack files and delta compression on the wire",
       "QUIC transport alongside HTTP/2",
       "Virtual filesystem with lazy loading (FUSE / ProjFS)",
       "High availability and a clustered metadata store",
@@ -102,7 +116,7 @@ const milestones: Milestone[] = [
     items: [
       "Interactive rebase",
       "Bidirectional Git mirroring",
-      "Resolving merge conflicts in the admin panel",
+      "Pull mirrors (import from Git on a schedule)",
     ],
   },
   {
@@ -111,7 +125,7 @@ const milestones: Milestone[] = [
     summary: "Stronger guarantees for regulated environments.",
     items: [
       "Encryption at rest",
-      "Custom ABAC attributes and branch-scoped role assignment",
+      "Branch-scoped role assignment",
       "Physical tenant isolation",
     ],
   },
