@@ -24,7 +24,7 @@ zstd = { version = "0.13", default-features = false }
 toml_edit = { version = "0.22", default-features = false, features = ["parse"] }
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
