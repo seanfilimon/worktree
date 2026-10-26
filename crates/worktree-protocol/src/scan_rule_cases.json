@@ -1,0 +1,166 @@
+{
+  "comment": "Parity cases for the shared secret scanning rules (scan_rules.json): the Rust scanner (worktree-sdk scan::secrets tests) and the Go scanner (services/server-go/internal/scan parity_test.go) must produce exactly these findings. Inputs are assembled from parts so that this file holds no literal secret: a part is a string, {\"repeat\": s, \"count\": n} or {\"hex\": \"...\"}. A want entry may give its excerpt as excerpt_parts (same part syntax). fingerprint is checked when present.",
+  "cases": [
+    {
+      "name": "aws access key in an env file",
+      "path": "config/aws.env",
+      "parts": ["# credentials\nAWS_ACCESS_KEY_ID=", "AK", "IA", "Z7Q4W2E8R5T1Y3U6", "\n"],
+      "want": [
+        {"rule": "aws-access-key", "line": 2, "excerpt": "AWS_ACCESS_KEY_ID=AKIA****Y3U6", "fingerprint": "683e63ab39e025dc3e6ea642"}
+      ]
+    },
+    {
+      "name": "github token on crlf lines",
+      "path": "src/app.rs",
+      "parts": ["a\r\nb\r\n\r\nt = ", "gh", "p_", "Xk3Lm9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk2Zx9", "\r\nc\r\nt2 = ", "gh", "p_", "Xk3Lm9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk2Zx9", "\r\n"],
+      "want": [
+        {"rule": "github-token", "line": 4, "excerpt": "t = ghp_****2Zx9", "fingerprint": "fd07e02d5902c12c017b886a"},
+        {"rule": "github-token", "line": 6, "excerpt": "t2 = ghp_****2Zx9", "fingerprint": "fd07e02d5902c12c017b886a"}
+      ]
+    },
+    {
+      "name": "allow marker suppresses its line only",
+      "path": "src/a.rs",
+      "parts": ["// wt:allow-secret\nt = \"", "gh", "p_", "Xk3Lm9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk2Zx9", "\"\nu = \"", "gh", "p_", "Xk3Lm9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk2Zx9", "\" // wt:allow-secret\n"],
+      "want": [
+        {"rule": "github-token", "line": 2, "excerpt": "t = \"ghp_****2Zx9\""}
+      ]
+    },
+    {
+      "name": "private key embedded in a json string",
+      "path": "svc/key.json",
+      "parts": ["{\"private_key\": \"-----BEGIN PRIV", "ATE KEY-----\\n", "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDf3Lq8Wn2Kx7Vz", "\\n-----END PRIV", "ATE KEY-----\\n\"}\n"],
+      "want": [
+        {"rule": "private-key", "line": 1, "excerpt": "{\"private_key\": \"-----BEGIN PRIVATE KEY-----****", "fingerprint": "426d1e7f59eaefa65e157425"}
+      ]
+    },
+    {
+      "name": "pem private key block",
+      "path": "deploy/id_rsa",
+      "parts": ["# key\n-----BEGIN RSA PRIV", "ATE KEY-----\n", "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDf3Lq8Wn2Kx7Vz", "\n", "Qw8Er4Ty6Ui2Op0As5Df9Gh3Jk7Lz1Xc5Vb9Nm3Qa7Ws1Ed5Rf9Tg3Yh7Uj1Ik5", "\n-----END RSA PRIV", "ATE KEY-----\n"],
+      "want": [
+        {"rule": "private-key", "line": 2, "excerpt": "-----BEGIN RSA PRIVATE KEY-----"}
+      ]
+    },
+    {
+      "name": "private key header without a body",
+      "path": "src/parse.rs",
+      "parts": ["if line.starts_with(\"-----BEGIN RSA PRIV", "ATE KEY-----\") {\n    parse(line);\n}\n"],
+      "want": []
+    },
+    {
+      "name": "generic quoted secrets",
+      "path": "src/config.py",
+      "parts": ["db_password = \"", "q7Rk2mVx9LpT4wZs8NbY3cHd6FjG1aE5", "\"\nAPI_KEY: '", "q7Rk2mVx9LpT4wZs8NbY3cHd6FjG1aE5", "'\n"],
+      "want": [
+        {"rule": "generic-secret", "line": 1, "excerpt": "db_password = \"q7Rk****1aE5\"", "fingerprint": "ca3e34004ceb2beb30471817"},
+        {"rule": "generic-secret", "line": 2, "excerpt": "API_KEY: 'q7Rk****1aE5'"}
+      ]
+    },
+    {
+      "name": "generic unquoted env secret",
+      "path": ".env",
+      "parts": ["SECRET_KEY=", "Zt8Vb3Nm6Qa1Ws4Ed7Rf0Tg5Yh2Uj9Ik3OlP", "\n"],
+      "want": [
+        {"rule": "generic-secret", "line": 1, "excerpt": "SECRET_KEY=Zt8V****3OlP"}
+      ]
+    },
+    {
+      "name": "low entropy, placeholders and identifiers are ignored",
+      "path": "src/x.py",
+      "parts": ["password = \"aaaaaaaaaaaaaaaaaaaaaaaa1\"\napi_key = \"EXAMPLE1234567890abcdefgh\"\ntoken = \"ThisIsAVeryLongIdentifierName\"\npassword = \"${DB_PASSWORD_FROM_ENVIRONMENT_1}\"\nkey = ", "AK", "IA", "IOSFODNN7EXAMPLE", "\n"],
+      "want": []
+    },
+    {
+      "name": "two secrets on one line",
+      "path": "notes.txt",
+      "parts": ["keys ", "AK", "IA", "Z7Q4W2E8R5T1Y3U6", " ", "gh", "p_", "Xk3Lm9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk2Zx9", "\n"],
+      "want": [
+        {"rule": "aws-access-key", "line": 1, "excerpt": "keys AKIA****Y3U6 ghp_****2Zx9"},
+        {"rule": "github-token", "line": 1, "excerpt": "keys AKIA****Y3U6 ghp_****2Zx9"}
+      ]
+    },
+    {
+      "name": "slack webhook keeps the url and redacts the token",
+      "path": "ops/alerts.yaml",
+      "parts": ["webhook = \"https://hooks.slack.com/", "services/T0123ABCD/B0456EFGH/", "Pw3Lk8Jh2Gf6Ds1Az9Xc4Vb7", "\"\n"],
+      "want": [
+        {"rule": "slack-webhook", "line": 1, "excerpt": "webhook = \"https://hooks.slack.com/services/T0123ABCD/B0456EFGH/Pw3L****4Vb7\""}
+      ]
+    },
+    {
+      "name": "anthropic key wins over the openai and generic rules",
+      "path": ".env",
+      "parts": ["ANTHROPIC_API_KEY=", "sk", "-ant-", "api03-", "Hq4Wn8Ld2Ks6Pz0Mx3Rv7Bt1Yc5Gf9Jd4Ne8Qa", "\n"],
+      "want": [
+        {"rule": "anthropic-api-key", "line": 1, "excerpt": "ANTHROPIC_API_KEY=sk-a****e8Qa"}
+      ]
+    },
+    {
+      "name": "jwt bearer token",
+      "path": "test/http.txt",
+      "parts": ["Authorization: Bearer ", "ey", "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", ".", "ey", "JzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ", ".", "Tq7Hn2Vb5Kd9Lx3Mw8Pz1Rc6Fs4Gy0Jk7Np2Qe5Xa", "\n"],
+      "want": [
+        {"rule": "jwt", "line": 1, "excerpt": "Authorization: Bearer eyJh****e5Xa"}
+      ]
+    },
+    {
+      "name": "google key value includes the terminating byte",
+      "path": "web/maps.js",
+      "parts": ["const key = \"", "AI", "za", "Sy4Df8Gh2Jk6Lz0Xc3Vb7Nm1Qw5Er9Ty4Ui", "\";\n"],
+      "want": [
+        {"rule": "google-api-key", "line": 1, "excerpt": "const key = \"AIza****4Ui\";"}
+      ]
+    },
+    {
+      "name": "stripe live key",
+      "path": "billing.env",
+      "parts": ["STRIPE=", "sk", "_live_", "Mn4Bv8Cx2Za6Lk0Jh3Gf7Ds1", "\n"],
+      "want": [
+        {"rule": "stripe-secret-key", "line": 1, "excerpt": "STRIPE=sk_l****7Ds1"}
+      ]
+    },
+    {
+      "name": "npm token wins over the generic rule",
+      "path": ".npmrc",
+      "parts": ["//registry.npmjs.org/:_authToken=", "np", "m_", "Rt5Yu9Io3Pa7Sd1Fg5Hj9Kl3Zx7Cv1Bn5Mq9", "\n"],
+      "want": [
+        {"rule": "npm-token", "line": 1, "excerpt": "//registry.npmjs.org/:_authToken=npm_****5Mq9"}
+      ]
+    },
+    {
+      "name": "binary content is skipped",
+      "path": "blob.bin",
+      "parts": ["K=", "AK", "IA", "Z7Q4W2E8R5T1Y3U6", "\n", {"hex": "00010203"}],
+      "want": []
+    },
+    {
+      "name": "non utf-8 text is still scanned",
+      "path": "latin1.txt",
+      "parts": [{"hex": "636166e9203d20310a"}, "K=", "AK", "IA", "Z7Q4W2E8R5T1Y3U6", "\n"],
+      "want": [
+        {"rule": "aws-access-key", "line": 2, "excerpt": "K=AKIA****Y3U6"}
+      ]
+    },
+    {
+      "name": "long lines are windowed",
+      "path": "dist/app.min.js",
+      "parts": ["x = ", "gh", "p_", "Xk3Lm9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk2Zx9", " ", {"repeat": "a", "count": 8192}, "\n"],
+      "want": [
+        {"rule": "github-token", "line": 1, "excerpt_parts": ["x = ghp_****2Zx9 ", {"repeat": "a", "count": 107}, "…"]}
+      ]
+    },
+    {
+      "name": "secrets past the line cap are ignored",
+      "path": "dist/app.min.js",
+      "parts": [{"repeat": "a", "count": 8192}, " ", "gh", "p_", "Xk3Lm9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk2Zx9", "\n"],
+      "want": []
+    },
+    {
+      "name": "clean source",
+      "path": "src/main.rs",
+      "parts": ["fn main() {\n    let password = read_password_from_stdin()?;\n    println!(\"hello, world\");\n}\n"],
+      "want": []
+    }
+  ]
+}

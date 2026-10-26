@@ -1,19 +1,24 @@
 //! Rule-based secret detection.
 //!
-//! Each [`Rule`] is a byte regex plus cheap post-filters (placeholder
-//! suppression, Shannon-entropy floor, letter+digit requirement, and for
-//! private keys a check that a key body actually follows the PEM header).
-//! Every rule is run once over the whole buffer — the regex engine's literal
-//! prefilters make this far faster than per-line matching — and matches are
-//! then mapped to lines, deduplicated (the earliest rule in [`rules`] wins
-//! when two rules flag the same bytes) and rendered as redacted excerpts.
+//! The rules come from the rule file shared with the Go server
+//! (`worktree_protocol::scan_rules`, `scan_rules.json`; ENGINEERING_PLAN
+//! §16.7). Each [`Rule`] is a byte regex plus cheap post-filters (keyword
+//! prefilter, placeholder suppression, Shannon-entropy floor, letter+digit
+//! requirement, and for private keys a check that a key body actually
+//! follows the PEM header). Every rule is run once over the whole buffer —
+//! the regex engine's literal prefilters make this far faster than per-line
+//! matching — and matches are then mapped to lines, deduplicated (the
+//! earliest rule in [`rules`] wins when two rules flag the same bytes) and
+//! rendered as redacted excerpts.
 //!
 //! Patterns never match across a line break, so every finding belongs to
-//! exactly one line.
+//! exactly one line. The server scanner (`services/server-go/internal/scan`)
+//! implements the same algorithm; `scan_rule_cases.json` pins both.
 
 use std::sync::LazyLock;
 
 use regex::bytes::{Regex, RegexBuilder};
+use worktree_protocol::scan_rules::{self, scan_rule_set};
 
 use super::{is_binary, SecretFinding};
 
@@ -34,7 +39,11 @@ const EXCERPT_CONTEXT: usize = 60;
 const MIN_PARTIAL_REDACT_LEN: usize = 12;
 const MASK: &str = "****";
 
-/// A built-in secret detection rule.
+/// Extra validation of the bytes following a match; returns the bytes that
+/// complete the fingerprint value (the first key body line).
+type TailValidator = fn(&[u8]) -> Option<&[u8]>;
+
+/// A built-in secret detection rule (from the shared rule file).
 ///
 /// The secret value a rule reports is its first participating capture group,
 /// or the whole match when the pattern has no groups. Post-filters run on
@@ -42,12 +51,15 @@ const MASK: &str = "****";
 #[derive(Debug)]
 pub struct Rule {
     /// Stable identifier reported in [`SecretFinding::rule`].
-    pub id: &'static str,
+    pub id: String,
     /// Human-readable description for documentation and CLI listings.
-    pub description: &'static str,
-    /// Regex source (Rust `regex` syntax, matched against bytes with Unicode
-    /// disabled and multi-line mode on).
-    pub pattern: &'static str,
+    pub description: String,
+    /// Regex source (matched against bytes with Unicode disabled and
+    /// multi-line mode on).
+    pub pattern: String,
+    /// The rule only runs on input containing one of these (ASCII
+    /// case-insensitive).
+    pub keywords: Vec<String>,
     /// Minimum Shannon entropy (bits per byte) of the secret value; 0 = none.
     min_entropy: f64,
     /// The value must contain at least one ASCII letter and one ASCII digit.
@@ -58,7 +70,10 @@ pub struct Rule {
     /// and mask the remainder of the line instead (private-key headers).
     mask_rest_of_line: bool,
     /// Extra validation on the bytes following the match.
-    validate_tail: Option<fn(&[u8]) -> bool>,
+    validate_tail: Option<TailValidator>,
+    regex: Regex,
+    /// Case-insensitive alternation of the keywords (None = always run).
+    keyword_regex: Option<Regex>,
 }
 
 impl Rule {
@@ -80,133 +95,52 @@ impl Rule {
         }
         self.min_entropy <= 0.0 || shannon_entropy(value) >= self.min_entropy
     }
-}
 
-/// Entropy floor applied to vendor tokens: rejects runs like `AKIA` + 16 `A`s
-/// while accepting any realistic random token.
-const TOKEN_ENTROPY: f64 = 2.5;
-/// Entropy floor for context-only (keyword = value) rules.
-const GENERIC_ENTROPY: f64 = 3.5;
-
-const fn token_rule(id: &'static str, description: &'static str, pattern: &'static str) -> Rule {
-    Rule {
-        id,
-        description,
-        pattern,
-        min_entropy: TOKEN_ENTROPY,
-        needs_letter_and_digit: false,
-        skip_placeholders: true,
-        mask_rest_of_line: false,
-        validate_tail: None,
+    /// Whether the keyword prefilter lets the rule run on `data`.
+    fn may_match(&self, data: &[u8]) -> bool {
+        self.keyword_regex.as_ref().is_none_or(|k| k.is_match(data))
     }
 }
 
+fn compile(pattern: &str, what: &str) -> Regex {
+    RegexBuilder::new(pattern)
+        .unicode(false)
+        .multi_line(true)
+        .build()
+        .unwrap_or_else(|e| panic!("built-in secret rule {what} is invalid: {e}"))
+}
+
 /// Built-in rules in priority order (earlier rules win overlaps).
-static RULES: [Rule; 16] = [
-    Rule {
-        id: "private-key",
-        description: "PEM / OpenSSH / PGP private key block",
-        pattern: r"-----BEGIN[ ](?:(?:RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED)[ ])?PRIVATE[ ]KEY(?:[ ]BLOCK)?-----",
-        min_entropy: 0.0,
-        needs_letter_and_digit: false,
-        skip_placeholders: false,
-        mask_rest_of_line: true,
-        validate_tail: Some(followed_by_key_body),
-    },
-    token_rule(
-        "aws-access-key",
-        "AWS access key id (AKIA/ASIA/ABIA/ACCA + 16 characters)",
-        r"\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b",
-    ),
-    Rule {
-        needs_letter_and_digit: true,
-        min_entropy: GENERIC_ENTROPY,
-        ..token_rule(
-            "aws-secret-key",
-            "AWS secret access key assigned to an aws_*secret* / *_sk variable",
-            r#"(?i)aws[a-z0-9_.-]{0,20}(?:secret|sk)[a-z0-9_.-]{0,20}["']?[ \t]*(?::=|=>|=|:)[ \t]*["']?([a-z0-9/+=]{40})(?:[^a-z0-9/+=]|$)"#,
-        )
-    },
-    token_rule(
-        "github-fine-grained-token",
-        "GitHub fine-grained personal access token (github_pat_)",
-        r"\bgithub_pat_[A-Za-z0-9_]{60,255}\b",
-    ),
-    token_rule(
-        "github-token",
-        "GitHub token (ghp_, gho_, ghu_, ghs_, ghr_)",
-        r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b",
-    ),
-    token_rule(
-        "gitlab-token",
-        "GitLab personal access token (glpat-)",
-        r"\bglpat-[A-Za-z0-9_-]{20,}",
-    ),
-    token_rule(
-        "slack-webhook",
-        "Slack incoming webhook URL",
-        r"https://hooks\.slack\.com/(?:services|workflows|triggers)/T[A-Z0-9]+/[A-Z0-9]+/([A-Za-z0-9]{16,})",
-    ),
-    Rule {
-        needs_letter_and_digit: true,
-        ..token_rule(
-            "slack-token",
-            "Slack API token (xoxb-, xoxa-, xoxp-, xoxr-, xoxs-)",
-            r"\bxox[baprs]-[A-Za-z0-9-]{10,}",
-        )
-    },
-    token_rule(
-        "stripe-secret-key",
-        "Stripe live secret or restricted key (sk_live_, rk_live_)",
-        r"\b(?:sk|rk)_live_[A-Za-z0-9]{24,}",
-    ),
-    token_rule(
-        "google-api-key",
-        "Google API key (AIza + 35 characters)",
-        r"\bAIza[0-9A-Za-z_-]{35}(?:[^0-9A-Za-z_-]|$)",
-    ),
-    token_rule(
-        "npm-token",
-        "npm access token (npm_)",
-        r"\bnpm_[A-Za-z0-9]{36}\b",
-    ),
-    token_rule(
-        "anthropic-api-key",
-        "Anthropic API key (sk-ant-)",
-        r"\bsk-ant-[A-Za-z0-9_-]{32,}",
-    ),
-    Rule {
-        needs_letter_and_digit: true,
-        ..token_rule(
-            "openai-api-key",
-            "OpenAI-style API key (sk-, sk-proj-, sk-svcacct-, sk-admin-)",
-            r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}",
-        )
-    },
-    token_rule(
-        "jwt",
-        "JSON Web Token (signed, three base64url segments)",
-        r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
-    ),
-    Rule {
-        needs_letter_and_digit: true,
-        min_entropy: GENERIC_ENTROPY,
-        ..token_rule(
-            "generic-secret",
-            "High-entropy quoted value assigned to a password/secret/api_key/token variable",
-            r#"(?i)(?:password|passwd|pwd|secret|api[_-]?key|apikey|token|credential|access[_-]?key|private[_-]?key)[a-z0-9_.-]{0,32}["'\]]{0,2}[ \t]*(?::=|=>|=|:)[ \t]*(?:"([^"\s]{20,256})"|'([^'\s]{20,256})'|`([^`\s]{20,256})`)"#,
-        )
-    },
-    Rule {
-        needs_letter_and_digit: true,
-        min_entropy: GENERIC_ENTROPY,
-        ..token_rule(
-            "generic-secret",
-            "High-entropy unquoted value assigned to a password/secret/api_key/token variable (.env / YAML style)",
-            r#"(?i)(?:password|passwd|pwd|secret|api[_-]?key|apikey|token|credential|access[_-]?key|private[_-]?key)[a-z0-9_.-]{0,32}[ \t]*(?:=|:)[ \t]*([a-z0-9+/_-]{20,256})(?:[ \t;,#\r]|$)"#,
-        )
-    },
-];
+static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
+    scan_rule_set()
+        .rules
+        .iter()
+        .map(|r| {
+            let validate_tail: Option<TailValidator> = match r.validate_tail.as_deref() {
+                None => None,
+                Some("key_body") => Some(key_body),
+                Some(other) => panic!("secret rule {}: unknown validate_tail {other:?}", r.id),
+            };
+            let keyword_regex = (!r.keywords.is_empty()).then(|| {
+                let alts: Vec<String> = r.keywords.iter().map(|k| regex::escape(k)).collect();
+                compile(&format!("(?i){}", alts.join("|")), &r.id)
+            });
+            Rule {
+                id: r.id.clone(),
+                description: r.description.clone(),
+                pattern: r.pattern.clone(),
+                keywords: r.keywords.clone(),
+                min_entropy: r.min_entropy,
+                needs_letter_and_digit: r.needs_letter_and_digit,
+                skip_placeholders: r.skip_placeholders,
+                mask_rest_of_line: r.mask_rest_of_line,
+                validate_tail,
+                regex: compile(&r.pattern, &r.id),
+                keyword_regex,
+            }
+        })
+        .collect()
+});
 
 /// The built-in rule set, in priority order. Rule ids are stable; several
 /// rules may share an id when they detect the same kind of secret in
@@ -214,19 +148,6 @@ static RULES: [Rule; 16] = [
 pub fn rules() -> &'static [Rule] {
     &RULES
 }
-
-static COMPILED: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    RULES
-        .iter()
-        .map(|rule| {
-            RegexBuilder::new(rule.pattern)
-                .unicode(false)
-                .multi_line(true)
-                .build()
-                .unwrap_or_else(|e| panic!("built-in secret rule {} is invalid: {e}", rule.id))
-        })
-        .collect()
-});
 
 /// A user-defined rule (`[secret_scanning] patterns`). It has no post-filters:
 /// every match of its regex (its first capture group, if any) is a finding.
@@ -252,7 +173,7 @@ pub(super) fn compile_custom(id: &str, pattern: &str) -> Result<CustomRule, Stri
 /// Rule id of candidate index `idx` (built-ins first, then custom rules).
 fn rule_id(idx: usize, custom: &[CustomRule]) -> &str {
     match RULES.get(idx) {
-        Some(rule) => rule.id,
+        Some(rule) => rule.id.as_str(),
         None => custom
             .get(idx - RULES.len())
             .map_or("custom", |c| c.id.as_str()),
@@ -265,11 +186,13 @@ fn masks_rest_of_line(idx: usize) -> bool {
 }
 
 /// A candidate secret: byte span of the value plus the rule that found it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Candidate {
     rule: usize,
     start: usize,
     end: usize,
+    /// Fingerprint of the secret (see `worktree_protocol::scan_rules`).
+    fingerprint: String,
 }
 
 /// Scan one buffer with the built-in rules; see [`super::scan_secrets`].
@@ -295,25 +218,37 @@ pub(super) fn scan_with(path: &str, data: &[u8], custom: &[CustomRule]) -> Vec<S
                 rule: RULES.len() + j,
                 start: secret.start(),
                 end: secret.end(),
+                fingerprint: scan_rules::fingerprint(&rule.id, secret.as_bytes()),
             });
         }
     }
-    for (idx, (rule, re)) in RULES.iter().zip(COMPILED.iter()).enumerate() {
-        for caps in re.captures_iter(data) {
+    for (idx, rule) in RULES.iter().enumerate() {
+        if !rule.may_match(data) {
+            continue;
+        }
+        for caps in rule.regex.captures_iter(data) {
             let Some(whole) = caps.get(0) else { continue };
             let secret = caps.iter().skip(1).flatten().next().unwrap_or(whole);
             if !rule.accepts(secret.as_bytes()) {
                 continue;
             }
-            if let Some(validate) = rule.validate_tail {
-                if !validate(&data[whole.end()..]) {
-                    continue;
+            let fingerprint = match rule.validate_tail {
+                Some(validate) => {
+                    let Some(body) = validate(&data[whole.end()..]) else {
+                        continue;
+                    };
+                    let mut value = secret.as_bytes().to_vec();
+                    value.push(b'\n');
+                    value.extend_from_slice(body);
+                    scan_rules::fingerprint(&rule.id, &value)
                 }
-            }
+                None => scan_rules::fingerprint(&rule.id, secret.as_bytes()),
+            };
             candidates.push(Candidate {
                 rule: idx,
                 start: secret.start(),
                 end: secret.end(),
+                fingerprint,
             });
         }
     }
@@ -353,6 +288,7 @@ pub(super) fn scan_with(path: &str, data: &[u8], custom: &[CustomRule]) -> Vec<S
                     rule: c.rule,
                     start: c.start - line_start,
                     end: c.end - line_start,
+                    fingerprint: c.fingerprint.clone(),
                 })
                 .collect();
             emit_line(path, line_no, line, local, custom, &mut findings);
@@ -395,6 +331,7 @@ fn emit_line(
             path: path.to_string(),
             line: line_no,
             excerpt: excerpt(&redacted, pos),
+            fingerprint: c.fingerprint.clone(),
         });
     }
 }
@@ -475,32 +412,11 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 }
 
 /// Substrings (lower-cased) that mark a value as a documentation placeholder
-/// rather than a live credential.
-const PLACEHOLDER_MARKERS: &[&str] = &[
-    "example",
-    "xxx",
-    "changeme",
-    "change_me",
-    "change-me",
-    "placeholder",
-    "dummy",
-    "your",
-    "redacted",
-    "replace",
-    "insert",
-    "sample",
-    "<",
-    ">",
-    "${",
-    "{{",
-    "}}",
-    "****",
-    "...",
-];
-
+/// rather than a live credential (`placeholder_markers` of the rule file).
 fn is_placeholder(value: &[u8]) -> bool {
     let lower = value.to_ascii_lowercase();
-    PLACEHOLDER_MARKERS
+    scan_rule_set()
+        .placeholder_markers
         .iter()
         .any(|m| contains(&lower, m.as_bytes()))
 }
@@ -528,26 +444,27 @@ fn shannon_entropy(value: &[u8]) -> f64 {
 /// Validates that a PEM / PGP header is followed by key material — either on
 /// the next lines or after an escaped `\n` (keys embedded in JSON/env
 /// strings) — so code that merely mentions the header is not flagged.
-fn followed_by_key_body(tail: &[u8]) -> bool {
+///
+/// Returns the first body line (it completes the finding's fingerprint, so
+/// that different keys get different fingerprints).
+fn key_body(tail: &[u8]) -> Option<&[u8]> {
     let mut rest = tail;
     // Allow a few blank or `Name: value` armor-header lines before the body.
     for _ in 0..4 {
-        rest = match strip_line_break(rest) {
-            Some(r) => r,
-            None => return false,
-        };
+        rest = strip_line_break(rest)?;
         let line_len = next_line_break(rest);
         let line = trim_quotes(&rest[..line_len]);
         if line.is_empty() || line.contains(&b':') {
             rest = &rest[line_len..];
             continue;
         }
-        return line.len() >= 16
+        let body = line.len() >= 16
             && line
                 .iter()
                 .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='));
+        return body.then_some(line);
     }
-    false
+    None
 }
 
 /// Strip one leading line break: real (`\n`, `\r\n`) or escaped (`\n`
@@ -674,12 +591,15 @@ mod tests {
     fn rules_are_listed_and_compile() {
         let rules = rules();
         assert!(rules.len() >= 15);
-        assert_eq!(COMPILED.len(), rules.len());
         for r in rules {
             assert!(!r.id.is_empty() && !r.description.is_empty() && !r.pattern.is_empty());
             assert!(r.id.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
+            assert!(!r.keywords.is_empty());
         }
-        let ids: HashSet<&str> = rules.iter().map(|r| r.id).collect();
+        let set = scan_rule_set();
+        assert_eq!(set.allow_marker, ALLOW_MARKER);
+        assert_eq!(set.max_scan_line_len, MAX_SCAN_LINE_LEN);
+        let ids: HashSet<&str> = rules.iter().map(|r| r.id.as_str()).collect();
         for want in [
             "aws-access-key",
             "aws-secret-key",
@@ -1178,7 +1098,116 @@ mod tests {
         assert_eq!(shannon_entropy(b""), 0.0);
         assert_eq!(shannon_entropy(b"aaaa"), 0.0);
         assert!((shannon_entropy(b"abcd") - 2.0).abs() < 1e-9);
-        assert!(shannon_entropy(alnum(130, 40).as_bytes()) > GENERIC_ENTROPY);
+        assert!(shannon_entropy(alnum(130, 40).as_bytes()) > 3.5);
+    }
+
+    // ----- parity with the Go server scanner ---------------------------------
+
+    /// Assemble a case input from parts (see scan_rule_cases.json).
+    fn assemble(parts: &serde_json::Value) -> Vec<u8> {
+        let mut out = Vec::new();
+        for p in parts.as_array().expect("parts") {
+            if let Some(s) = p.as_str() {
+                out.extend_from_slice(s.as_bytes());
+            } else if let Some(r) = p.get("repeat") {
+                let n = p["count"].as_u64().expect("count") as usize;
+                out.extend_from_slice(r.as_str().expect("repeat").repeat(n).as_bytes());
+            } else if let Some(h) = p.get("hex").and_then(|h| h.as_str()) {
+                for i in (0..h.len()).step_by(2) {
+                    out.push(u8::from_str_radix(&h[i..i + 2], 16).expect("hex"));
+                }
+            } else {
+                panic!("bad part {p}");
+            }
+        }
+        out
+    }
+
+    /// The shared parity cases: the Go scanner's parity_test.go checks the
+    /// very same expectations.
+    #[test]
+    fn shared_parity_cases() {
+        let doc: serde_json::Value =
+            serde_json::from_str(worktree_protocol::scan_rules::SCAN_RULE_CASES_JSON)
+                .expect("cases parse");
+        let mut failures = Vec::new();
+        for case in doc["cases"].as_array().expect("cases") {
+            let name = case["name"].as_str().unwrap_or("?");
+            let path = case["path"].as_str().expect("path");
+            let data = assemble(&case["parts"]);
+            let got = scan_secrets(path, &data);
+            let want = case["want"].as_array().expect("want");
+            let mut ok = got.len() == want.len();
+            for (g, w) in got.iter().zip(want) {
+                let excerpt = match w.get("excerpt_parts") {
+                    Some(parts) => String::from_utf8(assemble(parts)).expect("utf-8"),
+                    None => w["excerpt"].as_str().expect("excerpt").to_string(),
+                };
+                ok &= g.rule == w["rule"].as_str().unwrap_or_default()
+                    && g.line as u64 == w["line"].as_u64().unwrap_or_default()
+                    && g.excerpt == excerpt
+                    && g.path == path
+                    && g.fingerprint.len() == worktree_protocol::scan_rules::FINGERPRINT_HEX_LEN;
+                if let Some(fp) = w.get("fingerprint").and_then(|f| f.as_str()) {
+                    ok &= g.fingerprint == fp;
+                }
+            }
+            if !ok {
+                failures.push(format!("{name}: got {got:#?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn the_shared_rule_files_trip_no_rule() {
+        for (name, text) in [
+            (
+                "scan_rules.json",
+                worktree_protocol::scan_rules::SCAN_RULES_JSON,
+            ),
+            (
+                "scan_rule_cases.json",
+                worktree_protocol::scan_rules::SCAN_RULE_CASES_JSON,
+            ),
+        ] {
+            let found = scan_secrets(name, text.as_bytes());
+            assert!(found.is_empty(), "{name}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn keywords_cover_every_match() {
+        // Each rule's keyword prefilter must never hide a real match: scanning
+        // with the prefilter disabled finds nothing more on the parity inputs.
+        let doc: serde_json::Value =
+            serde_json::from_str(worktree_protocol::scan_rules::SCAN_RULE_CASES_JSON)
+                .expect("cases parse");
+        for case in doc["cases"].as_array().expect("cases") {
+            let data = assemble(&case["parts"]);
+            for rule in rules() {
+                if rule.regex.is_match(&data) && !is_binary(&data) {
+                    let lower = data.to_ascii_lowercase();
+                    assert!(
+                        rule.keywords.iter().any(|k| contains(&lower, k.as_bytes())),
+                        "rule {} matched without a keyword in {}",
+                        rule.id,
+                        case["name"]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn different_private_keys_have_different_fingerprints() {
+        let a = scan(&format!("# key\n{}", private_key_block("RSA")));
+        let mut other = private_key_block("RSA");
+        other = other.replacen('\n', &format!("\n{}\n", rand_str(77, 64, B64)), 1);
+        let b = scan(&format!("# key\n{other}"));
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        assert_ne!(a[0].fingerprint, b[0].fingerprint);
     }
 
     /// 10 MB scan budget. Run with

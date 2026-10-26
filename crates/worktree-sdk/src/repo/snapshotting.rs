@@ -311,6 +311,7 @@ mod tests {
             path: "cfg.env".into(),
             line: 3,
             excerpt: "AKIA****".into(),
+            fingerprint: String::new(),
         };
         let many = vec![f.clone(); MAX_LISTED_FINDINGS + 2];
         let text = describe_findings(&many);

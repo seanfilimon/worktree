@@ -348,6 +348,12 @@ Secret scanning runs **on the client, before every snapshot**, in
 - **Bypass.** `wt snapshot --no-scan` skips the scan.
 - **Result.** A blocking finding aborts the snapshot with the file, line, rule
   and a redacted excerpt.
+- **Server side (v0.8).** The server scans every push with the same rule set
+  (one JSON file shared by client and server), per tree in `warn` (default:
+  record and report), `block` (reject unless the pusher holds
+  `branch:bypass_protection` or the secret's fingerprint is allowlisted) or
+  `off` mode, publishes `secret.detected` and audits it; `--no-scan` has no
+  effect there. See [`SecretScanning.md`](./SecretScanning.md).
 
 ## 14. Integrity and branch protection
 
@@ -410,6 +416,7 @@ Secret scanning runs **on the client, before every snapshot**, in
 | Path ACLs, license read enforcement, scoped `DownloadObjects` | Built (v0.5) |
 | Snapshot signing and verification | Built (v0.5) |
 | Client-side secret scanning with config | Built (`[secret_scanning]` honoured in v0.5) |
+| Server-side secret scanning of pushes (shared rules, modes, bypass, allowlist, findings, `secret.detected`) | Built (v0.8, [`SecretScanning.md`](./SecretScanning.md)) |
 | IPC token for the daemon | Built (v0.5) |
 | Credential file protection on Windows | Partial (relies on profile ACLs) |
 | OAuth device flow, 1-hour access tokens, rotating refresh tokens with reuse detection ([DeviceAuth](./DeviceAuth.md)) | Built (v0.8) |
@@ -430,8 +437,9 @@ built:
   [DeviceAuth](./DeviceAuth.md); refresh tokens for SSO logins are not.)
 - **Tokens in `.wt/identity/token`.** Credentials live in
   `$WT_HOME/credentials.toml`. The **OS keychain** is not used.
-- **Server-side secret scanning** on push, the `secret_detected` audit event,
-  and permission-gated scan overrides. `--no-scan` is local and
+- **Server-side custom secret patterns** and validity checks of found
+  credentials (server scanning itself is built in v0.8; see
+  [`SecretScanning.md`](./SecretScanning.md) §17). `--no-scan` stays local and
   unconditional.
 - **Auditing every allow decision** in `access_decision` records that include
   the policies evaluated. Denials are audited, and the simulator explains any

@@ -68,6 +68,7 @@ is authoritative; the spec is a bug.
 | **Forks** | [`tree/Forks.md`](./tree/Forks.md) | Forking trees across tenants (`tree:fork`), shared objects with copied snapshot records, branch relations and fork sync, merge requests from forks, license redistribution rule, `wt fork` |
 | **Tenant lifecycle** | [`iam/TenantLifecycle.md`](./iam/TenantLifecycle.md) | Tenant and account email verification, references by verified email, slug renames with 90-day reservations and `tenant_moved`, deletion with a recovery window, restore, purge job, `wt tenant switch` |
 | **Device authorization** | [`security/DeviceAuth.md`](./security/DeviceAuth.md) | RFC 8628 device flow (`wt login --device`, admin `/device` approval with MFA), 1-hour access tokens with rotating single-use refresh tokens, reuse detection, SDK transparent refresh |
+| **Secret scanning** | [`security/SecretScanning.md`](./security/SecretScanning.md) | Shared client/server rule set and fingerprints, push scanning (`off`/`warn`/`block`, bypass, allowlist), findings, on-demand scans, license audit with strict SPDX check, `wt compliance`, `wt license audit` |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

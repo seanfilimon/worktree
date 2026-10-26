@@ -80,6 +80,8 @@ tags:
     description: Your notification inbox, settings and watch levels.
   - name: Admin
     description: Server administration (server administrators only).
+  - name: Compliance
+    description: Secret scanning of pushes, findings, allowlists and license audits.
 paths:
   /healthz:
     get:
@@ -8821,6 +8823,371 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
   # ---- end forks ----
+  # ---- compliance (§16.7) ----
+  /api/v1/trees/{tenant}/{tree}/compliance/settings:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getComplianceSettings
+      summary: Get the secret scanning settings
+      description: |
+        v0.8 (§16.7). The tree's secret scanning configuration: `mode`
+        (`off`, `warn` (default) or `block`), `exclude` path globs (license
+        rule glob syntax) never scanned, and `max_file_bytes` (0 = 1 MiB;
+        larger files are skipped).
+      tags: [Compliance]
+      x-wt-action: tree:read
+      responses:
+        "200":
+          description: The settings (defaults when never set).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    put:
+      operationId: putComplianceSettings
+      summary: Change the secret scanning settings
+      description: |
+        v0.8 (§16.7). Changes the fields present in the body. In `warn`
+        mode pushes containing possible secrets go through and the findings
+        are recorded; in `block` mode they are rejected (an `AccessDenied`
+        push rejection listing path:line, rule, redacted excerpt and
+        fingerprint) unless the pusher holds `branch:bypass_protection`.
+        `max_file_bytes` is at most 16 MiB; at most 100 `exclude` globs.
+        Audited as `compliance.settings`.
+      tags: [Compliance]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ComplianceSettingsRequest"
+      responses:
+        "200":
+          description: The updated settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceSettings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/compliance/findings:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: listComplianceFindings
+      summary: List secret scanning findings
+      description: |
+        v0.8 (§16.7). Possible secrets found in pushes, most recently seen
+        first. One finding exists per fingerprint and path; pushing the same
+        secret again increments `count` (and reopens a resolved finding
+        unless the push was blocked). Excerpts are redacted. `open` and
+        `resolved` count every finding of the tree.
+      tags: [Compliance]
+      x-wt-action: tree:write
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: "`open` (default), `resolved` or `all`."
+          schema:
+            type: string
+            enum: [open, resolved, all]
+        - name: limit
+          in: query
+          required: false
+          description: At most this many findings (default 100, at most 1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: The findings and counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretFindingList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/compliance/findings/{id}/resolve:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: id
+        in: path
+        required: true
+        description: Finding id.
+        schema:
+          type: string
+    post:
+      operationId: resolveComplianceFinding
+      summary: Resolve or reopen a finding
+      description: |
+        v0.8 (§16.7). Marks the finding resolved with a `resolution`
+        (`revoked`, `false_positive`, `test_data` or `wont_fix`) and an
+        optional `note`, or reopens it (`reopen: true`). A resolved secret
+        does not stop later pushes in block mode; add it to the allowlist
+        for that. Audited as `compliance.finding.resolve` /
+        `compliance.finding.reopen`.
+      tags: [Compliance]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveFindingRequest"
+      responses:
+        "200":
+          description: The updated finding.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretFinding"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/compliance/allowlist:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getComplianceAllowlist
+      summary: List allowlisted secrets
+      description: |
+        v0.8 (§16.7). Fingerprints of known false positives (with the
+        reason, author and time). Allowlisted secrets never produce findings
+        and never block a push.
+      tags: [Compliance]
+      x-wt-action: tree:write
+      responses:
+        "200":
+          description: The allowlist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllowList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    post:
+      operationId: addComplianceAllow
+      summary: Allowlist a secret
+      description: |
+        v0.8 (§16.7). Adds the `fingerprint` (24 hex digits, shown with each
+        finding, by `wt compliance scan` and in block-mode rejections) with a
+        required `reason` (at most 500 bytes), replacing the reason of an
+        existing entry. Open findings with that fingerprint are resolved as
+        `false_positive`. At most 1000 entries per tree. Audited as
+        `compliance.allow.add`.
+      tags: [Compliance]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AllowEntryRequest"
+      responses:
+        "201":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllowEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    delete:
+      operationId: deleteComplianceAllow
+      summary: Remove an allowlist entry
+      description: v0.8 (§16.7). Removes the entry for `fingerprint`. Audited as `compliance.allow.remove`.
+      tags: [Compliance]
+      x-wt-action: tree:admin
+      parameters:
+        - name: fingerprint
+          in: query
+          required: true
+          description: The fingerprint to remove.
+          schema:
+            type: string
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/compliance/scan:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    post:
+      operationId: scanComplianceSnapshot
+      summary: Scan a snapshot for secrets
+      description: |
+        v0.8 (§16.7). Scans every file of the snapshot `ref` names (a
+        branch, tag or snapshot id; default the default branch) with the
+        server rule set, the tree's exclude globs and size cap. Nothing is
+        stored; `allowed` marks allowlisted matches. The body is optional.
+      tags: [Compliance]
+      x-wt-action: tree:admin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ComplianceScanRequest"
+      responses:
+        "200":
+          description: The matches.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceScanResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/compliance/licenses:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getComplianceLicenses
+      summary: License audit of a snapshot
+      description: |
+        v0.8 (§16.7). For the snapshot `ref` names (default branch when
+        absent): files per license (general rules; most specific glob wins),
+        paths no rule covers, proprietary paths other tenants can read
+        through a rule's grant (`grantee` "" = every non-owning tenant), and
+        a strict check of every rule's SPDX expression against the embedded
+        SPDX License List (`spdx_list_version`): unknown, deprecated or
+        mis-cased identifiers and unknown exceptions are reported in
+        `problems`. Path lists are capped at 1000 entries (`truncated`); the
+        counts are exact.
+      tags: [Compliance]
+      x-wt-action: tree:admin
+      parameters:
+        - name: ref
+          in: query
+          required: false
+          description: Branch, tag or snapshot id.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The audit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicenseAudit"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/admin/compliance:
+    get:
+      operationId: adminCompliance
+      summary: Server-wide compliance summary
+      description: |
+        v0.8 (§16.7). Per tree: scanning mode, open / resolved / blocked
+        findings, allowlist size, license rules and rules failing the strict
+        SPDX check; totals; the 20 most recent open findings; versions of
+        the scan rule set and the SPDX License List.
+      tags: [Admin, Compliance]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  # ---- end compliance ----
 components:
   securitySchemes:
     bearerAuth:
@@ -13631,3 +13998,437 @@ components:
           type: boolean
           description: "The source tree or branch no longer exists."
     # ---- end forks ----
+    # ---- compliance (§16.7) ----
+    AllowEntry:
+      type: object
+      description: "AllowEntry lets the secret with Fingerprint through every push."
+      required: [fingerprint, reason, created_by, created_at]
+      properties:
+        fingerprint:
+          type: string
+        reason:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    AllowEntryRequest:
+      type: object
+      description: "AllowRequest is the body of POST {tree}/compliance/allowlist."
+      properties:
+        fingerprint:
+          type: string
+        reason:
+          type: string
+    AllowList:
+      type: object
+      description: "AllowList is the scan_allow document of a tree."
+      required: [tree_id, entries]
+      properties:
+        tree_id:
+          type: string
+        entries:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/AllowEntry"
+    ComplianceModeCounts:
+      type: object
+      description: "ModeCounts counts trees per scanning mode."
+      required: [off, warn, block]
+      properties:
+        off:
+          type: integer
+        warn:
+          type: integer
+        block:
+          type: integer
+    ComplianceScanRequest:
+      type: object
+      description: "ScanRequest is the body of POST {tree}/compliance/scan."
+      properties:
+        ref:
+          type: string
+          description: "Ref is a branch, tag or snapshot id (\"\" = the default branch)."
+    ComplianceScanResult:
+      type: object
+      description: "ScanResult is the body answering POST {tree}/compliance/scan."
+      required: [tree_id, ref, snapshot_id, mode, files, bytes, skipped, truncated, matches]
+      properties:
+        tree_id:
+          type: string
+        ref:
+          type: string
+        snapshot_id:
+          type: string
+        mode:
+          type: string
+        files:
+          type: integer
+          description: "files scanned"
+        bytes:
+          type: integer
+          format: int64
+          description: "bytes scanned"
+        skipped:
+          type: integer
+          description: "too large, chunked or excluded"
+        truncated:
+          type: boolean
+        matches:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/ScanMatch"
+    ComplianceSettings:
+      type: object
+      description: "Settings is the secret scanning configuration of a tree."
+      required: [tree_id, mode, exclude, max_file_bytes]
+      properties:
+        tree_id:
+          type: string
+        mode:
+          type: string
+          description: "Mode is off, warn (default) or block."
+        exclude:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Exclude lists path globs (license rule glob syntax) never scanned."
+        max_file_bytes:
+          type: integer
+          format: int64
+          description: "MaxFileBytes: larger files are skipped (0 = 1 MiB; at most 16 MiB)."
+        updated_by:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    ComplianceSettingsRequest:
+      type: object
+      description: "SettingsPatch is the body of PUT {tree}/compliance/settings; absent fields are unchanged."
+      properties:
+        mode:
+          type: string
+        exclude:
+          type: array
+          items:
+            type: string
+        max_file_bytes:
+          type: integer
+          format: int64
+    ComplianceSummary:
+      type: object
+      description: "Summary is the body of GET /admin/compliance."
+      required: [trees, modes, open_findings, resolved_findings, allowlisted, license_rules, invalid_rules, spdx_list_version, rules_version, scan_rules, tree_list, recent]
+      properties:
+        trees:
+          type: integer
+        modes:
+          $ref: "#/components/schemas/ComplianceModeCounts"
+        open_findings:
+          type: integer
+        resolved_findings:
+          type: integer
+        allowlisted:
+          type: integer
+        license_rules:
+          type: integer
+        invalid_rules:
+          type: integer
+        spdx_list_version:
+          type: string
+        rules_version:
+          type: integer
+        scan_rules:
+          type: integer
+        tree_list:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/TreeCompliance"
+        recent:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/RecentSecretFinding"
+          description: "latest open findings (at most 20)"
+    ExposedPath:
+      type: object
+      description: "ExposedPath is a proprietary file another tenant may read."
+      required: [path, spdx, grantee, grant, glob]
+      properties:
+        path:
+          type: string
+        spdx:
+          type: string
+        grantee:
+          type: string
+          description: "Grantee is the tenant slug the granting rule names (\"\" = every tenant that does not own the tree)."
+        grant:
+          type: string
+        glob:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    LicenseAudit:
+      type: object
+      description: "LicenseAudit is the body of GET {tree}/compliance/licenses."
+      required: [tree_id, ref, snapshot_id, files, licenses, unlicensed, unlicensed_count, exposed, exposed_count, rules, invalid_rules, spdx_list_version, truncated]
+      properties:
+        tree_id:
+          type: string
+        ref:
+          type: string
+        snapshot_id:
+          type: string
+        files:
+          type: integer
+        licenses:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/LicenseUsage"
+        unlicensed:
+          type: [array, "null"]
+          items:
+            type: string
+        unlicensed_count:
+          type: integer
+        exposed:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/ExposedPath"
+        exposed_count:
+          type: integer
+        rules:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/LicenseRuleCheck"
+        invalid_rules:
+          type: integer
+        spdx_list_version:
+          type: string
+        truncated:
+          type: boolean
+          description: "Truncated: a path list was cut at 1000 entries (the counts are exact)."
+    LicenseRuleCheck:
+      type: object
+      description: "RuleCheck is the strict check of one license rule."
+      required: [path_glob, spdx, grant, grantee, expired, files, valid, problems]
+      properties:
+        path_glob:
+          type: string
+        spdx:
+          type: string
+        grant:
+          type: string
+        grantee:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        expired:
+          type: boolean
+        files:
+          type: integer
+          description: "files the rule governs"
+        valid:
+          type: boolean
+        problems:
+          type: [array, "null"]
+          items:
+            type: string
+    LicenseUsage:
+      type: object
+      description: "LicenseUsage is how many files one SPDX expression governs."
+      required: [spdx, files, proprietary, globs]
+      properties:
+        spdx:
+          type: string
+        files:
+          type: integer
+        proprietary:
+          type: boolean
+        globs:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "the rules assigning it"
+    RecentSecretFinding:
+      type: object
+      description: "RecentFinding is a finding with its tree's names."
+      required: [id, tree_id, path, line, rule, excerpt, fingerprint, branch, snapshot_id, status, action, count, pushed_by, first_seen_at, last_seen_at, tenant, tree_name]
+      properties:
+        id:
+          type: string
+        tree_id:
+          type: string
+        path:
+          type: string
+        line:
+          type: integer
+        rule:
+          type: string
+        excerpt:
+          type: string
+          description: "redacted"
+        fingerprint:
+          type: string
+        branch:
+          type: string
+          description: "Branch and SnapshotID locate the latest push that contained it."
+        snapshot_id:
+          type: string
+        status:
+          type: string
+          description: "Status is open or resolved; Action what the latest push did (warned, blocked, bypassed)."
+        action:
+          type: string
+        count:
+          type: integer
+          description: "pushes that contained it"
+        pushed_by:
+          type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        resolution:
+          type: string
+        note:
+          type: string
+        resolved_by:
+          type: string
+        resolved_at:
+          type: string
+          format: date-time
+        tenant:
+          type: string
+        tree_name:
+          type: string
+    ResolveFindingRequest:
+      type: object
+      description: "ResolveRequest is the body of POST {tree}/compliance/findings/{id}/resolve."
+      properties:
+        resolution:
+          type: string
+          description: "Resolution: revoked, false_positive, test_data or wont_fix."
+        note:
+          type: string
+        reopen:
+          type: boolean
+          description: "Reopen sets the finding back to open (Resolution is ignored)."
+    ScanMatch:
+      type: object
+      description: "ScanMatch is one secret found by an on-demand scan."
+      required: [rule, path, line, excerpt, fingerprint, allowed]
+      properties:
+        rule:
+          type: string
+        path:
+          type: string
+        line:
+          type: integer
+        excerpt:
+          type: string
+        fingerprint:
+          type: string
+        allowed:
+          type: boolean
+          description: "Allowed: the fingerprint is on the tree's allowlist."
+    SecretFinding:
+      type: object
+      description: "Finding is a secret found in a push (one per fingerprint and path)."
+      required: [id, tree_id, path, line, rule, excerpt, fingerprint, branch, snapshot_id, status, action, count, pushed_by, first_seen_at, last_seen_at]
+      properties:
+        id:
+          type: string
+        tree_id:
+          type: string
+        path:
+          type: string
+        line:
+          type: integer
+        rule:
+          type: string
+        excerpt:
+          type: string
+          description: "redacted"
+        fingerprint:
+          type: string
+        branch:
+          type: string
+          description: "Branch and SnapshotID locate the latest push that contained it."
+        snapshot_id:
+          type: string
+        status:
+          type: string
+          description: "Status is open or resolved; Action what the latest push did (warned, blocked, bypassed)."
+        action:
+          type: string
+        count:
+          type: integer
+          description: "pushes that contained it"
+        pushed_by:
+          type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        resolution:
+          type: string
+        note:
+          type: string
+        resolved_by:
+          type: string
+        resolved_at:
+          type: string
+          format: date-time
+    SecretFindingList:
+      type: object
+      description: "FindingList is the body of GET {tree}/compliance/findings."
+      required: [findings, open, resolved]
+      properties:
+        findings:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/SecretFinding"
+        open:
+          type: integer
+        resolved:
+          type: integer
+    TreeCompliance:
+      type: object
+      description: "TreeCompliance is one tree of the server-wide summary."
+      required: [tree_id, tenant, tree, mode, open_findings, resolved_findings, blocked_findings, allowlisted, license_rules, invalid_rules]
+      properties:
+        tree_id:
+          type: string
+        tenant:
+          type: string
+          description: "slug"
+        tree:
+          type: string
+          description: "name"
+        mode:
+          type: string
+        open_findings:
+          type: integer
+        resolved_findings:
+          type: integer
+        blocked_findings:
+          type: integer
+          description: "open findings whose last push was rejected"
+        allowlisted:
+          type: integer
+        license_rules:
+          type: integer
+        invalid_rules:
+          type: integer
+          description: "rules failing the strict SPDX check"
+        last_finding_at:
+          type: string
+          format: date-time
+    # ---- end compliance ----

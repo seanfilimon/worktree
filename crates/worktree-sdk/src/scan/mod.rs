@@ -38,6 +38,11 @@ pub struct SecretFinding {
     pub line: usize,
     /// The matching line with the secret redacted (e.g. "AKIA****MPLE").
     pub excerpt: String,
+    /// Stable id of the secret (24 hex digits; same algorithm as the server,
+    /// see `worktree_protocol::scan_rules`): what server allowlist entries
+    /// (`wt compliance allow`) name.
+    #[serde(default)]
+    pub fingerprint: String,
 }
 
 /// Scan one file's content. Skips binary content. Honors inline

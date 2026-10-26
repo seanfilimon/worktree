@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "comment": "Secret scanning rules shared by the client (crates/worktree-sdk/src/scan/secrets.rs, embedded through worktree_protocol::scan_rules) and the server (services/server-go/internal/scan/rules.json must be a byte-identical copy; a Go test enforces it). Patterns use the common subset of Rust regex and Go RE2 syntax, are matched against bytes in multi-line mode and never match across a line break. A rule only runs on lines containing one of its keywords (ASCII case-insensitive) and, when min_run is set, a run of at least min_run bytes that are not ASCII whitespace (both are implied by the pattern; they only save work). The reported value is the first participating capture group, or the whole match. See specs/security/SecretScanning.md.",
+  "allow_marker": "wt:allow-secret",
+  "max_scan_line_len": 8192,
+  "placeholder_markers": [
+    "example",
+    "xxx",
+    "changeme",
+    "change_me",
+    "change-me",
+    "placeholder",
+    "dummy",
+    "your",
+    "redacted",
+    "replace",
+    "insert",
+    "sample",
+    "<",
+    ">",
+    "${",
+    "{{",
+    "}}",
+    "****",
+    "..."
+  ],
+  "rules": [
+    {
+      "id": "private-key",
+      "description": "PEM / OpenSSH / PGP private key block",
+      "pattern": "-----BEGIN[ ](?:(?:RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED)[ ])?PRIVATE[ ]KEY(?:[ ]BLOCK)?-----",
+      "keywords": ["-----begin"],
+      "mask_rest_of_line": true,
+      "validate_tail": "key_body"
+    },
+    {
+      "id": "aws-access-key",
+      "description": "AWS access key id (AKIA/ASIA/ABIA/ACCA + 16 characters)",
+      "pattern": "\\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\\b",
+      "keywords": ["akia", "asia", "abia", "acca"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "aws-secret-key",
+      "description": "AWS secret access key assigned to an aws_*secret* / *_sk variable",
+      "pattern": "(?i)aws[a-z0-9_.-]{0,20}(?:secret|sk)[a-z0-9_.-]{0,20}[\"']?[ \\t]*(?::=|=>|=|:)[ \\t]*[\"']?([a-z0-9/+=]{40})(?:[^a-z0-9/+=]|$)",
+      "keywords": ["aws"],
+      "min_entropy": 3.5,
+      "min_run": 40,
+      "needs_letter_and_digit": true,
+      "skip_placeholders": true
+    },
+    {
+      "id": "github-fine-grained-token",
+      "description": "GitHub fine-grained personal access token (github_pat_)",
+      "pattern": "\\bgithub_pat_[A-Za-z0-9_]{60,255}\\b",
+      "keywords": ["github_pat_"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "github-token",
+      "description": "GitHub token (ghp_, gho_, ghu_, ghs_, ghr_)",
+      "pattern": "\\bgh[pousr]_[A-Za-z0-9]{36,255}\\b",
+      "keywords": ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "gitlab-token",
+      "description": "GitLab personal access token (glpat-)",
+      "pattern": "\\bglpat-[A-Za-z0-9_-]{20,}",
+      "keywords": ["glpat-"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "slack-webhook",
+      "description": "Slack incoming webhook URL",
+      "pattern": "https://hooks\\.slack\\.com/(?:services|workflows|triggers)/T[A-Z0-9]+/[A-Z0-9]+/([A-Za-z0-9]{16,})",
+      "keywords": ["hooks.slack.com"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "slack-token",
+      "description": "Slack API token (xoxb-, xoxa-, xoxp-, xoxr-, xoxs-)",
+      "pattern": "\\bxox[baprs]-[A-Za-z0-9-]{10,}",
+      "keywords": ["xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"],
+      "min_entropy": 2.5,
+      "needs_letter_and_digit": true,
+      "skip_placeholders": true
+    },
+    {
+      "id": "stripe-secret-key",
+      "description": "Stripe live secret or restricted key (sk_live_, rk_live_)",
+      "pattern": "\\b(?:sk|rk)_live_[A-Za-z0-9]{24,}",
+      "keywords": ["sk_live_", "rk_live_"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "google-api-key",
+      "description": "Google API key (AIza + 35 characters)",
+      "pattern": "\\bAIza[0-9A-Za-z_-]{35}(?:[^0-9A-Za-z_-]|$)",
+      "keywords": ["aiza"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "npm-token",
+      "description": "npm access token (npm_)",
+      "pattern": "\\bnpm_[A-Za-z0-9]{36}\\b",
+      "keywords": ["npm_"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "anthropic-api-key",
+      "description": "Anthropic API key (sk-ant-)",
+      "pattern": "\\bsk-ant-[A-Za-z0-9_-]{32,}",
+      "keywords": ["sk-ant-"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "openai-api-key",
+      "description": "OpenAI-style API key (sk-, sk-proj-, sk-svcacct-, sk-admin-)",
+      "pattern": "\\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}",
+      "keywords": ["sk-"],
+      "min_entropy": 2.5,
+      "needs_letter_and_digit": true,
+      "skip_placeholders": true
+    },
+    {
+      "id": "jwt",
+      "description": "JSON Web Token (signed, three base64url segments)",
+      "pattern": "\\beyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}",
+      "keywords": ["eyj"],
+      "min_entropy": 2.5,
+      "skip_placeholders": true
+    },
+    {
+      "id": "generic-secret",
+      "description": "High-entropy quoted value assigned to a password/secret/api_key/token variable",
+      "pattern": "(?i)(?:password|passwd|pwd|secret|api[_-]?key|apikey|token|credential|access[_-]?key|private[_-]?key)[a-z0-9_.-]{0,32}[\"'\\]]{0,2}[ \\t]*(?::=|=>|=|:)[ \\t]*(?:\"([^\"\\s]{20,256})\"|'([^'\\s]{20,256})'|`([^`\\s]{20,256})`)",
+      "keywords": ["pass", "pwd", "secret", "key", "token", "credential"],
+      "min_entropy": 3.5,
+      "min_run": 20,
+      "needs_letter_and_digit": true,
+      "skip_placeholders": true
+    },
+    {
+      "id": "generic-secret",
+      "description": "High-entropy unquoted value assigned to a password/secret/api_key/token variable (.env / YAML style)",
+      "pattern": "(?i)(?:password|passwd|pwd|secret|api[_-]?key|apikey|token|credential|access[_-]?key|private[_-]?key)[a-z0-9_.-]{0,32}[ \\t]*(?:=|:)[ \\t]*([a-z0-9+/_-]{20,256})(?:[ \\t;,#\\r]|$)",
+      "keywords": ["pass", "pwd", "secret", "key", "token", "credential"],
+      "min_entropy": 3.5,
+      "min_run": 20,
+      "needs_letter_and_digit": true,
+      "skip_placeholders": true
+    }
+  ]
+}

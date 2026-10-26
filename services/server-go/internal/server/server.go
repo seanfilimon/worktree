@@ -204,6 +204,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		log.Warn("git mirrors are disabled", slog.String("reason", st.Error))
 	}
 	mirrors.Start(ctx)
+	scanner.Start(ctx) // compliance (§16.7): drops scan documents of deleted trees
 	// notifications (§15.3): bus-driven inbox, watch settings and SMTP email.
 	if err := notifier.Configure(notify.Options{SMTPURL: cfg.SMTPURL, SMTPFrom: cfg.SMTPFrom, PublicURL: cfg.PublicURL}); err != nil {
 		return err
