@@ -37,6 +37,7 @@ pub mod merge;
 pub mod mfa;
 pub mod mirror;
 pub mod mr;
+pub mod mr_resolve; // v0.8 conflict-ui (§16.9): wt mr conflicts / resolve
 pub mod open;
 pub mod owners;
 pub mod policy;

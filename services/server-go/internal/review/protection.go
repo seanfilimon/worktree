@@ -67,7 +67,7 @@ func (e Effective) MethodAllowed(method string) bool {
 
 // AllMergeMethods lists the merge methods in preference order: the default
 // method of a merge is the first one that is allowed and possible.
-var AllMergeMethods = []string{domain.MergeFastForward, domain.MergeCommit, domain.MergeSquash}
+var AllMergeMethods = []string{domain.MergeFastForward, domain.MergeCommit, domain.MergeSquash, MergeRebase} // v0.8: + rebase (§16.9)
 
 // ValidMergeMethod reports whether m names a merge method.
 func ValidMergeMethod(m string) bool { return slices.Contains(AllMergeMethods, m) }

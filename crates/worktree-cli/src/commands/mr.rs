@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use worktree_sdk::remote::rest::seg;
 
 use crate::commands::iam_common::read_input;
+use crate::commands::mr_resolve;
 use crate::commands::server_common::{
     cwd_origin_tenant, decode, nullable, render, tenant_path, tree_or_default, when, Api, Cell,
     Table, TreeRef,
@@ -122,7 +123,28 @@ pub enum MrCommand {
         /// 'SRC' into TGT (!N)" / the merge request title)
         #[arg(short, long, value_name = "MSG")]
         message: Option<String>,
+        /// Rebase: replay the source snapshots onto the target (same as
+        /// --method rebase)
+        #[arg(long, conflicts_with = "method")]
+        rebase: bool,
+        /// Delete the source branch after the merge
+        #[arg(long)]
+        delete_branch: bool,
     },
+    /// Show the conflicts of a merge request: base, ours (the source) and
+    /// theirs (the target) per conflicting path
+    ///
+    /// --markers prints the diff3 marker preview of text conflicts; --write
+    /// writes it into the local tree (or --dir) to edit before `wt mr
+    /// resolve N`.
+    Conflicts(mr_resolve::ConflictsArgs),
+    /// Resolve the conflicts of a merge request on the server
+    ///
+    /// Writes a merge-resolution snapshot on the source branch (parents: the
+    /// source and target tips) from the resolved files in the local tree
+    /// (or --dir), `--take ours|theirs|base PATH` and `--delete PATH`.
+    /// Afterwards the merge request merges without conflicts.
+    Resolve(mr_resolve::ResolveArgs),
     /// Show which merge methods can merge a merge request, and its conflicts
     Mergeability {
         number: u32,
@@ -368,6 +390,8 @@ pub enum MergeMethod {
     Merge,
     /// Write one snapshot on the target with the combined changes
     Squash,
+    /// Replay the source snapshots onto the target (linear history)
+    Rebase,
 }
 
 impl MergeMethod {
@@ -376,6 +400,7 @@ impl MergeMethod {
             Self::FastForward => "fast-forward",
             Self::Merge => "merge",
             Self::Squash => "squash",
+            Self::Rebase => "rebase",
         }
     }
 }
@@ -756,13 +781,21 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
             tree,
             method,
             message,
+            rebase,
+            delete_branch,
         } => {
             let tree = tree_or_default(ctx, tree)?;
+            let method = if rebase {
+                Some(MergeMethod::Rebase)
+            } else {
+                method
+            };
+            let mut body = merge_body(method, message.as_deref());
+            if delete_branch {
+                body["delete_source_branch"] = json!(true);
+            }
             let value = api
-                .post(
-                    &format!("{}/merge", mr_path(&tree, number)),
-                    &merge_body(method, message.as_deref()),
-                )
+                .post(&format!("{}/merge", mr_path(&tree, number)), &body)
                 .map_err(|e| merge_error(e, number))?;
             render(out, &value, |t, mr: MergeRequest| {
                 t.line(format_args!(
@@ -772,8 +805,13 @@ pub fn run(ctx: &Context, args: MrArgs) -> Result<()> {
                     short(mr.merged_snapshot.as_deref().unwrap_or_default()).yellow(),
                     method_suffix(&mr)
                 ));
+                if delete_branch {
+                    t.line(format_args!("Deleted branch {}", mr.source_branch.green()));
+                }
             })
         }
+        MrCommand::Conflicts(args) => mr_resolve::conflicts(ctx, args),
+        MrCommand::Resolve(args) => mr_resolve::resolve(ctx, args),
         MrCommand::Mergeability { number, tree } => {
             let tree = tree_or_default(ctx, tree)?;
             let value = api.get(&format!("{}/mergeability", mr_path(&tree, number)))?;
@@ -943,8 +981,13 @@ fn merge_error(err: CliError, number: u32) -> CliError {
         "`wt mr mergeability N`".to_string()
     };
     if text.contains("merge_conflict") {
+        let resolve = if number > 0 {
+            format!("`wt mr conflicts {number}` / `wt mr resolve {number}`")
+        } else {
+            "`wt mr conflicts N` / `wt mr resolve N`".to_string()
+        };
         CliError::conflicts(text).with_hint(format!(
-            "merge the target into the source locally (`wt merge`), resolve, push, and retry; {target} lists the conflicts"
+            "merge the target into the source locally (`wt merge`), resolve, push, and retry, or resolve on the server with {resolve}; {target} lists the conflicts"
         ))
     } else if text.contains("merge_method_not_allowed") {
         err.with_hint(format!(
@@ -1572,6 +1615,8 @@ mod tests {
                 tree: Some(_),
                 method: None,
                 message: None,
+                rebase: false,
+                delete_branch: false,
             }
         ));
         assert!(matches!(
@@ -1619,8 +1664,65 @@ mod tests {
             }
         ));
         assert_eq!(
-            parse_err(&["mr", "merge", "3", "--method", "rebase"]),
+            parse_err(&["mr", "merge", "3", "--method", "octopus"]),
             ErrorKind::InvalidValue
+        );
+        // v0.8 conflict-ui (§16.9): rebase merges, source deletion,
+        // conflicts and resolve.
+        assert!(matches!(
+            mr(&["merge", "3", "--rebase", "--delete-branch"]),
+            MrCommand::Merge {
+                method: None,
+                rebase: true,
+                delete_branch: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            mr(&["merge", "3", "--method", "rebase"]),
+            MrCommand::Merge {
+                method: Some(MergeMethod::Rebase),
+                rebase: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            parse_err(&["mr", "merge", "3", "--rebase", "--method", "squash"]),
+            ErrorKind::ArgumentConflict
+        );
+        let MrCommand::Conflicts(c) =
+            mr(&["conflicts", "3", "acme/web", "--write", "--dir", "out"])
+        else {
+            panic!()
+        };
+        assert!(c.write && !c.markers && c.tree.is_some() && c.files_dir.is_some());
+        assert_eq!(
+            parse_err(&["mr", "conflicts", "3", "--dir", "out"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        let MrCommand::Resolve(r) = mr(&[
+            "resolve",
+            "3",
+            "--take",
+            "ours",
+            "a.txt",
+            "--take",
+            "theirs",
+            "b.bin",
+            "--delete",
+            "c.txt",
+            "-m",
+            "fix",
+            "--allow-markers",
+        ]) else {
+            panic!()
+        };
+        assert_eq!(r.take, vec!["ours", "a.txt", "theirs", "b.bin"]);
+        assert_eq!(r.delete, vec!["c.txt"]);
+        assert!(r.allow_markers && r.message.as_deref() == Some("fix") && r.tree.is_none());
+        assert_eq!(
+            parse_err(&["mr", "resolve", "3", "--take", "ours"]),
+            ErrorKind::WrongNumberOfValues
         );
         assert!(matches!(
             mr(&["mergeability", "4", "acme/web"]),

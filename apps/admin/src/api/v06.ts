@@ -22,13 +22,15 @@ const seg = encodeURIComponent;
 
 // ---- wire types ----
 
-export const MERGE_METHODS = ["fast-forward", "merge", "squash"] as const;
+// v0.8 conflict-ui (§16.9): "rebase" replays the source snapshots onto the target.
+export const MERGE_METHODS = ["fast-forward", "merge", "squash", "rebase"] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
 
 export const MERGE_METHOD_LABEL: Record<MergeMethod, string> = {
   "fast-forward": "Fast-forward",
   merge: "Merge snapshot",
   squash: "Squash",
+  rebase: "Rebase",
 };
 
 export function isMergeMethod(v: unknown): v is MergeMethod {
@@ -163,6 +165,8 @@ export interface Mergeability {
 export interface MergeOptions {
   method?: MergeMethod;
   message?: string;
+  /** v0.8 conflict-ui (§16.9): delete the source branch after the merge. */
+  delete_source_branch?: boolean;
 }
 
 /** A stored policy revision (domain.PolicyVersion). */
@@ -353,6 +357,8 @@ export function createV06Api(client: ApiClient) {
         const body: MergeOptions = {};
         if (opts?.method) body.method = opts.method;
         if (opts?.message?.trim()) body.message = opts.message.trim();
+        // v0.8 conflict-ui (§16.9)
+        if (opts?.delete_source_branch) body.delete_source_branch = true;
         return client.request<MergeRequest>(`${tree(t, n)}/merge-requests/${num}/merge`, {
           method: "POST",
           body: Object.keys(body).length ? body : undefined,

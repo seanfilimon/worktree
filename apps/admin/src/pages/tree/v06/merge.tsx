@@ -12,6 +12,8 @@ const METHOD_HINT: Record<MergeMethod, string> = {
   "fast-forward": "Move the target to the source tip. No new snapshot.",
   merge: "Create a merge snapshot with both tips as parents.",
   squash: "Create one snapshot with all changes, on top of the target.",
+  // v0.8 conflict-ui (§16.9)
+  rebase: "Replay the source snapshots onto the target. No merge snapshot.",
 };
 
 export function ConflictList({ conflicts }: { conflicts: readonly MergeConflict[] }) {
@@ -83,7 +85,7 @@ export function MergeOptionsFields({ mr, mergeability, method, onMethod, message
           })}
         </RadioGroup>
       </div>
-      {method !== "fast-forward" && (
+      {method !== "fast-forward" && method !== "rebase" && (
         <div className="grid gap-2">
           <Label htmlFor={`${id}-message`}>{method === "squash" ? "Squash message" : "Merge message"}</Label>
           <Textarea

@@ -566,7 +566,7 @@ mod tests {
         };
         assert!(merge_methods.is_empty());
         assert_eq!(
-            parse_err(&["protect", "set", "main", "--merge-methods", "squash,rebase"]),
+            parse_err(&["protect", "set", "main", "--merge-methods", "squash,merge2"]),
             ErrorKind::InvalidValue
         );
         assert!(matches!(

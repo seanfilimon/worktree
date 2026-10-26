@@ -33,6 +33,11 @@ import { useMergeability, useV06Api, mergeConflictsOf, MERGE_METHOD_LABEL, isMer
 import { ConflictList, MergeOptionsFields } from "./v06/merge";
 import { applyMergeability, defaultMethod, mergeMethodSummary } from "./v06/mergeUtil";
 import { useHotkeys } from "@/components/mr/useHotkeys";
+// v0.8 conflict-ui (§16.9)
+import type { MergeConflict, MergeOptions } from "@/api/v06";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { FileWarning } from "lucide-react";
 // v0.7 review (§15.7)
 import { isDraft, type BranchProtectionV07 } from "@/api/v07review";
 import { newSideLines } from "./v07/lines";
@@ -206,15 +211,23 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
             ? (serverChecks.data.blockers[0]?.message ?? "The server reports this merge request is not mergeable.")
             : null));
 
+  // v0.8 conflict-ui (§16.9): delete the source branch on merge; conflicts link to the resolver.
+  const [deleteSource, setDeleteSource] = useState(false);
+  const deleteSourceId = useId();
+  const conflicts: MergeConflict[] = open
+    ? (mergeInfo?.conflicts ?? (serverChecks.data as { conflicts?: MergeConflict[] | null } | undefined)?.conflicts ?? [])
+    : [];
+  const mergeOptions = (): MergeOptions | undefined => {
+    const o: MergeOptions =
+      mergeInfo && method ? { method, message: method === "fast-forward" || method === "rebase" ? undefined : mergeMessage } : {};
+    if (deleteSource) o.delete_source_branch = true;
+    return Object.keys(o).length ? o : undefined;
+  };
+
   const act = useMutation({
     mutationFn: (action: Action) =>
       action === "merge"
-        ? v06.mergeRequests.merge(
-            tenant,
-            tree,
-            m.number,
-            mergeInfo && method ? { method, message: method === "fast-forward" ? undefined : mergeMessage } : undefined,
-          )
+        ? v06.mergeRequests.merge(tenant, tree, m.number, mergeOptions())
         : api.mergeRequests[action](tenant, tree, m.number),
     meta: { inlineError: true },
     onSuccess: async (updated: MergeRequest, action) => {
@@ -301,6 +314,30 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
           )}
           {errorConflicts && <ConflictList conflicts={errorConflicts} />}
         </MergeErrorAlert>
+      )}
+
+      {/* v0.8 conflict-ui (§16.9) */}
+      {conflicts.length > 0 && (
+        <Alert data-conflict-banner className="border-foreground/60">
+          <FileWarning aria-hidden />
+          <AlertTitle className="line-clamp-none">This merge request has conflicts</AlertTitle>
+          <AlertDescription className="flex flex-col gap-2">
+            <p>
+              {conflicts.length} conflicting {conflicts.length === 1 ? "path" : "paths"} between {m.source_branch} and {m.target_branch}.
+            </p>
+            <ul aria-label="Conflicting paths" className="flex flex-col gap-0.5 font-mono text-xs text-foreground">
+              {conflicts.slice(0, 5).map((c) => (
+                <li key={`${c.path}:${c.kind}`} className="break-all">
+                  {c.path}
+                </li>
+              ))}
+              {conflicts.length > 5 && <li className="text-muted-foreground">and {conflicts.length - 5} more</li>}
+            </ul>
+            <Button asChild size="sm" variant="outline" className="w-fit">
+              <Link to={treePath(tenant, tree, `merge-requests/${m.number}/resolve`)}>Resolve conflicts</Link>
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -461,6 +498,21 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
                           onMessage={setMergeMessage}
                         />
                       )}
+                      {/* v0.8 conflict-ui (§16.9) */}
+                      <div className="flex items-start gap-2">
+                        <Checkbox
+                          id={deleteSourceId}
+                          checked={deleteSource}
+                          onCheckedChange={(v) => setDeleteSource(v === true)}
+                          className="mt-0.5"
+                        />
+                        <div className="grid gap-0.5">
+                          <Label htmlFor={deleteSourceId}>Delete source branch</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Deletes <span className="font-mono">{m.source_branch}</span> after the merge.
+                          </p>
+                        </div>
+                      </div>
                       <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction onClick={() => act.mutate("merge")}>Merge</AlertDialogAction>
@@ -685,7 +737,13 @@ function OutcomeCard({ mr: m, snapshotHref }: { mr: MergeRequest; snapshotHref: 
         {merged ? (
           <p>
             <span className="font-mono text-foreground">{m.target_branch}</span>{" "}
-            {mergedVia(m) === "fast-forward" ? "was fast-forwarded" : mergedVia(m) === "squash" ? "got a squash snapshot" : "got a merge snapshot"}{" "}
+            {mergedVia(m) === "fast-forward"
+              ? "was fast-forwarded"
+              : mergedVia(m) === "squash"
+                ? "got a squash snapshot"
+                : mergedVia(m) === "rebase" // v0.8 conflict-ui (§16.9)
+                  ? "got the rebased snapshots"
+                  : "got a merge snapshot"}{" "}
             <Timestamp value={m.merged_at} />
             {mergedVia(m) !== "fast-forward" && (
               <Badge variant="outline" className="ml-1">

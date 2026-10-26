@@ -80,5 +80,8 @@ export function mergeMethodSummary(method: MergeMethod, mr: Pick<MergeRequest, "
       return `A merge snapshot of ${mr.source_branch} into ${mr.target_branch} is created on the server.`;
     case "squash":
       return `All changes of ${mr.source_branch} are squashed into one new snapshot on ${mr.target_branch}.`;
+    // v0.8 conflict-ui (§16.9)
+    case "rebase":
+      return `The snapshots of ${mr.source_branch} are replayed onto ${mr.target_branch} on the server.`;
   }
 }

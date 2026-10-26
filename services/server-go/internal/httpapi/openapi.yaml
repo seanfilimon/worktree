@@ -1588,6 +1588,18 @@ paths:
         merge service only fast-forward is available (other methods answer
         501). Publishes `mr.merged` (and `branch.pushed` with
         `merge_method` when the target moved).
+
+        v0.8 (§16.9): `rebase` replays the source snapshots the target lacks,
+        oldest first, onto the target tip (new snapshots keeping author,
+        message and creation time, pushed by the caller, unsigned; snapshots
+        already on the target are dropped; a fast-forward when the target is
+        an ancestor of the source). It needs a linear source (no merge
+        snapshots) of at most 1000 snapshots; a snapshot that does not apply
+        answers `409 merge_conflict`. `require_linear` allows it,
+        `require_signed` forbids it. `delete_source_branch` deletes the
+        source branch after the merge (needs `branch:delete`, refused before
+        merging for the default branch, `no_delete` protections or a branch
+        used by another open merge request; publishes `branch.deleted`).
       tags: [MergeRequests]
       x-wt-action: mr:merge
       requestBody:
@@ -5913,6 +5925,127 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/conflicts:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number.
+        schema:
+          type: integer
+          minimum: 1
+    get:
+      operationId: mrConflicts
+      summary: Get the conflicts of a merge request
+      description: |
+        v0.8 (§16.9). The three-way merge of the target into the source
+        branch (as `wt merge <target>` on the source would do it): per
+        conflicting path its base, `ours` (source branch) and `theirs`
+        (target branch) versions with their text (at most 1 MiB per side and
+        8 MiB per report; larger sides are `too_large`, binary and chunked
+        files `binary`) and a diff3-style marker preview (`<<<<<<< <source>`,
+        `||||||| base`, `=======`, `>>>>>>> <target>`) with its regions. At
+        most 200 paths are detailed (`total`, `truncated`). Paths the caller
+        may not read are listed without content (`restricted`).
+        `resolvable` tells whether `POST .../resolve` can resolve them now;
+        `reason` explains why not (no conflicts, not open, fork source).
+      tags: [MergeRequests]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The conflict report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/resolve:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number.
+        schema:
+          type: integer
+          minimum: 1
+    post:
+      operationId: resolveMRConflicts
+      summary: Resolve the conflicts of a merge request
+      description: |
+        v0.8 (§16.9). Writes a merge-resolution snapshot on the source
+        branch: the merge of the target into the source (parents: source
+        tip, target tip; authored and pushed by the caller; unsigned) with
+        every conflicting path resolved by `files` — exactly one of
+        `content` (UTF-8 text, at most 8 MiB; `executable` optional),
+        `take` (`ours` = source, `theirs` = target, `base`; taking a side
+        that deleted the path deletes it) or `delete` per path. Every
+        conflicting path must be resolved exactly once and only conflicting
+        paths may be (`400`); content still holding conflict markers is
+        refused unless `allow_markers`. Needs `tree:write` and a direct push
+        to the source branch allowed by its protection; path ACLs, the
+        tenant storage quota and signature requirements apply like for a
+        push. `source_tip` / `target_tip` (the tips the conflicts were
+        loaded at) that no longer match, or a source that moves
+        concurrently, answer `409 resolve_outdated`; a merge request that is
+        not open or has no conflicts `409 conflict`. Publishes
+        `branch.pushed` and `mr.conflicts_resolved`
+        `{"number","source_branch","target_branch","old_tip","target_tip","snapshot_id","paths","resolved_by"}`;
+        audited as `mr.resolve_conflicts`.
+      tags: [MergeRequests]
+      x-wt-action: tree:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveRequest"
+      responses:
+        "200":
+          description: The merge request, the resolution snapshot and the resolved paths.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden`, `branch_protection` (direct pushes to the source are not allowed), `path_denied` or `signature_required`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`resolve_outdated`, `quota_exceeded` or `conflict`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/ready:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -8429,7 +8562,7 @@ components:
           type: array
           items:
             type: string
-            enum: [fast-forward, merge, squash]
+            enum: [fast-forward, merge, squash, rebase]
           description: "v0.6 (§14.1): merge methods allowed into matching branches (empty = all). The lists of all matching rules intersect. `require_linear` also forbids `merge`, `require_signed` forbids `merge` and `squash`. Unknown names answer 400; the stored list is deduplicated in preference order (fast-forward, merge, squash)."
         require_owner_approval:
           type: boolean
@@ -8730,6 +8863,117 @@ components:
       properties:
         snapshot:
           type: string
+    ConflictFile:
+      type: object
+      description: "ConflictFile is one conflicting path of a ConflictReport (review.ConflictFile). `ours` is the source branch, `theirs` the target branch."
+      required: [path, kind, binary, too_large, restricted, base, ours, theirs, regions]
+      properties:
+        path:
+          type: string
+        kind:
+          type: string
+          enum: [content, modify_delete, add_add, binary, chunked, executable, file_directory]
+          description: "The conflict kind (see MergeConflict)."
+        binary:
+          type: boolean
+          description: "Binary is set when a side is binary or chunked: no text, no markers."
+        too_large:
+          type: boolean
+          description: "TooLarge is set when a side exceeds MaxConflictText (or the report's text budget is spent): no text, no markers."
+        restricted:
+          type: boolean
+          description: "Restricted is set when the caller may not read the path (path policies, license rules): no text, no markers."
+        base:
+          $ref: "#/components/schemas/ConflictSide"
+        ours:
+          $ref: "#/components/schemas/ConflictSide"
+        theirs:
+          $ref: "#/components/schemas/ConflictSide"
+        markers:
+          type: string
+          description: "Markers is the diff3-style preview (\"<<<<<<< <source>\", \"||||||| base\", \"=======\", \">>>>>>> <target>\") when ours and theirs are text."
+        regions:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/ConflictRegion"
+          description: "Regions are the conflicting regions of Markers."
+    ConflictRegion:
+      type: object
+      description: "Region is one conflicting region of a text merge (merge3.Region). The line slices hold each side's lines without their \"\\n\" terminators (a CRLF \"\\r\" is kept)."
+      required: [start_line, ours_start, theirs_start, ours, base, theirs]
+      properties:
+        start_line:
+          type: integer
+          description: "StartLine is the 1-based line of the merged output where \"<<<<<<<\" appears."
+        ours_start:
+          type: integer
+          description: "OursStart is the 1-based first line of Ours in the ours file (the line before the region when Ours is empty, as in unified diffs)."
+        theirs_start:
+          type: integer
+          description: "TheirsStart is OursStart for the theirs file."
+        ours:
+          type: [array, "null"]
+          items:
+            type: string
+        base:
+          type: [array, "null"]
+          items:
+            type: string
+        theirs:
+          type: [array, "null"]
+          items:
+            type: string
+    ConflictReport:
+      type: object
+      description: "ConflictReport is the answer of GET .../merge-requests/{n}/conflicts (review.ConflictReport)."
+      required: [number, state, source_branch, target_branch, source_tip, target_tip, merge_base, resolvable, total, truncated, files]
+      properties:
+        number:
+          type: integer
+        state:
+          type: string
+        source_branch:
+          type: string
+        target_branch:
+          type: string
+        source_tip:
+          type: string
+        target_tip:
+          type: string
+        merge_base:
+          type: string
+        resolvable:
+          type: boolean
+          description: "Resolvable reports whether POST .../resolve can resolve the conflicts now (open, diverged with conflicts, source in this tree); Reason says why not."
+        reason:
+          type: string
+        total:
+          type: integer
+          description: "Total is the number of conflicting paths; Files details the first MaxConflictFiles (200) of them (Truncated)."
+        truncated:
+          type: boolean
+        files:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/ConflictFile"
+    ConflictSide:
+      type: object
+      description: "ConflictSide is one version (base, ours = source, theirs = target) of a conflicting path."
+      required: [exists, size, executable]
+      properties:
+        exists:
+          type: boolean
+        size:
+          type: integer
+          format: int64
+        executable:
+          type: boolean
+        hash:
+          type: string
+          description: "Hash is the hex hash of the blob (of the chunk list for chunked files)."
+        text:
+          type: string
+          description: "Text is the content; omitted when the side does not exist, is binary or chunked, too large, or restricted."
     ContributorStat:
       type: object
       required: [author, snapshots, last_at]
@@ -9719,7 +9963,7 @@ components:
           type: [array, "null"]
           items:
             type: string
-            enum: [fast-forward, merge, squash]
+            enum: [fast-forward, merge, squash, rebase]
           description: "v0.6 (§14.1): the merge methods that are allowed and possible, in preference order (the first is the default)."
         conflicts:
           type: [array, "null"]
@@ -9772,7 +10016,7 @@ components:
       properties:
         method:
           type: string
-          enum: ["", fast-forward, merge, squash]
+          enum: ["", fast-forward, merge, squash, rebase]
           description: "Merge method for every member; empty = each member's default method."
     MergeMRRequest:
       type: object
@@ -9780,11 +10024,14 @@ components:
       properties:
         method:
           type: string
-          enum: ["", fast-forward, merge, squash]
-          description: "Merge method; empty = the default, the first of fast-forward, merge, squash that is allowed and possible (see the mergeability endpoint)."
+          enum: ["", fast-forward, merge, squash, rebase]
+          description: "Merge method; empty = the default, the first of fast-forward, merge, squash, rebase that is allowed and possible (see the mergeability endpoint). v0.8 (§16.9): rebase replays the source snapshots onto the target."
         message:
           type: string
-          description: "Snapshot message of a merge or squash (at most 64 KiB of UTF-8; default \"Merge branch '<source>' into <target> (!N)\" for merge, the merge request title for squash). Ignored by fast-forward."
+          description: "Snapshot message of a merge or squash (at most 64 KiB of UTF-8; default \"Merge branch '<source>' into <target> (!N)\" for merge, the merge request title for squash). Ignored by fast-forward and rebase."
+        delete_source_branch:
+          type: boolean
+          description: "v0.8 (§16.9): delete the source branch after the merge (needs branch:delete; checked before merging)."
     MergeRequest:
       type: object
       properties:
@@ -10421,6 +10668,63 @@ components:
         expires_at:
           type: string
           format: date-time
+    ResolveFile:
+      type: object
+      description: "ResolveFile resolves one conflicting path: exactly one of Content (the resolved text), Take (ours / theirs / base) or Delete."
+      required: [path]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+          description: "The resolved UTF-8 text (at most 8 MiB)."
+        take:
+          type: string
+          enum: [ours, theirs, base]
+          description: "Take one version: ours = the source branch, theirs = the target branch, base = the merge base. Taking a side that deleted the path deletes it."
+        delete:
+          type: boolean
+        executable:
+          type: boolean
+          description: "Executable sets the executable bit of Content (default: ours', else theirs')."
+    ResolveRequest:
+      type: object
+      description: "ResolveInput is the body of POST .../merge-requests/{n}/resolve (review.ResolveInput)."
+      properties:
+        files:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/ResolveFile"
+          description: "One resolution per conflicting path (at most 1000)."
+        message:
+          type: string
+          description: "Message of the resolution snapshot (default \"Merge branch '<target>' into <source> (!N, conflicts resolved)\")."
+        source_tip:
+          type: string
+          description: "SourceTip / TargetTip, when set, must still be the branch tips (the ones the conflicts were loaded at); otherwise 409 resolve_outdated."
+        target_tip:
+          type: string
+        allow_markers:
+          type: boolean
+          description: "AllowMarkers accepts content that still holds conflict markers."
+    ResolveResult:
+      type: object
+      description: "Resolved is the result of POST .../merge-requests/{n}/resolve (review.Resolved)."
+      required: [merge_request, snapshot, paths]
+      properties:
+        merge_request:
+          anyOf:
+            - $ref: "#/components/schemas/MergeRequest"
+            - type: "null"
+        snapshot:
+          anyOf:
+            - $ref: "#/components/schemas/Snapshot"
+            - type: "null"
+        paths:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Paths are the resolved conflicting paths."
     Resource:
       type: object
       description: "Resource identifies what an action targets, for fine-grained evaluation."
