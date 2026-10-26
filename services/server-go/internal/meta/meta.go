@@ -166,11 +166,15 @@ func normTenant(t domain.Tenant) domain.Tenant {
 		l := *t.Limits
 		t.Limits = &l
 	}
+	t.EmailVerifiedAt = utcPtr(t.EmailVerifiedAt)
+	t.Attributes = cloneAttrs(t.Attributes)
 	return t
 }
 
 func normAccount(a domain.Account) domain.Account {
 	a.CreatedAt = utc(a.CreatedAt)
+	a.EmailVerifiedAt = utcPtr(a.EmailVerifiedAt)
+	a.Attributes = cloneAttrs(a.Attributes)
 	return a
 }
 
@@ -190,7 +194,16 @@ func normToken(t domain.APIToken) domain.APIToken {
 func normTree(t domain.Tree) domain.Tree {
 	t.CreatedAt = utc(t.CreatedAt)
 	t.UpdatedAt = utc(t.UpdatedAt)
+	t.Attributes = cloneAttrs(t.Attributes)
 	return t
+}
+
+// cloneAttrs copies an attribute map; empty maps become nil (JSON omitempty).
+func cloneAttrs(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	return maps.Clone(m)
 }
 
 func normBranch(b domain.Branch) domain.Branch {

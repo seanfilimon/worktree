@@ -38,6 +38,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/config"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/events"
+	"github.com/seanfilimon/worktree/services/server-go/internal/fork"
 	"github.com/seanfilimon/worktree/services/server-go/internal/gc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/httpapi"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
@@ -52,11 +53,13 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
 	"github.com/seanfilimon/worktree/services/server-go/internal/review"
+	"github.com/seanfilimon/worktree/services/server-go/internal/scan"
 	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
 	"github.com/seanfilimon/worktree/services/server-go/internal/sso"
 	"github.com/seanfilimon/worktree/services/server-go/internal/staged"
 	"github.com/seanfilimon/worktree/services/server-go/internal/syncsvc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
+	"github.com/seanfilimon/worktree/services/server-go/internal/treeconfig"
 	"github.com/seanfilimon/worktree/services/server-go/internal/webhooks"
 )
 
@@ -159,6 +162,10 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	notifier := notify.New(notify.Deps(v5))
 	mirrors := mirror.New(mirror.Deps(v5))
 	backups := backup.New(backup.Deps(v5))
+	// v0.8 components (docs/ENGINEERING_PLAN.md §16).
+	forks := fork.New(fork.Deps(v5))
+	scanner := scan.New(scan.Deps(v5))
+	treeCfg := treeconfig.New(treeconfig.Deps(v5))
 	// storage-backends (§15.2): backups in <data>/backups, optional schedule.
 	backups.Configure(backup.Options{
 		Dir: filepath.Join(cfg.DataDir, "backups"), Interval: cfg.BackupInterval, Keep: cfg.BackupKeep, Version: cfg.Version,
@@ -213,6 +220,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 			pathACL, // sec-paths (§13.1): path ACLs run first
 			rev,     // review-ci (§13.4): RequireLinear on direct pushes
 			limiter, // ops (§13.3): branch and storage quotas
+			treeCfg, // config-as-code (§16.3): rejects invalid .wt-tree configuration
+			scanner, // compliance (§16.7): secret scanning
 			signer,  // signing (§13.6): verifies signatures, sets Verified; keep last
 		},
 		AccessCfg: accessCfg,
@@ -268,7 +277,12 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		Notify:  notifier,
 		Mirrors: mirrors,
 		Backup:  backups,
-		Pprof:   cfg.Pprof, // hardening (§15.10): /debug/pprof
+
+		// v0.8 (§16).
+		Forks:      forks,
+		Scan:       scanner,
+		TreeConfig: treeCfg,
+		Pprof:      cfg.Pprof, // hardening (§15.10): /debug/pprof
 	})
 
 	proxies, _ := config.ParseProxies(cfg.TrustedProxies) // validated by Load

@@ -4,6 +4,7 @@ pub mod access;
 pub mod admin;
 pub mod api;
 pub mod archive;
+pub mod attr;
 pub mod audit;
 pub mod auth;
 pub mod blame;
@@ -11,12 +12,14 @@ pub mod branch;
 pub mod cherry_pick;
 pub mod ci;
 pub mod completions;
+pub mod compliance;
 pub mod config;
 pub mod daemon;
 pub mod deps;
 pub mod diff;
 pub mod doctor;
 pub mod events;
+pub mod fork;
 pub mod fsck;
 pub mod gc;
 pub mod git;
@@ -60,6 +63,7 @@ pub mod todo;
 pub mod token;
 pub mod tree;
 pub mod trees;
+pub mod undo;
 pub mod webhook;
 
 use crate::cli::Command;
@@ -138,6 +142,10 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Api(args) => api::run(ctx, args),
         Command::Sparse(args) => sparse::run(ctx, args),
         Command::Sync(args) => synchronize::run(ctx, args),
+        Command::Fork(args) => fork::run(ctx, args),
+        Command::Undo(args) => undo::run(ctx, args),
+        Command::Attr(args) => attr::run(ctx, args),
+        Command::Compliance(args) => compliance::run(ctx, args),
         Command::Inbox(args) => inbox::run(ctx, args),
         Command::Mirror(args) => mirror::run(ctx, args),
         Command::Owners(args) => owners::run(ctx, args),

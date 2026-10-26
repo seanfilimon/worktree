@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use crate::commands::{
-    access, admin, api, archive, audit, auth, blame, branch, cherry_pick, ci, completions, config,
-    daemon, deps, diff, doctor, events, fsck, gc, git, grant, history, iam, identity, ignore,
-    inbox, init, invite, license, merge, mfa, mirror, mr, open, owners, policy, protect, rebase,
-    release, remote, role, sa, search, session, snapshot, sparse, sso, stash, status, sync,
-    synchronize, tag, team, tenant, todo, token, tree, trees, webhook,
+    access, admin, api, archive, attr, audit, auth, blame, branch, cherry_pick, ci, completions,
+    compliance, config, daemon, deps, diff, doctor, events, fork, fsck, gc, git, grant, history,
+    iam, identity, ignore, inbox, init, invite, license, merge, mfa, mirror, mr, open, owners,
+    policy, protect, rebase, release, remote, role, sa, search, session, snapshot, sparse, sso,
+    stash, status, sync, synchronize, tag, team, tenant, todo, token, tree, trees, undo, webhook,
 };
 
 #[derive(Debug, Parser)]
@@ -204,6 +204,14 @@ pub enum Command {
     Mirror(mirror::MirrorArgs),
     /// Path owners of a server tree (who reviews which paths): show, set
     Owners(owners::OwnersArgs),
+    /// Fork a server tree into another tenant; list forks; sync a fork with its upstream
+    Fork(fork::ForkArgs),
+    /// Undo the last local operations (snapshot, merge, rebase, branch moves) from the operation log
+    Undo(undo::UndoArgs),
+    /// ABAC attributes of tenants, accounts and trees: show, set, unset
+    Attr(attr::AttrArgs),
+    /// Secret scanning and license compliance: scan, findings, license audit
+    Compliance(compliance::ComplianceArgs),
 }
 
 #[cfg(test)]

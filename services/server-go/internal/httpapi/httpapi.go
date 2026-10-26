@@ -26,6 +26,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
 	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/fork"
 	"github.com/seanfilimon/worktree/services/server-go/internal/gc"
 	"github.com/seanfilimon/worktree/services/server-go/internal/iam"
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
@@ -33,8 +34,10 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/notify"
 	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
 	"github.com/seanfilimon/worktree/services/server-go/internal/release"
+	"github.com/seanfilimon/worktree/services/server-go/internal/scan"
 	"github.com/seanfilimon/worktree/services/server-go/internal/signing"
 	"github.com/seanfilimon/worktree/services/server-go/internal/todo"
+	"github.com/seanfilimon/worktree/services/server-go/internal/treeconfig"
 	"github.com/seanfilimon/worktree/services/server-go/internal/webhooks"
 )
 
@@ -105,6 +108,11 @@ type Deps struct {
 	Notify  *notify.Service
 	Mirrors *mirror.Service
 	Backup  *backup.Service
+
+	// v0.8 (docs/ENGINEERING_PLAN.md §16). nil = endpoints answer 501.
+	Forks      *fork.Service
+	Scan       *scan.Service
+	TreeConfig *treeconfig.Service
 
 	// hardening (§15.10): Pprof serves the Go runtime profiles at
 	// /debug/pprof to server admins; false = those routes answer 404.
@@ -263,6 +271,15 @@ func (a *api) routes() {
 	a.registerMirrorRoutes(tree)
 	a.registerBackupRoutes()
 	a.registerOwnerRoutes(tree)
+
+	// v0.8 (docs/ENGINEERING_PLAN.md §16).
+	a.registerForkRoutes(tree)
+	a.registerTreeConfigRoutes(tree)
+	a.registerTenantLifecycleRoutes()
+	a.registerAttributeRoutes(tree)
+	a.registerDeviceRoutes()
+	a.registerComplianceRoutes(tree)
+	a.registerResolveRoutes(tree)
 	a.registerPprofRoutes()   // hardening (§15.10): GET /debug/pprof[/{profile}]
 	a.registerOpenAPIRoutes() // openapi (§14.10): GET /api/v1/openapi.yaml
 

@@ -299,7 +299,7 @@ func TestEffectivePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []domain.Action{
-		domain.ActTenantRead, domain.ActTreeRead, domain.ActTreeWrite,
+		domain.ActTenantRead, domain.ActTreeRead, domain.ActTreeWrite, domain.ActTreeFork,
 		domain.ActBranchCreate, domain.ActBranchDelete, domain.ActBranchPush,
 		domain.ActMRApprove, domain.ActMRMerge,
 		domain.ActReleaseCreate, domain.ActReleaseDelete, domain.ActCIReport, domain.ActIAMRead,
@@ -313,7 +313,7 @@ func TestEffectivePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	want = []domain.Action{
-		domain.ActTenantRead, domain.ActTreeRead, domain.ActTreeWrite, domain.ActBranchCreate,
+		domain.ActTenantRead, domain.ActTreeRead, domain.ActTreeWrite, domain.ActTreeFork, domain.ActBranchCreate,
 		domain.ActBranchPush, domain.ActMRCreate, domain.ActReleaseCreate, domain.ActCIReport, domain.ActIAMRead,
 	}
 	if !equalActions(got, want) {

@@ -2,8 +2,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
   Copy,
+  FileCog,
   FolderTree,
   GitBranch,
+  GitFork,
   GitPullRequest,
   Globe,
   History,
@@ -15,6 +17,7 @@ import {
   Package,
   Scale,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Tag,
   UserCheck,
@@ -64,6 +67,9 @@ const TABS: TabDef[] = [
   { to: "access", label: "Access", icon: KeyRound },
   { to: "owners", label: "Owners", icon: UserCheck },
   { to: "mirrors", label: "Mirrors", icon: Copy },
+  { to: "forks", label: "Forks", icon: GitFork },
+  { to: "config", label: "Config", icon: FileCog },
+  { to: "compliance", label: "Compliance", icon: ShieldAlert },
   { to: "settings", label: "Settings", icon: Settings },
 ];
 

@@ -264,7 +264,7 @@ func TestIAMRoles(t *testing.T) {
 				if !slices.Contains(rs[1].Permissions, domain.ActIAMAdmin) || slices.Contains(rs[1].Permissions, domain.ActServerAdmin) {
 					t.Fatalf("admin perms = %v", rs[1].Permissions)
 				}
-				if !slices.Equal(rs[4].Permissions, []domain.Action{domain.ActTenantRead, domain.ActTreeRead}) {
+				if !slices.Equal(rs[4].Permissions, []domain.Action{domain.ActTenantRead, domain.ActTreeRead, domain.ActTreeFork}) {
 					t.Fatalf("viewer perms = %v", rs[4].Permissions)
 				}
 			}},

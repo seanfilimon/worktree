@@ -8074,6 +8074,15 @@ components:
       type: object
       required: [id, username, email, display_name, tenant_id, is_admin, disabled, created_at]
       properties:
+        attributes:
+          type: object
+          description: "ABAC attributes (v0.8 §16.5)."
+          additionalProperties:
+            type: string
+        email_verified_at:
+          type: string
+          format: date-time
+          description: "When the email address was verified (v0.8 §16.4)."
         id:
           type: string
         username:
@@ -8353,6 +8362,12 @@ components:
       type: object
       required: [tree_id, name, tip, protected, created_at, updated_at]
       properties:
+        description:
+          type: string
+          description: "Branch description (v0.8 §16.3)."
+        owner:
+          type: string
+          description: "Branch owner: user:<name> or team:<slug> (v0.8 §16.3)."
         tree_id:
           type: string
         name:
@@ -8373,6 +8388,9 @@ components:
       description: "BranchProtection applies to every branch whose name matches Pattern (path.Match glob, e.g. \"main\" or \"release/*\")."
       required: [tree_id, pattern, no_direct_push, required_approvals, allowed_pushers, no_delete]
       properties:
+        no_force_push:
+          type: boolean
+          description: "Refuse force pushes even with branch:force_push (v0.8 §16.10)."
         tree_id:
           type: string
         pattern:
@@ -9770,6 +9788,9 @@ components:
     MergeRequest:
       type: object
       properties:
+        source_tree_id:
+          type: string
+          description: "Fork tree holding the source branch; empty = this tree (v0.8 §16.2)."
         id:
           type: string
         tree_id:
@@ -10909,6 +10930,9 @@ components:
       description: "StagedSnapshot is a WIP snapshot visible to the team but not part of branch history. At most one per (tree, account, branch): a newer stage replaces the older one."
       required: [snapshot_id, tree_id, tenant_id, account_id, author, branch_name, files_changed, files_added, files_modified, files_deleted, message, staged_at]
       properties:
+        label:
+          type: string
+          description: "Named staged slot (v0.8 §16.8)."
         snapshot_id:
           type: string
         tree_id:
@@ -11237,6 +11261,18 @@ components:
       type: object
       required: [id, slug, name, kind, plan, created_at]
       properties:
+        attributes:
+          type: object
+          description: "ABAC attributes (v0.8 §16.5)."
+          additionalProperties:
+            type: string
+        email:
+          type: string
+          description: "Contact address (v0.8 §16.4)."
+        email_verified_at:
+          type: string
+          format: date-time
+          description: "When the email address was verified (v0.8 §16.4)."
         id:
           type: string
         slug:
@@ -11438,6 +11474,14 @@ components:
       type: object
       required: [id, tenant_id, name, description, default_branch, visibility, created_at, updated_at]
       properties:
+        attributes:
+          type: object
+          description: "ABAC attributes (v0.8 §16.5)."
+          additionalProperties:
+            type: string
+        fork_of:
+          type: string
+          description: "Id of the tree this one was forked from (v0.8 §16.2)."
         id:
           type: string
         tenant_id:

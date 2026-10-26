@@ -1581,3 +1581,347 @@ Doc collections added in v0.7 (report the exact keys you use):
   (validation only), SDK `repo/working.rs` + `repo/trees.rs` (.wt-tree
   tracking), `internal/policyhist` (tree deletion), admin blame component,
   e2e gap scenarios, `docs/performance.md`.
+
+## 16. v0.8 build-out
+
+Goal: close the largest items of the specs' Roadmap sections: pack and
+delta transfer, forks, config-as-code from `.wt-tree/`, the tenant
+lifecycle, ABAC attributes, the OAuth device flow, server-side secret
+scanning and license compliance, multiple staged snapshots, conflict
+resolution in the browser, force pushes / undo / remote tag deletion, and
+server operations (backups to object storage, durable outbox, retention).
+Same rules as §13.15, §14 and §15 (own your files; tests for everything;
+each workstream adds its UI in its own admin page files, its own e2e
+scenario file(s) in `crates/worktree-e2e/tests/e2e/` registered in that
+directory's `main.rs`, its OpenAPI operations in `httpapi/openapi.yaml`
+(the coverage and schema tests must pass on your branch), one new or
+substantially rewritten spec file whose Roadmap section drops what you
+built; commit on your branch; do not edit this plan). When you must touch
+a shared file (`syncsvc/push.go`, `domain/*.go`, `review/*.go`,
+`commands/mr.rs`, `api/types.ts`, ...) keep the edit small and put new
+code in new files.
+
+Shared foundation (already on `main`):
+
+- `sync.proto`: `PushRequest.force` / `operation_id`,
+  `StageUploadRequest.label`, `StagedInfo.label`, RPCs `UploadPack`
+  (client stream of `PackChunk`), `QueryUpload`, `DownloadPack` (server
+  stream), `DeleteTag` and their messages. The Go server answers
+  `Unimplemented` until `pack-delta` / `history-v2` implement them; the SDK
+  fake server does the same.
+- Go domain (`domain/types.go`, `domain/v08.go`): `Tenant.Email`,
+  `Tenant.EmailVerifiedAt`, `Tenant.Attributes`; `Account.EmailVerifiedAt`,
+  `Account.Attributes`; `Tree.ForkOf`, `Tree.Attributes`;
+  `Branch.Description`, `Branch.Owner`; `StagedSnapshot.Label`;
+  `BranchProtection.NoForcePush`; `MergeRequest.SourceTreeID`. Actions
+  `tree:fork` (viewer+, tree-scoped), `branch:force_push` (admin+),
+  `branch:bypass_protection` (owner, audited) in the authz catalog, iam
+  scopes, admin `scopes.ts` and the Rust `access::declarative::ACTIONS`.
+  Events `tree.forked`, `branch.force_pushed`, `tenant.renamed`,
+  `tenant.deleted`, `config.applied`, `secret.detected`,
+  `mr.conflicts_resolved`. Meta normalization clones the attribute maps.
+- Stub packages `fork`, `scan`, `treeconfig` wired in `server.go` and
+  `httpapi.Deps` (`Forks`, `Scan`, `TreeConfig`); `scan` and `treeconfig`
+  are already in the `PushChecks` list (after `limiter`, before `signer`).
+- Stub route files (registered in `httpapi.go`): `forks.go`,
+  `treeconfig.go`, `tenant_lifecycle.go`, `attributes.go`, `device.go`,
+  `compliance.go`, `resolve.go`.
+- CLI stub command groups: `wt fork`, `wt undo`, `wt attr`,
+  `wt compliance` (modules `fork`, `undo`, `attr`, `compliance`; already in
+  the `wt --help` groups).
+- Admin stub pages routed and in navigation: `/device`
+  (`pages/DevicePage.tsx`), `/compliance` (`pages/CompliancePage.tsx`),
+  tree tabs `forks` (`pages/tree/ForksTab.tsx`), `config`
+  (`pages/tree/TreeConfigTab.tsx`), `compliance`
+  (`pages/tree/ComplianceTab.tsx`) and the route
+  `merge-requests/:number/resolve` (`pages/tree/ResolveConflictsPage.tsx`).
+
+Doc collections added in v0.8 (report the exact keys you use):
+`pack_uploads` (key upload id), `forks` (`DocKey(upstreamTreeID,
+forkTreeID)`), `tree_config` (key treeID), `tenant_slugs` (reserved old
+slugs → tenant id), `tenant_deletions` (key tenantID), `email_tokens`,
+`device_codes`, `refresh_tokens`, `scan_findings` (`DocKey(treeID, id)`),
+`scan_allow` (key treeID), `push_ops` (`DocKey(treeID, operationID)`),
+`outbox` (email outbox), others agent-defined.
+
+### 16.1 Pack and delta transfer (workstream `pack-delta`)
+
+- Pack format (`crates/worktree-protocol/src/pack/` + Go
+  `internal/syncsvc/pack*.go`): a stream of entries `{hash, kind
+  whole|delta, base hash, zstd payload}` with a trailer checksum;
+  copy/insert binary deltas (rolling-hash or suffix-array based, bounded
+  window) chosen when they save ≥ 25 % against the whole object; delta
+  depth ≤ 8; bases must be objects the receiver has (`have`) or earlier
+  entries of the same pack. Objects are always stored whole (WTZ1) on the
+  server after reconstruction; hashes are verified before storing.
+- Server: `UploadPack` (authorization like `UploadObjects`, size and quota
+  limits, chunks of ≤ 4 MiB, resumable: chunks carry `upload_id` +
+  `offset`, the server persists the received prefix in a spool directory
+  `<data>/uploads/` + `pack_uploads` for 24 h; `QueryUpload` reports the
+  offset to resume from), `DownloadPack` (objects reachable from `want`
+  minus `have`, deltas only when `allow_deltas`), metrics (bytes saved).
+- SDK: push and fetch/clone use packs when the server supports them
+  (fall back to `UploadObjects`/`DownloadObjects` on `Unimplemented`),
+  resume an interrupted push upload once, progress reporting unchanged.
+  `wt push --no-pack` / `WT_NO_PACK=1` for debugging.
+- Benchmarks: before/after bytes and time for pushing a 50 MB tree with
+  small edits (document in `docs/performance.md` under a v0.8 heading).
+- Spec: `specs/sync/Packs.md`; Sync.md / Storage.md Roadmap updated.
+- Owns: `crates/worktree-protocol/src/pack/**`, SDK
+  `remote/{push,fetch,clone}.rs` (pack paths) + new `remote/pack.rs`,
+  `syncsvc/pack*.go` (+ registration of the RPCs in `syncsvc/service.go`),
+  `internal/config` (one flag block if needed).
+
+### 16.2 Forks (workstream `forks`)
+
+- `fork.Service`: `Fork(ctx, p, srcTree, dstTenant, name, visibility)`
+  needs `tree:fork` on the source and `tree:create` in the destination;
+  copies branches (all or `--branch`), tags, protections not copied; the
+  object store is shared so no objects are copied; sets `Tree.ForkOf`;
+  records `forks`; event `tree.forked`; audit. Upstream deletion leaves
+  forks intact (`fork_of` keeps the id; the API reports `upstream_missing`).
+  Quota (`MaxTrees`) applies. License rules: paths whose license forbids
+  redistribution outside the tenant are refused with a clear error (same
+  rule as archives).
+- Fork sync: `POST {tree}/fork/sync` fast-forwards fork branches to
+  upstream when possible, reports diverged branches.
+- Merge requests across trees: an MR in the upstream with
+  `source_tree_id` = fork; diff/merge read the source branch from the
+  fork; merging requires the usual upstream permissions; `review` package
+  edits stay minimal (new file `review/forks.go`).
+- REST: `POST {tree}/forks` (create), `GET {tree}/forks` (list),
+  `GET {tree}/fork` (upstream info), `POST {tree}/fork/sync`; `wt mr
+  create --from TENANT/TREE:BRANCH`.
+- CLI: `wt fork TENANT/TREE [--into TENANT] [--name N] [--branch B]...`,
+  `wt fork list [TREE]`, `wt fork sync [TREE]`, `wt fork upstream`.
+- Admin: `ForksTab` (upstream card, fork list, fork dialog, sync button),
+  fork badge on tree headers, MR creation from a fork.
+- Spec: `specs/tree/Forks.md`; LicenseCompliance.md Roadmap updated.
+- Owns: `internal/fork/**`, `httpapi/forks.go`, `commands/fork.rs`,
+  `pages/tree/ForksTab.tsx`, `review/forks.go`.
+
+### 16.3 Config-as-code (workstream `config-as-code`)
+
+- `treeconfig.Service` (`PushChecker`): when a push changes
+  `.wt-tree/config.toml`, `.wt-tree/branches.toml`,
+  `.wt-tree/protections.toml` or `.wt-tree/access/**` on the default
+  branch, parse and validate them server-side; reject invalid files with
+  located errors (file:line:col, same codes as the Rust validator); after
+  a successful push apply them: branch metadata (`Branch.Description`,
+  `Branch.Owner`), declared protections (replacing config-managed
+  protections only; rules set via the API stay), and access documents via
+  `accesscfg` (requires the pusher to hold `iam:admin`, else the push is
+  rejected with a hint). Record the applied state in `tree_config`; event
+  `config.applied`; audit.
+- REST: `GET {tree}/config` (applied state, source snapshot, errors of
+  the last attempt), `POST {tree}/config/validate` (validate uploaded
+  files without pushing), `PATCH {tree}/branches/{branch}` accepts
+  `description`/`owner`.
+- CLI: `wt trees config show|validate [PATH]`, `wt branch describe NAME
+  TEXT`, `wt branch owner NAME user:X|team:Y`; local validation in
+  `wt status` / pre-push.
+- Rust: `crates/worktree-protocol/src/config/` parsers for `branches.toml`
+  and `protections.toml` with the same rules as the Go validator.
+- Admin: `TreeConfigTab` (applied config, source snapshot link,
+  validation errors), branch description/owner in `BranchesTab`.
+- Spec: `specs/dot-wt-tree/ConfigAsCode.md`; DotWtTree.md Roadmap updated.
+- Owns: `internal/treeconfig/**`, `httpapi/treeconfig.go`,
+  `pages/tree/TreeConfigTab.tsx`, Rust `protocol/src/config/{branches,protections}.rs`.
+
+### 16.4 Tenant lifecycle (workstream `tenant-lifecycle`)
+
+- Tenant email + verification: `PATCH /tenants/{t}` accepts `email`;
+  a verification email (via the notify mailer, or logged when SMTP is
+  off) with a single-use token (`email_tokens`, 24 h);
+  `POST /tenants/{t}/email/verify`; account email verification on the same
+  mechanism (`/me/email/verify`); grantee references by verified email
+  (`tenant = "ops@acme.io"`) resolve to the tenant.
+- Renames: `POST /tenants/{t}/rename` (tenant:admin + owner) reserves the
+  old slug for 90 days (`tenant_slugs`); requests to the old slug answer
+  `301`-style errors with the new slug in REST and gRPC (error detail);
+  CLI remotes print a hint to update the remote. Event `tenant.renamed`.
+- Deletion: `DELETE /tenants/{t}` (owner) starts a 30-day recovery
+  window (`tenant_deletions`, tenant suspended, trees read-only);
+  `POST /tenants/{t}/restore`; a purge job deletes trees, memberships,
+  grants and documents after the window (GC reclaims objects); event
+  `tenant.deleted`. Suspension now revokes the tenant's service-account
+  tokens and pauses cross-tenant grants that name it.
+- CLI: `wt tenant rename|delete|restore|email set|email verify`, `wt tenant
+  switch SLUG` (sets the current remote's tenant in `.wt/config.toml`).
+- Admin: tenant settings card for email/verification, rename dialog,
+  danger zone (delete / restore with countdown).
+- Spec: TenantModel.md rewritten sections + new
+  `specs/iam/TenantLifecycle.md`.
+- Owns: `iam/tenant_lifecycle*.go` (new), `httpapi/tenant_lifecycle.go`,
+  `commands/tenant.rs`, admin tenant settings files.
+
+### 16.5 ABAC attributes (workstream `abac`)
+
+- Attributes (`map[string]string`, keys `[a-z][a-z0-9_.-]{0,63}`, values
+  ≤ 256 bytes, ≤ 64 per object) on tenants, accounts and trees:
+  `GET|PUT /tenants/{t}/attributes`, `GET|PUT
+  /admin/accounts/{u}/attributes` (+ `GET /me/attributes`), `GET|PUT
+  {tree}/attributes` (tree:admin), audit.
+- Policy conditions gain generic attribute operators:
+  `conditions.attributes: [{key: "principal.department" |
+  "tree.classification" | "tenant.region", op: equals|not_equals|in|
+  not_in|starts_with|exists|not_exists, values: [...]}]` (all must hold).
+  Evaluated in `authz` (new file `authz/attributes.go`), validated on
+  policy writes and by the Rust declarative validator, explained by the
+  simulator (which condition matched/failed), cached with the existing
+  policy cache. Attribute changes invalidate the authz cache.
+- CLI: `wt attr show|set|unset tenant|account|tree TARGET KEY[=VALUE]`;
+  `wt policy` accepts attribute conditions; `wt iam simulate --attr`.
+- Admin: attribute editors on tenant settings, account detail and tree
+  settings; policy editor condition builder; simulator explanation.
+- Spec: `specs/iam/ABAC.md`; IAM.md / TenantModel.md Roadmap updated.
+- Owns: `authz/attributes.go` (+ minimal hook in `authz/policy.go`),
+  `httpapi/attributes.go`, `commands/attr.rs`, Rust declarative condition
+  parsing, admin attribute editor components.
+
+### 16.6 Device authorization and refresh tokens (workstream `device-auth`)
+
+- OAuth 2.0 device authorization grant (RFC 8628) for the CLI:
+  `POST /api/v1/auth/device` → `{device_code, user_code (XXXX-XXXX),
+  verification_uri (/admin/device), verification_uri_complete,
+  expires_in 600, interval 5}`; `POST /api/v1/auth/device/token` (polling;
+  `authorization_pending`, `slow_down`, `access_denied`, `expired_token`);
+  `GET /api/v1/auth/device/{user_code}` and `POST
+  /api/v1/auth/device/{user_code}/approve|deny` for the signed-in user
+  (MFA respected). Rate limited.
+- Refresh tokens: login and device flows return an access token (session,
+  1 h) and a refresh token (30 d, single use, rotation with reuse
+  detection revoking the family); `POST /api/v1/auth/refresh`; the SDK
+  refreshes transparently on `Unauthenticated` and stores the refresh
+  token in `credentials.toml` (0600).
+- CLI: `wt login --device` (prints the code and URL, opens the browser
+  when possible, polls), automatic refresh, `wt session list` shows device
+  sessions.
+- Admin: `DevicePage` (enter/confirm user code, show client name and
+  scopes, approve/deny).
+- Spec: `specs/security/DeviceAuth.md`; Security.md Roadmap updated.
+- Owns: `iam/device*.go`, `iam/refresh*.go` (new), `httpapi/device.go`,
+  SDK `remote/auth.rs` + `remote/credentials.rs` + `remote/session.rs`,
+  `commands/auth.rs`, `pages/DevicePage.tsx`.
+
+### 16.7 Secret scanning and license compliance (workstream `compliance`)
+
+- `scan.Service` (`PushChecker`): scans added/changed text files of a
+  push (size cap, skip binaries and chunked files) with the same rule set
+  as the client scanner (move the shared rules to
+  `crates/worktree-protocol/src/scan_rules.json` embedded by both, or
+  port them to Go with a parity test); per-tree mode `off|warn|block`
+  (default `warn`); block rejects with the findings (path:line, rule,
+  redacted match); `branch:bypass_protection` or an allowlist entry
+  (`scan_allow`: fingerprint + reason) lets a push through; findings are
+  stored (`scan_findings`), event `secret.detected`, audit.
+- License audit: `GET {tree}/compliance/licenses` (files per license,
+  unlicensed paths, proprietary paths reachable by grants, strict SPDX
+  check with the SPDX list embedded), `GET /admin/compliance` (server-wide
+  summary).
+- REST: `GET|PUT {tree}/compliance/settings`, `GET
+  {tree}/compliance/findings`, `POST {tree}/compliance/findings/{id}/resolve`,
+  `GET|POST|DELETE {tree}/compliance/allowlist`.
+- CLI: `wt compliance scan [--server]`, `wt compliance findings`,
+  `wt compliance allow FINGERPRINT --reason`, `wt license audit`.
+- Admin: `ComplianceTab` and `CompliancePage`.
+- Spec: `specs/security/SecretScanning.md`; Security.md and
+  LicenseCompliance.md Roadmap updated.
+- Owns: `internal/scan/**`, `httpapi/compliance.go`,
+  `commands/compliance.rs`, `commands/license.rs` (audit subcommand),
+  `pages/tree/ComplianceTab.tsx`, `pages/CompliancePage.tsx`.
+
+### 16.8 Staged v2 (workstream `staged-v2`)
+
+- Multiple staged snapshots per (tree, account, branch) keyed by `label`
+  (empty = default slot; `[a-z0-9][a-z0-9_.-]{0,63}`; ≤ 10 per branch),
+  status lifecycle `staged|pushed|cleared|expired` with a history kept
+  30 days; expiry after `--staged-ttl` (default 30 d).
+- Browsing staged contents: `GET {tree}/staged/{id}/files` and
+  `.../files/{path}` (respecting path ACLs); `wt stage show [LABEL]`,
+  `wt checkout --staged USER[/LABEL]` into a new local branch.
+- Push-time advisory: `PushResponse` warnings (or `GET
+  {tree}/staged/overlaps?paths=`) used by `wt push` to print "alice has
+  staged changes to …" (never blocks).
+- Hide staged metadata from anonymous readers of public trees.
+- CLI: `wt stage --label L`, `wt stage list`, `wt unstage --label L`.
+- Admin: `StagedTab` grouped by user and label, file browser, history.
+- Spec: StagedVisibility.md rewritten; Roadmap updated.
+- Owns: `internal/staged/**`, `httpapi/staged_routes.go`, `syncsvc`
+  stage handlers (small edits), SDK `remote/stage.rs`, `commands/sync.rs`
+  (stage/unstage), `pages/tree/StagedTab.tsx`.
+
+### 16.9 Conflict resolution in the browser (workstream `conflict-ui`)
+
+- `GET {tree}/merge-requests/{n}/conflicts`: per conflicting path base /
+  ours / theirs text (size cap; binary marked) and a marker preview
+  (diff3 style); `POST {tree}/merge-requests/{n}/resolve` with
+  `{files: [{path, content | take: ours|theirs|base | delete}]}` writes a
+  merge-resolution snapshot on the source branch (parents: source tip +
+  target tip, signed off as the caller, path ACLs and quotas apply), event
+  `mr.conflicts_resolved`.
+- Rebase merges (`merge_method: rebase`) replaying the source snapshots
+  onto the target; `delete_source_branch` option on merge.
+- CLI: `wt mr conflicts N`, `wt mr resolve N` (opens resolved files from
+  the local worktree or `--take ours|theirs PATH`), `wt mr merge
+  --rebase --delete-branch`.
+- Admin: `ResolveConflictsPage` (three-pane per file: ours / result
+  editor / theirs, take buttons, marker navigation, submit), conflict
+  banner on `MergeRequestDetail` linking to it.
+- Spec: Merging.md rewritten sections; Roadmap updated.
+- Owns: `review/resolve*.go`, `review/rebase*.go` (new),
+  `httpapi/resolve.go`, `commands/mr.rs` (conflicts/resolve/merge flags),
+  `pages/tree/ResolveConflictsPage.tsx`, small edits to
+  `MergeRequestDetail.tsx`.
+
+### 16.10 Force push, undo and remote tag deletion (workstream `history-v2`)
+
+- Force push: `PushRequest.force` moves a branch even when the new tip
+  does not descend from the old one; requires `branch:force_push` and is
+  refused by protections with `no_force_push` (and by `require_linear` /
+  approvals unless `branch:bypass_protection`); records the old tip in
+  the server reflog, event `branch.force_pushed`, audit.
+- Idempotency: `PushRequest.operation_id` (client UUID) makes retried
+  pushes no-ops returning the first response (`push_ops`, 24 h).
+- Bypass: `branch:bypass_protection` lets owners push/merge past
+  protections, always audited with `bypass: true`.
+- `DeleteTag` RPC (needs `tree:write`; tag protections apply), `wt tag
+  delete --remote`.
+- Local operation log: every local mutation (snapshot, merge, rebase,
+  cherry-pick, reset, branch switch/delete, stash) records before/after
+  refs in `.wt/oplog.jsonl`; `wt undo [N]`, `wt undo --list`, `wt redo`;
+  refuses when the working tree is dirty unless `--force`.
+- CLI: `wt push --force` (alias `--force-with-lease` semantic: refuses when
+  the server tip is not the last known remote tip), `wt protect set
+  --no-force-push`.
+- Admin: force-push events in branch history, `no_force_push` toggle in
+  `ProtectionsTab`.
+- Spec: `specs/tree/Undo.md`; HistoryRewriting.md and Sync.md updated.
+- Owns: `syncsvc/push_force*.go`, `syncsvc/tags_delete.go` (new) + small
+  edits in `syncsvc/push.go`, `review/protection.go` (no_force_push),
+  SDK `repo/oplog.rs` (new) + hooks into `repo/*` mutations,
+  `commands/undo.rs`, `commands/tag.rs`, `commands/protect.rs`,
+  `pages/tree/ProtectionsTab.tsx`.
+
+### 16.11 Server operations (workstream `server-ops`)
+
+- Backups to object storage: `--backup-target disk|s3` reusing the S3
+  config (`--backup-s3-prefix`), list/restore from either; backup
+  retention by age and count; Helm `CronJob` example.
+- Durable email outbox: queued emails survive restarts (`outbox`
+  collection, retry with backoff, dead-letter after 24 h, admin view and
+  `wt admin outbox list|retry`); `wt status` shows pending local outbox
+  operations (the v0.7 client offline queue).
+- Retention: `--policy-version-retention` (age/count) pruning policy
+  versions; `--audit-retention`; webhook delivery retention.
+- Helm: `ServiceMonitor`, `NetworkPolicy`, `PodDisruptionBudget`
+  templates (off by default); musl release targets in
+  `scripts/release.sh` when the toolchain exists.
+- `wt mirror --tree` conflict: rename the mirror command's tree argument
+  so the global `--tree` keeps its meaning (deprecation alias).
+- Spec: Deployment.md and Backends.md updated (Roadmap trimmed).
+- Owns: `internal/backup/**`, `httpapi/backups.go`, notify mailer outbox
+  files (new `notify/outbox*.go`), `internal/policyhist` retention,
+  `deploy/**`, `scripts/release.sh`, `commands/admin_backup.rs`,
+  `commands/status.rs` (outbox line), `commands/mirror.rs` (argument
+  rename), `pages/BackupsPage.tsx`.

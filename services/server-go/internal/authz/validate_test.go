@@ -159,6 +159,7 @@ func TestActionsCatalog(t *testing.T) {
 		domain.ActTenantRead, domain.ActTenantAdmin, domain.ActServerAdmin,
 		domain.ActIAMRead, domain.ActIAMAdmin,
 		domain.ActReleaseCreate, domain.ActReleaseDelete, domain.ActCIReport,
+		domain.ActTreeFork, domain.ActBranchForcePush, domain.ActProtectionBypass,
 	}
 	got := Actions()
 	if len(got) != len(all) {

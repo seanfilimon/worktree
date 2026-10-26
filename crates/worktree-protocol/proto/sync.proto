@@ -158,6 +158,12 @@ message PushRequest {
   // Manifests and blobs they reference must already be uploaded via
   // UploadObjects before Push is called.
   repeated SnapshotRecord snapshots = 9;
+  // v0.8 (§16.10): move the branch even when new_tip does not descend from
+  // the server tip (needs branch:force_push and no no_force_push rule).
+  bool force = 10;
+  // v0.8 (§16.10): client-chosen idempotency key; a retried push with the
+  // same id returns the first result.
+  string operation_id = 11;
 
   reserved 100 to 199;
 }
@@ -282,6 +288,8 @@ message StageUploadRequest {
   // v0.5: manifest of the staged working state (already uploaded). The
   // server keeps its objects alive (GC root) and lets readers fetch them.
   optional ContentHash manifest_hash = 12;
+  // v0.8 (§16.8): named slot; one staged entry per (account, branch, label).
+  string label = 13;
 
   reserved 100 to 199;
 }
@@ -425,6 +433,79 @@ service SyncService {
 
   // Read back the last applied declarative access document.
   rpc GetAccessConfig(GetAccessConfigRequest) returns (GetAccessConfigResponse);
+
+  // ---- v0.8 (docs/ENGINEERING_PLAN.md §16) ----
+
+  // Upload objects as a pack stream (deltas allowed, resumable by
+  // upload_id/offset; §16.1).
+  rpc UploadPack(stream PackChunk) returns (UploadPackResponse);
+  // How many bytes of an interrupted pack upload the server kept.
+  rpc QueryUpload(QueryUploadRequest) returns (QueryUploadResponse);
+  // Download objects as a pack stream (deltas against objects the client
+  // says it has; §16.1).
+  rpc DownloadPack(DownloadPackRequest) returns (stream PackChunk);
+  // Delete a tag (respecting tag protections; §16.10).
+  rpc DeleteTag(DeleteTagRequest) returns (DeleteTagResponse);
+}
+
+// ---- v0.8 messages ----
+
+// A slice of a pack stream (format in specs/sync/PackFormat.md).
+message PackChunk {
+  bytes data = 1;
+  // Uploads: the id that names this upload (first chunk), and the byte
+  // offset of data within the whole pack (resume).
+  string upload_id = 2;
+  uint64 offset = 3;
+  TreeId tree_id = 4;
+
+  reserved 100 to 199;
+}
+
+message UploadPackResponse {
+  uint32 objects_stored = 1;
+  uint32 objects_already_present = 2;
+  repeated ContentHash rejected = 3;
+  uint64 bytes_received = 4;
+
+  reserved 100 to 199;
+}
+
+message QueryUploadRequest {
+  string upload_id = 1;
+
+  reserved 100 to 199;
+}
+
+message QueryUploadResponse {
+  bool found = 1;
+  uint64 offset = 2;
+
+  reserved 100 to 199;
+}
+
+message DownloadPackRequest {
+  TreeId tree_id = 1;
+  repeated ContentHash want = 2;
+  // Objects the client already has (delta bases).
+  repeated ContentHash have = 3;
+  bool allow_deltas = 4;
+
+  reserved 100 to 199;
+}
+
+message DeleteTagRequest {
+  TreeId tree_id = 1;
+  string name = 2;
+
+  reserved 100 to 199;
+}
+
+message DeleteTagResponse {
+  bool deleted = 1;
+  optional string error = 2;
+
+  reserved 100 to 199;
 }
 
 // ============================================================
@@ -647,6 +728,8 @@ message StagedInfo {
   google.protobuf.Timestamp staged_at = 9;
   // v0.5: manifest of the staged state when the client sent one.
   optional ContentHash manifest_hash = 10;
+  // v0.8 (§16.8).
+  string label = 11;
 
   reserved 100 to 199;
 }

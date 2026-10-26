@@ -203,6 +203,7 @@ mod tests {
                 nanos: 0,
             }),
             manifest_hash: None,
+            ..Default::default()
         };
         let info = staged_from_wire(&rec);
         assert_eq!(info.snapshot_id, "s1");

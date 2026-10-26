@@ -28,6 +28,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "cherry-pick",
             "rebase",
             "stash",
+            "undo",
             "tag",
         ],
     ),
@@ -58,16 +59,16 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     (
         "Collaboration",
         &[
-            "tenant", "trees", "mr", "owners", "ci", "protect", "license", "todo", "deps",
+            "tenant", "trees", "fork", "mr", "owners", "ci", "protect", "license", "todo", "deps",
             "release", "search", "events", "webhook", "inbox", "open",
         ],
     ),
-    ("Administration", &["admin", "audit", "api"]),
+    ("Administration", &["admin", "audit", "compliance", "api"]),
     (
         "Identity and access",
         &[
             "team", "role", "policy", "grant", "access", "sa", "token", "session", "mfa", "invite",
-            "iam", "sso", "identity",
+            "iam", "attr", "sso", "identity",
         ],
     ),
     (

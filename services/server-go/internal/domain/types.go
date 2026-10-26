@@ -67,6 +67,12 @@ type Tenant struct {
 	Status       string        `json:"status,omitempty"`
 	StatusReason string        `json:"status_reason,omitempty"`
 	Limits       *TenantLimits `json:"limits,omitempty"`
+
+	// v0.8 (§16). Email is the tenant's contact address (verified when
+	// EmailVerifiedAt is set); Attributes feed ABAC policy conditions.
+	Email           string            `json:"email,omitempty"`
+	EmailVerifiedAt *time.Time        `json:"email_verified_at,omitempty"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
 }
 
 type Account struct {
@@ -79,6 +85,10 @@ type Account struct {
 	IsAdmin      bool      `json:"is_admin"`  // server-wide admin
 	Disabled     bool      `json:"disabled"`
 	CreatedAt    time.Time `json:"created_at"`
+
+	// v0.8 (§16).
+	EmailVerifiedAt *time.Time        `json:"email_verified_at,omitempty"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
 }
 
 type Membership struct {
@@ -116,6 +126,10 @@ type Tree struct {
 	Visibility    string    `json:"visibility"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+
+	// v0.8 (§16). ForkOf is the id of the tree this one was forked from.
+	ForkOf     string            `json:"fork_of,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 type Branch struct {
@@ -125,6 +139,10 @@ type Branch struct {
 	Protected bool      `json:"protected"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// v0.8 (§16.3): branch metadata (also declarable in .wt-tree/branches.toml).
+	Description string `json:"description,omitempty"`
+	Owner       string `json:"owner,omitempty"` // "user:<name>" | "team:<slug>"
 }
 
 type Snapshot struct {
@@ -188,6 +206,9 @@ type StagedSnapshot struct {
 	Message       string    `json:"message"`
 	StagedAt      time.Time `json:"staged_at"`
 
+	// v0.8 (§16.8): named slot (one entry per tree, account, branch, label).
+	Label string `json:"label,omitempty"`
+
 	// v0.5: hex BLAKE3 of the staged working manifest ("" when the client
 	// sent none). It keeps the staged content alive and downloadable.
 	ManifestHash string `json:"manifest_hash,omitempty"`
@@ -212,6 +233,10 @@ type BranchProtection struct {
 
 	// v0.6 (§14): merge methods allowed into matching branches (empty = all).
 	MergeMethods []string `json:"merge_methods,omitempty"`
+
+	// v0.8 (§16.10): refuse force pushes even from callers with
+	// branch:force_push.
+	NoForcePush bool `json:"no_force_push,omitempty"`
 
 	// ---- v0.7 review (§15.7) ----
 
@@ -266,6 +291,10 @@ type MergeRequest struct {
 	// "team:<team slug>" (a team of the tree's tenant).
 	Reviewers []string `json:"reviewers,omitempty"`
 	// ---- end v0.7 review ----
+
+	// v0.8 (§16.2): SourceTreeID is the fork the source branch lives in
+	// (empty = the merge request's own tree).
+	SourceTreeID string `json:"source_tree_id,omitempty"`
 }
 
 // ---- v0.7 review (§15.7) ----

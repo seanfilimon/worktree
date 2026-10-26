@@ -35,6 +35,9 @@ var knownActions = []domain.Action{
 	domain.ActReleaseCreate,
 	domain.ActReleaseDelete,
 	domain.ActCIReport,
+	domain.ActTreeFork,
+	domain.ActBranchForcePush,
+	domain.ActProtectionBypass,
 }
 
 var (

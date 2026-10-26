@@ -10,6 +10,8 @@ import {
   Wrench,
   Archive,
   Bell,
+  MonitorSmartphone,
+  ShieldAlert,
   ShieldQuestionMark,
   Users,
   type LucideIcon,
@@ -37,7 +39,8 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Overview",
     items: [{ to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, keywords: ["home", "stats", "activity"] },
-      { to: "/notifications", label: "Notifications", icon: Bell, keywords: ["inbox", "mentions", "reviews", "watch"] }],
+      { to: "/notifications", label: "Notifications", icon: Bell, keywords: ["inbox", "mentions", "reviews", "watch"] },
+      { to: "/device", label: "Device sign-in", icon: MonitorSmartphone, keywords: ["device code", "login", "cli", "authorize"] }],
   },
   {
     label: "Workspace",
@@ -68,6 +71,7 @@ const NAV_GROUPS: NavGroup[] = [
         keywords: ["gc", "garbage collection", "storage", "quotas", "retention", "limits"],
       },
       { to: "/backups", label: "Backups", icon: Archive, adminOnly: true, keywords: ["backup", "restore", "disaster recovery"] },
+      { to: "/compliance", label: "Compliance", icon: ShieldAlert, adminOnly: true, keywords: ["secrets", "secret scanning", "licenses", "audit"] },
       {
         to: "/sso",
         label: "Single sign-on",

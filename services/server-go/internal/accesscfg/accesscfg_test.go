@@ -329,7 +329,7 @@ func TestApplyAuthorizationAndEscalation(t *testing.T) {
 	e.must(e.store.PutMembership(e.ctx, &domain.Membership{TenantID: e.acme.ID, AccountID: "acct-dev", Role: "iam-manager"}))
 	esc := Document{Roles: []domain.CustomRole{{Name: "superuser", Permissions: []domain.Action{"tree:*"}}}}
 	res := e.apply("dev", nil, esc, true)
-	if res.Accepted || !strings.Contains(strings.Join(res.Errors, "|"), "role superuser grants tree:write, tree:create, tree:admin, which you do not have yourself") {
+	if res.Accepted || !strings.Contains(strings.Join(res.Errors, "|"), "role superuser grants tree:write, tree:create, tree:admin, tree:fork, which you do not have yourself") {
 		t.Fatalf("escalating role = %+v", res)
 	}
 	escPol := Document{Policies: []domain.Policy{{Name: "open", Enabled: true,

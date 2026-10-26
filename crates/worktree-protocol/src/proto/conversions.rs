@@ -390,6 +390,7 @@ impl From<dom::PushRequest> for wire::PushRequest {
             snapshot_chain: d.snapshot_chain.into_iter().map(Into::into).collect(),
             account_id: Some(d.account_id.into()),
             snapshots: Vec::new(),
+            ..Default::default()
         }
     }
 }
@@ -488,6 +489,7 @@ impl From<dom::StageUploadRequest> for wire::StageUploadRequest {
             message: d.message,
             account_id: Some(d.account_id.into()),
             manifest_hash: None,
+            ..Default::default()
         }
     }
 }
@@ -1253,6 +1255,7 @@ impl wire::StagedInfo {
             message: s.message.clone(),
             staged_at: Some(datetime_to_prost(s.timestamp)),
             manifest_hash: None,
+            ..Default::default()
         }
     }
 
@@ -1569,6 +1572,7 @@ mod tests {
             snapshot_chain: vec![],
             account_id: Some(AccountId::new().into()),
             snapshots: vec![],
+            ..Default::default()
         };
         let err = dom::PushRequest::try_from(w).unwrap_err();
         match err {

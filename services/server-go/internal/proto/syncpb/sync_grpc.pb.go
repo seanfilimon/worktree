@@ -50,6 +50,10 @@ const (
 	SyncService_WatchBranches_FullMethodName    = "/worktree.sync.v1.SyncService/WatchBranches"
 	SyncService_Unstage_FullMethodName          = "/worktree.sync.v1.SyncService/Unstage"
 	SyncService_GetAccessConfig_FullMethodName  = "/worktree.sync.v1.SyncService/GetAccessConfig"
+	SyncService_UploadPack_FullMethodName       = "/worktree.sync.v1.SyncService/UploadPack"
+	SyncService_QueryUpload_FullMethodName      = "/worktree.sync.v1.SyncService/QueryUpload"
+	SyncService_DownloadPack_FullMethodName     = "/worktree.sync.v1.SyncService/DownloadPack"
+	SyncService_DeleteTag_FullMethodName        = "/worktree.sync.v1.SyncService/DeleteTag"
 )
 
 // SyncServiceClient is the client API for SyncService service.
@@ -89,6 +93,16 @@ type SyncServiceClient interface {
 	Unstage(ctx context.Context, in *UnstageRequest, opts ...grpc.CallOption) (*UnstageResponse, error)
 	// Read back the last applied declarative access document.
 	GetAccessConfig(ctx context.Context, in *GetAccessConfigRequest, opts ...grpc.CallOption) (*GetAccessConfigResponse, error)
+	// Upload objects as a pack stream (deltas allowed, resumable by
+	// upload_id/offset; §16.1).
+	UploadPack(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[PackChunk, UploadPackResponse], error)
+	// How many bytes of an interrupted pack upload the server kept.
+	QueryUpload(ctx context.Context, in *QueryUploadRequest, opts ...grpc.CallOption) (*QueryUploadResponse, error)
+	// Download objects as a pack stream (deltas against objects the client
+	// says it has; §16.1).
+	DownloadPack(ctx context.Context, in *DownloadPackRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PackChunk], error)
+	// Delete a tag (respecting tag protections; §16.10).
+	DeleteTag(ctx context.Context, in *DeleteTagRequest, opts ...grpc.CallOption) (*DeleteTagResponse, error)
 }
 
 type syncServiceClient struct {
@@ -280,6 +294,58 @@ func (c *syncServiceClient) GetAccessConfig(ctx context.Context, in *GetAccessCo
 	return out, nil
 }
 
+func (c *syncServiceClient) UploadPack(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[PackChunk, UploadPackResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &SyncService_ServiceDesc.Streams[3], SyncService_UploadPack_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[PackChunk, UploadPackResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_UploadPackClient = grpc.ClientStreamingClient[PackChunk, UploadPackResponse]
+
+func (c *syncServiceClient) QueryUpload(ctx context.Context, in *QueryUploadRequest, opts ...grpc.CallOption) (*QueryUploadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryUploadResponse)
+	err := c.cc.Invoke(ctx, SyncService_QueryUpload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *syncServiceClient) DownloadPack(ctx context.Context, in *DownloadPackRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PackChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &SyncService_ServiceDesc.Streams[4], SyncService_DownloadPack_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DownloadPackRequest, PackChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_DownloadPackClient = grpc.ServerStreamingClient[PackChunk]
+
+func (c *syncServiceClient) DeleteTag(ctx context.Context, in *DeleteTagRequest, opts ...grpc.CallOption) (*DeleteTagResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteTagResponse)
+	err := c.cc.Invoke(ctx, SyncService_DeleteTag_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SyncServiceServer is the server API for SyncService service.
 // All implementations must embed UnimplementedSyncServiceServer
 // for forward compatibility.
@@ -317,6 +383,16 @@ type SyncServiceServer interface {
 	Unstage(context.Context, *UnstageRequest) (*UnstageResponse, error)
 	// Read back the last applied declarative access document.
 	GetAccessConfig(context.Context, *GetAccessConfigRequest) (*GetAccessConfigResponse, error)
+	// Upload objects as a pack stream (deltas allowed, resumable by
+	// upload_id/offset; §16.1).
+	UploadPack(grpc.ClientStreamingServer[PackChunk, UploadPackResponse]) error
+	// How many bytes of an interrupted pack upload the server kept.
+	QueryUpload(context.Context, *QueryUploadRequest) (*QueryUploadResponse, error)
+	// Download objects as a pack stream (deltas against objects the client
+	// says it has; §16.1).
+	DownloadPack(*DownloadPackRequest, grpc.ServerStreamingServer[PackChunk]) error
+	// Delete a tag (respecting tag protections; §16.10).
+	DeleteTag(context.Context, *DeleteTagRequest) (*DeleteTagResponse, error)
 	mustEmbedUnimplementedSyncServiceServer()
 }
 
@@ -374,6 +450,18 @@ func (UnimplementedSyncServiceServer) Unstage(context.Context, *UnstageRequest) 
 }
 func (UnimplementedSyncServiceServer) GetAccessConfig(context.Context, *GetAccessConfigRequest) (*GetAccessConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetAccessConfig not implemented")
+}
+func (UnimplementedSyncServiceServer) UploadPack(grpc.ClientStreamingServer[PackChunk, UploadPackResponse]) error {
+	return status.Error(codes.Unimplemented, "method UploadPack not implemented")
+}
+func (UnimplementedSyncServiceServer) QueryUpload(context.Context, *QueryUploadRequest) (*QueryUploadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryUpload not implemented")
+}
+func (UnimplementedSyncServiceServer) DownloadPack(*DownloadPackRequest, grpc.ServerStreamingServer[PackChunk]) error {
+	return status.Error(codes.Unimplemented, "method DownloadPack not implemented")
+}
+func (UnimplementedSyncServiceServer) DeleteTag(context.Context, *DeleteTagRequest) (*DeleteTagResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteTag not implemented")
 }
 func (UnimplementedSyncServiceServer) mustEmbedUnimplementedSyncServiceServer() {}
 func (UnimplementedSyncServiceServer) testEmbeddedByValue()                     {}
@@ -659,6 +747,60 @@ func _SyncService_GetAccessConfig_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SyncService_UploadPack_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(SyncServiceServer).UploadPack(&grpc.GenericServerStream[PackChunk, UploadPackResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_UploadPackServer = grpc.ClientStreamingServer[PackChunk, UploadPackResponse]
+
+func _SyncService_QueryUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryUploadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SyncServiceServer).QueryUpload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SyncService_QueryUpload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SyncServiceServer).QueryUpload(ctx, req.(*QueryUploadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SyncService_DownloadPack_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DownloadPackRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SyncServiceServer).DownloadPack(m, &grpc.GenericServerStream[DownloadPackRequest, PackChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_DownloadPackServer = grpc.ServerStreamingServer[PackChunk]
+
+func _SyncService_DeleteTag_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteTagRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SyncServiceServer).DeleteTag(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SyncService_DeleteTag_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SyncServiceServer).DeleteTag(ctx, req.(*DeleteTagRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SyncService_ServiceDesc is the grpc.ServiceDesc for SyncService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -718,6 +860,14 @@ var SyncService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetAccessConfig",
 			Handler:    _SyncService_GetAccessConfig_Handler,
 		},
+		{
+			MethodName: "QueryUpload",
+			Handler:    _SyncService_QueryUpload_Handler,
+		},
+		{
+			MethodName: "DeleteTag",
+			Handler:    _SyncService_DeleteTag_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -733,6 +883,16 @@ var SyncService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "WatchBranches",
 			Handler:       _SyncService_WatchBranches_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "UploadPack",
+			Handler:       _SyncService_UploadPack_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "DownloadPack",
+			Handler:       _SyncService_DownloadPack_Handler,
 			ServerStreams: true,
 		},
 	},

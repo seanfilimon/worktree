@@ -21,12 +21,13 @@ var v03Actions = []domain.Action{
 // expectedGrants is the full v0.4 built-in matrix, written out explicitly.
 var expectedGrants = map[string]map[domain.Action]bool{
 	domain.RoleViewer: {
-		domain.ActTenantRead: true, domain.ActTreeRead: true,
+		domain.ActTenantRead: true, domain.ActTreeRead: true, domain.ActTreeFork: true,
 	},
 	domain.RoleDeveloper: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
 		domain.ActTreeWrite: true, domain.ActBranchCreate: true, domain.ActBranchPush: true, domain.ActMRCreate: true,
 		domain.ActReleaseCreate: true, domain.ActCIReport: true,
+		domain.ActTreeFork: true,
 	},
 	domain.RoleMaintainer: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
@@ -35,6 +36,7 @@ var expectedGrants = map[string]map[domain.Action]bool{
 		domain.ActBranchDelete: true, domain.ActMRApprove: true, domain.ActMRMerge: true, domain.ActTreeCreate: true,
 		domain.ActReleaseDelete: true,
 		domain.ActIAMRead:       true,
+		domain.ActTreeFork:      true,
 	},
 	domain.RoleAdmin: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
@@ -43,6 +45,7 @@ var expectedGrants = map[string]map[domain.Action]bool{
 		domain.ActBranchDelete: true, domain.ActMRApprove: true, domain.ActMRMerge: true, domain.ActTreeCreate: true,
 		domain.ActReleaseDelete: true,
 		domain.ActIAMRead:       true, domain.ActTreeAdmin: true, domain.ActTenantAdmin: true, domain.ActIAMAdmin: true,
+		domain.ActTreeFork: true, domain.ActBranchForcePush: true,
 	},
 	domain.RoleOwner: {
 		domain.ActTenantRead: true, domain.ActTreeRead: true,
@@ -51,6 +54,7 @@ var expectedGrants = map[string]map[domain.Action]bool{
 		domain.ActBranchDelete: true, domain.ActMRApprove: true, domain.ActMRMerge: true, domain.ActTreeCreate: true,
 		domain.ActReleaseDelete: true,
 		domain.ActIAMRead:       true, domain.ActTreeAdmin: true, domain.ActTenantAdmin: true, domain.ActIAMAdmin: true,
+		domain.ActTreeFork: true, domain.ActBranchForcePush: true, domain.ActProtectionBypass: true,
 	},
 	"":            {}, // non-member
 	"custom-role": {}, // undefined custom role

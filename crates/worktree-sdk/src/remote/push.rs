@@ -210,6 +210,7 @@ fn push_request(
         snapshot_chain: chain.iter().map(|s| snapshot_id(&s.id)).collect(),
         account_id: None,
         snapshots,
+        ..Default::default()
     }
 }
 

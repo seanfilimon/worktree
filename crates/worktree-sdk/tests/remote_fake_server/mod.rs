@@ -640,6 +640,7 @@ impl SyncService for Svc {
                     nanos: 0,
                 }),
                 manifest_hash: r.manifest_hash,
+                ..Default::default()
             },
         });
         Ok(Response::new(wire::StageUploadResponse {
@@ -1214,6 +1215,47 @@ impl SyncService for Svc {
                 updated_by: by.clone(),
             },
         }))
+    }
+
+    // ---- v0.8 (§16): not served by the fake (clients fall back) ----
+
+    async fn upload_pack(
+        &self,
+        _req: Request<Streaming<wire::PackChunk>>,
+    ) -> Result<Response<wire::UploadPackResponse>, Status> {
+        Err(Status::unimplemented(
+            "UploadPack is not supported by the fake server",
+        ))
+    }
+
+    async fn query_upload(
+        &self,
+        _req: Request<wire::QueryUploadRequest>,
+    ) -> Result<Response<wire::QueryUploadResponse>, Status> {
+        Err(Status::unimplemented(
+            "QueryUpload is not supported by the fake server",
+        ))
+    }
+
+    type DownloadPackStream =
+        tokio_stream::Iter<std::vec::IntoIter<Result<wire::PackChunk, Status>>>;
+
+    async fn download_pack(
+        &self,
+        _req: Request<wire::DownloadPackRequest>,
+    ) -> Result<Response<Self::DownloadPackStream>, Status> {
+        Err(Status::unimplemented(
+            "DownloadPack is not supported by the fake server",
+        ))
+    }
+
+    async fn delete_tag(
+        &self,
+        _req: Request<wire::DeleteTagRequest>,
+    ) -> Result<Response<wire::DeleteTagResponse>, Status> {
+        Err(Status::unimplemented(
+            "DeleteTag is not supported by the fake server",
+        ))
     }
 }
 

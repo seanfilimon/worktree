@@ -135,6 +135,7 @@ pub(crate) async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result
         message: message.clone(),
         account_id: None,
         manifest_hash: Some(wire_hash(&manifest_hash)),
+        ..Default::default()
     };
     session.client.stage(req).await?;
 

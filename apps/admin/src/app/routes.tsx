@@ -14,6 +14,12 @@ import { TreeAccessTab } from "@/pages/iam/TreeAccessTab";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { OperationsPage } from "@/pages/OperationsPage";
 import { BackupsPage } from "@/pages/BackupsPage";
+import { CompliancePage } from "@/pages/CompliancePage";
+import { DevicePage } from "@/pages/DevicePage";
+import { ComplianceTab } from "@/pages/tree/ComplianceTab";
+import { ForksTab } from "@/pages/tree/ForksTab";
+import { ResolveConflictsPage } from "@/pages/tree/ResolveConflictsPage";
+import { TreeConfigTab } from "@/pages/tree/TreeConfigTab";
 import { NotificationsPage } from "@/pages/notifications/NotificationsPage";
 import { MirrorsTab } from "@/pages/tree/MirrorsTab";
 import { OwnersTab } from "@/pages/tree/OwnersTab";
@@ -73,11 +79,15 @@ export const routes: RouteObject[] = [
               { path: "todos", element: <TodosTab /> },
               { path: "merge-requests", element: <MergeRequestsTab /> },
               { path: "merge-requests/:number", element: <MergeRequestDetail /> },
+              { path: "merge-requests/:number/resolve", element: <ResolveConflictsPage /> },
               { path: "protections", element: <ProtectionsTab /> },
               { path: "licenses", element: <LicensesTab /> },
               { path: "access", element: <TreeAccessTab /> },
               { path: "owners", element: <OwnersTab /> },
               { path: "mirrors", element: <MirrorsTab /> },
+              { path: "forks", element: <ForksTab /> },
+              { path: "config", element: <TreeConfigTab /> },
+              { path: "compliance", element: <ComplianceTab /> },
               { path: "settings", element: <TreeSettingsTab /> },
             ],
           },
@@ -89,6 +99,8 @@ export const routes: RouteObject[] = [
           { path: "operations", element: <OperationsPage /> },
           { path: "backups", element: <BackupsPage /> },
           { path: "notifications", element: <NotificationsPage /> },
+          { path: "device", element: <DevicePage /> },
+          { path: "compliance", element: <CompliancePage /> },
           { path: "sso", element: <SsoSettingsPage /> },
           { path: "settings", element: <SettingsPage /> },
           { path: "*", element: <NotFoundPage /> },
