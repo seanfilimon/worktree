@@ -1,4 +1,6 @@
-# Local stack: W0rkTree server (+ bundled admin panel) and the docs site.
+# Local dev stack: W0rkTree server (+ bundled admin panel) and the docs site.
+# For deployments (S3 / SMTP profiles) use deploy/docker-compose.yml; see
+# docs/deploy.md.
 #
 #   WT_ADMIN_PASSWORD=change-me docker compose up --build
 #
@@ -10,7 +12,7 @@ services:
   server:
     build:
       context: .
-      dockerfile: Dockerfile.server
+      dockerfile: deploy/docker/Dockerfile
       args:
         VERSION: ${WT_VERSION:-dev}
     image: worktree-server:${WT_VERSION:-dev}

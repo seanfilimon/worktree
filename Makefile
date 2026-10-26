@@ -95,8 +95,8 @@ dev: ## Go server (:7420) + admin Vite dev server (:5173)
 	bash scripts/dev.sh
 
 # ------------------------------------------------------------------ docker
-docker: ## Build the server image (Dockerfile.server)
-	docker build -f Dockerfile.server --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(IMAGE) .
+docker: ## Build the server image (deploy/docker/Dockerfile)
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(IMAGE) .
 
 docker-web: ## Build the web image (apps/web/Dockerfile)
 	docker build -f apps/web/Dockerfile -t worktree-web:$(VERSION) .
