@@ -1358,7 +1358,10 @@ paths:
         Opens a merge request from `source_branch` into `target_branch`
         (both must exist and differ). The HTTP layer requires `tree:read`;
         the review service checks `mr:create`. Publishes `mr.opened`;
-        audited by the review service.
+        audited by the review service. v0.7 (§15.7): `draft` opens a draft
+        (not mergeable until `POST .../ready`); `reviewers` requests
+        reviewers; a non-draft merge request also requests the owners of
+        its changed paths (`mr.review_requested`).
       tags: [MergeRequests]
       x-wt-action: mr:create
       requestBody:
@@ -1527,7 +1530,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: "`merge_blocked`, `linked_group`, `merge_method_not_allowed` or `conflict` (Error); `merge_conflict` (MergeConflictError, the conflicting paths both at the top level and in `error`)."
+          description: "`merge_blocked` (v0.7: including missing owner approvals, blocker `owners`), `linked_group`, `merge_method_not_allowed`, `draft` (v0.7: a draft merge request), `quota_exceeded` (v0.7: the merge or squash snapshot would exceed the tenant storage quota) or `conflict` (Error); `merge_conflict` (MergeConflictError, the conflicting paths both at the top level and in `error`)."
           content:
             application/json:
               schema:
@@ -5607,6 +5610,326 @@ paths:
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/comments/{id}/apply:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number.
+        schema:
+          type: integer
+          minimum: 1
+      - name: id
+        in: path
+        required: true
+        description: Comment id (a comment with a `suggestion`).
+        schema:
+          type: string
+    post:
+      operationId: applySuggestion
+      summary: Apply a suggested change
+      description: |
+        v0.7 (§15.7). Writes a snapshot on the merge request's source branch
+        (parent: the source tip; authored and pushed by the caller) whose
+        file is the suggested version, marks the suggestion applied
+        (`applied_snapshot`, `applied_by`, `applied_at`) and the comment
+        resolved. Needs `tree:write` and a direct push to the source branch
+        allowed by its protection; path ACLs, the tenant storage quota and
+        signature requirements apply like for a push. When the source tip
+        changed the suggested lines since the suggestion was made the answer
+        is `409 suggestion_outdated` (edits elsewhere in the file are merged
+        line-wise). Already applied suggestions, merge requests that are not
+        open and a source that moved concurrently answer `409 conflict`; the
+        storage quota `409 quota_exceeded`. Publishes `branch.pushed` and
+        `mr.suggestion_applied` `{"number","comment_id","path","snapshot_id","applied_by"}`;
+        audited as `mr.suggestion_apply`.
+      tags: [MergeRequests]
+      x-wt-action: tree:write
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplySuggestionRequest"
+      responses:
+        "200":
+          description: The applied comment and the new snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppliedSuggestion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`suggestion_outdated`, `quota_exceeded` or `conflict`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/ready:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number.
+        schema:
+          type: integer
+          minimum: 1
+    post:
+      operationId: markMRReady
+      summary: Mark a draft ready for review
+      description: |
+        v0.7 (§15.7). Clears `draft`, requests the owners of the changed
+        paths as reviewers (`mr.review_requested`) and publishes `mr.ready`.
+        The author may mark their own merge request ready; others need
+        `mr:merge`. A merge request that is not a draft is returned
+        unchanged. Audited as `mr.ready`.
+      tags: [MergeRequests]
+      x-wt-action: [self, 'mr:merge']
+      responses:
+        "200":
+          description: The merge request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MergeRequest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/reviewers:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number.
+        schema:
+          type: integer
+          minimum: 1
+    post:
+      operationId: requestReviewers
+      summary: Request reviewers
+      description: |
+        v0.7 (§15.7). Adds review requests (`user:NAME`, `team:SLUG`; also
+        `@NAME`, `@TENANT/TEAM`) to an open merge request. Users and teams
+        (of the tree's tenant) must exist; the author cannot be requested.
+        The author or a caller with `mr:approve` may request. Publishes
+        `mr.review_requested` `{"number","reviewers","requested_by"}` with
+        the newly requested reviewers; audited as `mr.review_request`.
+      tags: [MergeRequests]
+      x-wt-action: [self, 'mr:approve']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewersRequest"
+      responses:
+        "200":
+          description: The merge request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MergeRequest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    delete:
+      operationId: removeReviewers
+      summary: Withdraw review requests
+      description: |
+        v0.7 (§15.7). Removes review requests named by `?reviewer=`
+        (repeatable) or a `ReviewersRequest` body. The author or a caller
+        with `mr:approve` may remove. Audited as `mr.review_request_remove`.
+      tags: [MergeRequests]
+      x-wt-action: [self, 'mr:approve']
+      parameters:
+        - name: reviewer
+          in: query
+          required: false
+          description: A reviewer to remove (repeatable).
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewersRequest"
+      responses:
+        "200":
+          description: The merge request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MergeRequest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/merge-requests/{n}/owners:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+      - name: n
+        in: path
+        required: true
+        description: Merge request number.
+        schema:
+          type: integer
+          minimum: 1
+    get:
+      operationId: getMROwners
+      summary: Owners of the changed paths
+      description: |
+        v0.7 (§15.7). Every path the merge request changes (relative to the
+        merge base with the target), its owners and whether one of them
+        approved the current source tip. `required` reports the target's
+        `require_owner_approval`; `missing` lists owned paths without an
+        owner approval.
+      tags: [MergeRequests]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Owners per changed path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MROwners"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/trees/{tenant}/{tree}/owners:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getOwners
+      summary: Get the path owners of a tree
+      description: |
+        v0.7 (§15.7). The server configuration (`source: config`), else the
+        rules of the `OWNERS` file at the root of the default branch
+        (`source: file`, with unparsable lines in `errors`), else none.
+        Rules use the license-rule `**` glob syntax; the last matching rule
+        wins. OWNERS lines are `pattern  @user @tenant/team ...`.
+      tags: [Trees]
+      x-wt-action: tree:read
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The owner configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnersConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    put:
+      operationId: putOwners
+      summary: Replace the path owners of a tree
+      description: |
+        v0.7 (§15.7). Stores the server owner configuration (owners are
+        normalized to `user:NAME` / `team:SLUG` and must exist); an empty
+        `rules` list removes it so the OWNERS file applies again. Audited as
+        `owners.update`.
+      tags: [Trees]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutOwnersRequest"
+      responses:
+        "200":
+          description: The owner configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnersConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/tenants/{tenant}/linked-groups:
     parameters:
       - $ref: "#/components/parameters/Tenant"
@@ -7542,6 +7865,26 @@ components:
           type: string
         snapshots:
           type: integer
+    AppliedSuggestion:
+      type: object
+      description: "AppliedSuggestion is the result of POST .../comments/{id}/apply (review.AppliedSuggestion): the updated comment and the snapshot written on the source branch."
+      required: [comment, snapshot]
+      properties:
+        comment:
+          anyOf:
+            - $ref: "#/components/schemas/ReviewComment"
+            - type: "null"
+        snapshot:
+          anyOf:
+            - $ref: "#/components/schemas/Snapshot"
+            - type: "null"
+    ApplySuggestionRequest:
+      type: object
+      description: "applySuggestionRequest is the optional body of POST .../comments/{id}/apply."
+      properties:
+        message:
+          type: string
+          description: "message of the snapshot (default: \"Apply suggestion to PATH (!N, comment #ID)\")"
     Approval:
       type: object
       required: [account_id, username, at]
@@ -7821,6 +8164,9 @@ components:
             type: string
             enum: [fast-forward, merge, squash]
           description: "v0.6 (§14.1): merge methods allowed into matching branches (empty = all). The lists of all matching rules intersect. `require_linear` also forbids `merge`, `require_signed` forbids `merge` and `squash`. Unknown names answer 400; the stored list is deduplicated in preference order (fast-forward, merge, squash)."
+        require_owner_approval:
+          type: boolean
+          description: "v0.7 (§15.7): every path a merge request changes needs an approval of the current source tip from one of the path's owners (`GET .../owners`); missing approvals answer `409 merge_blocked` (blocker kind `owners`)."
     CICombinedStatus:
       type: object
       description: "Combined CI view of one snapshot (ci.Status). state is failure if any check failed or errored, else pending if any is pending, else success; \"\" when no check was reported."
@@ -8030,6 +8376,9 @@ components:
           minimum: 0
         snapshot_id:
           type: string
+        suggestion:
+          $ref: "#/components/schemas/SuggestionInput"
+          description: "v0.7 (§15.7): a suggested change; `path`, `line` and `snapshot_id` are then taken from it and `body` may be empty."
     CreateGroupRequest:
       type: object
       properties:
@@ -8086,6 +8435,14 @@ components:
           type: string
         target_branch:
           type: string
+        draft:
+          type: boolean
+          description: "v0.7 (§15.7): open as a draft (cannot be merged until `POST .../ready`; owners are requested when it becomes ready)."
+        reviewers:
+          type: array
+          items:
+            type: string
+          description: "v0.7 (§15.7): reviewers to request: `user:NAME`, `team:SLUG` (also `@NAME`, `@TENANT/TEAM`); they must exist."
     CreateReleaseRequest:
       type: object
       properties:
@@ -8869,6 +9226,29 @@ components:
           format: date-time
         recovery_codes_left:
           type: integer
+    MROwners:
+      type: object
+      description: "MROwners reports the owners of the paths a merge request changes (review.MROwners)."
+      required: [source, required, satisfied, paths, missing]
+      properties:
+        source:
+          type: string
+          enum: [config, file, none]
+        required:
+          type: boolean
+          description: "Required is set when the target's protection requires owner approval."
+        satisfied:
+          type: boolean
+          description: "Satisfied is set when every owned path has an owner approval."
+        paths:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/PathOwnership"
+        missing:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Missing lists the owned paths without an owner approval."
     MeResponse:
       type: object
       required: [account, memberships]
@@ -8917,13 +9297,13 @@ components:
       properties:
         kind:
           type: string
-          description: "state | source | linked_group | approvals | changes_requested | ci | todos | linear | diverged | conflicts | merge_method. Since v0.6, linear, diverged, conflicts and merge_method are reported only when no allowed merge method can merge the request."
+          description: "state | source | linked_group | approvals | changes_requested | ci | todos | linear | diverged | conflicts | merge_method | draft | owners. Since v0.6, linear, diverged, conflicts and merge_method are reported only when no allowed merge method can merge the request. v0.7: draft (the merge request is a draft) and owners (require_owner_approval: an owned changed path lacks an owner approval)."
         message:
           type: string
     MergeChecks:
       type: object
       description: "MergeChecks is the merge readiness of a merge request (review.MergeChecks)."
-      required: [mergeable, blockers, approvals, ci, todos, methods, conflicts]
+      required: [mergeable, blockers, approvals, ci, todos, methods, conflicts, owners]
       properties:
         mergeable:
           type: boolean
@@ -8948,6 +9328,9 @@ components:
           items:
             $ref: "#/components/schemas/MergeConflict"
           description: "v0.6 (§14.1): the conflicts of the three-way merge when the branches diverged (empty otherwise)."
+        owners:
+          $ref: "#/components/schemas/OwnersSummary"
+          description: "v0.7 (§15.7): owner approval of the changed paths."
     MergeConflict:
       type: object
       description: "Conflict is one path a server-side merge cannot resolve (review.Conflict). Tree is set for linked-group merges (\"tenant/tree\")."
@@ -9049,6 +9432,14 @@ components:
         merge_method:
           type: string
           description: "v0.6 (§14.1): the method used to merge: `fast-forward`, `merge` or `squash` (empty on open and closed requests, and on requests merged before v0.6, which were fast-forwarded)."
+        draft:
+          type: boolean
+          description: "v0.7 (§15.7): draft merge requests cannot be merged (`409 draft`) until marked ready."
+        reviewers:
+          type: array
+          items:
+            type: string
+          description: "v0.7 (§15.7): requested reviewers, `user:NAME` or `team:SLUG` (explicit requests and the owners of the changed paths)."
     Mergeability:
       type: object
       description: "Mergeability reports which merge methods can merge a merge request (review.Mergeability). It does not consider approvals, CI or TODOs (see the checks endpoint)."
@@ -9085,6 +9476,42 @@ components:
           additionalProperties:
             type: string
           description: "Reasons explains, per method, why it is not offered."
+    OwnersConfig:
+      type: object
+      description: "OwnersConfig is the owner configuration of a tree as served by GET {tree}/owners (review.OwnersConfig)."
+      required: [tree_id, rules, updated_by, updated_at, source, errors]
+      properties:
+        tree_id:
+          type: string
+        rules:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/PathOwnerRule"
+        updated_by:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [config, file, none]
+          description: "config = server configuration, file = the OWNERS file at the root of the default branch (used when there is no server configuration), none."
+        errors:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Errors lists OWNERS file lines that could not be parsed."
+    OwnersSummary:
+      type: object
+      description: "OwnersSummary is the owner part of MergeChecks (review.OwnersSummary)."
+      required: [required, missing]
+      properties:
+        required:
+          type: boolean
+        missing:
+          type: [array, "null"]
+          items:
+            type: string
     PasswordResetRequest:
       type: object
       properties:
@@ -9163,6 +9590,53 @@ components:
           type: string
         active:
           type: boolean
+    PathOwnerRule:
+      type: object
+      description: "PathOwnerRule makes accounts or teams owners of paths of a tree (CODEOWNERS-style; the last matching rule wins; a rule without owners un-owns its paths)."
+      required: [pattern, owners]
+      properties:
+        pattern:
+          type: string
+          description: "\"**\" glob, '/'-separated, anchored at the tree root (license-rule syntax)"
+        owners:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "\"user:<name>\" | \"team:<slug>\""
+    PathOwners:
+      type: object
+      description: "PathOwners is the owner configuration of a tree."
+      required: [tree_id, rules, updated_by, updated_at]
+      properties:
+        tree_id:
+          type: string
+        rules:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/PathOwnerRule"
+        updated_by:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    PathOwnership:
+      type: object
+      description: "PathOwnership is one path a merge request changes and its owners (review.PathOwnership)."
+      required: [path, owners, approved, approved_by]
+      properties:
+        path:
+          type: string
+        owners:
+          type: [array, "null"]
+          items:
+            type: string
+        approved:
+          type: boolean
+          description: "Approved is set when one of Owners approved the current source tip."
+        approved_by:
+          type: [array, "null"]
+          items:
+            type: string
     Policy:
       type: object
       description: "Policy is a named, versioned set of statements scoped to one tenant. Evaluation: an explicit deny in any enabled policy overrides every allow (roles, grants and policy allows). Policy allows extend role grants."
@@ -9370,6 +9844,14 @@ components:
       properties:
         role:
           type: string
+    PutOwnersRequest:
+      type: object
+      description: "putOwnersRequest is the body of PUT {tree}/owners (an empty list removes the server configuration)."
+      properties:
+        rules:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/PathOwnerRule"
     PutSSORequest:
       type: object
       description: "putSSORequest is the body of PUT /api/v1/admin/sso. has_client_secret and updated_at are accepted (and ignored) so that a GET response can be sent back as is."
@@ -9587,6 +10069,9 @@ components:
         updated_at:
           type: string
           format: date-time
+        suggestion:
+          $ref: "#/components/schemas/Suggestion"
+          description: "v0.7 (§15.7): a suggested change, applied with `POST .../comments/{id}/apply`."
     ReviewRequest:
       type: object
       properties:
@@ -9594,6 +10079,15 @@ components:
           type: string
         body:
           type: string
+    ReviewersRequest:
+      type: object
+      description: "reviewersRequest is the body of POST/DELETE .../reviewers."
+      properties:
+        reviewers:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "user:NAME | team:SLUG (also @NAME, @TENANT/TEAM)"
     RevokedResponse:
       type: object
       required: [revoked]
@@ -10065,6 +10559,50 @@ components:
         manifest_hash:
           type: string
           description: "v0.5: hex BLAKE3 of the staged working manifest (\"\" when the client sent none). It keeps the staged content alive and downloadable."
+    Suggestion:
+      type: object
+      description: "Suggestion is a change proposed by a merge request comment: lines start_line..end_line (1-based, inclusive) of path as of snapshot_id are replaced by replacement. Applying it writes a snapshot on the source branch (applied_snapshot)."
+      required: [path, start_line, end_line, replacement, snapshot_id]
+      properties:
+        path:
+          type: string
+        start_line:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
+        replacement:
+          type: string
+        snapshot_id:
+          type: string
+        applied_snapshot:
+          type: string
+        applied_by:
+          type: string
+          description: "username"
+        applied_at:
+          type: string
+          format: date-time
+    SuggestionInput:
+      type: object
+      description: "SuggestionInput is the suggestion of a new comment (review.SuggestionInput)."
+      required: [path, start_line, end_line, replacement]
+      properties:
+        path:
+          type: string
+        start_line:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
+        replacement:
+          type: string
+          description: "replaces the lines; a missing final newline is added; empty deletes them"
+        snapshot_id:
+          type: string
+          description: "SnapshotID defaults to the comment's snapshot, else the source tip."
     SystemInfo:
       type: object
       required: [version, go_version, os, arch, started_at, uptime_seconds, allow_registration, data_dir, num_cpu, num_goroutine, memory, storage, event_bus]

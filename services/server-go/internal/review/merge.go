@@ -658,6 +658,11 @@ func (s *Service) prepareMerge(ctx context.Context, p *domain.Principal, tree *d
 		PushedBy:     p.AccountID,
 		PushedAt:     now,
 	}
+	// v0.7 (§15.7): the new objects must fit the tenant's storage quota
+	// (sized against both tips, which already reference the rest).
+	if err := s.checkMergeQuota(ctx, p, tree, mr.TargetBranch, ev.targetTip, snap, []string{ev.targetTip, ev.sourceTip}); err != nil {
+		return nil, err
+	}
 	if err := s.store.PutSnapshot(ctx, snap); err != nil {
 		return nil, fmt.Errorf("review: store %s snapshot: %w", method, err)
 	}

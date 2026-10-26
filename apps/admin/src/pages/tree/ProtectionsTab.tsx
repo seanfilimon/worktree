@@ -1,9 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, BadgeCheck, CircleCheck, GitCommitHorizontal, GitMerge, Info, ListTodo, Lock, Pencil, Plus, ShieldCheck } from "lucide-react";
+import { Ban, BadgeCheck, CircleCheck, GitCommitHorizontal, GitMerge, Info, ListTodo, Lock, Pencil, Plus, ShieldCheck, UserCheck } from "lucide-react";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { useApi } from "@/api/context";
 import { keys, useBranches, useProtections } from "@/api/queries";
-import type { BranchProtectionV05 } from "@/api/v05tree";
+import type { BranchProtectionV07 } from "@/api/v07review";
 import { isMergeMethod, MERGE_METHOD_LABEL, MERGE_METHODS, type MergeMethod } from "@/api/v06";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChipsInput } from "@/components/files/ChipsInput";
@@ -37,6 +37,8 @@ interface FormState {
   block_on_todos: boolean;
   // v0.6 (§14.1): allowed merge methods; empty = all.
   merge_methods: MergeMethod[];
+  // v0.7 (§15.7)
+  require_owner_approval: boolean;
 }
 
 const NEW_RULE: FormState = {
@@ -51,14 +53,15 @@ const NEW_RULE: FormState = {
   require_linear: false,
   block_on_todos: false,
   merge_methods: [],
+  require_owner_approval: false,
 };
 
 /** Allowed merge methods of a rule (v0.6 field, absent before). */
-function ruleMethods(p: BranchProtectionV05): MergeMethod[] {
-  return ((p as BranchProtectionV05 & { merge_methods?: string[] | null }).merge_methods ?? []).filter(isMergeMethod);
+function ruleMethods(p: BranchProtectionV07): MergeMethod[] {
+  return ((p as BranchProtectionV07 & { merge_methods?: string[] | null }).merge_methods ?? []).filter(isMergeMethod);
 }
 
-function toForm(p: BranchProtectionV05): FormState {
+function toForm(p: BranchProtectionV07): FormState {
   return {
     pattern: p.pattern,
     no_direct_push: p.no_direct_push,
@@ -71,12 +74,13 @@ function toForm(p: BranchProtectionV05): FormState {
     require_linear: p.require_linear ?? false,
     block_on_todos: p.block_on_todos ?? false,
     merge_methods: ruleMethods(p),
+    require_owner_approval: p.require_owner_approval ?? false,
   };
 }
 
 /** The PUT body; v0.5 fields are `omitempty` on the server, so false / empty ones are left out. */
-function toBody(treeId: string, pattern: string, approvals: number, f: FormState): BranchProtectionV05 {
-  const body: BranchProtectionV05 = {
+function toBody(treeId: string, pattern: string, approvals: number, f: FormState): BranchProtectionV07 {
+  const body: BranchProtectionV07 = {
     tree_id: treeId,
     pattern,
     no_direct_push: f.no_direct_push,
@@ -91,9 +95,10 @@ function toBody(treeId: string, pattern: string, approvals: number, f: FormState
   if (f.require_signed) body.require_signed = true;
   if (f.require_linear) body.require_linear = true;
   if (f.block_on_todos) body.block_on_todos = true;
+  if (f.require_owner_approval) body.require_owner_approval = true;
   // Every method selected is the same as none: "all".
   if (f.merge_methods.length > 0 && f.merge_methods.length < MERGE_METHODS.length) {
-    (body as BranchProtectionV05 & { merge_methods?: MergeMethod[] }).merge_methods = MERGE_METHODS.filter((m) => f.merge_methods.includes(m));
+    (body as BranchProtectionV07 & { merge_methods?: MergeMethod[] }).merge_methods = MERGE_METHODS.filter((m) => f.merge_methods.includes(m));
   }
   return body;
 }
@@ -179,7 +184,7 @@ function ProtectionDialog({
   const replaces = !editing && existing.includes(pattern);
 
   const save = useMutation({
-    mutationFn: (body: BranchProtectionV05) => api.trees.putProtection(tenant, tree, body),
+    mutationFn: (body: BranchProtectionV07) => api.trees.putProtection(tenant, tree, body),
     onSuccess: async (p) => {
       toast.success(editing ? "Protection updated" : "Protection added", p.pattern);
       onClose();
@@ -334,6 +339,13 @@ function ProtectionDialog({
             checked={form.block_on_todos}
             onChange={(v) => set("block_on_todos", v)}
           />
+          <SwitchField
+            id={`${id}-owners`}
+            label="Require owner approval"
+            description="Every changed path needs an approval of the current source tip from one of its owners (Owners tab)."
+            checked={form.require_owner_approval}
+            onChange={(v) => set("require_owner_approval", v)}
+          />
         </fieldset>
         <fieldset className="grid gap-2" aria-describedby={`${id}-methods-hint`}>
           <legend className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">Merge methods</legend>
@@ -399,7 +411,8 @@ function Explanation() {
         </p>
         <p>
           <span className="font-semibold text-foreground">Require CI</span>,{" "}
-          <span className="font-semibold text-foreground">block on TODOs</span> and{" "}
+          <span className="font-semibold text-foreground">block on TODOs</span>,{" "}
+          <span className="font-semibold text-foreground">owner approval</span> and{" "}
           <span className="font-semibold text-foreground">linear history</span> gate merges;{" "}
           <span className="font-semibold text-foreground">signed snapshots</span> gate pushes. Tag protections guard release tags
           against deletion and re-pointing.
@@ -410,11 +423,18 @@ function Explanation() {
   );
 }
 
-function hasV05Rule(p: BranchProtectionV05): boolean {
-  return !!(p.require_ci_pass || p.require_signed || p.require_linear || p.block_on_todos || ruleMethods(p).length > 0);
+function hasV05Rule(p: BranchProtectionV07): boolean {
+  return !!(
+    p.require_ci_pass ||
+    p.require_signed ||
+    p.require_linear ||
+    p.block_on_todos ||
+    p.require_owner_approval ||
+    ruleMethods(p).length > 0
+  );
 }
 
-function V05RuleBadges({ rule: p }: { rule: BranchProtectionV05 }) {
+function V05RuleBadges({ rule: p }: { rule: BranchProtectionV07 }) {
   const checks = p.required_checks ?? [];
   const methods = ruleMethods(p);
   return (
@@ -449,6 +469,12 @@ function V05RuleBadges({ rule: p }: { rule: BranchProtectionV05 }) {
           blocks on TODOs
         </Badge>
       )}
+      {p.require_owner_approval && (
+        <Badge variant="outline" title="Every changed path needs an approval from one of its owners">
+          <UserCheck aria-hidden="true" />
+          owner approval
+        </Badge>
+      )}
     </>
   );
 }
@@ -473,7 +499,7 @@ export function ProtectionsTab() {
     },
   });
 
-  const rules: BranchProtectionV05[] = protections.data ?? [];
+  const rules: BranchProtectionV07[] = protections.data ?? [];
   const names = (branches.data ?? []).map((b) => b.name);
 
   return (

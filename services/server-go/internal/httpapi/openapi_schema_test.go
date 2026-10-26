@@ -252,6 +252,21 @@ var openAPITypes = map[string]any{
 	"PolicyDiff":            policyhist.DiffResult{},
 	"PolicyStatementChange": policyhist.StatementChange{},
 	"PolicyFieldChange":     policyhist.FieldChange{},
+
+	// ---- v0.7 review (§15.7) ----
+	"Suggestion":             domain.Suggestion{},
+	"PathOwnerRule":          domain.PathOwnerRule{},
+	"PathOwners":             domain.PathOwners{},
+	"OwnersConfig":           review.OwnersConfig{},
+	"PathOwnership":          review.PathOwnership{},
+	"MROwners":               review.MROwners{},
+	"OwnersSummary":          review.OwnersSummary{},
+	"SuggestionInput":        review.SuggestionInput{},
+	"AppliedSuggestion":      review.AppliedSuggestion{},
+	"PutOwnersRequest":       putOwnersRequest{},
+	"ReviewersRequest":       reviewersRequest{},
+	"ApplySuggestionRequest": applySuggestionRequest{},
+	// ---- end v0.7 review ----
 }
 
 // openAPICommentDirs are the package directories whose doc comments feed

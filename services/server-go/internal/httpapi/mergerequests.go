@@ -21,6 +21,10 @@ type createMRRequest struct {
 	Description  string `json:"description"`
 	SourceBranch string `json:"source_branch"`
 	TargetBranch string `json:"target_branch"`
+
+	// v0.7 (§15.7): open as a draft; request reviewers ("user:x", "team:y").
+	Draft     bool     `json:"draft,omitempty"`
+	Reviewers []string `json:"reviewers,omitempty"`
 }
 
 func normalizeMR(mr *domain.MergeRequest) { mr.Approvals = nonNil(mr.Approvals) }
@@ -176,7 +180,21 @@ func (a *api) handleCreateMR(w http.ResponseWriter, r *http.Request) error {
 	if req.SourceBranch == req.TargetBranch {
 		return badRequestf("source_branch and target_branch must differ")
 	}
-	mr, err := a.d.Review.Open(r.Context(), p, tree, req.Title, req.Description, req.SourceBranch, req.TargetBranch)
+	var mr *domain.MergeRequest
+	if dr, ok := a.d.Review.(deepReviewer); ok { // v0.7 (§15.7)
+		if len(req.Reviewers) > review.MaxReviewers {
+			return badRequestf("at most %d reviewers can be requested", review.MaxReviewers)
+		}
+		mr, err = dr.OpenWith(r.Context(), p, tree, review.OpenInput{
+			Title: req.Title, Description: req.Description, Source: req.SourceBranch, Target: req.TargetBranch,
+			Draft: req.Draft, Reviewers: req.Reviewers,
+		})
+	} else if req.Draft || len(req.Reviewers) > 0 {
+		return &apiError{status: http.StatusNotImplemented, code: "not_implemented",
+			msg: "draft merge requests and review requests are not available on this server"}
+	} else {
+		mr, err = a.d.Review.Open(r.Context(), p, tree, req.Title, req.Description, req.SourceBranch, req.TargetBranch)
+	}
 	if err != nil {
 		return err
 	}

@@ -31,8 +31,14 @@ import { CommentThreads, ReviewForm } from "./v05/MrDiscussion";
 import { ChecksPanel, LinkedGroupCard, ServerReadiness } from "./v05/MrPanels";
 import { useMergeability, useV06Api, mergeConflictsOf, MERGE_METHOD_LABEL, isMergeMethod, type MergeMethod } from "@/api/v06";
 import { ConflictList, MergeOptionsFields } from "./v06/merge";
-import { applyMergeability, defaultMethod, describeV06MergeError, mergeMethodSummary } from "./v06/mergeUtil";
+import { applyMergeability, defaultMethod, mergeMethodSummary } from "./v06/mergeUtil";
 import { useHotkeys } from "@/components/mr/useHotkeys";
+// v0.7 review (§15.7)
+import { isDraft, type BranchProtectionV07 } from "@/api/v07review";
+import { newSideLines } from "./v07/lines";
+import { describeV07MergeError } from "./v07/mergeErrors";
+import { ReviewDiff } from "./v07/ReviewDiff";
+import { DraftBadge, OwnersPanel, ReadyForReviewButton, ReviewersPanel } from "./v07/ReviewPanels";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -187,15 +193,18 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
   const [mergeMessage, setMergeMessage] = useState("");
   const method = pickedMethod && mergeInfo?.methods.includes(pickedMethod) ? pickedMethod : defaultMethod(mergeInfo);
   const serverChecks = useMrChecks(tenant, tree, m.number, open);
-  const blocker =
-    clientBlocker ??
-    (changesRequested.length > 0
-      ? `Changes requested by ${changesRequested.map((r) => r.username).join(", ")}.`
-      : v.linked_group
-        ? "Part of a linked group: merge the group instead."
-        : serverChecks.data && !serverChecks.data.mergeable
-          ? (serverChecks.data.blockers[0]?.message ?? "The server reports this merge request is not mergeable.")
-          : null);
+  const draft = isDraft(m);
+  // v0.7 (§15.7): drafts cannot be merged (`409 draft`).
+  const blocker = draft
+    ? "Draft: mark it ready for review before merging."
+    : (clientBlocker ??
+      (changesRequested.length > 0
+        ? `Changes requested by ${changesRequested.map((r) => r.username).join(", ")}.`
+        : v.linked_group
+          ? "Part of a linked group: merge the group instead."
+          : serverChecks.data && !serverChecks.data.mergeable
+            ? (serverChecks.data.blockers[0]?.message ?? "The server reports this merge request is not mergeable.")
+            : null));
 
   const act = useMutation({
     mutationFn: (action: Action) =>
@@ -221,10 +230,17 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
   const approvedByMe = counted.some((a) => a.account_id === account?.id);
   const canApprove = open && !isAuthor && !approvedByMe && !act.isPending;
   const canMerge = open && blocker === null && !protections.isPending && !act.isPending;
-  const error = act.isError ? describeV06MergeError(act.error) : null;
+  const error = act.isError ? describeV07MergeError(act.error) : null;
   const errorConflicts = act.isError ? mergeConflictsOf(act.error) : null;
   const ciRef = m.state === "merged" ? { snapshot: m.merged_snapshot } : sourceTip ? { snapshot: sourceTip } : { branch: m.source_branch };
   const snapshotHref = (id: string) => treePath(tenant, tree, `snapshots/${encodeURIComponent(id)}`);
+  // Source-tip lines visible in the diff: fallback for the lines a suggestion replaces.
+  const diffFiles = cmp.current?.files;
+  const knownLines = useMemo(() => (m.state === "merged" || !diffFiles ? null : newSideLines(diffFiles)), [m.state, diffFiles]);
+  const knownLine = useMemo(
+    () => (knownLines ? (path: string, line: number) => knownLines.get(path)?.get(line) : undefined),
+    [knownLines],
+  );
 
   const hotkeys = useMemo(
     () => ({
@@ -262,6 +278,7 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
         </h2>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
           <MergeStateBadge state={m.state} />
+          {draft && <DraftBadge />}
           <UserChip name={m.author} className="text-foreground" />
           <span className="inline-flex flex-wrap items-center gap-1">
             wants to merge <BranchFlow source={m.source_branch} target={m.target_branch} />
@@ -328,11 +345,19 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
               sourceTip={open ? sourceTip : undefined}
               files={cmp.current?.files.map((f) => f.path) ?? []}
               canModerate={canModerate}
+              knownLine={knownLine}
             />
           </TabsContent>
 
           <TabsContent value="changes" className="pt-2">
-            <ChangesPanel cmp={cmp} merged={m.state === "merged"} />
+            <ChangesPanel
+              cmp={cmp}
+              mr={m}
+              tenant={tenant}
+              tree={tree}
+              sourceTip={open ? sourceTip : undefined}
+              canModerate={canModerate}
+            />
           </TabsContent>
 
           <TabsContent value="snapshots" className="pt-2">
@@ -350,6 +375,8 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
             required={required}
             protectionsLoading={protections.isPending}
           />
+
+          <ReviewersPanel tenant={tenant} tree={tree} mr={m} reviews={reviews} stateOf={stateOf} />
 
           {v.linked_group && (
             <LinkedGroupCard tenant={tenant} groupId={v.linked_group} currentTreeId={m.tree_id} canMerge={open} />
@@ -374,6 +401,15 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
                 <ServerReadiness checks={serverChecks.data} error={serverChecks.error} pending={serverChecks.isPending} />
                 <Separator />
                 <div className="flex flex-col gap-2">
+                  {draft && (
+                    <div data-draft-notice className="flex flex-col gap-2 rounded-md border border-dashed p-2.5 text-xs text-muted-foreground">
+                      <p>
+                        <span className="font-semibold text-foreground">Draft.</span> Reviewers are requested and merging is possible once it is
+                        ready for review.
+                      </p>
+                      <ReadyForReviewButton tenant={tenant} tree={tree} mr={m} />
+                    </div>
+                  )}
                   {!isAuthor && (
                     <Button
                       variant="outline"
@@ -463,6 +499,7 @@ function Detail({ mr: m, tenant, tree }: { mr: MergeRequest; tenant: string; tre
             <OutcomeCard mr={m} snapshotHref={snapshotHref} />
           )}
 
+          {m.state !== "closed" && <OwnersPanel tenant={tenant} tree={tree} mr={m} />}
           <ChecksPanel tenant={tenant} tree={tree} {...ciRef} missing={serverChecks.data?.ci.missing} />
         </aside>
       </div>
@@ -525,6 +562,7 @@ function ruleSummary(r: BranchProtectionV05): string {
     r.require_signed && "signed only",
     r.require_linear && "linear",
     r.block_on_todos && "blocks on TODOs",
+    (r as BranchProtectionV07).require_owner_approval && "owner approval",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -696,7 +734,22 @@ function ComparisonState({ cmp, children }: { cmp: Comparison; children: (c: Com
   return children(cmp.current);
 }
 
-function ChangesPanel({ cmp, merged }: { cmp: Comparison; merged: boolean }) {
+function ChangesPanel({
+  cmp,
+  mr: m,
+  tenant,
+  tree,
+  sourceTip,
+  canModerate,
+}: {
+  cmp: Comparison;
+  mr: MergeRequest;
+  tenant: string;
+  tree: string;
+  sourceTip?: string;
+  canModerate: boolean;
+}) {
+  const merged = m.state === "merged";
   return (
     <ComparisonState cmp={cmp}>
       {(c) =>
@@ -708,7 +761,21 @@ function ChangesPanel({ cmp, merged }: { cmp: Comparison; merged: boolean }) {
               <DiffStat stats={c.stats} />
               {merged && <span className="text-muted-foreground"> in the merged snapshot</span>}
             </p>
-            <DiffViewer files={c.files} />
+            {/* v0.7: open and closed requests get inline line threads; a merged one keeps the plain viewer
+                (its lines are the merged snapshot's, not the source tip's). */}
+            {merged ? (
+              <DiffViewer files={c.files} />
+            ) : (
+              <ReviewDiff
+                tenant={tenant}
+                tree={tree}
+                mr={m}
+                files={c.files}
+                sourceTip={sourceTip}
+                canComment={m.state === "open"}
+                canModerate={canModerate}
+              />
+            )}
           </div>
         )
       }

@@ -1,11 +1,13 @@
 /** Merge request side panels for v0.5 (§13.4): CI checks, server merge readiness, linked group. */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CircleCheck, CircleX, ExternalLink, GitMerge, Link2, LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { CircleCheck, CircleX, ExternalLink, FilePen, GitMerge, Link2, LoaderCircle, UserCheck, type LucideIcon } from "lucide-react";
+import { useId, useState } from "react";
 import { Link } from "react-router";
 import { errorMessage } from "@/api/client";
 import { useTenantTrees } from "@/api/queries";
-import { isUnavailable, useCIStatus, useLinkedGroup, useTreeV05Api, v05Keys, type MergeChecks } from "@/api/v05tree";
+import { isUnavailable, useCIStatus, useLinkedGroup, v05Keys, type MergeChecks } from "@/api/v05tree";
+import { MERGE_METHOD_LABEL, MERGE_METHODS, isMergeMethod, type MergeMethod } from "@/api/v06";
+import { useV07ReviewApi } from "@/api/v07review";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,6 +22,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { shortId } from "@/lib/format";
 import { mergeRequestPath } from "@/lib/paths";
@@ -115,6 +119,12 @@ export function ChecksPanel({
   );
 }
 
+/** v0.7 (§15.7) blocker kinds with a readable label and icon; others show their kind. */
+const BLOCKER_LABEL: Record<string, { label: string; icon: LucideIcon }> = {
+  draft: { label: "Draft", icon: FilePen },
+  owners: { label: "Owner approval", icon: UserCheck },
+};
+
 /** What the server says about mergeability (`GET .../checks`). */
 export function ServerReadiness({ checks, error, pending }: { checks?: MergeChecks; error: unknown; pending: boolean }) {
   if (pending) return <Skeleton className="h-4 w-48" />;
@@ -135,11 +145,23 @@ export function ServerReadiness({ checks, error, pending }: { checks?: MergeChec
       </p>
       {checks.blockers.length > 0 && (
         <ul aria-label="Merge blockers" className="flex flex-col gap-1.5 pl-6">
-          {checks.blockers.map((b, i) => (
-            <li key={`${b.kind}:${i}`} data-blocker={b.kind} className="text-xs">
-              <span className="font-mono font-semibold">{b.kind}</span> <span className="text-muted-foreground">{b.message}</span>
-            </li>
-          ))}
+          {checks.blockers.map((b, i) => {
+            const known = BLOCKER_LABEL[b.kind];
+            const Icon = known?.icon;
+            return (
+              <li key={`${b.kind}:${i}`} data-blocker={b.kind} className="text-xs">
+                {known && Icon ? (
+                  <span className="inline-flex items-center gap-1 font-semibold">
+                    <Icon aria-hidden="true" className="size-3" />
+                    {known.label}
+                  </span>
+                ) : (
+                  <span className="font-mono font-semibold">{b.kind}</span>
+                )}{" "}
+                <span className="text-muted-foreground">{b.message}</span>
+              </li>
+            );
+          })}
         </ul>
       )}
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1 pl-6 text-xs text-muted-foreground">
@@ -170,16 +192,19 @@ export function ServerReadiness({ checks, error, pending }: { checks?: MergeChec
 
 /** The linked group this merge request belongs to; members merge atomically. */
 export function LinkedGroupCard({ tenant, groupId, currentTreeId, canMerge }: { tenant: string; groupId: string; currentTreeId: string; canMerge: boolean }) {
-  const api = useTreeV05Api();
+  const api = useV07ReviewApi();
   const group = useLinkedGroup(tenant, groupId);
   const trees = useTenantTrees(tenant);
   const queryClient = useQueryClient();
   const toast = useToast();
   const [open, setOpen] = useState(false);
+  // v0.7 (§15.7): merge method for every member; "default" = each member's own default.
+  const [method, setMethod] = useState<MergeMethod | "default">("default");
+  const methodId = useId();
   const names = new Map((trees.data ?? []).map((t) => [t.tree.id, t.tree.name]));
 
   const merge = useMutation({
-    mutationFn: () => api.linkedGroups.merge(tenant, groupId),
+    mutationFn: () => api.linkedGroups.merge(tenant, groupId, method === "default" ? undefined : method),
     meta: { inlineError: true },
     onSuccess: async () => {
       toast.success("Linked group merged", group.data?.name ?? groupId);
@@ -256,6 +281,27 @@ export function LinkedGroupCard({ tenant, groupId, currentTreeId, canMerge }: { 
                       All {g.members.length} merge requests merge together. If any of them is not mergeable, none is merged.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
+                  <div className="grid gap-2">
+                    <Label htmlFor={methodId}>Merge method</Label>
+                    <Select value={method} onValueChange={(v) => setMethod(isMergeMethod(v) ? v : "default")}>
+                      <SelectTrigger id={methodId} className="w-full sm:w-64" aria-describedby={`${methodId}-hint`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default</SelectItem>
+                        {MERGE_METHODS.map((mm) => (
+                          <SelectItem key={mm} value={mm}>
+                            {MERGE_METHOD_LABEL[mm]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p id={`${methodId}-hint`} className="text-xs text-muted-foreground">
+                      {method === "default"
+                        ? "Each member merges with its own default method."
+                        : `Every member merges with ${MERGE_METHOD_LABEL[method].toLowerCase()}; members whose protection forbids it block the group.`}
+                    </p>
+                  </div>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction onClick={() => merge.mutate()}>Merge all</AlertDialogAction>

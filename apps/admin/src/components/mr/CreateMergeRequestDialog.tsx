@@ -24,6 +24,9 @@ import { mergeRequestPath } from "@/lib/paths";
 import { ChangeSummary } from "./ChangeSummary";
 import { MergeErrorAlert } from "./MergeErrorAlert";
 import { findBranch, suggestTitle } from "./model";
+// v0.7 review (§15.7): draft and requested reviewers on create.
+import { splitPrincipals, type CreateMergeRequestV07 } from "@/api/v07review";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface Props {
   tenant: string;
@@ -69,6 +72,9 @@ function CreateForm({ tenant, tree, defaultBranch, onDone }: Omit<Props, "open" 
   const [typedTitle, setTitle] = useState<string | null>(null);
   const [description, setDescription] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  // v0.7 review (§15.7)
+  const [draft, setDraft] = useState(false);
+  const [reviewers, setReviewers] = useState("");
 
   const source = chosenSource ?? defaultSource(list, target);
   const title = typedTitle ?? suggestTitle(source);
@@ -90,7 +96,10 @@ function CreateForm({ tenant, tree, defaultBranch, onDone }: Omit<Props, "open" 
         description: description.trim(),
         source_branch: source,
         target_branch: target,
-      }),
+        // v0.7 review (§15.7): omitted unless set.
+        ...(draft ? { draft: true } : {}),
+        ...(splitPrincipals(reviewers).length ? { reviewers: splitPrincipals(reviewers) } : {}),
+      } satisfies CreateMergeRequestV07),
     meta: { inlineError: true },
     onSuccess: async (mr) => {
       await queryClient.invalidateQueries({ queryKey: ["tree", tenant, tree] });
@@ -201,6 +210,33 @@ function CreateForm({ tenant, tree, defaultBranch, onDone }: Omit<Props, "open" 
           placeholder="What changes and why (optional)"
           rows={4}
         />
+      </div>
+
+      {/* v0.7 review (§15.7): requested reviewers and draft. */}
+      <div className="flex flex-col gap-2">
+        <Label htmlFor={`${id}-reviewers`}>Reviewers</Label>
+        <Input
+          id={`${id}-reviewers`}
+          value={reviewers}
+          onChange={(e) => setReviewers(e.target.value)}
+          placeholder={`alice, @${tenant}/core`}
+          autoComplete="off"
+          spellCheck={false}
+          className="font-mono text-sm"
+          aria-describedby={`${id}-reviewers-hint`}
+        />
+        <p id={`${id}-reviewers-hint`} className="text-xs text-muted-foreground">
+          Optional. Users or teams, separated by spaces or commas. Owners of the changed paths are requested automatically.
+        </p>
+      </div>
+      <div className="flex items-start gap-2">
+        <Checkbox id={`${id}-draft`} checked={draft} onCheckedChange={(v) => setDraft(v === true)} aria-describedby={`${id}-draft-hint`} />
+        <div className="grid gap-1">
+          <Label htmlFor={`${id}-draft`}>Create as draft</Label>
+          <p id={`${id}-draft-hint`} className="text-xs text-muted-foreground">
+            Drafts cannot be merged and request owners only once marked ready for review.
+          </p>
+        </div>
       </div>
 
       {create.isError && <MergeErrorAlert error={describeMergeError(create.error)} />}

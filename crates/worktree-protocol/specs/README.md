@@ -63,6 +63,7 @@ is authoritative; the spec is a bug.
 | **Notifications** | [`server/Notifications.md`](./server/Notifications.md) | Per-account inbox from bus events (reviews, mentions, CI, TODOs, merges, watched trees), watch levels, SSE, SMTP email, `wt inbox` |
 | **Release integrity** | [`security/ReleaseIntegrity.md`](./security/ReleaseIntegrity.md) | Signed tags (canonical TagRecord payload, verification on push and REST, `require_signed`), asset SHA-256 and SHA256SUMS, verified releases, SPDX 2.3 SBOMs, `wt tag verify`, `wt release verify` |
 | **One-step sync** | [`sync/OneStepSync.md`](./sync/OneStepSync.md) | `wt sync` (fetch, merge or rebase, push; conflicts and `--continue`), the offline outbox (`wt push --queue`, `wt sync queue/flush/drop`), daemon auto-flush and auto-sync |
+| **Review workflow** | [`server/ReviewWorkflow.md`](./server/ReviewWorkflow.md) | Path owners (server config and `OWNERS` file), review requests, owner approval, draft merge requests, suggested changes, storage quotas on server-written snapshots |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

@@ -62,7 +62,9 @@ func reviewError(err error) error {
 	if errors.As(err, &me) {
 		return &apiError{status: http.StatusConflict, code: review.CodeMergeMethodNotAllowed, msg: me.Message}
 	}
-	return err
+	// v0.7 (§15.7): drafts answer 409 draft (a BlockedError above); the
+	// tenant storage quota 409 quota_exceeded.
+	return deepReviewError(err)
 }
 
 // registerReviewRoutes registers the v0.5 routes for review decisions,
@@ -190,8 +192,17 @@ func (a *api) handleAddComment(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	if err := validateText("body", in.Body, review.MaxBodyLen, true); err != nil {
+	// v0.7 (§15.7): a suggestion comment may have an empty body.
+	if err := validateText("body", in.Body, review.MaxBodyLen, in.Suggestion == nil); err != nil {
 		return err
+	}
+	if in.Suggestion != nil {
+		if err := validateText("suggestion.replacement", in.Suggestion.Replacement, review.MaxSuggestionReplacement, false); err != nil {
+			return err
+		}
+		if in.Suggestion.StartLine < 1 || in.Suggestion.EndLine < in.Suggestion.StartLine {
+			return badRequestf("suggestion lines must satisfy 1 <= start_line <= end_line")
+		}
 	}
 	if err := validateText("path", in.Path, review.MaxCommentPathLen, false); err != nil {
 		return err

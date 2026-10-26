@@ -132,7 +132,7 @@ func (s *Service) commentReview(ctx context.Context, p *domain.Principal, tree *
 	if b, err := s.store.GetBranch(ctx, tree.ID, mr.SourceBranch); err == nil {
 		tip = b.Tip
 	}
-	c, err := s.storeComment(ctx, p, tree, mr, CommentInput{Body: body, SnapshotID: tip})
+	c, err := s.storeComment(ctx, p, tree, mr, CommentInput{Body: body, SnapshotID: tip}, nil)
 	if err != nil {
 		return nil, err
 	}

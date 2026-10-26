@@ -27,6 +27,10 @@ type CommentInput struct {
 	Path       string `json:"path,omitempty"`
 	Line       int    `json:"line,omitempty"`
 	SnapshotID string `json:"snapshot_id,omitempty"`
+
+	// v0.7 (§15.7): a suggested change; Path, Line and SnapshotID are then
+	// taken from it and Body may be empty.
+	Suggestion *SuggestionInput `json:"suggestion,omitempty"`
 }
 
 // CommentPatch changes a comment; nil fields are left alone.
@@ -93,24 +97,34 @@ func (s *Service) AddComment(ctx context.Context, p *domain.Principal, tree *dom
 	if err != nil {
 		return nil, err
 	}
-	if in.SnapshotID == "" {
+	if in.SnapshotID == "" && (in.Suggestion == nil || in.Suggestion.SnapshotID == "") {
 		if b, err := s.store.GetBranch(ctx, tree.ID, mr.SourceBranch); err == nil {
 			in.SnapshotID = b.Tip
 		}
 	}
-	c, err := s.storeComment(ctx, p, tree, mr, in)
+	sg, err := s.suggestionFor(ctx, tree, &in) // v0.7 (§15.7)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.storeComment(ctx, p, tree, mr, in, sg)
 	if err != nil {
 		return nil, err
 	}
 	s.publish(domain.EventMRCommented, p, tree, *c)
-	s.record(ctx, "mr.comment", p, tree, mr, map[string]string{"comment_id": c.ID, "path": c.Path})
+	details := map[string]string{"comment_id": c.ID, "path": c.Path}
+	if sg != nil {
+		details["suggestion"] = suggestionLabel(sg)
+	}
+	s.record(ctx, "mr.comment", p, tree, mr, details)
 	return c, nil
 }
 
 // storeComment validates and stores a new comment on mr.
-func (s *Service) storeComment(ctx context.Context, p *domain.Principal, tree *domain.Tree, mr *domain.MergeRequest, in CommentInput) (*domain.ReviewComment, error) {
-	if err := validateBody(in.Body); err != nil {
-		return nil, err
+func (s *Service) storeComment(ctx context.Context, p *domain.Principal, tree *domain.Tree, mr *domain.MergeRequest, in CommentInput, sg *domain.Suggestion) (*domain.ReviewComment, error) {
+	if sg == nil || in.Body != "" {
+		if err := validateBody(in.Body); err != nil {
+			return nil, err
+		}
 	}
 	switch {
 	case len(in.Path) > MaxCommentPathLen || !utf8.ValidString(in.Path) || strings.ContainsRune(in.Path, 0):
@@ -139,6 +153,7 @@ func (s *Service) storeComment(ctx context.Context, p *domain.Principal, tree *d
 		SnapshotID: in.SnapshotID,
 		CreatedAt:  now,
 		UpdatedAt:  now,
+		Suggestion: sg,
 	}
 	if err := s.store.CreateDoc(ctx, CommentCollection, commentKey(tree.ID, mr.Number, c.ID), c); err != nil {
 		return nil, fmt.Errorf("review: store comment: %w", err)

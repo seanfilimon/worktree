@@ -20,6 +20,8 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { mergeRequestPath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { useTreeContext } from "./context";
+import { isDraft } from "@/api/v07review";
+import { DraftBadge } from "./v07/ReviewPanels";
 
 type Filter = MergeRequestState | "all";
 const FILTERS: Filter[] = [...MR_STATES, "all"];
@@ -203,6 +205,7 @@ function MergeRequestTable({
                 >
                   {mr.title}
                 </Link>
+                {isDraft(mr) && <DraftBadge className="ml-2 align-middle" />}
                 <BranchFlow source={mr.source_branch} target={mr.target_branch} className="mt-1 md:hidden" />
               </TableCell>
               <TableCell className="hidden md:table-cell">
