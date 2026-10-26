@@ -18,6 +18,9 @@ Whatever you choose, read [reverse proxies](#reverse-proxies-and-tls), [backups]
 variables is in [configuration.md](./configuration.md#server-flags-and-environment); every flag has
 an environment variable, flags win over the environment.
 
+The public website and docs (`apps/web`) deploy separately, to Railway: see
+[Deploying the website and docs](./deploy-docs-site.md).
+
 ---
 
 ## Server essentials

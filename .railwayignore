@@ -1,0 +1,15 @@
+# Files `railway up` does not upload (in addition to .gitignore). Railway
+# only builds the website (apps/web/Dockerfile, which needs the root
+# package.json, package-lock.json, .npmrc and apps/*/package.json); see
+# docs/deploy-docs-site.md.
+.claude/
+.turbo/
+target/
+crates/
+services/
+deploy/
+docs/video/
+release/
+**/node_modules
+**/.next
+**/.source

@@ -4,6 +4,9 @@
 # Build from the repository root (npm workspaces):
 #
 #   docker build -f apps/web/Dockerfile -t worktree-web .
+#
+# Railway builds this file through apps/web/railway.json; see
+# docs/deploy-docs-site.md.
 
 ARG NODE_VERSION=24
 
@@ -19,12 +22,14 @@ COPY apps ./apps
 RUN find apps -mindepth 2 -maxdepth 2 ! -name package.json -exec rm -rf {} +
 
 # Install dependencies (hoisted root node_modules + any nested workspace ones).
+# No BuildKit cache mount: Railway rejects cache mounts whose id is not
+# prefixed with its service id, and the layer cache covers this step.
 FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 COPY --from=manifests /src/apps ./apps
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --no-fund --workspace=apps/web --include-workspace-root
+RUN npm ci --no-audit --no-fund --workspace=apps/web --include-workspace-root \
+    && npm cache clean --force
 
 # Build the site.
 FROM deps AS builder
@@ -35,6 +40,7 @@ RUN npm run build --workspace=apps/web
 
 # Production image. In a workspace, Next traces from the repo root, so the
 # standalone server lives at apps/web/server.js inside .next/standalone.
+# PORT defaults to 8080; platforms such as Railway may override it.
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -51,6 +57,6 @@ USER nextjs
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
+  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-8080}/" || exit 1
 
 CMD ["node", "apps/web/server.js"]
