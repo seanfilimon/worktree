@@ -174,33 +174,42 @@ wt merge abort
 ## `wt tag`
 
 ```text
-Usage: wt tag [OPTIONS] [COMMAND]
+Usage: wt tag [OPTIONS] [NAME] [REV]
+       wt tag <COMMAND>
 ```
 
-Tags are named, fixed pointers to a snapshot, used for releases.
+Tags are named, fixed pointers to a snapshot, used for releases. `wt tag NAME [REV]` is short for `wt tag create NAME [REV]`.
 
 | Subcommand | Description |
 |---|---|
-| `list` (default) | List tags: name, target snapshot, tagger, date, message. |
+| `list` (default) | List tags: name, target snapshot, tagger, date, message, signature. |
 | `create <NAME> [REV]` | Tag `REV` (default `HEAD`) as `NAME`. |
 | `delete <NAME>` | Delete the local tag `NAME`. |
+| `verify <NAME>` | Verify the tag's signature against your local keys (and, with `--account USER`, that account's registered keys). With `--remote [--from R]`, verify the server's copy instead of the local one. Exits `1` unless the signature is good. |
+| `push <NAME>` | Push one tag to the server (`--remote R`, default `[sync] remote`) and fail with the server's reason when it is refused, for example an unsigned tag under a `require_signed` tag protection. |
 
 | Flag | Applies to | Description |
 |---|---|---|
 | `-m, --message <MSG>` | `create` | Tag message (makes an annotated tag). |
+| `--sign` | `create` | Sign the tag with your Ed25519 signing key (`[signing] key`, else `default`). `[signing] auto = true` signs every tag. |
 
 ```bash
 wt tag
 wt tag create v1.0.0 -m "First stable release"
+wt tag v1.1.0 -m "Second release" --sign
 wt tag create v0.9.0 4f9c2a1e
+wt tag verify v1.1.0
+wt tag verify v1.1.0 --remote --account ada
+wt tag push v1.1.0
 wt tag delete v1.0.0-rc1
 ```
 
 **Notes**
 
-- `wt push` uploads local tags whose target the server knows; `wt fetch` and `wt pull` download server tags. Tags are immutable on the server: pushing an existing name is refused.
+- `wt push` uploads local tags whose target the server knows (refusals are logged, not fatal); `wt fetch` and `wt pull` download server tags. Tags are immutable on the server: pushing an existing name is refused.
+- A signed tag carries an Ed25519 signature over its canonical record (name, target, message, tagger, time), made with the same keys as [snapshot signing](/docs/cli/signing). The signature travels with the tag on push, fetch and clone; the server verifies it against the signer's registered keys and marks the tag **verified**, or refuses a tag whose signature does not verify. The key is loaded before the tag is written, so a missing key leaves no unsigned tag behind. See [Signed tags](/docs/server/release-integrity#signed-tags).
 - `wt tag delete` removes the tag locally only and is not propagated. Delete a server tag with [`wt trees tag-delete`](/docs/cli/administration#wt-trees) (needs `tree:admin`); the next `wt fetch` otherwise brings a pushed tag back.
-- Servers can protect tags (who may create them, and whether they can be moved or deleted) with [`wt protect tag`](/docs/cli/merge-requests#wt-protect).
+- Servers can protect tags (who may create them, whether they can be moved or deleted, and whether they must be signed) with [`wt protect tag`](/docs/cli/merge-requests#wt-protect).
 - Releases are built on tags: see [`wt release`](/docs/cli/dependencies#wt-release) and [Tags and releases](/guides/tags-and-releases).
 
 <Callout type="info">

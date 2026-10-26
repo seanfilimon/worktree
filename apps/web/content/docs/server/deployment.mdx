@@ -1,33 +1,193 @@
 ---
 title: Deployment
-description: Run worktree-server in production with built-in TLS or behind a reverse proxy, as a system service or container, with registration, retention, limits and backups in place.
+description: Run worktree-server in production with Docker, Docker Compose (S3 and SMTP profiles), Helm, systemd or launchd, behind a reverse proxy or with built-in TLS, and install the clients with the checksum-verifying installers.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
-import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-This page covers running the server for a team. For a narrative walkthrough, see the [self-hosting guide](/guides/self-hosting); for day-to-day knobs, see [Operations](/docs/server/operations).
+This page covers running the server for a team and installing the clients on developer machines. The operator guide in the repository, [`docs/deploy.md`](https://github.com/seanfilimon/worktree/blob/main/docs/deploy.md), and the [Deployment specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Deployment.md) are the full references. For a narrative walkthrough, see the [self-hosting guide](/guides/self-hosting); for day-to-day knobs, see [Operations](/docs/server/operations).
+
+| Method | Files | Best for |
+|---|---|---|
+| [Docker](#docker) | `deploy/docker/Dockerfile`, `deploy/docker/Dockerfile.cli` | One host, quick start |
+| [Docker Compose](#docker-compose) | `deploy/docker-compose.yml` | One host, optionally with MinIO (S3) and Mailpit (SMTP) |
+| [Kubernetes (Helm)](#kubernetes-helm) | `deploy/helm/worktree/` | Clusters |
+| [systemd](#systemd) | `deploy/systemd/` | Linux hosts and VMs |
+| [launchd](#launchd-macos) | `deploy/launchd/` | macOS hosts and developer laptops |
+| [Installers](#installing-the-clients) | `scripts/install.sh`, `scripts/install.ps1` | `wt` and `worktree-bg` on workstations |
+
+## Server essentials
+
+- **One process, one data directory.** Metadata is one bbolt file (`<data>/meta.db`, opened with an exclusive lock); objects live in `<data>/objects/` or, since v0.7, in an [S3 bucket](/docs/server/storage-backends#s3-object-store). Run exactly one server per data directory and scale vertically. Every packaging format below runs a single replica.
+- **One port.** gRPC (HTTP/2) and HTTP/1.1 (REST, SSE, `/healthz`, `/metrics`, `/admin/`) share port `7420`.
+- **Environment-first configuration.** Every flag has a `WT_*` variable (flag > environment > default); the packaging formats configure the server through the environment only. See [Configuration](/docs/server/configuration).
+- **Bootstrap the admin** with `WT_ADMIN_PASSWORD` (and optionally `WT_ADMIN_USER`, default `admin`) on the first start. The account persists; the variable can be removed afterwards.
+- **Health**: `GET /healthz` without authentication, `GET /metrics` in Prometheus format. See [Monitoring](/docs/server/monitoring).
 
 ## Production checklist
 
-- [ ] Build the binary (and the admin panel) from a tagged source checkout, or build the container image. See [Installation](/docs/server/installation).
-- [ ] Run as a dedicated, unprivileged user with its own data directory (`--data`).
-- [ ] Encrypt traffic: either built-in TLS (`--tls-cert`/`--tls-key`), or listen on loopback (`--addr 127.0.0.1:7420`) behind a TLS-terminating proxy and set `--trusted-proxies`. Never serve cleartext on a public address (the server warns when you do).
-- [ ] Set the admin password through `WT_ADMIN_PASSWORD` from a file readable only by the service user, not on the command line.
-- [ ] Disable self-service registration (`--allow-registration=false`) unless you want open sign-up; create accounts with `wt admin account-create` or invitations.
-- [ ] Set `--public-url` if you configure SSO.
+- [ ] Pick a packaging format below and pin a version.
+- [ ] Run as a dedicated, unprivileged user (the image and the units already do) with the data directory on durable storage.
+- [ ] Encrypt traffic: built-in TLS (`--tls-cert`/`--tls-key`), or listen on loopback behind a TLS-terminating proxy and set `--trusted-proxies`. Never serve cleartext on a public address (the server warns when you do).
+- [ ] Set `WT_ADMIN_PASSWORD` from a secret store or a file readable only by the service user, never on the command line.
+- [ ] Disable self-service registration (`WT_ALLOW_REGISTRATION=false`) unless you want open sign-up.
+- [ ] Set `WT_PUBLIC_URL` (SSO redirects, links in notification email).
 - [ ] Decide retention: `--staged-retention` (default 7 days), `--audit-retention` (default keep forever), `--gc-grace` (default 30 days).
-- [ ] Review `--rate-limit` (default 1,200 requests per minute per principal) and default quotas (`--default-max-trees`, `--default-max-storage`).
+- [ ] Review `--rate-limit` (default 1,200 requests per minute per principal) and default quotas.
 - [ ] Restrict `/metrics` to your monitoring network.
-- [ ] Add browser origins that call the API from elsewhere to `--cors-origins`.
-- [ ] Schedule backups of the data directory and test a restore. See [Storage](/docs/server/storage#backup).
-- [ ] Monitor `/healthz`, disk space and the audit log. See [Monitoring](/docs/server/monitoring).
+- [ ] Schedule [backups](/docs/server/storage-backends#backups) (`WT_BACKUP_INTERVAL`), copy them off the host, and test a [restore](/docs/server/storage-backends#restore).
+- [ ] Optional: [S3 object storage](/docs/server/storage-backends#s3-object-store), [notification email](/docs/server/notifications#email) (`WT_SMTP_URL`), `git` for [Git mirrors](/docs/server/mirrors) (included in the image).
+
+## Docker
+
+The server image is built from the repository root with `deploy/docker/Dockerfile` (multi-stage: the admin panel with Node, the server with Go and `CGO_ENABLED=0`, an Alpine runtime):
+
+```bash
+docker build -f deploy/docker/Dockerfile --build-arg VERSION=0.7.0 -t worktree-server .
+docker run -d --name worktree -p 7420:7420 \
+  -v wt-data:/data \
+  -e WT_ADMIN_PASSWORD='use-a-long-random-secret' \
+  -e WT_ALLOW_REGISTRATION=false \
+  worktree-server
+curl http://localhost:7420/healthz
+```
+
+| Image property | Value |
+|---|---|
+| Base | Alpine with `ca-certificates`, `git` (for [Git mirrors](/docs/server/mirrors)), `curl`, `tini`, `tzdata` |
+| User | `10001:10001`, non-root; `HOME=/data` |
+| Volume | `/data` (`WT_DATA=/data`) |
+| Admin panel | `/app/admin` (`WT_ADMIN_DIR=/app/admin`), served at `/admin/` |
+| Port | `7420` (`WT_ADDR=:7420`) |
+| Health check | `wt-healthcheck`: `GET /healthz` on the port of `WT_ADDR`, HTTPS when `WT_TLS_CERT` is set; override with `WT_HEALTHCHECK_URL` |
+| Entrypoint | `tini -- worktree-server`; extra arguments are passed as flags |
+
+Because configuration is environment-first, `docker run ... -e WT_LOG_LEVEL=debug worktree-server` and `docker run ... worktree-server --log-level debug` are equivalent. To serve TLS from the container, mount the certificate files read-only and set `WT_TLS_CERT` and `WT_TLS_KEY`.
+
+The release workflow (`.github/workflows/release.yml`, on tags `v*`) builds multi-arch (`linux/amd64`, `linux/arm64`) images tagged `ghcr.io/seanfilimon/worktree-server:<version>` (plus `:<major>.<minor>` and `:latest` for final releases). Until a release is published for the version you want, build the image locally as above.
+
+### CLI image
+
+`deploy/docker/Dockerfile.cli` builds statically linked (musl) `wt` and `worktree-bg`; the build fails unless both binaries run in an empty `scratch` stage. Use it in CI jobs or to extract static Linux binaries:
+
+```bash
+docker build -f deploy/docker/Dockerfile.cli -t worktree-cli .
+docker run --rm -v "$PWD:/work" -e WT_TOKEN worktree-cli status
+docker create --name wtcli worktree-cli && docker cp wtcli:/usr/local/bin/wt ./wt && docker rm wtcli
+```
+
+The image runs as user `10001` with `WT_HOME=/home/wt/.wt`, working directory `/work` and entrypoint `wt`. Releases publish it as `ghcr.io/seanfilimon/worktree-cli:<version>`.
+
+## Docker Compose
+
+`deploy/docker-compose.yml` runs the server and, behind [Compose profiles](https://docs.docker.com/compose/how-tos/profiles/), the companions of the v0.7 storage and notification features:
+
+```bash
+cd deploy
+# server only (objects on the wt-data volume)
+WT_ADMIN_PASSWORD=change-me docker compose up -d --build
+
+# + MinIO as the S3 object store (console: http://localhost:9001)
+WT_ADMIN_PASSWORD=change-me WT_OBJECT_STORE=s3 docker compose --profile s3 up -d
+
+# + Mailpit capturing notification email (UI: http://localhost:8025)
+WT_ADMIN_PASSWORD=change-me WT_SMTP_URL=smtp://mailpit:1025 docker compose --profile smtp up -d
+```
+
+| Profile | Services | Server settings it pairs with |
+|---|---|---|
+| (none) | `server` (built from `deploy/docker/Dockerfile`, port `${WT_PORT:-7420}`, volume `wt-data`) | |
+| `s3` | `minio` (API 9000, console 9001, volume `minio-data`), `minio-init` (creates the bucket `${WT_S3_BUCKET:-worktree}`, then exits) | `WT_OBJECT_STORE=s3`; the `WT_S3_*` variables default to the MinIO service |
+| `smtp` | `mailpit` (SMTP on 1025, web UI on 8025) | `WT_SMTP_URL=smtp://mailpit:1025` |
+
+Set the `WT_*` variables in the shell or in `deploy/.env`. The server waits for `minio-init` and `mailpit` only when their profile is active (optional dependencies, Compose 2.20 or newer). `docker compose down` keeps the named volumes; `down -v` deletes them.
+
+<Callout type="info" title="The root docker-compose.yml">
+  The `docker-compose.yml` at the repository root is a local development stack: it builds the same server image and also runs this documentation site on port 3000. Use `deploy/docker-compose.yml` for deployments.
+</Callout>
+
+## Kubernetes (Helm)
+
+```bash
+helm install wt deploy/helm/worktree -n worktree --create-namespace \
+  --set server.publicURL=https://wt.example.com \
+  --set ingress.enabled=true --set ingress.className=nginx \
+  --set 'ingress.hosts[0].host=wt.example.com' \
+  --set 'ingress.tls[0].secretName=wt-tls' --set 'ingress.tls[0].hosts[0]=wt.example.com' \
+  --set 'server.trustedProxies={10.0.0.0/8}'
+kubectl -n worktree get secret wt-worktree -o jsonpath='{.data.WT_ADMIN_PASSWORD}' | base64 -d; echo
+helm test wt -n worktree
+```
+
+| Object | Purpose |
+|---|---|
+| `StatefulSet` (1 replica, fixed) | The server with startup, liveness and readiness probes on `/healthz`; non-root `10001`, read-only root filesystem, all capabilities dropped, in-memory `/tmp`, no service-account token. Config and Secret checksums roll the pod on change |
+| `PersistentVolumeClaim` (template `data`, 20 Gi) | `/data`; or `persistence.existingClaim`; or an `emptyDir` with `persistence.enabled=false` (demo only). Claims are retained on uninstall |
+| `ConfigMap` | Every non-secret setting as `WT_*` variables (`server.*`, `objectStore`, `s3.*`, `smtp.from`, `backup.*`) |
+| `Secret` | `WT_ADMIN_PASSWORD` (from `adminPassword`, or generated once and kept across upgrades), `WT_S3_ACCESS_KEY`, `WT_S3_SECRET_KEY`, `WT_SMTP_URL`. Skipped with `existingSecret` (key names in `secretKeys`) |
+| `Service` and headless `Service` | Port `http` with `appProtocol: kubernetes.io/h2c` (gRPC and HTTP share it) |
+| `Ingress` (+ optional `-grpc` Ingress) | The second Ingress routes `/worktree.sync.v1.SyncService` with `ingress.grpc.annotations` (default nginx `backend-protocol: GRPC`). Set `ingress.grpc.enabled=false` for controllers that honour `appProtocol` (Traefik, Contour, Envoy Gateway) |
+| `Pod` (`helm test`) | Calls `/healthz` through the Service |
+
+| Value | Default | Notes |
+|---|---|---|
+| `image.repository`, `image.tag` | `ghcr.io/seanfilimon/worktree-server`, chart `appVersion` | Point at your registry when you build the image yourself |
+| `adminPassword`, `existingSecret` | empty | See the Secret row |
+| `server.publicURL` | empty | SSO redirects and links |
+| `server.trustedProxies` | `[]` | Set it to the ingress controller's pod CIDR so audit, rate limits and IP conditions see real clients |
+| `server.allowRegistration` | `true` | |
+| `server.tls.enabled`, `server.tls.secretName`, `server.tls.clientCASecretName` | off | TLS from the pod (probes switch to HTTPS); optional mTLS CA (`ca.crt`) |
+| `objectStore`, `s3.*` | `disk` | `s3` needs `s3.bucket` |
+| `smtp.url`, `smtp.from` | empty | Notification email |
+| `backup.interval`, `backup.keep` | `"0"`, `7` | Scheduled backups into `/data/backups` |
+| `persistence.size`, `persistence.storageClass` | `20Gi`, cluster default | Claim templates are immutable: resize the PVC directly |
+| `resources` | 100m / 128Mi requests, 1Gi memory limit | |
+| `extraEnv`, `extraArgs` | `[]` | Anything else (`--gc-interval`, `TZ`, ...) |
+
+The chart refuses inconsistent values when rendering (TLS without a Secret, `objectStore=s3` without a bucket, an unknown object store, an existing claim with persistence disabled) and ships a `values.schema.json`. Validate changes with `helm lint --strict deploy/helm/worktree`, or without Helm with `cd deploy/helm/check && go run .`; `bash deploy/validate.sh` runs every packaging check.
+
+## systemd
+
+`deploy/systemd/worktree-server.service` is a hardened system unit: user `worktree`, `StateDirectory=worktree` (`/var/lib/worktree` as `WT_DATA`), `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, no capabilities, a system-call filter and `MemoryDenyWriteExecute`. The environment comes from `/etc/worktree/server.env`; `deploy/systemd/server.env.example` documents every setting, including the commented S3, SMTP and backup blocks.
+
+```bash
+sudo useradd --system --home-dir /var/lib/worktree --shell /usr/sbin/nologin worktree
+sudo install -m 0755 worktree-server /usr/local/bin/
+sudo mkdir -p /usr/local/share/worktree/admin
+sudo tar -xzf worktree-admin-*.tar.gz --strip-components=1 -C /usr/local/share/worktree/admin
+sudo install -D -m 0640 -g worktree deploy/systemd/server.env.example /etc/worktree/server.env
+sudoedit /etc/worktree/server.env          # WT_ADMIN_PASSWORD, WT_PUBLIC_URL, WT_TRUSTED_PROXIES, ...
+sudo install -m 0644 deploy/systemd/worktree-server.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now worktree-server
+journalctl -u worktree-server -f
+```
+
+To listen on a privileged port without a proxy, add `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and `AmbientCapabilities=CAP_NET_BIND_SERVICE` in a drop-in (`systemctl edit worktree-server`). `systemctl stop` sends `SIGTERM`: the server stops accepting work, drains connections within `--shutdown-timeout` (default 15 s), audits `server.stop` and exits.
+
+`deploy/systemd/worktree-bg@.service` runs the [background daemon](/docs/cli/daemon) as a user unit, one instance per `WT_HOME` (the instance name is the escaped path):
+
+```bash
+install -D -m 0644 deploy/systemd/worktree-bg@.service ~/.config/systemd/user/worktree-bg@.service
+systemctl --user daemon-reload
+systemctl --user enable --now "worktree-bg@$(systemd-escape --path "$HOME/.wt").service"
+loginctl enable-linger "$USER"     # optional: keep it running while logged out
+```
+
+## launchd (macOS)
+
+- `deploy/launchd/dev.w0rktree.bg.plist` is a user agent for `worktree-bg run` (from `~/.local/bin`): copy it to `~/Library/LaunchAgents/` and run `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.w0rktree.bg.plist`.
+- `deploy/launchd/dev.w0rktree.server.plist` is a system daemon running `worktree-server` as `_worktree` with data in `/usr/local/var/worktree` and its log in `/usr/local/var/log/worktree-server.log`; the install steps are in the file's header.
+
+`worktree-bg service` prints equivalent single-instance definitions (systemd, launchd, Windows Task Scheduler) with the absolute path of the running binary.
+
+### Windows
+
+`worktree-server.exe` runs as an ordinary console program; it does not register itself with the Windows Service Control Manager. Use a service wrapper such as NSSM or WinSW, or a Task Scheduler task that runs at startup, and set `WT_ADMIN_PASSWORD` in the wrapper's environment settings rather than on the command line.
 
 ## Reverse proxy and TLS
 
-You have two options.
-
-### Option 1: built-in TLS
+### Built-in TLS
 
 The server terminates TLS on its own port; HTTPS and gRPC share it through ALPN `h2`:
 
@@ -39,31 +199,22 @@ worktree-server \
   --public-url https://wt.example.com
 ```
 
-Add `--tls-client-ca /etc/worktree/tls/clients-ca.pem` to require client certificates (mTLS). The server reads the certificate at startup: restart it after renewing (for example from your ACME client's deploy hook). Clients use the `https://` URL directly:
+Add `--tls-client-ca` to require client certificates (mTLS). The certificate is read at startup: restart the server after renewing it.
+
+### A TLS-terminating reverse proxy
+
+Run the server on loopback (`WT_ADDR=127.0.0.1:7420`) and let the proxy handle certificates. The proxy must:
+
+1. forward gRPC (path prefix `/worktree.sync.v1.SyncService/`) to the backend over **HTTP/2** (cleartext h2c, or TLS when the server terminates TLS too);
+2. not buffer the SSE stream at `/api/v1/events`, and allow hour-long responses and gRPC streams (`WatchBranches`, used by the daemon);
+3. allow large request bodies (at least 64 MiB; pushes stream objects);
+4. set `X-Forwarded-For`, with the proxy listed in **`--trusted-proxies`** (`WT_TRUSTED_PROXIES`, IPs or CIDRs). Without it every request appears to come from the proxy: per-IP rate limits share one bucket, IP policy conditions cannot match and audit records show the proxy. Never trust `0.0.0.0/0`.
 
 ```bash
-wt remote add origin https://wt.example.com --tenant acme
-wt login https://wt.example.com -u ada
-```
-
-### Option 2: a TLS-terminating reverse proxy
-
-Run the server on loopback and let the proxy handle certificates. The proxy must:
-
-1. terminate TLS for clients;
-2. forward gRPC (`Content-Type: application/grpc`, path prefix `/worktree.sync.v1.SyncService/`) to the backend over **HTTP/2 cleartext** (h2c), because gRPC needs HTTP/2 end to end;
-3. pass REST and `/admin/` requests through (HTTP/1.1 or h2c both work);
-4. not buffer the SSE stream at `/api/v1/events`, and allow long-lived responses (heartbeat every 15 seconds) and long-lived gRPC streams (`WatchBranches`, used by the daemon);
-5. allow request bodies of at least 64 MiB (gRPC messages and release assets);
-6. set `X-Forwarded-For`, and the server must list the proxy in `--trusted-proxies` so audit records, policy IP conditions and per-IP rate limits see the real client:
-
-```bash
-worktree-server --addr 127.0.0.1:7420 --trusted-proxies 127.0.0.1 --public-url https://wt.example.com
+worktree-server --addr 127.0.0.1:7420 --trusted-proxies 127.0.0.1,::1 --public-url https://wt.example.com
 ```
 
 #### Caddy
-
-Caddy obtains certificates automatically and can speak h2c to the backend for all traffic:
 
 ```text
 wt.example.com {
@@ -79,11 +230,11 @@ wt.example.com {
 }
 ```
 
-The `h2c://` scheme makes Caddy speak cleartext HTTP/2 to the backend for every request, so gRPC, REST, SSE and the admin panel share one upstream. `flush_interval -1` flushes responses immediately, which keeps the event stream live. Caddy sets `X-Forwarded-For` by default.
+`h2c://` makes Caddy speak cleartext HTTP/2 to the backend for every request, so gRPC, REST, SSE and the admin panel share one upstream; `flush_interval -1` keeps the event stream live.
 
 #### nginx
 
-nginx forwards gRPC with `grpc_pass` (HTTP/2 to the backend) and everything else with `proxy_pass`. The `http2 on;` directive needs nginx 1.25.1 or newer; on older versions write `listen 443 ssl http2;`.
+nginx forwards gRPC with `grpc_pass` and everything else with `proxy_pass`. `http2 on;` needs nginx 1.25.1 or newer.
 
 ```text
 upstream worktree {
@@ -98,26 +249,13 @@ server {
     ssl_certificate     /etc/ssl/wt.example.com/fullchain.pem;
     ssl_certificate_key /etc/ssl/wt.example.com/privkey.pem;
 
-    client_max_body_size 64m;
+    client_max_body_size 0;
 
-    # gRPC sync service (wt, worktree-bg)
     location /worktree.sync.v1.SyncService/ {
         grpc_pass grpc://worktree;
         grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         grpc_read_timeout 1h;
         grpc_send_timeout 1h;
-    }
-
-    # Server-Sent Events
-    location /api/v1/events {
-        proxy_pass http://worktree;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 1h;
     }
 
     location = /metrics {
@@ -126,131 +264,90 @@ server {
         proxy_pass http://worktree;
     }
 
-    # REST API, /healthz, admin panel
     location / {
         proxy_pass http://worktree;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;          # SSE
+        proxy_read_timeout 1h;
     }
 }
 ```
+
+#### Traefik
+
+Point a service at `h2c://worktree:7420`, or use the Helm chart with `ingress.grpc.enabled=false` (Traefik honours the Service's `appProtocol`).
 
 <Callout type="info" title="Client URLs">
   Remote URLs are the public `https://` origin of the proxy or of the server. `wt` and the daemon speak gRPC over TLS for `https://` remotes and h2c for `http://` remotes. See [Security](/docs/security).
 </Callout>
 
-## Running as a service
+## Installing the clients
 
-### systemd (Linux)
+`scripts/install.sh` (Linux, macOS, Git Bash) and `scripts/install.ps1` (Windows PowerShell 5.1 or newer, PowerShell 7 on any OS) download the release archive for the machine's OS and architecture, verify its SHA-256 against the release's `SHA256SUMS` (falling back to the archive's `.sha256` file for releases before v0.7) and install `wt` and `worktree-bg`, plus `worktree-server` with `--with-server` / `-WithServer`. **Nothing is installed when verification fails.**
 
-<Steps>
-<Step>
-
-### Create a user and directories
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
 
 ```bash
-sudo useradd --system --home /var/lib/worktree --shell /usr/sbin/nologin worktree
-sudo install -d -o worktree -g worktree -m 0750 /var/lib/worktree /var/lib/worktree/data
-sudo install -m 0755 worktree-server /usr/local/bin/worktree-server
-sudo cp -r apps/admin/dist /opt/worktree-admin
+bash scripts/install.sh --version v0.7.0 --dir /usr/local/bin --with-server
+bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.7.0   # internal mirror
+bash scripts/install.sh --base-url ./dist                                       # local build
 ```
 
-</Step>
-<Step>
+</Tab>
+<Tab value="PowerShell">
 
-### Store secrets in an environment file
+```powershell
+.\scripts\install.ps1 -Version v0.7.0 -WithServer -AddToPath
+.\scripts\install.ps1 -BaseUrl \\fileserver\worktree\v0.7.0
+.\scripts\install.ps1 -BaseUrl .\dist
+```
+
+</Tab>
+</Tabs>
+
+| Option (sh / ps1) | Env | Default |
+|---|---|---|
+| `--version` / `-Version` | `WT_VERSION` | `latest` |
+| `--dir` / `-InstallDir` | `WT_INSTALL_DIR` | `~/.local/bin`; `%LOCALAPPDATA%\Programs\worktree\bin` |
+| `--base-url` / `-BaseUrl` | `WT_BASE_URL` | `https://github.com/<repo>/releases/download/<version>` (`.../latest/download` for `latest`) |
+| `--target` / `-Target` | `WT_TARGET` | detected, for example `aarch64-apple-darwin` (Apple silicon under Rosetta gets `aarch64`) |
+| `--repo` / `-Repo` | `WT_REPO` | `seanfilimon/worktree` |
+| `--from-source` / `-FromSource` | | build with `cargo install --locked` (and `go build`) instead of downloading |
+
+A base URL can be `https://`, `http://` (with a warning: the checksum then only detects corruption), `file://` or a plain directory; it must contain `SHA256SUMS` and the archives, which is exactly what `scripts/release.sh` writes to `dist/`. `-AddToPath` updates the Windows user `PATH`; otherwise the installers print how to add the directory.
+
+### Release archives
+
+`scripts/release.sh` builds the archives locally; the release workflow runs the same script on native runners for every target:
 
 ```bash
-sudo install -d -m 0750 /etc/worktree
-sudo install -m 0600 /dev/null /etc/worktree/server.env
-sudoedit /etc/worktree/server.env
+bash scripts/release.sh                          # host target + admin panel -> dist/
+bash scripts/release.sh --all                    # every target with an installed Rust toolchain
+bash scripts/release.sh --target aarch64-unknown-linux-gnu --skip-admin
 ```
 
-```text
-WT_ADMIN_USER=admin
-WT_ADMIN_PASSWORD=use-a-long-random-secret
-WT_PUBLIC_URL=https://wt.example.com
-WT_TRUSTED_PROXIES=127.0.0.1
-WT_LOG_FORMAT=json
-```
+| Artifact | Contents |
+|---|---|
+| `worktree-<version>-<target>.tar.gz` (`.zip` on Windows) | `wt`, `worktree-bg`, `worktree-server`, `LICENSE`, `README.md` |
+| `worktree-admin-<version>.tar.gz` | The admin panel build for `--admin-dir` |
+| `worktree-<version>.tgz` | The Helm chart (release workflow) |
+| `<artifact>.sha256`, `SHA256SUMS` | SHA-256 checksums |
 
-</Step>
-<Step>
-
-### Install the unit
-
-`/etc/systemd/system/worktree-server.service`:
-
-```text
-[Unit]
-Description=W0rkTree server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=worktree
-Group=worktree
-WorkingDirectory=/var/lib/worktree
-EnvironmentFile=/etc/worktree/server.env
-ExecStart=/usr/local/bin/worktree-server \
-  --addr 127.0.0.1:7420 \
-  --data /var/lib/worktree/data \
-  --admin-dir /opt/worktree-admin \
-  --allow-registration=false
-Restart=on-failure
-RestartSec=5
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/worktree
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now worktree-server
-curl -s http://127.0.0.1:7420/healthz
-```
-
-</Step>
-</Steps>
-
-`systemctl stop` sends `SIGTERM`: the server stops accepting work, drains connections within `--shutdown-timeout` (default 15 s), audits `server.stop` and exits.
-
-### Windows
-
-`worktree-server.exe` runs as an ordinary console program; it does not register itself with the Windows Service Control Manager. To run it as a service, use a service wrapper such as NSSM or WinSW, or a Task Scheduler task that runs at startup. Configure the same flags, and set `WT_ADMIN_PASSWORD` in the wrapper's environment settings rather than on the command line.
-
-## Containers
-
-The repository root has a `Dockerfile.server` that builds the admin panel and a static Go binary and packages both in an Alpine image. No image is published; build it yourself:
-
-```bash
-docker build -f Dockerfile.server -t worktree-server .
-docker run -d --name worktree -p 7420:7420 -v wt-data:/data \
-  -e WT_ADMIN_PASSWORD='use-a-long-random-secret' -e WT_ALLOW_REGISTRATION=false \
-  worktree-server
-```
-
-The image runs as the unprivileged user `worktree` (uid 10001), stores data in the `/data` volume, serves the bundled admin panel from `/app/admin` (`WT_ADDR=:7420`, `WT_DATA=/data`, `WT_ADMIN_DIR=/app/admin`) and declares a `HEALTHCHECK` on `/healthz`. Pass any other setting as a `WT_*` environment variable, for example `WT_TLS_CERT` and `WT_TLS_KEY` with the certificate files mounted into the container. Build arguments `VERSION` and `COMMIT` set the reported version.
-
-For a local stack, `docker-compose.yml` runs the server (port 7420, with the admin panel) and this documentation site (port 3000):
-
-```bash
-WT_ADMIN_PASSWORD=change-me docker compose up --build
-```
-
-Keep the data volume on persistent storage and run a single container per data directory: bbolt allows only one process to open `meta.db`.
+Targets: `x86_64` and `aarch64` of `unknown-linux-gnu`, `apple-darwin` and `pc-windows-msvc`. The version comes from `[workspace.package]` in `Cargo.toml`; the release workflow refuses a tag `v<version>` that differs from it. Targets whose Rust standard library or cross linker is missing are skipped with a warning (`--strict` makes that an error); the Go server always cross-compiles.
 
 ## Upgrading
 
-1. Back up the data directory.
-2. Build the new version and replace the binary (and the admin panel build), or rebuild the image.
-3. Restart the service and check `/healthz` for the new `version`.
+1. Read the [changelog](/changelog) and take a backup (`wt admin backup create --note "before 0.7.1"`).
+2. Replace the binary or bump the image tag: `helm upgrade wt deploy/helm/worktree --reuse-values --set image.tag=<version>`, `docker compose pull && docker compose up -d` (or `up -d --build` for a local build), or reinstall with `scripts/install.sh --with-server --version vX.Y.Z` and `systemctl restart worktree-server`.
+3. Start the new version on the same data directory. There is one replica, so expect a short outage; graceful shutdown waits up to `WT_SHUTDOWN_TIMEOUT` (default 15 s) and the Helm chart's startup probe allows five minutes for the first start.
+4. Check that `GET /healthz` reports the new `version`, then upgrade the clients with the installers.
 
-The server refuses to open a `meta.db` written by a newer schema, so keep the backup until the new version has run cleanly. The project is pre-1.0: read the [changelog](/changelog) before upgrading.
+The server refuses to open a `meta.db` written by a newer schema, so downgrades are not supported once a newer server has written its data: [restore](/docs/server/storage-backends#restore) the backup instead.
+
+<Callout type="info" title="Not built yet">
+  Signed release artifacts (cosign, SLSA provenance), native packages (Homebrew, Scoop/winget, `.deb`/`.rpm`), musl archives, a distroless image and zero-downtime rolling upgrades are on the [roadmap](/roadmap).
+</Callout>

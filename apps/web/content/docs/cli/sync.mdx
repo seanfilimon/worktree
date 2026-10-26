@@ -1,0 +1,124 @@
+---
+title: One-Step Sync and Offline Queue
+description: wt sync fetches, integrates (merge or rebase) and pushes in one command; pushes made while the server is unreachable are queued and delivered later by wt sync flush or the daemon.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Keeping a tree in step with its server used to take three commands (`wt fetch`, `wt pull` or `wt rebase origin/BRANCH`, `wt push`) and failed outright when the server was unreachable. v0.7 adds:
+
+- **`wt sync`**: fetch, integrate the remote copy of the current branch and push, with one summary;
+- **the offline queue**: when the server cannot be reached, unpushed snapshots are recorded as a queued push instead of failing, and delivered later;
+- **daemon auto-flush and auto-sync**: the background daemon delivers queued pushes when the server is back, and can run `wt sync` on a schedule.
+
+The server sees ordinary pulls and pushes; nothing changed in the protocol. The [One-step sync specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/sync/OneStepSync.md) is normative.
+
+## wt sync
+
+```text
+wt sync [--merge | --rebase] [--no-push] [--all-trees] [--remote R]
+wt sync --continue | --abort
+```
+
+For the selected tree (`--tree`, else the tree containing the current directory) and its current branch `B`, with remote `R` (`--remote`, else `sync.remote`, default `origin`):
+
+1. **Fetch** every remote branch and the tags. A tree that does not exist on the server yet is not an error: step 3 creates it.
+2. **Integrate** `R/B` into `B`:
+
+   | Local `B` versus `R/B` | Action |
+   |---|---|
+   | Equal, `R/B` unknown, or `B` already contains `R/B` | Nothing to integrate |
+   | `B` is empty or behind `R/B` | Fast-forward and check out |
+   | Diverged, strategy `merge` (default) | One merge snapshot, message `Merge R/B into B` |
+   | Diverged, strategy `rebase` | Replay your unpushed snapshots on top of `R/B` |
+
+   The strategy is `--merge` or `--rebase`, else [`sync.strategy`](#configuration). Rebase replays only unpushed snapshots (the pushed-history guard of [`wt rebase`](/docs/cli/history-rewriting#wt-rebase) applies). Integrating needs a clean working tree: snapshot or [stash](/docs/cli/history-rewriting#wt-stash) your changes first. When there is nothing to integrate, a dirty tree is fine and the push still happens.
+3. **Push** `B` when it has snapshots and its tip differs from `R/B`. `--no-push` stops after step 2.
+
+```text
+$ wt sync
+Sync proj (main) with origin [merge]
+  fetch   1 branch updated; received 2 snapshots and 5 objects
+  merge   merged origin/main (merge snapshot 1a2b3c4d)
+  push    9f8e7d6c..1a2b3c4d -> origin/main; sent 2 snapshots and 3 objects
+Synced.
+```
+
+`--all-trees` syncs every tree of the worktree on its own current branch, in tree order; an error in one tree is reported for that tree and the others still sync.
+
+`--json` prints a report with `tree`, `branch`, `remote`, `strategy`, `status` (`up_to_date`, `synced`, `conflicts`, `aborted`, `queued`, `offline`), the fetch and push reports, `integration` (`none`, `up_to_date`, `fast_forward`, `merged`, `rebased`, `conflicts`, `aborted`), `replayed`, `old_tip`, `new_tip`, `queued`, `conflicts` and `offline_error` (an array of `{tree, report, error}` with `--all-trees`).
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Synced or up to date, including a push that was queued because the server is unreachable |
+| `1` | An error, or the server is unreachable and there is nothing to queue (`offline`) |
+| `3` | Stopped with conflicts |
+
+## Conflicts
+
+A conflicting merge or rebase stops the sync exactly like [`wt merge`](/docs/cli/branches#wt-merge) or [`wt rebase`](/docs/cli/history-rewriting#wt-rebase): conflict markers in the working tree, the usual merge state, exit code **3**, and nothing pushed.
+
+```bash
+wt sync                          # exit 3: conflicts in src/auth.rs
+wt merge status
+wt merge resolve src/auth.rs --ours   # or edit the file and remove the markers
+wt sync --continue               # finish the merge or rebase, then push
+wt sync --abort                  # or undo the integration
+```
+
+- `wt sync --continue` finishes the integration once the markers are resolved, then pushes. A rebase may stop again at a later snapshot; remaining markers fail with exit 3.
+- `wt sync --abort` returns the branch and the working tree to their state before the integration.
+
+While the integration is pending, a plain `wt sync` refuses and points at these two. The pending state is the ordinary merge or rebase state, so `wt merge --continue` or `wt rebase --continue` followed by `wt push` is equivalent.
+
+## Offline queue
+
+When a push fails because the server **cannot be reached** (a connect failure, connection refused or reset, a broken pipe, gRPC `Unavailable` or `DeadlineExceeded`), the push can be queued in the tree's **outbox**, `.wt/trees/<tree>/outbox.jsonl`. Any answer from the server (a push rejection, `Unauthenticated`, `PermissionDenied`, a quota) is not "unreachable" and fails normally.
+
+- `wt push --queue` pushes, and queues instead of failing when the server is unreachable (exit 0). Without `--queue` such a push fails with a hint naming `--queue`.
+- `wt sync` queues automatically when the fetch finds the server unreachable and the branch is ahead of the last known `R/B` (`status: queued`, exit 0).
+
+```bash
+wt push --queue
+wt sync queue                    # or: wt sync --status
+wt sync flush                    # retry now; exit 1 while entries remain
+wt sync drop 2                   # forget entry 2 without pushing it
+```
+
+| Command | Effect |
+|---|---|
+| `wt sync queue [--all-trees]` (also `wt sync --status`) | Queued pushes numbered from 1 (oldest), with attempts and the last error |
+| `wt sync flush [--all-trees]` | Retry every entry; exit `1` while any remain |
+| `wt sync drop N` | Forget entry `N` without pushing it |
+
+There is at most one entry per remote and branch: queueing the branch again moves its tip forward. A flush pushes each branch at its **current** tip, so snapshots made after queueing go out too. A delivered entry is removed; a failed one keeps its attempt count and last error. A queued push the server refuses (typically because someone else pushed meanwhile) stays queued: run `wt sync`, which integrates the remote changes, pushes and clears it. Any successful push of a branch clears its entry.
+
+## Daemon auto-flush and auto-sync
+
+The [background daemon](/docs/cli/daemon) runs an outbox loop for every watched worktree, re-reading its configuration every 10 seconds:
+
+- **Auto-flush** (`sync.auto_flush = true`, the default): when a tree has queued pushes, the daemon flushes them. A pass that leaves entries queued backs off exponentially (1 s doubling to 5 min); a new entry or a newer tip is tried at once.
+- **Auto-sync** (`sync.auto_sync_secs = N`, default `0` = off): every `N` seconds, for every tree that is clean and has no merge or rebase pending, the daemon runs a full sync. A conflicting integration is **undone at once** (logged as a warning), so the working tree never receives conflict markers unattended; pushes that cannot reach the server are queued and flushed by auto-flush.
+
+Results are logged to `$WT_HOME/bg.log` (`wt daemon logs`).
+
+## Configuration
+
+| Key | Values | Default | Meaning |
+|---|---|---|---|
+| `sync.strategy` | `merge`, `rebase` | `merge` | How `wt sync` integrates diverged history |
+| `sync.auto_flush` | bool | `true` | The daemon delivers queued pushes |
+| `sync.auto_sync_secs` | integer | `0` | Daemon auto-sync period in seconds (`0` = off) |
+| `sync.remote` | remote name | `origin` | Remote of `wt sync`, `wt push` and the daemon |
+
+```bash
+wt config set sync.strategy rebase
+wt config set sync.auto_sync_secs 300
+wt config get sync.auto_flush
+```
+
+The keys live in the `[sync]` section of `.wt/config.toml`; default values are not written to the file. See [Configuration](/docs/cli/configuration).
+
+<Callout type="info" title="Not built yet">
+  Syncing branches other than the current one, queue state in `wt status` and `wt daemon status`, queueing staged snapshots and tag pushes while offline, `--autostash` and a desktop notification for aborted auto-syncs are on the [roadmap](/roadmap).
+</Callout>

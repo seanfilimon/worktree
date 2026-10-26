@@ -135,14 +135,16 @@ curl -s -X POST $WT/api/v1/trees/acme/payments/merge-requests/4/merge \
 |---|---|
 | `400 bad_request` | Unknown `method`, invalid `message`, unknown body fields. |
 | `403 review_required` | Missing approvals. |
-| `409 merge_blocked` | Change requests, CI, blocking TODOs; a fast-forward that would bring merge snapshots under `require_linear`. |
+| `409 merge_blocked` | Change requests, missing [owner approvals](/docs/server/review-workflow#owner-approval), CI, blocking TODOs; a fast-forward that would bring merge snapshots under `require_linear`. |
+| `409 draft` | The merge request is a [draft](/docs/server/review-workflow#draft-merge-requests). |
 | `409 linked_group` | A member of an open linked group merged alone. |
 | `409 merge_method_not_allowed` | Protection refuses the method. |
+| `409 quota_exceeded` | The new objects of a merge or squash snapshot would exceed the tenant's storage quota. |
 | `409 merge_conflict` | The three-way merge has conflicts (`conflicts` lists them; linked-group entries carry `tree`). |
 | `409 conflict` | Fast-forward requested on diverged branches; the target moved during the merge; merge or squash into an empty target. |
 
 A successful merge publishes `mr.merged` and, when the target moved, `branch.pushed` with `merge_request` and `merge_method` in its payload, so watchers, [code search](/docs/server/code-search) and [webhooks](/docs/server/webhooks) see server-made snapshots. The audit record `mr.merge` carries `old_tip`, `new_tip`, `method` and `approvals`.
 
 <Callout type="info" title="Roadmap">
-  Rebase merges, resolving conflicts in the browser, signing server-made snapshots (so `require_signed` can allow merge and squash), deleting the source branch after a merge and content merges of chunked files are not built. Merges do not check tenant storage quotas. See the [roadmap](/roadmap).
+  Rebase merges, resolving conflicts in the browser, signing server-made snapshots (so `require_signed` can allow merge and squash), deleting the source branch after a merge and content merges of chunked files are not built. See the [roadmap](/roadmap). Since v0.7, merge and squash snapshots are checked against tenant storage quotas (fast-forwards add no objects).
 </Callout>

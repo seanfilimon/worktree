@@ -112,7 +112,7 @@ interval_secs = 300
 - A secret-scan finding or a failing pre-snapshot hook skips that tree and is reported in `last_error`; other trees continue.
 - `auto_snapshot.enabled = false` turns auto-snapshots off for that worktree or tree without unwatching it.
 - With `auto_snapshot.on_branch_switch = "snapshot"`, `wt switch` asks the daemon to snapshot the tree before switching. See [`wt switch`](/docs/cli/branches#wt-switch).
-- Auto-snapshots never push. Only `wt push` changes branch history on the server.
+- Auto-snapshots never push. Branch history on the server changes only through `wt push` / `wt sync`, or through the daemon's [outbox loop](#offline-queue-and-auto-sync) delivering pushes you queued or running `wt sync` when you set `sync.auto_sync_secs`.
 
 ## Background fetch
 
@@ -123,7 +123,21 @@ When `sync.auto_fetch = true` (default) and the worktree has a remote with a sav
 3. Every `sync.interval_secs` (default `300`) it fetches every linked tree as a fallback, even without events.
 4. When the server is unreachable or the stream breaks, it reconnects with exponential backoff from 1 second to 5 minutes. Snapshots continue locally meanwhile.
 
-Integrate fetched work yourself with [`wt pull`](/docs/cli/remote#wt-pull) or `wt merge origin/<branch>`. The protocol side is described in [Sync protocol](/docs/protocol/sync-protocol).
+Integrate fetched work yourself with [`wt pull`](/docs/cli/remote#wt-pull), [`wt sync`](/docs/cli/sync) or `wt merge origin/<branch>`. The protocol side is described in [Sync protocol](/docs/protocol/sync-protocol).
+
+## Offline queue and auto-sync
+
+Next to the fetch task, each watched worktree has an **outbox loop** that re-reads the worktree config every 10 seconds:
+
+- **Auto-flush** (`sync.auto_flush = true`, the default): when a tree has pushes queued in its [offline queue](/docs/cli/sync#offline-queue) (`wt push --queue`, or `wt sync` while the server was unreachable), the daemon retries them. A pass that leaves entries queued backs off exponentially from 1 second to 5 minutes; a pass that delivers everything resets the backoff, and a new or updated queue entry is tried at once.
+- **Auto-sync** (`sync.auto_sync_secs = N`, default `0` = off; needs the sync remote): every `N` seconds, for every tree that is clean and has no merge or rebase pending, the daemon runs `wt sync`. A conflicting integration is undone at once (logged as a warning), so the working tree never receives conflict markers unattended; pushes that cannot reach the server are queued and flushed by auto-flush.
+
+```bash
+wt config set sync.auto_sync_secs 600    # sync clean trees every 10 minutes
+wt config set sync.auto_flush false      # deliver queued pushes only with wt sync flush
+```
+
+Results go to `bg.log`. See [Daemon auto-flush and auto-sync](/docs/cli/sync#daemon-auto-flush-and-auto-sync).
 
 ## Maintenance and shutdown
 

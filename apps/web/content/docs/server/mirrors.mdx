@@ -1,0 +1,103 @@
+---
+title: Git Mirrors
+description: Push mirrors keep a copy of a server tree in a Git repository on GitHub, GitLab or your own Git server - deterministic commits, license-aware content, force-with-lease pushes, credentials that never reach a command line.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **mirror** keeps a copy of a server tree in a Git repository elsewhere: GitHub, GitLab, Gitea or a company Git server. It is a *push* mirror: the W0rkTree server is the source of truth, exports the tree's snapshots as Git commits and pushes the mirrored branches and tags after every push and on demand. Nothing is fetched back. The [Mirrors specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Mirrors.md) is normative.
+
+Mirrors belong to one tree and are managed by its administrators (`tree:admin`) with [`wt mirror`](#wt-mirror), the tree's **Mirrors** tab in the admin panel, or the [REST API](#rest-api). Unlike [`wt git push`](/docs/cli/git), mirrors need no working copy: the server builds the commits from its own metadata and object store.
+
+## Requirements
+
+Mirrors run the `git` executable on the server, version 2.31 or newer: `--git-binary` (`WT_GIT_BINARY`, default `git` on `PATH`). The [server image](/docs/server/deployment#docker) includes it. When it is missing or too old, the server logs a warning at start and mirrors stay configurable but **disabled**: `wt mirror list` and the Mirrors tab say so, syncs record `last_status: disabled`, and a manual sync answers `409 conflict`.
+
+## wt mirror
+
+```bash
+export GITHUB_TOKEN=ghp_...
+wt mirror add https://github.com/acme/web.git --branch main --branch 'release/*' --token-env GITHUB_TOKEN
+wt mirror list
+wt mirror sync 7c1e...
+wt mirror update 7c1e... --all-branches --no-tags
+wt mirror update 7c1e... --inactive          # pause
+wt mirror remove 7c1e... --yes
+```
+
+| Command | Effect |
+|---|---|
+| `wt mirror list` | Mirrors of the tree with their last sync status and error; the git status when mirrors are disabled |
+| `wt mirror add URL [-b GLOB]... [--no-tags] [--token-env VAR] [--inactive]` | Add a mirror. Without `-b`, every branch is mirrored; tags are mirrored unless `--no-tags`; `--inactive` creates it paused |
+| `wt mirror show ID` | One mirror |
+| `wt mirror update ID [--url U] [-b GLOB... \| --all-branches] [--tags \| --no-tags] [--token-env VAR \| --clear-token] [--active \| --inactive]` | Change only the given fields. A new URL forgets what was pushed to the old remote |
+| `wt mirror remove ID [-y]` | Remove the mirror; the remote repository is left as it is |
+| `wt mirror sync ID [--no-wait]` | Export and push now; prints the new commits and the outcome per ref, exits `1` when the sync failed. `--no-wait` starts it and returns |
+
+Every subcommand takes `--tree TENANT/TREE` to name the server tree; without it, the tree of the current worktree is used. `--token-env VAR` reads the credential from an environment variable so it stays out of shell history and process lists. `--json` prints the server responses.
+
+Branch globs are `/`-separated: `*`, `?` and `[...]` match within one segment, a `**` segment matches any number of segments. `main` matches only `main`; `release/*` matches `release/1.0` but not `release/1/2`; `feature/**` matches `feature` and everything below it.
+
+## When a mirror syncs
+
+- **Automatically**, 5 seconds after a branch push, creation or deletion, a tag push or deletion, or a merge in the tree (a burst of pushes gives one sync), shortly after the mirror is created or updated, and at server start for mirrors whose last sync failed or did not finish. A failed automatic sync is retried after 1 min, 5 min, 30 min and 2 h; the next event restarts the cycle.
+- **On demand** with `wt mirror sync`, "Sync now" in the Mirrors tab, or `POST .../mirrors/{id}/sync`.
+
+Syncs of one mirror never overlap. Deleting a tree removes its mirrors and their local state, never the remote repositories.
+
+## How snapshots become commits
+
+Each sync walks the history behind the mirrored refs and writes only snapshots it has not exported yet, parents first, in one `git fast-import` run into a bare repository `<data>/mirrors/<id>.git`; a snapshot-to-commit map makes later syncs incremental. Commits are **deterministic** and identical to what [`wt git export`](/docs/cli/git) writes, so the same history always has the same commit ids:
+
+- author and committer from the snapshot author, at the snapshot time in UTC;
+- the snapshot message;
+- the manifest's files, with large chunked files reassembled and mode `100755` for executables;
+- the snapshot's parents in order (merge snapshots become merge commits).
+
+Tags with a message become annotated tags, others lightweight tags. Branch and tag names Git cannot represent and paths with an empty, `.`, `..` or `.git` component are skipped and reported.
+
+### License-aware content
+
+Mirroring redistributes the tree outside the platform, so it applies the same rule as [archive exports](/docs/server/licensing): paths whose license rule does not permit export (a proprietary license without a grant, `read-only` or `modify` grants) are **left out** of the commits, and a generated `LICENSES/NOTICE` lists the SPDX id of every included path covered by a rule and how many paths were excluded. When the tree's license rules change, the next sync re-exports the whole history with the new filter, so a newly restricted file disappears from the mirrored history (the commit ids change and the push is forced, still under the lease below).
+
+## Push
+
+After the export the server runs `git push --porcelain` with `--force-with-lease` for every ref this mirror pushed before:
+
+- a rewrite caused by a license change is forced, but a ref someone else moved on the remote is **not** overwritten: the push is rejected and the sync fails with a clear error;
+- a ref pushed for the first time is a normal push and fails if the remote already has unrelated history there;
+- branches and tags deleted in the tree are deleted on the remote when this mirror pushed them; refs that merely stop matching the globs are left alone; nothing else on the remote is touched.
+
+The outcome per ref is `created`, `updated`, `forced`, `deleted`, `up_to_date` or `rejected`. A push is bounded by 10 minutes.
+
+## Credentials and remote URLs
+
+- `https://` and `http://` remotes may store a **credential**: a token (sent as `x-access-token:<token>`, which GitHub, GitLab and Gitea accept) or `user:password`. It is passed to git as an `http.extraHeader` through the environment of the push only, never on a command line, in logs or in API responses (`has_credential` says whether one is stored). URLs with a password in them are refused.
+- `ssh://` and scp-like `user@host:path` remotes use the server's own SSH keys (`ssh -o BatchMode=yes`) and take no credential.
+- git runs with an isolated configuration: no system or global config, no prompts or credential helpers, no HTTP redirects, and only the `https`, `http` and `ssh` transports.
+- **SSRF guard.** Like [webhook targets](/docs/server/operations#webhook-targets), a mirror host that is, or resolves to, a loopback, link-local or private address is refused when the mirror is saved and again before every sync, and `file://` URLs are refused. `--mirror-allow-local` (`WT_MIRROR_ALLOW_LOCAL=true`) allows both, for a Git server on your LAN or for tests.
+
+At most 10 mirrors per tree, and one tree cannot mirror twice to the same URL.
+
+## Events and audit
+
+A sync publishes `mirror.synced` (`{mirror_id, url, commits, refs, pushed}`) or `mirror.failed` (`{mirror_id, url, status, error}`), with the requesting user or `system` as actor; both reach SSE streams and [webhooks](/docs/server/webhooks). Audit actions: `mirror.create`, `mirror.update`, `mirror.delete`, `mirror.sync`; details never include the credential.
+
+## REST API
+
+Under `/api/v1/trees/{tenant}/{tree}`, all `tree:admin`:
+
+| Method and path | Body / query | Response |
+|---|---|---|
+| `GET .../mirrors` | | `{"mirrors": [Mirror], "git": {available, version?, error?}}` |
+| `POST .../mirrors` | `{url, branches?, tags?, credential?, active?}` | `201` Mirror |
+| `GET .../mirrors/{id}` | | Mirror |
+| `PATCH .../mirrors/{id}` | Any of the create fields; `credential: ""` removes it, `branches: []` mirrors every branch | Mirror |
+| `DELETE .../mirrors/{id}` | | `204` |
+| `POST .../mirrors/{id}/sync` | `?wait=false` | `200 {mirror, result}`, or `202 {mirror}` with `wait=false` |
+
+A `Mirror` has `id`, `url`, `has_credential`, `branches`, `tags`, `active`, `created_by`, `created_at`, `last_sync_at`, `last_status` (`ok`, `error`, `running` or `disabled`) and `last_error`. The sync `result` is `{commits, refs: [{ref, new?, status, reason?}], pushed, excluded?, skipped?, error?, duration_ms}`; a failed export or push is reported there, not as an error status. Errors: `400` (validation, SSRF guard), `409 conflict` (duplicate URL, more than 10 mirrors, syncing an inactive or disabled mirror).
+
+<Callout type="info" title="Not built yet">
+  Pull mirrors (importing from Git) and two-way sync, per-mirror SSH deploy keys, credential encryption at rest, signed commits in the mirror and per-mirror path filters are on the [roadmap](/roadmap).
+</Callout>

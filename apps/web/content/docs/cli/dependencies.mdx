@@ -139,26 +139,38 @@ Releases belong to a server tree and one of its tags.
 
 ```text
 wt release list [TREE]
-wt release create [--name <NAME>] [--notes <TEXT> | --notes-file <FILE>] [--draft] [--prerelease] [--snapshot <REV>] <TAG> [TREE]
+wt release create [--name <NAME>] [--notes <TEXT> | --notes-file <FILE>] [--draft] [--prerelease] [--snapshot <REV>] [--sbom] <TAG> [TREE]
 wt release show <TAG> [TREE]
 wt release edit [--name <NAME>] [--notes <TEXT>] [--notes-file <FILE>] [--draft | --publish] [--prerelease | --no-prerelease] <TAG> [TREE]
 wt release delete [--yes] <TAG> [TREE]
 wt release upload [--in <TENANT/TREE>] <TAG> <FILE>...
 wt release download [--in <TENANT/TREE>] [-o <DIR>] <TAG> [ASSET]
+wt release checksums <TAG> [TREE]
+wt release sbom <TAG> [TREE]
+wt release verify [-d <DIR>] [--in <TENANT/TREE>] [--account <USERNAME>] [--allow-unsigned] [--ignore-missing] <TAG>
 ```
 
 ```bash
-wt release create v1.4.0 --snapshot main --name "1.4.0" --notes-file CHANGELOG.md --draft
+wt tag v1.4.0 main -m "1.4.0" --sign && wt tag push v1.4.0
+wt release create v1.4.0 --name "1.4.0" --notes-file CHANGELOG.md --draft --sbom
 wt release upload v1.4.0 dist/app-linux.tar.gz dist/app-windows.zip
 wt release edit v1.4.0 --publish
+wt release checksums v1.4.0 > SHA256SUMS
+
+# Consumer side
 wt release download v1.4.0 -o ./downloads
+wt release verify v1.4.0 -d ./downloads
 ```
 
-- `create` uses an existing tag, or creates it at `--snapshot` (id, branch or tag) when it does not exist yet.
+- `create` uses an existing tag, or creates it at `--snapshot` (id, branch or tag) when it does not exist yet. `--sbom` also generates an SPDX 2.3 SBOM of the snapshot and attaches it as `sbom.spdx.json`.
+- `checksums` prints the release's `SHA256SUMS` (one `<sha256>  <name>` line per asset); the server computes each asset's SHA-256 on upload.
+- `sbom` (re)generates the SBOM asset of an existing release (`release:create`).
+- `verify` checks the assets in `DIR` (default `.`) against the release checksums **and** verifies the tag signature itself, against your local keys, the signer's registered keys and `--account`'s; it does not trust the server's `verified` flag. It fails (exit `1`) on an unsigned tag (unless `--allow-unsigned`), an invalid or unknown signature, a tag that no longer points at the release's snapshot, a checksum mismatch, an asset without a checksum line, or a missing file (unless `--ignore-missing`).
+- `show` and `list` display whether a release is **verified**: its tag carries a verified signature and still points at the release's snapshot. See [Release integrity](/docs/server/release-integrity).
 - `delete` removes the release; the tag is kept.
 - Each asset is at most 64 MiB, a release holds at most 100, and uploading a name that exists replaces it. Downloads keep the asset's content type and file name. `download` without `ASSET` fetches every asset.
 - Creating, editing and uploading need `release:create` (developer and above); deleting needs `release:delete` (maintainer and above). Drafts are listed only for accounts that may create releases.
-- Events: `release.created`, `release.deleted`.
+- Events: `release.created`, `release.updated`, `release.deleted`.
 
 <Callout type="info">
 Assets are stored in the server's object store and kept by garbage collection while the release exists. See [Operations](/docs/server/operations#garbage-collection).

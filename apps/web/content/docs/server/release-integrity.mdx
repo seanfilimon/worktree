@@ -1,0 +1,141 @@
+---
+title: Release Integrity
+description: Ed25519-signed tags verified by the server, tag protections that require signatures, SHA-256 checksums for every release asset, SPDX 2.3 SBOMs, and wt release verify to check a download without trusting the server.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A release is trustworthy when a consumer can check, without trusting the transport or the server's storage, that the release's **tag was signed** by a known person and that every **downloaded asset is byte-identical** to what was uploaded. v0.7 adds signed tags, server-side tag verification, signed-tag protections, per-asset SHA-256 checksums, verified releases, SBOM generation and client-side verification. The [Release integrity specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/security/ReleaseIntegrity.md) is normative.
+
+```text
+wt tag v1.0 --sign --> tag record + Ed25519 signature --> push: server verifies against registered keys
+                                                               |
+                                    Tag{verified, signer} -- Release{verified}
+                                                               |
+wt release download --> files --> wt release verify <-- SHA256SUMS + tag signature
+```
+
+## Signed tags
+
+Tags are signed with the same Ed25519 keys as snapshots ([`wt identity`](/docs/cli/signing)). Register your public key on the server once so it can verify your signatures:
+
+```bash
+wt identity generate              # once per machine (key "default")
+wt identity register              # upload the public key to your account
+wt tag v1.0.0 -m "Release 1.0.0" --sign
+wt push                           # pushes the branch and tags the server lacks
+wt tag push v1.0.0                # or push one tag and see a refusal reason
+```
+
+| Command or setting | Effect |
+|---|---|
+| `wt tag NAME [REV] [-m MSG] --sign` (= `wt tag create ... --sign`) | Sign with `[signing] key`, else the `default` key |
+| `[signing] auto = true` | Every tag created with `wt tag` is signed, like snapshots |
+| `wt tag push NAME [--remote R]` | Push one tag; fails with the server's reason when it is refused |
+| `wt tag verify NAME [--account USER] [--remote [--from R]]` | Verify the local copy (or with `--remote` the server's copy) against your local keys plus the registered keys of `USER`; exit `1` unless the signature is good |
+
+The signature covers the tag's name, target snapshot, message, tagger and creation time (a deterministic protobuf encoding of the tag record with the signature fields cleared). It is stored in the local tag file and travels with the tag on push, fetch and clone. The key is loaded before the tag is written, so a missing key never leaves an unsigned tag behind.
+
+### Verification on the server
+
+Every tag the server is about to store (pushed tags, `POST {tree}/tags`, and tags created by a release) is checked:
+
+- A tag carrying a signature must verify against a **registered, unrevoked** key. Otherwise it is refused (`403 signature_required` over REST; a push reports the reason) and `tag.signature_invalid` is audited.
+- A verified tag is stored with `verified: true` and `signer`, the username of the key's owner. Clients cannot set either field.
+- Tags listed by the server carry the signature and the signed tagger, so any client can re-verify them.
+
+The admin panel's **Tags** tab shows a "Verified" badge with the signer and key.
+
+## Signed-tag protection
+
+```bash
+wt protect tag set 'v*' --require-signed --no-move --no-delete
+```
+
+With `require_signed`, tags matching the pattern must carry a verified signature. Unsigned matching tags are refused on push, REST create and release creation with a hint such as "tag 'v2' is protected by 'v*' and must be signed (wt tag v2 --sign)". The other tag protection flags (`--no-move`, `--no-delete`, `--tagger`) apply as before. See [Branch protection](/docs/server/branch-protection).
+
+## Checksums
+
+The server computes the SHA-256 of every release asset on upload and stores it with the asset, next to its BLAKE3 content address.
+
+```bash
+wt release checksums v1.0.0
+```
+
+```text
+3b7f...e1  worktree-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+9a02...4c  sbom.spdx.json
+```
+
+`GET {tree}/releases/{tag}/checksums` returns the same `sha256sum`-format text (one line per asset, sorted by name); assets uploaded before v0.7 are hashed from their stored bytes. The Releases tab shows a SHA-256 column and a **Checksums** dialog to copy or download the file.
+
+### Verified releases
+
+A release is **verified** when its tag is verified **and** still points at the release's snapshot (a tag recreated elsewhere no longer vouches for it). The flag is computed on every read; `wt release show` and `wt release list` display it, and the Releases tab shows a badge.
+
+## SBOM
+
+```bash
+wt release create v1.0.0 --snapshot main --notes-file CHANGELOG.md --sbom
+wt release sbom v1.0.0            # (re)generate for an existing release
+```
+
+The server generates an **SPDX 2.3** JSON document of the release's snapshot and attaches it as the asset `sbom.spdx.json` (replacing an earlier one); it needs the right to create releases.
+
+- One package for the tree (name, the tag as version, a package verification code, the licenses found), and one file entry per path with `SHA1`, `SHA256` and `BLAKE3` checksums.
+- Each file's `licenseConcluded` is the SPDX expression of the most specific general [license rule](/docs/server/licensing) covering it, else `NOASSERTION`.
+- Files the requester may not read (license read rules, path policies) are omitted and counted in the package comment. At most 200,000 files.
+
+## Verifying a release
+
+`wt release verify` checks a download against the server's records **and** the tag signature, without relying on the server's `verified` flag:
+
+```bash
+wt release download v1.0.0 -o ./dl --in acme/tools
+wt release verify v1.0.0 -d ./dl --in acme/tools
+```
+
+1. It fetches the release, its `SHA256SUMS` and the server's tag record.
+2. It rebuilds the signed payload from the record and verifies the signature against your local keys, the signer's registered keys and the keys of `--account USER`.
+3. It checks that the tag points at the release's snapshot.
+4. It hashes `DIR/<asset>` for every checksum line (`ok`, `mismatch`, `missing`) and flags assets without a checksum line (`unlisted`).
+
+| Flag | Meaning |
+|---|---|
+| `-d, --dir DIR` | Directory holding the downloaded assets (default `.`) |
+| `--in TENANT/TREE` | Server tree (default: the current worktree's) |
+| `--account USER` | Also trust this account's registered keys (the signer's are always trusted) |
+| `--allow-unsigned` | Accept an unsigned tag (checksums are still checked) |
+| `--ignore-missing` | Skip assets that were not downloaded instead of failing |
+
+It exits `1` on an unsigned tag (unless `--allow-unsigned`), an unknown or invalid signature, a moved tag, a checksum mismatch, an unlisted asset or a missing file (unless `--ignore-missing`). `--json` prints the verdict per asset and the signature status.
+
+## What this protects against
+
+| Threat | Mitigation |
+|---|---|
+| A tag record tampered with in transit or storage | The signature over the record; clients re-verify (`wt tag verify --remote`, `wt release verify`) |
+| A forged signer | Keys are registered per account and `signer` is the key owner; revoked keys stop verifying |
+| Unsigned tags on protected names | `require_signed` tag protections, also for tags created by releases |
+| A swapped or corrupted asset | Per-asset SHA-256, `SHA256SUMS`, `wt release verify`; BLAKE3 addressing in the store |
+| A tag moved after the release | A release is only verified while its tag points at its snapshot |
+| A server lying about `verified` | `wt release verify` checks the signature itself |
+
+Not covered: a compromised server that also replaces the signer's published keys (prefer local keys or keys obtained out of band), and one that swaps an asset together with its checksum, because `SHA256SUMS` itself is not signed yet.
+
+## REST reference
+
+| Operation | Notes |
+|---|---|
+| `POST {tree}/tags` | `{name, target, message, force?, signature?, signing_key_id?, tagger?, created_at?}`; a signed create must name the snapshot id and the signed `tagger` and `created_at` |
+| `GET {tree}/tags` | Tags with `signature`, `signing_key_id`, `verified`, `signer`, `signed_tagger` |
+| `PUT {tree}/tag-protections` | `require_signed` |
+| `GET {tree}/releases[/{tag}]` | `verified`, `signing_key_id`, `signer`; assets carry `sha256` |
+| `GET {tree}/releases/{tag}/checksums` | `SHA256SUMS` text |
+| `POST {tree}/releases/{tag}/sbom` | `201` with the new asset |
+
+Audit actions: `tag.signature_invalid`, plus `tag.create` and `tag.push` with `verified`. The `tag.pushed` event carries `verified`.
+
+<Callout type="info" title="Not built yet">
+  A detached signature over `SHA256SUMS`, SBOM package metadata from manifests (`Cargo.toml`, `package.json`, `go.mod`) and verification of keys from other servers are on the [roadmap](/roadmap). The project's own release archives are checksummed (`SHA256SUMS`) but not yet signed; see [Deployment](/docs/server/deployment#installing-the-clients).
+</Callout>

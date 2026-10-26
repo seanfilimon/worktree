@@ -28,9 +28,11 @@ wt push --branch feature/refunds
 
 ```bash
 wt mr create --source feature/refunds --target main --title "Add refund endpoint"
+wt mr create --source feature/refunds --target main --title "Add refund endpoint" --draft --reviewer team:payments
+wt mr ready 4                         # a draft becomes mergeable; owners are asked for review
 ```
 
-Needs `mr:create` (developer). Source and target must be branches of the same tree.
+Needs `mr:create` (developer). Source and target must be branches of the same tree. Opening a non-draft merge request (and every later push to its source) requests reviews from the [path owners](/docs/server/review-workflow#path-owners) of the changed paths.
 
 </Step>
 <Step>
@@ -39,9 +41,12 @@ Needs `mr:create` (developer). Source and target must be branches of the same tr
 
 ```bash
 wt mr show 4 --diff
+wt mr owners 4                        # owners per changed path and whether they approved
 wt mr comment 4 -m "Validate the amount" --path src/refund.rs --line 42
+wt mr suggest 4 --path src/refund.rs --lines 42-43 -m "    validate(amount)?;" -b "Validate first"
 wt mr review 4 --request-changes -m "Amount is not validated"
-# after the author pushes a fix
+# the author applies the suggestion (a new snapshot on the source branch), or pushes a fix
+wt mr apply-suggestion 4 17
 wt mr review 4 --approve
 ```
 
@@ -65,6 +70,15 @@ wt mr merge 4 --method squash -m "Add refund endpoint (!4)"
 - **Change requests block.** A `--request-changes` review from someone with `mr:approve` blocks the merge until that same reviewer approves the current tip.
 - **Authors cannot approve** (or request changes on) their own merge request.
 - `--approve` and `--request-changes` need `mr:approve` (maintainer); `--comment` and `wt mr comment` need only `tree:read`.
+- **Drafts cannot be merged.** A draft has a `draft` blocker and `wt mr merge` answers `409 draft` until `wt mr ready N` (author or `mr:merge`).
+- **Owner approval.** With `--require-owner-approval` on the target's protection, every changed path that has owners needs an approval of the current source tip from one of them (`owners` blocker). See [Owner approval](/docs/server/review-workflow#owner-approval).
+
+### Review requests, owners and suggestions
+
+- `wt mr reviewers N [TREE]` lists requested reviewers; `wt mr reviewers N [TREE] add WHO...` requests reviews and `remove WHO...` withdraws them (author or `mr:approve`). `WHO` is `user:NAME`, `team:SLUG`, `NAME`, `@NAME` or `@TENANT/SLUG`; the author cannot be requested. Each new request publishes `mr.review_requested` and lands in the reviewers' [inbox](/docs/server/notifications#wt-inbox).
+- `wt mr owners N [TREE]` shows the owners of every changed path (from `wt owners set` or the tree's `OWNERS` file), whether each path is approved, and which are still missing. Manage owner rules with [`wt owners show|set`](/docs/server/review-workflow#path-owners).
+- `wt mr suggest N [TREE] --path P --lines A[-B] (--file F | -m TEXT) [-b BODY]` posts a comment that replaces lines `A..B` (1-based, inclusive) of `P` as of the source tip; an empty replacement deletes them. `--file -` reads stdin.
+- `wt mr apply-suggestion N COMMENT_ID [TREE] [-m MSG]` writes a snapshot on the source branch on the server, authored by you (needs `tree:write` and a direct push allowed by the source's protection). It answers `409 suggestion_outdated` when the source tip changed those lines, `409 conflict` when it was already applied or the tip already contains the change, and `409 quota_exceeded` when the new objects exceed the tenant's storage quota. See [Suggested changes](/docs/server/review-workflow#suggested-changes).
 
 ### Merge methods
 
@@ -87,23 +101,28 @@ wt merge main -m "Merge main into feature/refunds"
 wt push --branch feature/refunds
 ```
 
-A refused merge reports why, in this order of precedence: a linked group answers `409 linked_group`; missing approvals answer `403 review_required`; change requests, CI, blocking TODOs and linear-history violations answer `409 merge_blocked` listing every blocker; a method protection refuses answers `409 merge_method_not_allowed`; conflicts answer `409 merge_conflict`; a fast-forward on diverged branches answers `409 conflict`. Run `wt mr checks` first to see all blockers at once. See [`wt merge`](/docs/cli/branches#wt-merge).
+A refused merge reports why, in this order of precedence: a draft answers `409 draft`; a linked group answers `409 linked_group`; missing approvals answer `403 review_required`; change requests, missing owner approvals, CI, blocking TODOs and linear-history violations answer `409 merge_blocked` listing every blocker; a method protection refuses answers `409 merge_method_not_allowed`; conflicts answer `409 merge_conflict`; a fast-forward on diverged branches answers `409 conflict`; a merge or squash snapshot whose new objects would exceed the tenant's storage quota answers `409 quota_exceeded`. Run `wt mr checks` first to see all blockers at once; refusals hint at `wt mr ready`, `wt mr owners` and the storage quota where relevant. See [`wt merge`](/docs/cli/branches#wt-merge).
 
 ## `wt mr`
 
 ```text
-wt mr <list|show|create|approve|merge|mergeability|close|review|comment|comments|checks|link|merge-group|groups>
+wt mr <list|show|create|ready|reviewers|owners|suggest|apply-suggestion|approve|merge|mergeability|close|review|comment|comments|checks|link|merge-group|groups>
 ```
 
 | Command | Usage | Notes |
 |---|---|---|
-| `list` | `wt mr list [--state <open\|merged\|closed\|all>] [TREE]` | Default `open`. |
-| `show` | `wt mr show [--diff] <NUMBER> [TREE]` | `--diff` adds the changes (JSON: `{"merge_request", "diff"}`). |
-| `create` | `wt mr create --source <B> --target <B> --title <T> [--description <D>] [TREE]` | |
+| `list` | `wt mr list [--state <open\|merged\|closed\|all>] [TREE]` | Default `open`. Drafts are marked. |
+| `show` | `wt mr show [--diff] <NUMBER> [TREE]` | `--diff` adds the changes (JSON: `{"merge_request", "diff"}`). Shows draft state and reviewers. |
+| `create` | `wt mr create --source <B> --target <B> --title <T> [--description <D>] [--draft] [--reviewer <WHO>]... [TREE]` | `--draft`: not mergeable until `ready`; owners are requested only then. |
+| `ready` | `wt mr ready <NUMBER> [TREE]` | Mark a draft ready for review (`mr.ready`). |
+| `reviewers` | `wt mr reviewers <NUMBER> [TREE] [add\|remove <WHO>...]` | List, request or withdraw review requests. |
+| `owners` | `wt mr owners <NUMBER> [TREE]` | Owners and approval state per changed path. |
+| `suggest` | `wt mr suggest --path <PATH> --lines <A-B> <--file <F>\|-m <TEXT>> [-b <TEXT>] <NUMBER> [TREE]` | Suggested change as a comment. |
+| `apply-suggestion` | `wt mr apply-suggestion [-m <MSG>] <NUMBER> <COMMENT_ID> [TREE]` | Comment ids are shown by `wt mr comments`. |
 | `approve` | `wt mr approve <NUMBER> [TREE]` | Same as `review --approve`. |
 | `review` | `wt mr review <--approve\|--request-changes\|--comment> [-m <TEXT>] <NUMBER> [TREE]` | `--comment` needs `-m`. |
 | `comment` | `wt mr comment --message <TEXT> [--path <PATH>] [--line <N>] <NUMBER> [TREE]` | `--line` refers to a line of `--path`. |
-| `comments` | `wt mr comments <NUMBER> [TREE]` | |
+| `comments` | `wt mr comments <NUMBER> [TREE]` | Includes suggestions and whether they were applied. |
 | `checks` | `wt mr checks <NUMBER> [TREE]` | Merge readiness, below. |
 | `merge` | `wt mr merge [--method <fast-forward\|merge\|squash>] [-m <MSG>] <NUMBER> [TREE]` | Needs `mr:merge`. Conflicts exit with code `3`. |
 | `mergeability` | `wt mr mergeability <NUMBER> [TREE]` | Possible methods, default, merge base, conflicts. |
@@ -129,7 +148,7 @@ Shows whether the merge request can be merged now and what blocks it. With `--js
 }
 ```
 
-Blocker kinds: `state` (not open), `source` (source branch missing or empty), `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `conflicts` (the three-way merge has conflicts), `merge_method` (no allowed method can merge), and, when no other allowed method can merge, `linear` (the source brings merge snapshots) and `diverged` (the target is not an ancestor of the source). The JSON also lists the possible `methods` and the `conflicts`. Messages above are illustrative.
+Blocker kinds: `state` (not open), `draft`, `source` (source branch missing or empty), `linked_group`, `approvals`, `changes_requested`, `owners` (owned paths without an owner approval, with `require_owner_approval`; the JSON adds `"owners": {"required", "missing"}`), `ci`, `todos`, `conflicts` (the three-way merge has conflicts), `merge_method` (no allowed method can merge), and, when no other allowed method can merge, `linear` (the source brings merge snapshots) and `diverged` (the target is not an ancestor of the source). The JSON also lists the possible `methods` and the `conflicts`. Messages above are illustrative.
 
 ### Linked merges across trees
 
@@ -198,10 +217,11 @@ wt protect tag list|set|remove ...
 | `--require-signed` | `require_signed` | Every pushed snapshot must carry a verified signature. See [Snapshot signing](/docs/cli/signing). |
 | `--require-linear` | `require_linear` | No merge snapshots, in direct pushes or merged sources. |
 | `--block-on-todos` | `block_on_todos` | Open blocking TODOs that target the source branch block merging. See [Dependencies](/docs/cli/dependencies#blocking-merges-on-todos). |
+| `--require-owner-approval` | `require_owner_approval` | Every changed path needs an approval (of the current source tip) from one of its owners. See [Owner approval](/docs/server/review-workflow#owner-approval). |
 | `--merge-methods <METHODS>` | `merge_methods` | Merge methods allowed into matching branches, comma-separated (`fast-forward`, `merge`, `squash`; default: all). See [Server-side merges](/docs/server/merging#restricting-methods-with-protection). |
 
 ```bash
-wt protect set main --no-direct-push --approvals 2 --no-delete --check ci/build --check ci/test --require-signed
+wt protect set main --no-direct-push --approvals 2 --no-delete --check ci/build --check ci/test --require-signed --require-owner-approval
 wt protect set "release/*" --no-direct-push --approvals 1 --require-linear
 wt protect set develop --no-direct-push --merge-methods squash,fast-forward
 wt protect list
@@ -212,15 +232,15 @@ Patterns are branch names or `path.Match` globs (`release/*`). All matching rule
 ### Tag protection
 
 ```text
-wt protect tag set [--no-delete] [--no-move] [--tagger <U>]... [TREE] <PATTERN>
+wt protect tag set [--no-delete] [--no-move] [--tagger <U>]... [--require-signed] [TREE] <PATTERN>
 wt protect tag list [TREE]
 wt protect tag remove [--yes] [TREE] <PATTERN>
 ```
 
 ```bash
-wt protect tag set "v*" --no-delete --no-move --tagger release-bot
+wt protect tag set "v*" --no-delete --no-move --tagger release-bot --require-signed
 ```
 
-`--no-move` stops matching tags from being replaced, `--no-delete` stops deletion, and `--tagger` limits who may create, move or delete them (default: anyone with `tree:write`).
+`--no-move` stops matching tags from being replaced, `--no-delete` stops deletion, and `--tagger` limits who may create, move or delete them (default: anyone with `tree:write`). `--require-signed` refuses matching tags without a verified signature on push, REST create and release creation (`signature_required`); create them with `wt tag NAME --sign`. See [Signed-tag protection](/docs/server/release-integrity#signed-tag-protection).
 
 See the [Server specification, section 9](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Server.md#9-merge-requests-reviews-and-ci) for the full merge, review and CI rules.

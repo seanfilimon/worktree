@@ -6,7 +6,7 @@ description: Layout of the server data directory, object compression, integrity 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-All server state lives in one data directory, set with `--data` / `WT_DATA` (default `./wt-data`, created with mode 0750). There is no external database.
+All server state lives in one data directory, set with `--data` / `WT_DATA` (default `./wt-data`, created with mode 0750). There is no external database. Since v0.7 the objects can live in an S3-compatible bucket instead of `objects/`, and the server writes its own consistent backups; see [S3 storage and backups](/docs/server/storage-backends).
 
 ## Layout
 
@@ -18,6 +18,9 @@ wt-data/
       1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
     4f/
       ...
+  backups/                .wtbak backup archives (v0.7)
+  codeindex/              persistent code search index (v0.7)
+  mirrors/                bare Git repositories of Git mirrors (v0.7)
 ```
 
 ### `meta.db`
@@ -36,7 +39,11 @@ A `docs` bucket holds the document collections added with reviews, CI, releases 
 | `gc_marks`, `gc_runs`, `tenant_usage` | GC bookkeeping, the last 20 GC reports, tenant storage usage |
 | `webhooks`, `webhook_deliveries` | [Webhooks](/docs/server/webhooks) (with their secrets) and their delivery logs |
 | `policy_versions` | [Policy history](/docs/server/policy-history) |
-| `code_index_meta` | Metadata of the in-memory [code search](/docs/server/code-search) index, one document per indexed tree |
+| `code_index_meta` | Metadata of the [code search](/docs/server/code-search) index, one document per indexed tree (the index itself is in `codeindex/`) |
+| `notifications`, `watch_settings`, `notification_settings`, `notify_state` | [Notifications](/docs/server/notifications), watch levels and email settings |
+| `path_owners` | Server [path owner](/docs/server/review-workflow#path-owners) configurations |
+| `mirrors`, `mirror_maps` | [Git mirrors](/docs/server/mirrors) (with their credentials) and their snapshot-to-commit maps |
+| `backups` | Index of [backups](/docs/server/storage-backends#backups) |
 
 The file is opened exclusively with a 5 second lock timeout, so a second server on the same data directory fails to start. Every write is one bbolt transaction. A schema version is stored, and the server refuses to open a database written by a newer schema.
 
@@ -75,7 +82,9 @@ Per-tenant storage usage is tracked in the `tenant_usage` document and increased
 
 ## Backup
 
-The simplest consistent backup is to stop the server, copy the whole data directory, and start it again.
+Since v0.7 the recommended way is the server's own **online backup**: `wt admin backup create`, the admin panel's Backups page, or a schedule with `--backup-interval`. It writes a consistent `.wtbak` archive of `meta.db` and every object (also from S3) while the server keeps running, and `worktree-server restore` restores it. See [S3 storage and backups](/docs/server/storage-backends#backups).
+
+Without it, the simplest consistent backup is to stop the server, copy the whole data directory, and start it again.
 
 <Tabs items={['bash', 'PowerShell']}>
 <Tab value="bash">
@@ -109,6 +118,8 @@ Do not copy `meta.db` while the server is running: a copy taken during a write c
 
 ## Restore
 
+To restore a `.wtbak` archive, use `worktree-server restore --data DIR FILE` while the server is stopped; it verifies every object and the database before installing them (see [Restore](/docs/server/storage-backends#restore)). To restore a file-level copy:
+
 1. Stop the server.
 2. Replace the data directory with the backup (both `meta.db` and `objects/`).
 3. Start the server with `--data` pointing at it.
@@ -120,5 +131,5 @@ Clients whose local history is ahead of the restored server can push again: thei
 Stop the server, move the directory, and start the server with the new `--data` path. Paths inside the directory are relative, so no other changes are needed.
 
 <Callout type="info">
-  Encryption at rest, pluggable storage backends (S3, external databases) and replication are not built yet (see the [roadmap](/roadmap)). Use full-disk or volume encryption if you need data encrypted at rest. See the [Storage specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Storage.md).
+  Encryption at rest, external metadata databases and replication are not built yet (see the [roadmap](/roadmap)). Use full-disk or volume encryption (and your object store's server-side encryption with S3) if you need data encrypted at rest. See the [Storage specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Storage.md).
 </Callout>

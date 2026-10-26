@@ -1,0 +1,120 @@
+---
+title: Notifications
+description: Every account has an inbox of review requests, mentions, CI failures and activity in watched trees - read it with wt inbox, the admin panel bell or the REST API, set watch levels per tree or tenant, and get email through SMTP.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Every user account has an **inbox** of notifications: short records of something on the server that involves you (a review request, an `@mention`, a CI failure on your merge request, ...) or that happened in a tree you watch. The server creates them from the same events it streams over SSE and delivers to webhooks, so nothing has to be configured for the defaults to work. The [Notifications specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Notifications.md) is normative.
+
+Notifications are listed by [`wt inbox`](#wt-inbox), shown by the bell in the admin panel's top bar and on its **Notifications** page, streamed live to their owner over SSE (`notification.created`), and optionally [emailed](#email). Service accounts have no inbox.
+
+## Why you are notified
+
+Each notification carries one reason, the most specific that applies:
+
+| Reason | When |
+|---|---|
+| `review_requested` | You, or a team you are in, were asked to review a merge request (explicitly, or as a [path owner](/docs/server/review-workflow#path-owners)) |
+| `mentioned` | `@you` or `@your-team` in a merge request description, comment or review |
+| `ci_failed` | A CI check failed on the source tip of an open merge request you authored or pushed |
+| `todo_assigned` | A TODO was assigned to you |
+| `mr_merged` | Your merge request was merged |
+| `mr_commented` | Your merge request was commented on, reviewed, approved or had a suggestion applied |
+| `release` | A release was published in a tree you watch (never for drafts) |
+| `watching` | Any other merge request event or CI failure in a tree you watch |
+
+Mentions are `@name` tokens not preceded by a letter, digit, `_`, `.`, `/`, `-` or `@` (so email addresses do not match). `name` resolves to an account by username, else to a team of the tree's tenant, whose members are notified.
+
+Rules applied to every notification:
+
+- **You are never notified about your own actions** (your comment, your merge, your assignment).
+- **Read access.** A recipient must hold `tree:read` on the tree when the notification is created; disabled accounts are skipped.
+- **Deduplication.** An identical notification within one minute is created once.
+- **Retention.** An account keeps at most 1000 notifications for at most 90 days.
+
+## Watch levels
+
+| Level | You get |
+|---|---|
+| `participating` (default) | Only the participating reasons: review requests, mentions, your merge requests, CI failures on them, TODOs assigned to you |
+| `watching` | Participating reasons plus every merge request event, CI failure and release of the tree |
+| `ignoring` | Nothing from the tree, not even mentions or review requests |
+
+Levels are set per tree or per tenant. The effective level for a tree is the tree's own setting, else the tenant's, else `participating`; setting `ignoring` on a tenant silences every tree of it without a setting of its own. Each watch setting also has an `email` flag that emails watching notifications.
+
+In the admin panel, every tree header has a **Watch** menu with the three levels and "Also email me watching notifications".
+
+## wt inbox
+
+```bash
+wt inbox                                   # unread notifications
+wt inbox --all -n 100                      # read ones too
+wt inbox read 3f2a 9c1d                    # mark read (unique id prefixes)
+wt inbox read --all
+wt inbox done 3f2a                         # remove from the inbox
+wt inbox watch                             # level of the current worktree's tree
+wt inbox watch acme/web --level watching --email
+wt inbox watch --tenant acme --level ignoring
+wt inbox watches                           # stored watch settings
+wt inbox settings --email off              # stop emailing participating notifications
+```
+
+| Command | Effect |
+|---|---|
+| `wt inbox [--all] [-n N]` | Unread notifications (with `--all`, read ones too; default limit 50) with a short id, reason, tree, age and title |
+| `wt inbox read ID... \| --all` | Mark notifications read; ids may be unique prefixes |
+| `wt inbox done ID...` | Remove notifications |
+| `wt inbox watch [TREE] [--tenant T] [--level participating\|watching\|ignoring] [--email\|--no-email]` | Show or set a watch level. `TREE` is `TENANT/TREE`, default the tree of the current worktree. Without `--level` the current setting is shown |
+| `wt inbox watches` | Your stored watch settings |
+| `wt inbox settings [--email on\|off]` | Show or change whether participating notifications are emailed |
+
+`--json` prints the server responses.
+
+## Email
+
+Email is enabled on the server with an SMTP URL:
+
+```bash
+export WT_SMTP_URL='smtp://wt-mailer:secret@smtp.example.com:587'
+export WT_SMTP_FROM='W0rkTree <worktree@example.com>'
+export WT_PUBLIC_URL=https://wt.example.com
+```
+
+| Flag | Environment variable | Meaning |
+|---|---|---|
+| `--smtp-url` | `WT_SMTP_URL` | `smtp://[user:pass@]host[:port]` (default port 587, STARTTLS when offered) or `smtps://[user:pass@]host[:port]` (implicit TLS, default port 465). Prefer the environment variable: the URL may contain a password and is never logged |
+| `--smtp-from` | `WT_SMTP_FROM` | From address. Default `"W0rkTree" <noreply@HOST>` with the host of `--public-url`, else `localhost` |
+
+Without `--smtp-url` no email is sent. Credentials are sent with AUTH PLAIN, which is only allowed over TLS or to localhost. Invalid values stop the server at startup.
+
+A notification is emailed when SMTP is configured, the account has an email address, and either your `email` setting is on (participating reasons; on by default) or the effective watch setting has `email` (any reason). Messages are plain text plus HTML with the subject `[tenant/tree] <title>` and the headers `Auto-Submitted: auto-generated` and `X-WT-Notification: <id>`; with `--public-url` they link to the merge request (or other target) in the admin panel and to the Notifications page.
+
+Email is sent in the background (up to 256 queued). A failed attempt is retried after 30 s, 2 min, 10 min and 30 min, then dropped with a log line. The queue is in memory: email pending at shutdown is lost.
+
+To try it locally, the [Compose `smtp` profile](/docs/server/deployment#docker-compose) runs Mailpit, which captures every message in a web UI.
+
+## Live delivery
+
+Each created notification is published as a `notification.created` event whose payload is the notification. It is delivered only to its own account, and only on event streams without a `tenant` or `tree` filter (`GET /api/v1/events`); not even a server administrator's stream sees other accounts' notifications, and webhooks never receive it. The admin panel's bell uses it to update the unread count. See [Events](/docs/server/events).
+
+## REST API
+
+All routes act on the caller's own account.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/v1/notifications?unread=true&limit=N` | `{"notifications": [...], "unread_count"}`, newest first; `limit` default 50, at most 1000 |
+| `POST /api/v1/notifications/{id}/read` | Mark one read |
+| `POST /api/v1/notifications/read-all` | Mark every unread one read: `{"updated": n}` |
+| `DELETE /api/v1/notifications/{id}` | Remove one (`204`) |
+| `GET`, `PUT /api/v1/notifications/settings` | `{"email", "email_configured"}`; PUT `{"email": bool}` |
+| `GET /api/v1/notifications/watches` | Your stored watch settings |
+| `GET`, `PUT /api/v1/trees/{tenant}/{tree}/watch` | Tree setting (`tree:read`); PUT `{"level", "email"?}` |
+| `GET`, `PUT /api/v1/tenants/{tenant}/watch` | Tenant setting (`tenant:read`) |
+
+A notification is `{id, account_id, reason, event, tenant_id, tree_id, title, body, url, actor, created_at, read_at?}`; `body` is an excerpt of at most 500 bytes and `url` is an admin panel path such as `/trees/acme/web/merge-requests/3`. Unknown levels are `400`; ids of other accounts' notifications are `404`; service accounts get `403`.
+
+<Callout type="info" title="Not built yet">
+  A persistent email queue, digest emails, unsubscribe links, per-reason email preferences and notification threads are on the [roadmap](/roadmap).
+</Callout>

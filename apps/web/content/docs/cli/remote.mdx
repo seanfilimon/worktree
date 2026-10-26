@@ -6,6 +6,8 @@ description: Configure servers, authenticate, and synchronize trees with push, f
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
+To fetch, integrate and push in one command, and to keep working while the server is unreachable, use [`wt sync`](/docs/cli/sync) and its offline queue.
+
 A **remote** is a named W0rkTree server plus a tenant on it. The server listens on one port (default `7420`) for both gRPC and REST, so a remote URL is just a base URL such as `http://localhost:7420`. Each tree in the worktree maps to a server tree `<tenant>/<tree>`; the server-side name defaults to the local tree name. The wire protocol behind these commands is described in [Sync protocol](/docs/protocol/sync-protocol).
 
 <Callout type="info" title="TLS">
@@ -180,19 +182,25 @@ Upload a branch of the selected tree to the server.
 |---|---|
 | `--remote <R>` | Remote to push to. Default: `[sync] remote`, usually `origin`. |
 | `--branch <B>` | Branch to push. Default: the current branch. |
+| `--queue` | If the server is unreachable, record the push in the [offline queue](/docs/cli/sync#offline-queue) (`.wt/trees/<tree>/outbox.jsonl`) and exit `0` instead of failing. `wt sync queue` lists it, `wt sync flush` retries it, and the daemon delivers it automatically with `sync.auto_flush`. |
 
 What happens:
 
 1. The server tree `<tenant>/<tree>` is resolved, and **created if it does not exist** (private, default branch `main`), when you may create trees.
 2. The client compares the server's tip with the local branch. If the server tip is unknown locally or not an ancestor of your tip, the push is refused locally before anything is uploaded ("fetch and merge first").
 3. Missing objects (manifests, blobs, and for files over 8 MiB the chunk lists and changed chunks) are uploaded, then the push is sent with the old and new tip.
-4. On success `refs/remotes/<remote>/<branch>` is updated, your staged snapshot for that branch is cleared, and local tags whose targets the server knows are pushed too.
+4. On success `refs/remotes/<remote>/<branch>` is updated, your staged snapshot for that branch is cleared, any queued push of that branch is removed from the offline queue, and local tags whose targets the server knows are pushed too (a refused tag, for example an unsigned one under a `require_signed` tag protection, is logged and does not fail the push; use [`wt tag push`](/docs/cli/branches#wt-tag) to see the reason).
 
 ```bash
 wt push
 wt push --branch feature/login
 wt --tree frontend push --remote company
+wt push --queue        # on a train: queue the push if the server cannot be reached
 ```
+
+Pushing from a [sparse checkout or partial clone](/docs/cli/sparse-checkout) works normally: snapshots keep the head entries of paths outside the sparse set, and only objects the server reports missing (always local) are uploaded.
+
+Without `--queue`, an unreachable server makes `wt push` fail with a hint naming `--queue`. Answers from the server (rejections, permission or quota errors) are never queued.
 
 ### Push rejections
 
@@ -205,6 +213,7 @@ The server enforces history and policy. A rejected push changes nothing on the s
 | Review required | The branch requires approvals the push does not have. | Merge through an approved merge request. |
 | Access denied | You lack `tree:write` or `branch:push` on the branch, or a policy denies writing one of the changed paths ("writing PATH is denied by policy NAME"). | Ask a tenant admin; see [Access control](/docs/server/access-control). |
 | Signature required | A pushed snapshot carries a signature that does not verify against your registered keys, or the branch requires signed snapshots (`require_signed`). | Register your key with [`wt identity register`](/docs/cli/signing#wt-identity) and sign with `wt snapshot --sign`. Reported as access denied. |
+| Invalid manifest | A manifest contains a `.wt/` path, or a `.wt-tree/` path other than the tree's own shared files at its root. | Servers before v0.7 refuse every `.wt-tree/` path: upgrade the server before pushing shared tree files from a v0.7 client. |
 | License violation | A changed file is under a [license rule](/docs/server/licensing) that does not allow your tenant to modify it. | Leave the file unchanged, or ask a tree admin to adjust the rule. |
 | Quota exceeded | The push would exceed the tenant's storage or branches-per-tree quota. | Ask a server admin to raise the [limits](/docs/server/operations#quotas). |
 
@@ -242,6 +251,8 @@ wt fetch --deepen 50
 
 The daemon runs the same fetch automatically when the server reports branch changes; see [Background fetch](/docs/cli/daemon#background-fetch). Shallow history is explained in [Shallow sync](/docs/protocol/large-files#shallow-sync).
 
+With [sparse checkout](/docs/cli/sparse-checkout) on, `wt fetch` (and therefore `wt pull`) follows the tree's sparse patterns without a flag: it downloads every manifest of the new snapshots but only the blobs and chunks of paths inside the sparse set, and marks the tree as a [partial clone](/docs/cli/sparse-checkout#partial-clones). Other content is downloaded on demand when an operation needs it.
+
 ## `wt pull`
 
 ```text
@@ -265,6 +276,7 @@ wt pull --branch main
 
 - Exits with code `3` when the merge stops with conflicts; resolve them and run `wt merge --continue` (or `wt merge abort`).
 - The working tree must be clean when a fast-forward checkout or a merge is needed. Pulling during a merge in progress is refused.
+- [`wt sync`](/docs/cli/sync#wt-sync) does a pull (merge or rebase, `sync.strategy`) and a push in one step.
 
 ## `wt clone`
 
@@ -280,6 +292,7 @@ Create a new worktree from a server tree.
 | `TENANT/TREE` | Tenant slug and tree name on the server. |
 | `DEST` | Destination directory; must not exist or must be empty. Default: `./TREE`. |
 | `--depth <N>` | Clone only the newest `N` snapshots of each branch (shallow clone). |
+| `--sparse <PATTERN>...` | Sparse (partial) clone: check out and download only these paths or patterns; other content is downloaded on demand. Combines with `--depth`. See [Sparse checkout](/docs/cli/sparse-checkout). |
 | `--watch` | Start the background daemon (if needed) and auto-snapshot the clone. |
 
 Clone initializes the worktree, sets `[remote.origin]` to `URL` and `TENANT`, links the root tree to the server tree's id and name, fetches everything, creates a local branch for every remote branch, and checks out the default branch.
@@ -287,10 +300,13 @@ Clone initializes the worktree, sets `[remote.origin]` to `URL` and `TENANT`, li
 ```bash
 wt clone http://localhost:7420 ada/my-project
 wt clone https://wt.example.com acme/backend ./backend --depth 20 --watch
+wt clone http://localhost:7420 acme/monorepo mono --sparse services/api docs
 ```
 
 **Notes**
 
+- With `--sparse`, the patterns are validated before the destination is created and written right after init; the fetch then downloads the manifests plus the sparse paths' blobs and chunks, and checkout writes only the sparse paths. The command prints the same sparse summary as `wt status`.
+- If the tree shares `.wt-tree/` files (tree-level config, ignore rules, hooks, access policies), they land in `<DEST>/.wt-tree/` and apply to the root tree. See [Shared tree files](/docs/cli/configuration#shared-tree-files).
 - Private and internal trees require `wt login` to the server first; public trees can be cloned anonymously.
 - Files withheld from you by license rules or path policies are not checked out; `wt status` lists them as restricted. See [Restricted paths](/docs/protocol/large-files#restricted-paths).
 

@@ -6,7 +6,7 @@ description: Sign snapshots with Ed25519 keys, register the public keys on the s
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
-Snapshots can carry an Ed25519 signature made with a key that never leaves your machine. The server verifies signatures on push and marks the snapshot **verified**; branch protection can require it. The server-side commands below accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#wt-identity).
+Snapshots and tags can carry an Ed25519 signature made with a key that never leaves your machine. The server verifies signatures on push and marks the snapshot or tag **verified**; branch and tag protection can require it. Signed tags are what make a release verifiable; see [Signed tags](#signed-tags) and [Release integrity](/docs/server/release-integrity). The server-side commands below accept `--server URL` (or `WT_SERVER`; default: the worktree's `origin` remote, else the only saved login) and `--json`. Every flag is listed in the [full CLI reference](https://github.com/seanfilimon/worktree/blob/main/docs/cli-reference.md#wt-identity).
 
 ## Set up signing
 
@@ -59,14 +59,14 @@ wt snapshot -m "Release 1.4.0" --sign
 # $WT_HOME/config.toml (user level) or .wt/config.toml (worktree level)
 [signing]
 key = "laptop"   # key name under $WT_HOME/keys/; "" = no automatic signing
-auto = true      # sign every locally created snapshot
+auto = true      # sign every locally created snapshot and tag
 ```
 
 | Setting | Behaviour |
 |---|---|
-| `key` set, `auto = true` | Every snapshot is signed with `key`, including merge, revert and daemon auto-snapshots. |
-| `key` set, `auto = false` | Only `wt snapshot --sign` signs, with `key`. |
-| `key` empty | `wt snapshot --sign` signs with the `default` key; nothing else is signed. |
+| `key` set, `auto = true` | Every snapshot is signed with `key`, including merge, revert and daemon auto-snapshots, and so is every tag created with `wt tag`. |
+| `key` set, `auto = false` | Only `wt snapshot --sign` and `wt tag NAME --sign` sign, with `key`. |
+| `key` empty | `--sign` signs with the `default` key; nothing else is signed. |
 
 If signing is requested and the key does not exist, the snapshot fails with an invalid-configuration error. `[signing]` can be set at the user level (`--global`) or in `.wt/config.toml`; it cannot be set per tree. See [Configuration](/docs/cli/configuration).
 
@@ -91,6 +91,21 @@ The snapshot records `signing_key_id`: the server key id when the key was regist
 <Callout type="warn">
 Remember that `wt protect set` replaces the whole rule: repeat the rule's other flags when you add `--require-signed`.
 </Callout>
+
+## Signed tags
+
+The same keys sign tags. `wt tag NAME [REV] --sign` (or any `wt tag` with `[signing] auto = true`) signs the tag's canonical record (name, target snapshot, message, tagger and creation time, with the signature fields cleared); the signature is stored in the local tag file and travels with the tag on push, fetch and clone.
+
+```bash
+wt tag v1.4.0 -m "Release 1.4.0" --sign
+wt tag push v1.4.0                 # fails with the server's reason when refused
+wt tag verify v1.4.0               # against local keys
+wt tag verify v1.4.0 --remote --account ada   # the server's copy, against ada's registered keys
+```
+
+- The server verifies the signature on `PushTag`, REST tag creation and release creation. A tag whose signature does not verify (unknown or revoked key, bad signature) is refused with `signature_required` and audited as `tag.signature_invalid`; a verified tag is stored with `verified: true` and the key owner as `signer`.
+- `wt protect tag set "v*" --require-signed` refuses unsigned tags matching the pattern. See [Signed-tag protection](/docs/server/release-integrity#signed-tag-protection).
+- `wt release verify TAG` re-verifies the release tag's signature on the client and checks the downloaded assets against the release checksums. See [Verifying a release](/docs/server/release-integrity#verifying-a-release).
 
 ## `wt identity`
 

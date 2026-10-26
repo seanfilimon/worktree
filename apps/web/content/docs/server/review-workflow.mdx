@@ -1,0 +1,155 @@
+---
+title: Review Workflow
+description: Path owners from the server or an OWNERS file, automatic and explicit review requests, required owner approval, draft merge requests and suggested changes that reviewers apply with one click.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+v0.7 deepens merge request review: **path owners** who are asked to review the paths they own, **review requests**, an optional **owner approval** gate, **draft** merge requests, and **suggested changes** that become a snapshot on the source branch when applied. Approvals, comments, CI gates and linked groups are described in [Reviews and merges](/docs/cli/merge-requests) and [Merging](/docs/server/merging); the [Review workflow specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/ReviewWorkflow.md) is normative.
+
+## Path owners
+
+An owner configuration is an ordered list of rules, each a path pattern and its owners:
+
+```text
+# OWNERS
+src/**          @acme/core
+docs/           @acme/docs @alice
+services/api/   @bob team:backend
+**/*.proto      @carol
+generated/**
+```
+
+- **Patterns** use the license-rule glob syntax, anchored at the tree root: `**` as a whole segment matches any depth, `*` and `?` stay within a segment, and a pattern that matches a directory covers everything below it (`docs`, `docs/` and `docs/**` are equivalent). A pattern without a slash is **not** matched at every depth: `*.go` covers top-level files only, `**/*.go` any depth.
+- **Owners** are `user:<username>` or `team:<slug>` (a team of the tree's tenant). Input also accepts `@name` or `name` for users and `@tenant/slug` or `tenant/slug` for teams; the server returns the canonical form.
+- **The last matching rule wins.** A rule with no owners un-owns what it matches, so a later `generated/**` exempts generated files.
+- Limits: 1000 rules, 100 owners per rule, patterns up to 512 bytes.
+
+### Where the rules come from
+
+1. The **server configuration**, set with `wt owners set` or in the tree's **Owners** tab (requires `tree:admin`; every user and team must exist).
+2. Otherwise, an **`OWNERS` file** at the root of the tree's default branch (see [below](#owners-file)).
+3. Otherwise there are no owners.
+
+```bash
+wt owners show                       # rules, their source (config, file or none) and OWNERS parse errors
+wt owners set OWNERS                 # replace the server configuration from an OWNERS-format file
+cat OWNERS | wt owners set -         # from stdin
+wt owners set --clear acme/web       # remove it: the OWNERS file applies again
+```
+
+`wt owners show [TREE]` and `wt owners set [FILE] [TREE]` take an optional `TENANT/TREE`; without it, the current worktree's tree.
+
+### OWNERS file
+
+One rule per line: a pattern followed by its owners, whitespace separated. `#` starts a comment at the start of a line or of a word, blank lines are ignored, and the file may be up to 256 KiB. Lines that cannot be parsed (no owners, an invalid owner, a malformed pattern) are skipped and reported by `wt owners show` and the Owners tab as `OWNERS:<line>: <reason>`. The file is read from the default branch's tip when the owners are evaluated, so it is reviewed and versioned like any other file.
+
+### Owners of a merge request
+
+```bash
+wt mr owners 12
+```
+
+```text
+PATH                  OWNERS                      APPROVED
+docs/guide.md         team:docs, user:alice       no
+services/api/main.go  user:bob, team:backend      yes (bob)
+README.md             -                           -
+!12 owner approval required: missing docs/guide.md (owners from the OWNERS file)
+```
+
+The changed paths are those that differ between the merge base of target and source and the source tip. An owned path is **approved** when a reviewer other than the author, whose latest decision is an approval of the **current source tip**, is one of its owners (a `user:` owner by username, a `team:` owner by membership). Approvals go stale when the source moves. `GET {tree}/merge-requests/{n}/owners` returns the same per path, plus `missing` (owned paths still without an owner approval), `satisfied` and `required`.
+
+## Owner approval
+
+```bash
+wt protect set main --require-owner-approval --approvals 1
+```
+
+With `require_owner_approval` on a branch protection that matches the target, every **owned** changed path needs an approval from one of its owners. `wt mr checks` then shows an `owners` blocker naming the paths still missing and their owners, and a merge (including a linked group containing the merge request) answers `409 merge_blocked`. The approval count (`--approvals`) is checked independently. See [Branch protection](/docs/server/branch-protection).
+
+## Review requests
+
+```bash
+wt mr create --source feature/login --target main --title "Login" --reviewer alice --reviewer team:security
+wt mr reviewers 12                       # list requested reviewers
+wt mr reviewers 12 add bob @acme/docs    # request more
+wt mr reviewers 12 remove alice          # withdraw
+```
+
+`WHO` is `user:NAME`, `team:SLUG`, `NAME`, `@NAME` or `@TENANT/SLUG`. Requests are added:
+
+- **explicitly**, by the author or anyone with `mr:approve` (users and teams must exist; the author cannot be requested);
+- **automatically**: the owners of the changed paths, minus the author, when a non-draft merge request is opened, when a draft is marked ready, and whenever its source branch moves (including suggestion snapshots). Reviewers already requested are not requested again.
+
+Each request that adds reviewers publishes `mr.review_requested` (`{"number", "reviewers", "requested_by"}`, only the newly added reviewers) and is audited; the [notifications](/docs/server/notifications) service turns it into `review_requested` inbox items, expanding teams to their members. A request does not imply an approval: reviewer state comes from the approvals.
+
+## Draft merge requests
+
+```bash
+wt mr create --source wip/parser --target main --title "New parser" --draft
+wt mr ready 14
+```
+
+- A draft is never mergeable: `wt mr checks` shows a `draft` blocker and `wt mr merge` (or a linked group containing it) answers **`409 draft`**.
+- Owners are not requested while it is a draft.
+- `wt mr ready N` (the author, or `mr:merge`) clears the draft flag, requests the owners and publishes `mr.ready`. A merge request that is not a draft is returned unchanged; one that is no longer open answers `409 conflict`.
+
+Converting an open merge request back to a draft is not built yet.
+
+## Suggested changes
+
+A review comment can carry a **suggestion**: replacement text for a range of lines of one file on the source branch.
+
+```bash
+wt mr suggest 12 --path src/auth.rs --lines 40-42 -m '    let token = issue(&user)?;' -b "Propagate the error"
+wt mr suggest 12 --path README.md --lines 7 --file fixed-line.txt
+wt mr comments 12                       # find the comment id
+wt mr apply-suggestion 12 87
+```
+
+| Rule | Value |
+|---|---|
+| Lines | `--lines A-B` or `--lines A`, 1-based and inclusive, at most 10,000 lines, as of the source tip |
+| Replacement | `-m TEXT` or `--file F` (`-` = stdin), at most 256 KiB; an empty replacement deletes the lines |
+| File | Must exist at the suggestion's snapshot, be text (not binary, not chunked) and at most 8 MiB |
+| Line endings | A missing final newline is added (except when replacing a last line that has none); `\n` becomes `\r\n` in CRLF files |
+
+In the admin panel, click a line number in the merge request's **Changes** view to open an inline comment thread; the composer has a "Suggest change" mode, and suggestions render with an **Apply suggestion** button.
+
+### Applying a suggestion
+
+`wt mr apply-suggestion N COMMENT_ID [-m MSG]` (or the Apply button) asks the server to write the change:
+
+1. It needs `tree:write` and a direct push to the source branch allowed by its [branch protection](/docs/server/branch-protection) (`403 branch_protection` otherwise).
+2. The suggestion is applied to the file as of the suggestion's snapshot. If the source tip has a different version of the file, the two are merged line-wise with the suggestion's snapshot as base. When the tip changed the suggested lines (or adjacent ones), or the file is gone, the answer is **`409 suggestion_outdated`**; when the tip already contains the change, `409 conflict`.
+3. The server writes a snapshot on the source branch: parent = the source tip, author = you, message `-m MSG` or `Apply suggestion to <path> (!N, comment #ID)`. It is not signed, so a branch that requires signed snapshots refuses it.
+4. The push checks of a normal push to the source (path rules, signatures, tenant quotas) run on it; a quota failure answers **`409 quota_exceeded`**.
+5. The source tip moves (compare-and-swap; `409 conflict` when it moved meanwhile), the comment is marked applied and resolved, and the server publishes `branch.pushed` and `mr.suggestion_applied`.
+
+Fetch the source branch afterwards (`wt pull`) to get the new snapshot locally.
+
+## Storage quotas on server-written snapshots
+
+Snapshots the server writes itself (merge and squash snapshots, also in linked groups, and suggestion snapshots) are checked against the tenant's storage quota like pushes: when their new objects would exceed `max_storage_bytes`, the operation answers `409 quota_exceeded` and nothing moves. Fast-forward merges add no objects and are not checked. See [Quotas](/docs/server/operations#quotas).
+
+## REST API
+
+Under `/api/v1/trees/{tenant}/{tree}`:
+
+| Method and path | Purpose |
+|---|---|
+| `GET .../owners` | Rules, `source` (`config`, `file` or `none`), `errors` (`tree:read`) |
+| `PUT .../owners` | `{"rules": [{"pattern", "owners"}]}`; an empty list removes the configuration (`tree:admin`) |
+| `GET .../merge-requests/{n}/owners` | Owners and approval state per changed path |
+| `POST .../merge-requests` | Accepts `"draft": true` and `"reviewers": [...]` |
+| `POST .../merge-requests/{n}/ready` | Mark a draft ready |
+| `POST`, `DELETE .../merge-requests/{n}/reviewers` | `{"reviewers": ["user:x", "team:y"]}` (DELETE also takes repeated `?reviewer=`) |
+| `POST .../merge-requests/{n}/comments` | Accepts `"suggestion": {"path", "start_line", "end_line", "replacement", "snapshot_id"?}` |
+| `POST .../merge-requests/{n}/comments/{id}/apply` | Apply a suggestion, optional `{"message"}`; answers `{"comment", "snapshot"}` |
+
+Events: `mr.review_requested`, `mr.ready`, `mr.suggestion_applied`. Audit actions: `mr.review_request`, `mr.review_request_remove`, `mr.ready`, `mr.suggestion_apply`.
+
+<Callout type="info" title="Not built yet">
+  Converting a merge request back to a draft, owners from other tenants and nested teams, multi-file suggestions and batch-applying suggestions, per-branch owner rules and dismissing stale reviews are on the [roadmap](/roadmap).
+</Callout>

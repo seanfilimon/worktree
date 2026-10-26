@@ -38,6 +38,10 @@ Snapshots can carry an Ed25519 signature. Keys are created with `wt identity gen
 
 On push, the server verifies every signed snapshot against a registered, unrevoked key and marks it `verified`; an invalid signature rejects the push and is audited as `snapshot.signature_invalid`. Branch protection with `--require-signed` requires every new snapshot on the branch to be verified. `wt identity verify` and `wt log --show-signature` check signatures locally. See [Snapshot signing](/docs/cli/signing).
 
+## Signed tags and verified releases
+
+The same keys sign tags (`wt tag NAME --sign`, or `[signing] auto`). The server verifies tag signatures on push, REST tag creation and release creation, stores `verified` and the signer, and tag protections with `--require-signed` refuse unsigned tags. Release assets get a SHA-256 checksum on upload (`SHA256SUMS` per release), releases can carry an SPDX 2.3 SBOM, and `wt release verify` checks downloaded assets and the tag signature itself, without trusting the server's `verified` flag. See [Release integrity](/docs/server/release-integrity).
+
 ## Accounts, passwords and tokens
 
 | Item | How it is handled |
@@ -76,7 +80,7 @@ Policies can target a tenant, tree, branch or individual paths (`wt:path/acme/we
 
 ## Branch protection and review
 
-Protection rules match branch names by glob and apply to everyone, server admins included; there is no bypass permission. They can forbid direct pushes and deletion, restrict pushers, require approvals on the **current** source tip (approvals go stale when the source moves; a change request blocks until the same reviewer approves), require passing CI checks, signed snapshots, linear history, or no open blocking TODOs, and restrict the merge methods. Merge and squash snapshots written by the server are not signed, so `require_signed` allows only fast-forward merges. Tag protections can forbid moving or deleting tags. See [Branch protection](/docs/server/branch-protection) and [Reviews, CI and merges](/docs/cli/merge-requests).
+Protection rules match branch names by glob and apply to everyone, server admins included; there is no bypass permission. They can forbid direct pushes and deletion, restrict pushers, require approvals on the **current** source tip (approvals go stale when the source moves; a change request blocks until the same reviewer approves), require passing CI checks, signed snapshots, linear history, approvals from [path owners](/docs/server/review-workflow#owner-approval), or no open blocking TODOs, and restrict the merge methods. Merge and squash snapshots written by the server are not signed, so `require_signed` allows only fast-forward merges. Tag protections can forbid moving or deleting tags. See [Branch protection](/docs/server/branch-protection) and [Reviews, CI and merges](/docs/cli/merge-requests).
 
 ## License enforcement
 
@@ -124,7 +128,8 @@ Browser requests to the REST API are allowed from `http://localhost:5173` (the a
 <Callout type="warn" title="Roadmap">
   The following are **not** built (see the [roadmap](/roadmap)):
 
-  - Encryption at rest for the object store and metadata database (use disk-level encryption).
+  - Encryption at rest for the object store and metadata database (use disk-level encryption, or the bucket's server-side encryption with the S3 store), and encryption of backup archives.
+  - A signature over release `SHA256SUMS` files, and signed release artifacts of W0rkTree itself.
   - The QUIC transport and certificate pinning in the client.
   - OAuth device flow, refresh tokens, and storing credentials in the OS keychain.
   - Server-side secret scanning of pushes.

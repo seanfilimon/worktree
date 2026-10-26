@@ -1,6 +1,6 @@
 ---
 title: Tags and Releases
-description: Mark releases with wt tag, share tags through the server with wt push and wt fetch, and produce release archives with wt archive.
+description: Mark releases with signed tags, share them through the server, publish server releases with checksummed assets and an SBOM, and verify a release as a consumer.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -10,7 +10,7 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 A **tag** is a named, fixed pointer to one snapshot, with an optional message, the tagger and a creation time. Tags belong to a tree, so each nested tree can have its own release line.
 
 ```text
-wt tag [list] | create NAME [REV] [-m MSG] | delete NAME
+wt tag [list] | [create] NAME [REV] [-m MSG] [--sign] | delete NAME | verify NAME | push NAME
 ```
 
 ## Creating and listing tags
@@ -27,13 +27,36 @@ wt tag                                            # list: name, target, tagger, 
 - Each tag records its tagger and creation time; set `user.name` and `user.email` with [`wt config`](/docs/cli/repository#wt-config) so they identify you.
 - A tag name works anywhere a revision does: `wt log v1.0.0`, `wt diff v1.0.0 HEAD --stat`, `wt restore docs/ --from v1.0.0`.
 
+## Signed tags
+
+A signed tag proves who created it: an Ed25519 signature over the tag's name, target snapshot, message, tagger and time, made with the same key you use for [snapshot signing](/docs/cli/signing).
+
+```bash
+wt identity generate laptop && wt identity register laptop   # once
+wt config set signing.key laptop --global
+
+wt tag v1.2.0 -m "Release 1.2.0" --sign     # or set signing.auto = true to sign every tag
+wt tag push v1.2.0                          # shows the server's reason if it refuses the tag
+wt tag verify v1.2.0                        # check the local copy against your keys
+wt tag verify v1.2.0 --remote --account ada # check the server's copy against ada's registered keys
+```
+
+The server verifies the signature against the signer's registered keys when the tag is pushed (or created over REST, or by a release) and marks it **verified**, with the key owner as signer. A tag whose signature does not verify is refused. To require signatures on release tags, protect them:
+
+```bash
+wt protect tag set "v*" --no-delete --no-move --require-signed
+```
+
+Unsigned tags matching `v*` are then refused with `signature_required`. See [Signed tags](/docs/server/release-integrity#signed-tags).
+
 ## Sharing tags
 
 Tags travel with branches:
 
 | Command | Tags |
 |---|---|
-| `wt push` | Uploads every local tag of the tree that the server does not have yet. |
+| `wt push` | Uploads every local tag of the tree that the server does not have yet. A refused tag is logged and does not fail the push. |
+| `wt tag push NAME` | Uploads one tag and fails with the server's reason when it is refused. |
 | `wt fetch`, `wt pull` | Downloads remote tags. |
 | `wt clone` | Brings all tags of the server tree. |
 
@@ -83,11 +106,11 @@ wt status          # should show no changes
 
 ### Record the release
 
-Optionally record version bumps as a snapshot first, then tag it:
+Optionally record version bumps as a snapshot first, then tag it (signed):
 
 ```bash
 wt snapshot -m "Release 1.2.0"
-wt tag create v1.2.0 -m "Release 1.2.0"
+wt tag create v1.2.0 -m "Release 1.2.0" --sign
 ```
 
 If nothing changed, `wt snapshot -m "Release 1.2.0" --allow-empty` creates an explicit release marker snapshot.
@@ -134,7 +157,35 @@ Get-FileHash "dist\my-project-$version.*" -Algorithm SHA256
 Keep `dist/` in your ignore rules (`wt ignore add "dist/"`) so release files are never snapshotted.
 
 </Step>
+<Step>
+
+### Publish a server release
+
+A server release attaches notes and asset files to the tag. The server computes a SHA-256 for every uploaded asset and can generate an SPDX 2.3 SBOM of the tagged snapshot:
+
+```bash
+wt release create v1.2.0 --name "1.2.0" --notes-file CHANGELOG.md --draft --sbom
+wt release upload v1.2.0 dist/my-project-1.2.0.tar.gz dist/my-project-1.2.0.zip
+wt release edit v1.2.0 --publish
+wt release checksums v1.2.0          # the SHA256SUMS of the assets
+wt release show v1.2.0               # "verified": the tag is signed and still points at the release
+```
+
+`--sbom` attaches `sbom.spdx.json` (files with SHA-1, SHA-256 and BLAKE3 hashes and the SPDX ids of the tree's [license rules](/docs/server/licensing)); `wt release sbom v1.2.0` regenerates it later. See [Checksums](/docs/server/release-integrity#checksums) and [SBOM](/docs/server/release-integrity#sbom).
+
+</Step>
 </Steps>
+
+### Verifying a release
+
+Consumers download the assets and verify them in one step:
+
+```bash
+wt release download v1.2.0 --in acme/my-project -o ./downloads
+wt release verify v1.2.0 --in acme/my-project -d ./downloads
+```
+
+`wt release verify` fetches the release, its `SHA256SUMS` and the server's tag record, verifies the tag signature itself (against your local keys and the signer's registered keys; `--account USER` trusts another account's keys too), checks that the tag still points at the release's snapshot, and hashes every downloaded asset. It exits `1` on an unsigned tag (unless `--allow-unsigned`), a bad signature, a moved tag, a checksum mismatch, an unlisted asset, or a missing file (unless `--ignore-missing`). See [Verifying a release](/docs/server/release-integrity#verifying-a-release).
 
 ### Maintenance releases
 
@@ -160,8 +211,8 @@ wt git export ../my-project-git
 git -C ../my-project-git push origin v1.2.0   # after adding a Git remote named origin
 ```
 
-## Not in v0.2.0
+To keep a Git copy up to date without a working copy, a tree admin can add a server-side [Git mirror](/docs/server/mirrors) (`wt mirror add URL`); it pushes mirrored branches and tags after every push.
 
-<Callout type="warn" title="Roadmap">
-Signed tags are not implemented (snapshots can be signed; see [Snapshot signing](/docs/cli/signing)), and there are no prebuilt release binaries for W0rkTree itself yet. Server-side releases with assets are managed with [`wt release`](/docs/cli/dependencies#wt-release). See the [roadmap](/roadmap).
+<Callout type="info" title="Not built yet">
+`SHA256SUMS` is not signed yet: the tag signature covers the snapshot, not the asset files, so a compromised server could replace an asset together with its checksum. A detached signature over `SHA256SUMS` is on the [roadmap](/roadmap).
 </Callout>

@@ -12,7 +12,7 @@ This guide takes you from a source checkout to a running, backed-up W0rkTree ser
 The server is a single pure-Go binary. It serves gRPC (for `wt`), the REST API, server-sent events, and the static admin panel on **one port**, `:7420` by default. All state lives in one data directory.
 
 <Callout type="info" title="Pre-1.0">
-  v0.2.0 is built from source only. There are no prebuilt binaries, container images, or package-manager installs yet.
+  This guide builds from source to show every moving part. Since v0.7 you can instead use the container image (`deploy/docker/Dockerfile`), Docker Compose, the Helm chart, the systemd and launchd units, or the release archives and installers; see [Deployment](/docs/server/deployment). For backups, the server now has built-in online backups ([S3 storage and backups](/docs/server/storage-backends#backups)).
 </Callout>
 
 ## 1. Build

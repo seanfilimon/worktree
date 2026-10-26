@@ -5,6 +5,7 @@
     "---Getting Started---",
     "installation",
     "configuration",
+    "deployment",
     "---Reference---",
     "rest-api",
     "openapi",
@@ -16,12 +17,17 @@
     "policy-history",
     "branch-protection",
     "merging",
+    "review-workflow",
+    "notifications",
     "code-search",
+    "mirrors",
+    "release-integrity",
     "licensing",
     "---Operations---",
     "operations",
     "storage",
+    "storage-backends",
     "monitoring",
-    "deployment"
+    "performance"
   ]
 }

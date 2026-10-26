@@ -1,0 +1,172 @@
+---
+title: S3 Storage and Backups
+description: Keep server objects on local disk or in an S3-compatible bucket, take consistent online backups (.wtbak) on demand or on a schedule, and restore or migrate them offline with worktree-server restore.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+Since v0.7 the server keeps its objects either on local disk (the default) or in an S3-compatible bucket, and it writes point-in-time **backups** of everything it stores (the metadata database and every object) into one `.wtbak` archive. The [Storage backends specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/storage/Backends.md) is normative; the data directory layout is described in [Storage](/docs/server/storage).
+
+The metadata database (`<data>/meta.db`) always stays in the data directory; only objects move to S3. Object ids, the stored encoding (WTZ1 [compression](/docs/server/operations#object-compression)) and the sync protocol are identical for both backends, so a store can be migrated between them with a backup and a restore.
+
+## Object stores
+
+| `--object-store` | Objects at | Notes |
+|---|---|---|
+| `disk` (default) | `<data>/objects/<2 hex>/<62 hex>` | Atomic temp-file and rename writes |
+| `s3` | `s3://<bucket>/<prefix>objects/<2 hex>/<62 hex>` | Any S3-compatible API: AWS S3, MinIO, Ceph RGW, Cloudflare R2, ... |
+
+Both stores verify that uploaded data hashes to its id before storing it, treat writing an existing object as a no-op, and write byte-identical stored objects, so an `objects/` directory can be copied into a bucket (or back) verbatim.
+
+## S3 object store
+
+```bash
+export WT_OBJECT_STORE=s3
+export WT_S3_ENDPOINT=s3.eu-central-1.amazonaws.com
+export WT_S3_BUCKET=acme-worktree
+export WT_S3_PREFIX=prod/
+export WT_S3_ACCESS_KEY=AKIA...
+export WT_S3_SECRET_KEY=...
+worktree-server --data /var/lib/worktree
+```
+
+| Flag | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `--object-store` | `WT_OBJECT_STORE` | `disk` | `disk` or `s3` |
+| `--s3-endpoint` | `WT_S3_ENDPOINT` | | `host[:port]` or `http(s)://host[:port]`; `http://` implies `--s3-insecure`. Required for `s3` |
+| `--s3-bucket` | `WT_S3_BUCKET` | | Bucket, created when missing. Required for `s3` |
+| `--s3-prefix` | `WT_S3_PREFIX` | empty | Key prefix (`wt/`; a trailing `/` is added) |
+| `--s3-region` | `WT_S3_REGION` | discovered | Bucket region |
+| `--s3-access-key`, `--s3-secret-key` | `WT_S3_ACCESS_KEY`, `WT_S3_SECRET_KEY` | | Static credentials, given together |
+| `--s3-insecure` | `WT_S3_INSECURE` | `false` | Plain HTTP to the endpoint |
+
+- **Credentials.** Prefer the `WT_S3_*` environment variables (flags are visible in process listings). When both keys are empty, the `AWS_*` and `MINIO_*` environment variables and then the EC2/ECS instance role are used.
+- **Startup check.** The server checks the bucket at startup (creating it when missing) and refuses to start when the endpoint is unreachable or the credentials are rejected (30 second timeout).
+- **Health.** `/healthz` also checks the bucket: when it is unreachable or gone, `checks.objects` is `error` and the response is `"status":"degraded"` with HTTP `503`. See [Monitoring](/docs/server/monitoring).
+- **Requests.** One `PutObject` per object (objects are at most 64 MiB) with `Content-MD5`; path-style requests for IP and localhost endpoints, virtual-host style otherwise.
+- **Listing.** Keys under the prefix that do not have the object form are ignored, so the bucket can hold other data under other prefixes.
+
+For a local S3 to experiment with, the [Compose `s3` profile](/docs/server/deployment#docker-compose) runs MinIO and creates the bucket; in Helm set `objectStore: s3` and the `s3.*` values.
+
+<Callout type="warn" title="Back up the bucket too">
+  With the S3 store, `meta.db` is still on the server's volume. A `.wtbak` backup contains both, but if you rely on provider-level protection (versioning, replication), protect the bucket and the data directory together.
+</Callout>
+
+## Backups
+
+A backup is one file `<data>/backups/<id>.wtbak`, with an id like `bk-20261025T120000Z-a1b2c3` (UTC creation time plus a random suffix). Backups are taken **online**: writers are not blocked.
+
+```bash
+wt admin backup create --note "before upgrading to 0.8"
+wt admin backup list
+wt admin backup download bk-20261025T120000Z-a1b2c3 -o /backups/wt.wtbak
+wt admin backup delete bk-20261025T120000Z-a1b2c3 --yes
+```
+
+| Command | Effect |
+|---|---|
+| `wt admin backup create [--note TEXT]` | Back up now and wait until the archive is complete (4-hour request timeout) |
+| `wt admin backup list` | Backups, the schedule, the keep count, the object store and the last scheduled failure |
+| `wt admin backup download ID [-o FILE]` | Stream the archive to `FILE.part`, then rename it (default `./<id>.wtbak`) |
+| `wt admin backup delete ID [--yes]` | Delete a backup on the server |
+
+All four need server administrator rights. The admin panel's **Backups** page (`/admin/backups`) does the same: the backups table (download, delete), a create dialog with an optional note, the object store details, the schedule and the restore command.
+
+### Scheduled backups
+
+| Flag | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `--backup-interval` | `WT_BACKUP_INTERVAL` | `0` (off) | Period of scheduled backups (at least `1m`), for example `24h` |
+| `--backup-keep` | `WT_BACKUP_KEEP` | `7` | Scheduled backups kept; `0` keeps all |
+
+Scheduled backups are created by the `system` actor; beyond the newest `--backup-keep` they are deleted after each scheduled run. Backups created by people are never pruned automatically.
+
+<Callout type="warn" title="Copy backups off the host">
+  Backups live in the data directory, on the same volume as the data. Download them (`wt admin backup download`) or copy `<data>/backups/` to other storage on a schedule.
+</Callout>
+
+### What is in an archive
+
+A `.wtbak` file is a zstd-compressed tar stream with, in order:
+
+| Member | Content |
+|---|---|
+| `meta.db` | A consistent copy of the bbolt database, written inside one read transaction |
+| `objects/<2 hex>/<62 hex>` | Every object's uncompressed content |
+| `manifest.json` | Format, version, id, creation time and author, note, server version, object store kind, the size and SHA-256 of `meta.db`, the object count and bytes |
+
+The metadata snapshot is taken first, then the object store is listed. Pushes upload objects before committing metadata, so every object the snapshot references is included; objects written later are harmless extras. An archive is written to `<id>.wtbak.partial` and renamed when complete, and only one backup runs at a time (`409 backup_running`). Archives copied into `<data>/backups/` are listed too.
+
+### REST API
+
+| Method and path | Result |
+|---|---|
+| `POST /api/v1/admin/backups` `{"note"?}` | `201 BackupInfo` once the archive is complete; `409 backup_running` |
+| `GET /api/v1/admin/backups` | Configuration, store, `running`, `next_run_at`, `last_error` and the backups |
+| `GET /api/v1/admin/backups/{id}/download` | The archive (`Range` supported) |
+| `DELETE /api/v1/admin/backups/{id}` | `204` |
+
+`BackupInfo` is `{id, path, size_bytes, objects, created_at, created_by, note?}`. Audit actions: `backup.create`, `backup.download`, `backup.delete`.
+
+## Restore
+
+Restore is **offline**: stop the server first (bbolt holds an exclusive lock on `meta.db`).
+
+```text
+worktree-server restore [--force] --data DIR [--object-store ... --s3-* ...] [--compress-objects] FILE.wtbak
+```
+
+<Steps>
+<Step>
+
+### Stop the server
+
+```bash
+sudo systemctl stop worktree-server
+```
+
+</Step>
+<Step>
+
+### Restore into an empty data directory
+
+```bash
+worktree-server restore --data /var/lib/worktree-restored /backups/bk-20261025T120000Z-a1b2c3.wtbak
+```
+
+</Step>
+<Step>
+
+### Start the server on it
+
+Point `--data` (or `WT_DATA`) at the restored directory and start the server.
+
+</Step>
+</Steps>
+
+What restore does:
+
+1. It refuses a data directory that exists and is not empty unless `--force`; with `--force`, `meta.db` is replaced and objects are added next to existing ones (stale objects are later collected by GC).
+2. It streams the archive: `meta.db` goes to `meta.db.restoring`; every object is checked against its BLAKE3 name and written to the selected object store, which verifies it again.
+3. It verifies `meta.db` against the manifest's size and SHA-256 and the object count, opens the restored database (schema check) and only then renames it to `meta.db`.
+
+A truncated, tampered or foreign archive fails with `corrupt archive` and leaves no `meta.db` behind. Exit codes: `0` restored, `1` failed, `2` usage. Tokens and sessions in the restored database stay valid. Clients whose local history is ahead of the restored server can push again.
+
+### Migrating between disk and S3
+
+Restoring into a different backend migrates the store. To move a disk-based server to S3:
+
+```bash
+wt admin backup create --note "move to S3"
+wt admin backup download bk-... -o move.wtbak
+sudo systemctl stop worktree-server
+WT_S3_ACCESS_KEY=... WT_S3_SECRET_KEY=... worktree-server restore \
+  --data /var/lib/worktree-s3 --object-store s3 \
+  --s3-endpoint s3.eu-central-1.amazonaws.com --s3-bucket acme-worktree move.wtbak
+# then start the server with --data /var/lib/worktree-s3 and the same S3 settings
+```
+
+<Callout type="info" title="Not built yet">
+  Writing backups directly to a bucket, incremental backups, online archive verification, archive encryption and a local read cache in front of S3 are on the [roadmap](/roadmap).
+</Callout>

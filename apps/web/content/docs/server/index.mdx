@@ -6,7 +6,7 @@ description: The Go server that stores canonical history, enforces access, prote
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
 
-The W0rkTree server (`worktree-server`, source in `services/server-go`) is the shared remote that `wt` clients push to and pull from. It is a single pure-Go binary (no cgo) that keeps all metadata in an embedded bbolt database and all file content in a BLAKE3 content-addressed object store on local disk. There are no external dependencies to run it.
+The W0rkTree server (`worktree-server`, source in `services/server-go`) is the shared remote that `wt` clients push to and pull from. It is a single pure-Go binary (no cgo) that keeps all metadata in an embedded bbolt database and all file content in a BLAKE3 content-addressed object store, on local disk or in an [S3-compatible bucket](/docs/server/storage-backends). There are no external dependencies to run it; `git` is needed only for [Git mirrors](/docs/server/mirrors) and an SMTP server only for [notification email](/docs/server/notifications#email).
 
 <Callout type="info" title="Server vs. daemon">
   The server is the remote authority for a team. It is not the local background daemon `worktree-bg`, which watches your working copy, takes auto-snapshots, stages work in progress and fetches remote branches. See [`wt daemon`](/docs/cli/daemon).
@@ -18,13 +18,14 @@ The W0rkTree server (`worktree-server`, source in `services/server-go`) is the s
 - **Hosts tenants and trees.** Every account gets a personal tenant; organizations are org tenants. Trees are `private`, `internal` or `public`.
 - **Authenticates and authorizes.** argon2id passwords, scoped bearer tokens, sessions, TOTP two-factor authentication, OpenID Connect SSO, invitations. Built-in and custom roles, teams, per-tree grants and allow/deny policies. See [Access control](/docs/server/access-control).
 - **Enforces rules on every push and read.** Per-branch and per-path policies, [branch and tag protection](/docs/server/branch-protection), [license rules](/docs/server/licensing), tenant quotas and snapshot signature verification.
-- **Runs code review.** Merge requests with reviews, stale-approval tracking, comments, CI status checks, merge readiness, [server-side fast-forward, merge and squash merges](/docs/server/merging) and linked groups that merge across trees atomically.
-- **Searches and explains code.** [Code search](/docs/server/code-search) over every readable tree's default branch, and [blame](/docs/cli/blame#server-api) per file.
-- **Notifies other systems.** Signed, retried [webhooks](/docs/server/webhooks) for every event, and an [OpenAPI description](/docs/server/openapi) of the REST API.
-- **Tracks cross-tree work.** Snapshot dependencies become TODOs in the target tree; releases with downloadable assets hang off tags.
+- **Runs code review.** Merge requests with reviews, stale-approval tracking, comments, CI status checks, merge readiness, [server-side fast-forward, merge and squash merges](/docs/server/merging) and linked groups that merge across trees atomically; [path owners, review requests, drafts and suggested changes](/docs/server/review-workflow).
+- **Searches and explains code.** [Code search](/docs/server/code-search) of contents and symbol definitions on any branch, with a persistent index, and [blame](/docs/cli/blame#server-api) per file.
+- **Notifies people and other systems.** A per-account [inbox with watch levels and email](/docs/server/notifications), signed, retried [webhooks](/docs/server/webhooks) for every event, and an [OpenAPI description](/docs/server/openapi) of the REST API.
+- **Mirrors to Git.** [Push mirrors](/docs/server/mirrors) keep a Git copy of a tree on GitHub, GitLab or your own Git server.
+- **Tracks cross-tree work and releases.** Snapshot dependencies become TODOs in the target tree; releases with downloadable assets hang off tags, with [signed tags, checksums and SBOMs](/docs/server/release-integrity).
 - **Shares work in progress.** Staged snapshots from `wt stage` or the daemon are visible to the team without entering branch history.
 - **Streams and records activity.** Server-Sent Events, a gRPC `WatchBranches` stream, and an append-only audit log with NDJSON export.
-- **Maintains itself.** Garbage collection with a grace period, compressed object storage, an integrity check (`wt admin fsck`), staged and audit retention, rate limiting, health probes and Prometheus metrics. See [Operations](/docs/server/operations).
+- **Maintains itself.** Garbage collection with a grace period, compressed object storage, an integrity check (`wt admin fsck`), online and scheduled [backups](/docs/server/storage-backends#backups), staged and audit retention, rate limiting, health probes, Prometheus metrics and optional profiling. See [Operations](/docs/server/operations) and [Performance](/docs/server/performance).
 
 ## Single-port architecture
 
@@ -62,6 +63,7 @@ The server is organised as small packages under `services/server-go/internal`, w
 | `iam`, `authz`, `sso` | Authentication (accounts, tokens, sessions, MFA, invitations, resets); authorization (roles, teams, grants, policies, simulator); OIDC SSO. |
 | `review`, `merge3`, `ci` | Branch protection, merge requests, reviews, linked groups and server-side merges; the three-way merge engine; CI check status. |
 | `webhooks`, `codesearch`, `blame`, `policyhist` | Webhook delivery; the code search index; server blame; policy version history. |
+| `notify`, `mirror`, `backup` | Notifications and email; Git push mirrors; backups and restore. |
 | `license`, `pathacl`, `signing`, `limits` | License rules; path-level write denies; Ed25519 signature verification; quotas and rate limiting. |
 | `staged`, `events`, `audit` | Staged snapshots and overlap detection; event bus; audit log. |
 | `todo`, `release`, `gc`, `accesscfg` | Dependencies to TODOs; releases and assets; garbage collection and retention; declarative access documents. |
@@ -76,10 +78,11 @@ The server is organised as small packages under `services/server-go/internal`, w
 If the server tip moved, the push is rejected with a conflict carrying the server tip: run `wt pull`, resolve, and push again. See [`wt push`](/docs/cli/remote#wt-push).
 
 <Cards>
-  <Card title="Installation" href="/docs/server/installation" description="Build the server from source and run it for the first time." />
+  <Card title="Installation" href="/docs/server/installation" description="Get the server from an archive, an image or a source build and run it for the first time." />
   <Card title="Configuration" href="/docs/server/configuration" description="Every flag and environment variable." />
   <Card title="REST API" href="/docs/server/rest-api" description="Conventions, errors and the endpoint catalogue." />
   <Card title="Access control" href="/docs/server/access-control" description="Roles, teams, grants, policies, tokens and SSO." />
   <Card title="Operations" href="/docs/server/operations" description="TLS, garbage collection, quotas and rate limits." />
-  <Card title="Deployment" href="/docs/server/deployment" description="TLS options, service units, containers and a production checklist." />
+  <Card title="Deployment" href="/docs/server/deployment" description="Docker, Compose, Helm, systemd, launchd, installers, upgrades and a production checklist." />
+  <Card title="S3 storage and backups" href="/docs/server/storage-backends" description="Objects in S3, online backups and offline restore." />
 </Cards>

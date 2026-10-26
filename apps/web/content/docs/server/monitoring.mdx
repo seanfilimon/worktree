@@ -22,9 +22,9 @@ curl -s http://localhost:7420/healthz
 | `status` | `ok` (HTTP `200`) when every probe passes, `degraded` (HTTP `503`) when one fails. |
 | `version` | Server version string. |
 | `uptime_seconds` | Seconds since the process started. |
-| `checks` | Result per probe: `meta` (the bbolt metadata store) and `objects` (the object store). |
+| `checks` | Result per probe: `meta` (the bbolt metadata store) and `objects` (the object store; with the [S3 store](/docs/server/storage-backends#s3-object-store) this also checks that the bucket is reachable). |
 
-Use it for load balancer health checks, container probes (the repository's `Dockerfile.server` declares a `HEALTHCHECK` on it) and uptime monitors. The standard gRPC health service `grpc.health.v1.Health` is also served and reports `NOT_SERVING` once shutdown begins; `wt whoami` uses the `Ping` RPC.
+Use it for load balancer health checks, container probes (the server image built from `deploy/docker/Dockerfile` declares a `HEALTHCHECK` on it, and the Helm chart's probes use it) and uptime monitors. The standard gRPC health service `grpc.health.v1.Health` is also served and reports `NOT_SERVING` once shutdown begins; `wt whoami` uses the `Ping` RPC.
 
 ## Prometheus metrics
 
@@ -127,4 +127,5 @@ Retention is `--audit-retention` (default `0`, keep forever); older events are p
 - Free disk space on the data volume, and `worktree_storage_bytes` growth.
 - Spikes in `worktree_authz_decisions_total{decision="deny"}`, `access.denied` or `auth.login_failed` events.
 - `worktree_rate_limited_total` rising for legitimate clients (raise `--rate-limit` or the tenant's `requests_per_minute`).
-- GC runs that report an `error` (`wt admin gc-status`), and backups that did not complete (see [Storage](/docs/server/storage#backup)).
+- GC runs that report an `error` (`wt admin gc-status`), and backups that did not complete (`wt admin backup list` shows the last scheduled failure; see [Scheduled backups](/docs/server/storage-backends#scheduled-backups)).
+- Git mirrors whose last sync failed (`wt mirror list`, or the `mirror.failed` event through a [webhook](/docs/server/webhooks)).

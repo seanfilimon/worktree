@@ -1,0 +1,103 @@
+---
+title: Sparse Checkout and Partial Clones
+description: Check out only the paths you work on with wt sparse, and clone a large tree with wt clone --sparse so only those paths are downloaded - everything else arrives on demand.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **sparse checkout** writes only part of a tree to the working directory: the files matching the tree's sparse patterns. A **partial clone** goes one step further and downloads only the content of those files; everything else is downloaded on demand when an operation needs it (diff, merge, blame, checkout after widening the set). Both are local features of the client: the server and the protocol are unchanged, a partial clone simply asks for fewer objects. The [Sparse checkout specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/tree/SparseCheckout.md) is normative.
+
+```bash
+wt clone https://wt.example.com acme/monorepo mono --sparse services/api docs
+cd mono
+wt sparse add services/web        # check out (and download) one more area
+wt sparse list
+wt sparse disable                 # back to a full checkout
+```
+
+## Patterns
+
+Patterns are relative to the tree root, one per line in `.wt/trees/<tree>/sparse`. The file's existence turns sparse checkout on for that tree; nested trees have their own settings.
+
+| You write | Stored | Meaning |
+|---|---|---|
+| `src`, `./src`, `src\` | `/src` | A plain path (no `*`, `?`, `[`): that file or directory and everything below it |
+| `docs/guide/` | `/docs/guide/` | Directory only |
+| `*.md` | `*.md` | gitignore syntax: any `.md` file at any depth |
+| `/*` (or `.`) | `/*` | Every top-level entry |
+| `!docs/private` | `!/docs/private` | Excludes again |
+
+`..` components and empty patterns are rejected; duplicates are dropped. The deepest matching level decides: `docs` plus `!docs/private` plus `docs/private/keep.md` checks out `docs/` without `docs/private/`, except `docs/private/keep.md`. Paths with an unresolved merge conflict always count as inside the set, so their conflict markers stay visible.
+
+## Commands
+
+| Command | Effect |
+|---|---|
+| `wt sparse set PATTERN...` | Enable sparse checkout with exactly these patterns |
+| `wt sparse add PATTERN...` | Add patterns (sparse checkout must be on) and write the files they bring in |
+| `wt sparse remove PATTERN...` | Remove patterns (each must be set; at least one must remain) and the unmodified files that leave the set |
+| `wt sparse list` | The patterns and how many head files are checked out |
+| `wt sparse disable` | Turn sparse checkout off and write every head file |
+| `wt sparse reapply` | Make the working directory match the patterns again |
+| `wt clone URL TENANT/TREE [DIR] --sparse PATTERN...` | [Partial clone](#partial-clones) |
+
+All of them accept the global `--tree NAME` and `--json` (`{tree, patterns, enabled, written, removed, kept_modified, fetched}`; `list` returns `{tree, enabled, patterns, files_total, files_checked_out, partial_remote}`). Changing the patterns takes the tree lock and is refused while a merge is in progress.
+
+When the patterns change:
+
+- head files inside the set that are missing on disk are written (downloaded first, in one batch, in a partial clone);
+- head files outside the set that are on disk and **unmodified** are removed;
+- **modified** files outside the set are kept and reported as `kept_modified`: once outside the set their changes are invisible to `status` and snapshots, so snapshot or restore them and run `wt sparse reapply`;
+- untracked files are never touched.
+
+## What sparse checkout changes
+
+For paths **outside** the set:
+
+| Operation | Behaviour |
+|---|---|
+| `wt switch`, `wt pull`, `wt merge`, `wt revert`, `wt rebase`, `wt cherry-pick` | Never written, never deleted from disk |
+| `wt status`, `wt diff` (working tree) | Not scanned: neither modified nor deleted; untracked files there are invisible |
+| `wt snapshot`, `wt stash`, auto-snapshots, `wt stage` | Keep the head entry unchanged, exactly like restricted paths |
+| Merges | Computed on manifests as usual; content is read (downloaded if needed) only for content merges; the result is recorded in the merge snapshot but not written |
+
+Paths **inside** the set behave as without sparse checkout: deleting one is a deletion.
+
+`wt status` adds a line such as:
+
+```text
+Sparse checkout (/services/api /docs): 412 of 9,830 files checked out; partial clone, other content is downloaded from origin on demand
+```
+
+and `wt status --json` adds a `sparse` object (`patterns`, `files_total`, `files_checked_out`, `partial_remote`), absent when sparse checkout is off.
+
+## Partial clones
+
+With sparse patterns set, `wt fetch` and `wt pull` (and therefore `wt clone --sparse`) download every manifest of the new snapshots, but blobs and chunks **only for paths inside the set**. If anything outside the set was left without local content, the tree is marked **partial** (`.wt/trees/<tree>/partial` names the remote).
+
+`wt clone --sparse PATTERN...` validates the patterns before creating the destination, writes them right after initialising the worktree, then fetches and checks out only the sparse paths. It combines with `--depth N` for a shallow, partial clone. `wt fetch` and `wt pull` need no flag afterwards: they follow the tree's patterns.
+
+### On-demand download
+
+In a partial clone, every read of content that is not stored locally goes to the server: diff and merge of other paths, `wt blame`, `wt show`, `wt archive`, checkout after `wt sparse add` or `wt sparse disable`. The client downloads the missing objects in batches over one cached connection with your saved credential, and the server applies its normal rules (reachability from the tree, license read checks).
+
+Pushing from a sparse or partial clone never needs the missing content: snapshots keep the head entries of paths outside the set, so their manifests reference content the server already has, and every other path stays intact on the server.
+
+### Working offline
+
+Everything that only needs local content keeps working offline: `status`, `snapshot`, `log`, diffs of sparse paths. An operation that needs content that was never downloaded fails with an error such as:
+
+```text
+3 object(s) needed here are not stored locally (this is a partial clone: content outside the sparse checkout
+is downloaded on demand) and could not be downloaded: cannot connect to ...; check the connection to the server and retry
+```
+
+Pushes made offline can be queued with [`wt push --queue`](/docs/cli/sync#offline-queue).
+
+### Maintenance
+
+`wt gc` never downloads anything in a partial clone. `wt fsck` counts missing content of a partial tree's snapshots as `restricted_missing` instead of reporting errors. See [Storage maintenance](/docs/cli/maintenance).
+
+<Callout type="info" title="Not planned">
+  Patterns are evaluated per file; there is no "cone mode", and the server does not filter by path: the client requests exactly the objects it needs.
+</Callout>

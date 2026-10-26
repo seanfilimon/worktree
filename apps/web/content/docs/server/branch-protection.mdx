@@ -26,6 +26,7 @@ A rule belongs to one tree and is keyed by its `pattern`.
 | `require_signed` | bool | `--require-signed` | Every pushed snapshot must carry a verified signature. See [signing](/docs/cli/signing). Also forbids the `merge` and `squash` methods, because the server cannot sign the snapshots it writes. |
 | `require_linear` | bool | `--require-linear` | No merge snapshots: direct pushes must be linear, the `merge` method is forbidden, and fast-forwarded sources must not contain merges. |
 | `block_on_todos` | bool | `--block-on-todos` | Open blocking TODOs that target the source branch block merging. See [TODOs](/docs/cli/dependencies#wt-todo). |
+| `require_owner_approval` | bool | `--require-owner-approval` | Every owned changed path needs an approval of the current source tip from one of its [path owners](/docs/server/review-workflow#owner-approval). |
 | `merge_methods` | string array | `--merge-methods a,b` | Merge methods allowed for merge requests into matching branches (`fast-forward`, `merge`, `squash`). Empty: all. Lists of several matching rules intersect. See [Server-side merges](/docs/server/merging). |
 
 Every rule whose pattern matches a branch applies to it; matching rules combine into their most restrictive form. Branch listings report `protected: true` for branches that at least one rule matches.
@@ -68,9 +69,10 @@ Pushing an existing tag name is refused; only a `tree:admin` can replace a tag, 
 | `no_delete` | `--no-delete` | Matching tags cannot be deleted. |
 | `no_move` | `--no-move` | Matching tags cannot be replaced (moved to another snapshot). |
 | `allowed_taggers` | `--tagger U` (repeatable) | Accounts allowed to create, move or delete matching tags. Empty: anyone with `tree:write`. |
+| `require_signed` | `--require-signed` | Matching tags must carry a verified signature (`wt tag NAME --sign`), also tags created by a release. See [Release integrity](/docs/server/release-integrity#signed-tag-protection). |
 
 ```bash
-wt protect tag set acme/payments 'v*' --no-delete --no-move --tagger release-bot
+wt protect tag set acme/payments 'v*' --no-delete --no-move --tagger release-bot --require-signed
 wt protect tag list acme/payments
 ```
 
@@ -166,9 +168,9 @@ wt mr merge 4                    # or --method fast-forward|merge|squash
 }
 ```
 
-Blocker kinds are `state`, `source`, `linked_group`, `approvals`, `changes_requested`, `ci`, `todos`, `conflicts`, `merge_method`, and, when no other allowed method can merge, `linear` and `diverged` (the target is not an ancestor of the source). The response also lists the possible `methods` and any `conflicts`. The messages above are illustrative.
+Blocker kinds are `state`, `draft`, `source`, `linked_group`, `approvals`, `owners` (with `require_owner_approval`), `changes_requested`, `ci`, `todos`, `conflicts`, `merge_method`, and, when no other allowed method can merge, `linear` and `diverged` (the target is not an ancestor of the source). The response also lists the possible `methods` and any `conflicts`. The messages above are illustrative.
 
-A merge (`mr:merge`) enforces the same checks (required approvals, change requests, `require_ci_pass`, `block_on_todos`), then merges with the requested method, or by default fast-forwards when it can and otherwise writes a merge snapshot (the first method protection allows). The target moves with compare-and-swap. A refused merge answers `409 linked_group` for a linked-group member, `403 review_required` for missing approvals, `409 merge_blocked` (listing the blockers) for change requests, CI, blocking TODOs or non-linear history, `409 merge_method_not_allowed`, `409 merge_conflict` with the conflicting paths, or `409 conflict` for a fast-forward on diverged branches. Success publishes `mr.merged` and `branch.pushed`. Methods, conflicts and mergeability: [Server-side merges](/docs/server/merging).
+A merge (`mr:merge`) enforces the same checks (required approvals, change requests, `require_ci_pass`, `block_on_todos`), then merges with the requested method, or by default fast-forwards when it can and otherwise writes a merge snapshot (the first method protection allows). The target moves with compare-and-swap. A refused merge answers `409 draft` for a [draft](/docs/server/review-workflow#draft-merge-requests), `409 linked_group` for a linked-group member, `403 review_required` for missing approvals, `409 merge_blocked` (listing the blockers) for change requests, missing owner approvals, CI, blocking TODOs or non-linear history, `409 quota_exceeded` when the merge snapshot would exceed the tenant's storage quota, `409 merge_method_not_allowed`, `409 merge_conflict` with the conflicting paths, or `409 conflict` for a fast-forward on diverged branches. Success publishes `mr.merged` and `branch.pushed`. Methods, conflicts and mergeability: [Server-side merges](/docs/server/merging).
 
 </Step>
 </Steps>

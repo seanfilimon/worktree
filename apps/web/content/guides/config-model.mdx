@@ -11,7 +11,8 @@ W0rkTree has exactly three places that hold configuration or state you might loo
 | Location | Scope | Written by | Contents |
 |---|---|---|---|
 | `.wt/config.toml` | One worktree | `wt init`, `wt config set`, `wt remote add/remove`, `wt clone` | Worktree identity, author, auto-snapshot and sync settings, remotes. |
-| `<dir>/.wt-tree/config.toml` | One nested tree | `wt tree add` | Marks `<dir>` as a nested tree. |
+| `<dir>/.wt-tree/local.toml` | One nested tree (local only) | `wt tree add` | Marks `<dir>` as a nested tree: its name and id. |
+| `<dir>/.wt-tree/config.toml`, `ignore`, `hooks/`, `access/` | One tree (shared, snapshotted) | `wt tree init-config`, you | Tree-level overrides, ignore rules, hooks and deny policies, versioned with the tree. |
 | `$WT_HOME` (default `~/.wt`) | One user, all worktrees | `wt login`, `wt register`, `wt logout`, `wt daemon` | Saved tokens and daemon state. |
 
 Configuration is layered: `$WT_HOME/config.toml` (user defaults for `[user]`, `[signing]`, `[secret_scanning]`) < `.wt/config.toml` < `<tree>/.wt-tree/config.toml` (per-tree `[auto_snapshot]`, `[secret_scanning]`, `[hooks]`). See [Local configuration](/docs/cli/configuration).
@@ -53,9 +54,14 @@ Read by the background daemon for this worktree.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `auto_stage` | bool | `true` | Upload the daemon's auto-snapshots as staged (team-visible) snapshots. |
-| `remote` | string | `origin` | Remote the daemon stages to. |
+| `remote` | string | `origin` | Remote the daemon stages to, and the default remote of push, fetch, pull and `wt sync`. |
+| `auto_fetch` | bool | `true` | The daemon keeps remote-tracking branches fresh. |
+| `interval_secs` | integer | `300` | Periodic fetch fallback of the daemon. |
+| `strategy` | string | `merge` | How `wt sync` integrates diverged history: `merge` or `rebase`. |
+| `auto_flush` | bool | `true` | The daemon delivers pushes queued while the server was unreachable. |
+| `auto_sync_secs` | integer | `0` | The daemon runs `wt sync` on clean trees every N seconds (`0` = off). |
 
-Auto-staging happens only when the remote named by `sync.remote` exists and you have a saved credential for its server.
+Auto-staging happens only when the remote named by `sync.remote` exists and you have a saved credential for its server. `wt sync` and the offline queue are described in [Sync and offline queue](/docs/cli/sync).
 
 ### `[remote.<name>]`
 
@@ -147,17 +153,20 @@ The full key table is in the [`wt config` reference](/docs/cli/repository#wt-con
 | `.wt/trees/<tree>/tree.toml` | Tree metadata: name, id, path, default branch, server-side name. |
 | `.wt/trees/<tree>/HEAD`, `refs/...` | Current branch, branch tips, remote-tracking tips, tags. |
 | `.wt/trees/<tree>/reflog.jsonl` | Append-only action log (`wt reflog`). |
+| `.wt/trees/<tree>/sparse`, `partial` | Sparse checkout patterns and the partial-clone marker (`wt sparse`, `wt clone --sparse`). |
+| `.wt/trees/<tree>/outbox.jsonl` | Pushes queued while the server was unreachable (`wt push --queue`, `wt sync`). |
 | `.wt/git-map.json` | Snapshot id to Git commit mapping, after `wt git export`. |
 
 See [Local layout](/docs/protocol/local-layout) for the complete list. `.wt/` itself is never snapshotted, so nothing in it is shared through the server; to share ignore rules with your team use a `.wtignore` file in the working directory instead.
 
-## Nested trees: `.wt-tree/config.toml`
+## Nested trees: `.wt-tree/`
 
-`wt tree add NAME PATH` registers a nested tree and writes `PATH/.wt-tree/config.toml`. The `.wt-tree/` directory is the marker that tells `wt` the directory is a tree root; the tree's metadata (branches, `HEAD`, server-side name) lives in `.wt/trees/NAME/` at the worktree root.
+`wt tree add NAME PATH` registers a nested tree and writes `PATH/.wt-tree/local.toml` with the tree's name and id. The `.wt-tree/` directory is the marker that tells `wt` the directory is a tree root; the tree's metadata (branches, `HEAD`, server-side name) lives in `.wt/trees/NAME/` at the worktree root.
 
-- Do not create or edit `.wt-tree/` by hand; use `wt tree add` and `wt tree remove`.
-- `.wt-tree/` is a built-in ignore and is never snapshotted.
+- Do not create or edit `local.toml` by hand; use `wt tree add` and `wt tree remove`. It is local only and never snapshotted.
+- Since v0.7 the rest of `.wt-tree/` is **shared**: `config.toml`, `ignore`, `hooks/**` and `access/**` are snapshotted, pushed and cloned with the tree they configure (never with its parent). Scaffold them with `wt tree init-config`. Trees created before v0.7 are migrated on the next scan (the identity moves from `config.toml` to `local.toml`) and start tracking the shared files on their next snapshot.
 - Nested trees share the worktree's `.wt/config.toml` (author, remotes, sync settings); their own `.wt-tree/config.toml` can override `[auto_snapshot]`, `[secret_scanning]` and `[hooks]`. Each tree has its own branches, tags and reflog, and is pushed to its own server tree.
+- Cloning a tree that has shared `.wt-tree/` files puts them at the new worktree's root, where they apply to the root tree. See [Shared tree files](/docs/cli/configuration#shared-tree-files).
 
 See [Nested trees](/guides/nested-trees).
 

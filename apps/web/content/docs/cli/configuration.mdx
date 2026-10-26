@@ -21,6 +21,7 @@ Rules:
 
 - A section a layer is not allowed to set is ignored there (and left in the file). Remotes, `[sync]`, `[worktree]` and `[git_remote.*]` are worktree-only; `[signing]` and `[user]` are user or worktree.
 - For a nested tree, the `.wt-tree/config.toml` files of its enclosing trees apply first, then its own.
+- A worktree created by `wt clone` of a tree that shares a `.wt-tree/` directory has it at the worktree root. That root `.wt-tree/config.toml` is a tree layer above `.wt/config.toml`, its `ignore` adds to the root rules and its `hooks/` run after `.wt/hooks/`. See [Shared tree files](#shared-tree-files).
 - `secret_scanning.patterns` and `secret_scanning.exclude` are **concatenated** across layers instead of replaced.
 - Empty `user.name`, `user.email` and `signing.key` strings count as unset, so a worktree can fall back to the user config.
 - Unknown keys are preserved whenever `wt` rewrites a file, so newer sections do not break older clients.
@@ -60,6 +61,9 @@ auto_stage = true
 remote = "origin"
 auto_fetch = true
 interval_secs = 300
+strategy = "rebase"                 # wt sync: merge (default) | rebase
+auto_flush = false                  # daemon delivers queued pushes (default true)
+auto_sync_secs = 600                # daemon runs wt sync every N s (default 0 = off)
 
 [remote.origin]
 url = "http://localhost:7420"
@@ -83,7 +87,7 @@ auto = false
 url = "https://example.com/acme/web.git"
 ```
 
-`[secret_scanning]`, `[hooks]` and `[signing]` are omitted from the file while they hold their defaults.
+`[secret_scanning]`, `[hooks]` and `[signing]` are omitted from the file while they hold their defaults, as are `sync.strategy`, `sync.auto_flush` and `sync.auto_sync_secs`.
 
 ## Keys
 
@@ -100,9 +104,12 @@ url = "https://example.com/acme/web.git"
 | `auto_snapshot.message_format` | string | `auto: {count} files changed` | worktree, tree | Auto-snapshot message. Placeholders: `{count}` (changed files), `{files}` (their paths, first 10 then `(+N more)`), `{branch}`, `{tree}`. |
 | `auto_snapshot.on_branch_switch` | string | `refuse` | worktree, tree | What happens when `wt switch` finds uncommitted changes. See below. |
 | `sync.auto_stage` | bool | `true` | worktree | The daemon uploads auto-snapshots as staged snapshots. |
-| `sync.remote` | string | `origin` | worktree | Remote used by the daemon and the default for push, fetch, pull and stage. |
+| `sync.remote` | string | `origin` | worktree | Remote used by the daemon and the default for push, fetch, pull, stage and [`wt sync`](/docs/cli/sync). |
 | `sync.auto_fetch` | bool | `true` | worktree | The daemon keeps remote-tracking branches fresh. See [Background fetch](/docs/cli/daemon#background-fetch). |
 | `sync.interval_secs` | integer | `300` | worktree | Periodic fetch fallback of the daemon. |
+| `sync.strategy` | string | `merge` | worktree | How [`wt sync`](/docs/cli/sync#wt-sync) integrates diverged history: `merge` (one merge snapshot) or `rebase` (replay unpushed snapshots onto the remote branch). `--merge` / `--rebase` override it. |
+| `sync.auto_flush` | bool | `true` | worktree | The daemon delivers pushes queued in the [offline queue](/docs/cli/sync#offline-queue) as soon as the server is reachable, with backoff. |
+| `sync.auto_sync_secs` | integer | `0` | worktree | When non-zero, the daemon runs `wt sync` every N seconds for every clean tree; conflicting integrations are undone and left for you. `0` = off. See [Daemon auto-flush and auto-sync](/docs/cli/sync#daemon-auto-flush-and-auto-sync). |
 | `remote.<name>.url`, `remote.<name>.tenant` | string | | worktree | Server base URL (`http://` or `https://`) and tenant slug. |
 | `secret_scanning.enabled` | bool | `true` | all | Run the pre-snapshot secret scan. |
 | `secret_scanning.block_on_match` | bool | `true` | all | `false` = report findings as warnings and snapshot anyway. |
@@ -111,7 +118,7 @@ url = "https://example.com/acme/web.git"
 | `hooks.enabled` | bool | `true` | worktree, tree | Run snapshot hooks. |
 | `hooks.timeout_secs` | integer | `60` | worktree, tree | Kill a hook after this many seconds (`0` = no limit). |
 | `signing.key` | string | empty | user, worktree | Key name under `$WT_HOME/keys/` (empty = signing off). |
-| `signing.auto` | bool | `false` | user, worktree | Sign every snapshot, not only `wt snapshot --sign`. Also re-signs snapshots created by `wt rebase` and `wt cherry-pick`. |
+| `signing.auto` | bool | `false` | user, worktree | Sign every snapshot, not only `wt snapshot --sign`, and every tag created with `wt tag`. Also re-signs snapshots created by `wt rebase` and `wt cherry-pick`. |
 | `alias.<name>` | string | | user, worktree | A command alias, for example `alias.lg = "log --oneline -n 20"`; an empty value removes it. A worktree alias replaces a user alias of the same name. See [Aliases](/docs/cli/ergonomics#aliases). |
 
 Booleans accept `true/false/yes/no/on/off/1/0`. An unparsable config file makes every command fail with `InvalidConfig` naming the file. [`wt doctor`](/docs/cli/ergonomics#wt-doctor) validates every layer and reports which file is wrong.
@@ -147,7 +154,23 @@ A path is never snapshotted (and never triggers a daemon snapshot) when the rule
 !build/
 ```
 
-Only `.wtignore` files are part of snapshots. `.wt/ignore` and `.wt-tree/ignore` stay on your machine. Inspect the result with `wt ignore list --sources` and `wt ignore check PATH`; see [`wt ignore`](/docs/cli/repository#wt-ignore).
+`.wtignore` files and, since v0.7, a tree's own `.wt-tree/ignore` are part of snapshots and shared with the team; `.wt/ignore` stays on your machine. Ignore rules never apply to a tree's shared `.wt-tree/` files themselves. Inspect the result with `wt ignore list --sources` and `wt ignore check PATH`; see [`wt ignore`](/docs/cli/repository#wt-ignore).
+
+## Shared tree files
+
+Since v0.7 a tree's `.wt-tree/` directory is split into one local file and a shared set:
+
+| File | Scope | Contents |
+|---|---|---|
+| `.wt-tree/local.toml` | **Local only**, never snapshotted | The tree's identity: `name` and `id` (rewritten to the server tree id on first contact). Written by `wt tree add`. |
+| `.wt-tree/config.toml` | Shared | Tree-level `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` overrides |
+| `.wt-tree/ignore` | Shared | Tree-level ignore patterns |
+| `.wt-tree/hooks/**` | Shared | Tree-level snapshot hooks (tracked with their executable bit) |
+| `.wt-tree/access/**` | Shared | Tree-scoped deny policies for [`wt access apply --tree-doc`](/docs/cli/iam#wt-access) |
+
+Shared files are snapshotted, pushed, fetched and cloned like any other file of the tree they configure, so configuration, hooks and policies are reviewed and versioned with the code. A parent tree never includes a nested tree's `.wt-tree/`. Manifests may contain `.wt-tree/` paths only at the tree root and only for the shared files above; the SDK and the server refuse anything else (and any `.wt/` path). Pushed `access/` files still need an explicit `wt access apply` to take effect on the server.
+
+**Migration.** Before v0.7 the identity lived in `config.toml` and the whole directory was local. On the first scan after upgrading (`wt status`, `wt snapshot`, ...) `wt` writes `local.toml` and removes the `name` / `id` lines from `config.toml` (deleting the file when nothing else is left). The shared files then show up as changes and are tracked from the next snapshot.
 
 ## Hooks
 
@@ -203,7 +226,7 @@ Scanning happens only on the client; the server does not scan pushes.
 
 ## Snapshot signing settings
 
-`[signing] key` names an Ed25519 key in `$WT_HOME/keys/` and `[signing] auto = true` signs every snapshot (otherwise only `wt snapshot --sign` signs). Keys are created and registered with [`wt identity`](/docs/cli/signing#wt-identity).
+`[signing] key` names an Ed25519 key in `$WT_HOME/keys/` and `[signing] auto = true` signs every snapshot and every tag created with `wt tag` (otherwise only `wt snapshot --sign` and `wt tag NAME --sign` sign). Keys are created and registered with [`wt identity`](/docs/cli/signing#wt-identity).
 
 ```bash
 wt identity generate laptop

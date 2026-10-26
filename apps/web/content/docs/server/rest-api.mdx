@@ -734,7 +734,12 @@ Every other endpoint group, all under `/api/v1`. `{t}` = `/tenants/{tenant}`, `{
 | IAM | `{t}/teams[/{team}[/members/{username}]]`, `{t}/roles[/{name}]`, `{t}/policies[/{id}]`, `POST {t}/policies/validate`, `{t}/service-accounts[/{name}[/keys[/{id}]]]`, `GET\|PUT\|DELETE {tree}/grants`, `GET /iam/actions`, `POST /iam/simulate`, `GET /iam/effective` | [Access control](/docs/server/access-control) |
 | Policy history | `GET {t}/policies/deleted`, `GET {t}/policies/{id}/versions[/{v}]`, `GET {t}/policies/{id}/diff?from=&to=`, `POST {t}/policies/{id}/rollback[?force=true]` | [Policy history](/docs/server/policy-history) |
 | Webhooks | `GET\|POST {t}/webhooks`, `GET\|PATCH\|DELETE {t}/webhooks/{id}`, `GET {t}/webhooks/{id}/deliveries[/{did}]`, `POST {t}/webhooks/{id}/deliveries/{did}/redeliver`, `POST {t}/webhooks/{id}/test`, same under `{tree}/webhooks` | [Webhooks](/docs/server/webhooks) |
-| Code search | `GET /search/code?q=&tenant=&tree=&path=&regex=&case=&context=&limit=` | [Code search](/docs/server/code-search) |
+| Code search | `GET /search/code?q=&tenant=&tree=&path=&regex=&case=&context=&limit=&branch=\|branches=all`, `GET /search/symbols?q=&kind=&...`, `GET /admin/code-index`, `POST /admin/code-index/rebuild?tree=` | [Code search](/docs/server/code-search) |
+| Notifications | `GET /notifications?unread=&limit=`, `POST /notifications/{id}/read`, `POST /notifications/read-all`, `DELETE /notifications/{id}`, `GET\|PUT /notifications/settings`, `GET /notifications/watches`, `GET\|PUT {tree}/watch`, `GET\|PUT {t}/watch` | [Notifications](/docs/server/notifications) |
+| Review workflow | `GET\|PUT {tree}/owners`, `GET {tree}/merge-requests/{n}/owners`, `POST\|DELETE {tree}/merge-requests/{n}/reviewers`, `POST {tree}/merge-requests/{n}/ready`, `POST {tree}/merge-requests/{n}/comments/{id}/apply` | [Review workflow](/docs/server/review-workflow) |
+| Git mirrors | `GET\|POST {tree}/mirrors`, `GET\|PATCH\|DELETE {tree}/mirrors/{id}`, `POST {tree}/mirrors/{id}/sync?wait=` | [Git mirrors](/docs/server/mirrors) |
+| Backups | `GET\|POST /admin/backups`, `GET /admin/backups/{id}/download`, `DELETE /admin/backups/{id}` | [S3 storage and backups](/docs/server/storage-backends#backups) |
+| Profiling | `GET /debug/pprof[/{profile}]` (no `/api/v1` prefix; server admins, only with `--pprof`) | [Performance](/docs/server/performance#profiling-a-running-server) |
 | Blame | `GET {tree}/blame/{rev}/{path...}?start=&end=` | [Blame](/docs/cli/blame#server-api) |
 | Declarative access | `GET {t}/access-config`, `POST {t}/access-config/plan`, `POST {t}/access-config/apply`, same under `{tree}/access-config` | [Declarative access](/docs/server/declarative-access) |
 | Branches and tags | `POST {tree}/branches {name, from?}`, `DELETE {tree}/branches/{name...}`, `POST {tree}/tags`, `DELETE {tree}/tags/{name...}` | [`wt trees`](/docs/cli/administration#wt-trees) |
@@ -743,7 +748,7 @@ Every other endpoint group, all under `/api/v1`. `{t}` = `/tenants/{tenant}`, `{
 | CI | `POST {tree}/ci/status {snapshot, context, state, description?, target_url?}` (`ci:report`), `GET {tree}/ci/status?snapshot=\|branch=` | [`wt ci`](/docs/cli/merge-requests#wt-ci) |
 | Linked groups | `GET\|POST {t}/linked-groups`, `GET\|DELETE {t}/linked-groups/{id}`, `POST {t}/linked-groups/{id}/merge {method?}` | [Branch protection](/docs/server/branch-protection#linked-merge-requests) |
 | TODOs and dependencies | `GET\|POST {tree}/todos`, `GET\|PATCH {tree}/todos/{n}`, `POST {tree}/todos/{n}/claim\|complete\|cancel`, `GET {tree}/dependencies?branch=` | [`wt todo`](/docs/cli/dependencies#wt-todo) |
-| Releases | `GET\|POST {tree}/releases`, `GET\|PATCH\|DELETE {tree}/releases/{tag}`, `PUT\|GET\|DELETE {tree}/releases/{tag}/assets/{name}` (raw body up to 64 MiB) | [`wt release`](/docs/cli/dependencies#wt-release) |
+| Releases | `GET\|POST {tree}/releases`, `GET\|PATCH\|DELETE {tree}/releases/{tag}`, `PUT\|GET\|DELETE {tree}/releases/{tag}/assets/{name}` (raw body up to 64 MiB), `GET {tree}/releases/{tag}/checksums`, `POST {tree}/releases/{tag}/sbom` | [`wt release`](/docs/cli/dependencies#wt-release), [Release integrity](/docs/server/release-integrity) |
 | Staged | `GET {tree}/staged/summary`, `DELETE {tree}/staged?branch=&account=`, `GET {tree}/staged/{snapshot}/files`, `GET {tree}/staged/{snapshot}/files/{path...}` (a staged entry's file list and file contents, with the blob endpoint's read checks) | [Staged snapshots](#staged-snapshots) |
 | OpenAPI | `GET /openapi.yaml` (no auth) | [OpenAPI and wt api](/docs/server/openapi) |
 

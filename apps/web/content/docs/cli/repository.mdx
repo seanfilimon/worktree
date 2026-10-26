@@ -54,7 +54,8 @@ wt --tree frontend status --json
 
 **Notes**
 
-- Ignored paths, `.wt/`, `.wt-tree/` markers and the directories of nested trees are never reported as changes of the parent tree.
+- Ignored paths, `.wt/`, `.wt-tree/local.toml` and the directories of nested trees (with their `.wt-tree/`) are never reported as changes of the parent tree. A tree's own shared `.wt-tree/` files (`config.toml`, `ignore`, `hooks/`, `access/`) are tracked like other files since v0.7; see [Shared tree files](/docs/cli/configuration#shared-tree-files).
+- With [sparse checkout](/docs/cli/sparse-checkout) on, files outside the sparse set are not scanned (neither modified nor deleted), and the report adds a line such as `Sparse checkout (/src /docs): 12 of 40 files checked out; partial clone, other content is downloaded from origin on demand`. JSON adds a `sparse` object (`patterns`, `files_total`, `files_checked_out`, `partial_remote`), absent when sparse checkout is off.
 - **Restricted** paths are files of the server tip that a license rule or a `tree:read` path policy withholds from you. They are not checked out and are listed in `.wt/trees/<tree>/stubbed`. See [Restricted paths](/docs/protocol/large-files#restricted-paths).
 - With `--json` the output mirrors the SDK `StatusReport` (`tree`, `branch`, `head`, `changes[]` with `path` and `kind`, `merge`) plus `restricted` (paths) and `shallow` (boolean).
 - When auto-snapshots are enabled but the daemon is not running, `wt status` prints a hint to run `wt daemon start`.
@@ -122,7 +123,7 @@ wt ignore add '*.log'
 **Notes**
 
 - `.wt/`, `.wt-tree/` and `.git/` are always ignored. Soft defaults (`node_modules/`, `target/`, `*.log`, `.env`, ...) apply unless re-included with `!pattern`. The full order is in [Ignore rules](/docs/cli/configuration#ignore-rules).
-- `.wt/ignore` and `.wt-tree/ignore` are local to the worktree; commit rules the team needs as a tracked `.wtignore` file.
+- `.wt/ignore` is local to the worktree. A tree's `.wt-tree/ignore` is shared with the tree (snapshotted and pushed) since v0.7, like tracked `.wtignore` files.
 - `wt git import` copies the Git repository's root `.gitignore` patterns into `.wt/ignore`.
 - More examples in [Ignore patterns](/guides/ignore-patterns).
 
@@ -137,9 +138,9 @@ Manage **nested trees**: independently versioned sub-projects inside one worktre
 | Subcommand | Description |
 |---|---|
 | `list` | List all trees: name, path relative to the root (empty for the root tree), current branch, default branch, and server-side name. |
-| `add <NAME> <PATH>` | Register `PATH` (relative to the worktree root; created if missing) as a nested tree named `NAME`, writing `PATH/.wt-tree/config.toml`. |
+| `add <NAME> <PATH>` | Register `PATH` (relative to the worktree root; created if missing) as a nested tree named `NAME`, writing the marker `PATH/.wt-tree/local.toml` (name and id). |
 | `remove <NAME>` | Unregister a nested tree. Its `.wt-tree/` and `.wt/trees/NAME/` are deleted; working files are kept and become part of the enclosing tree. The root tree cannot be removed. |
-| `validate [NAME]` | Check the tree layout: `.wt-tree/` marker present, config and ignore files parse, no nested `.wt/`. All trees when `NAME` is omitted; exits `1` on errors. |
+| `validate [NAME]` | Check the tree layout: `.wt-tree/` marker present, identity in `local.toml` matches the registry, config and ignore files parse, no nested `.wt/`. All trees when `NAME` is omitted; exits `1` on errors. |
 | `init-config [NAME]` | Scaffold `.wt-tree/{config.toml,ignore,hooks/,access/}` for a nested tree (default: the selected tree). Existing files are kept. |
 
 ```bash
@@ -157,7 +158,8 @@ wt tree remove frontend
 - A tree's snapshots exclude the paths of trees nested inside it, so each tree's history only contains its own files.
 - Select a tree with `--tree <name>` or by running `wt` from inside its directory (the deepest containing tree wins).
 - Each tree is pushed to its own server tree; see [`wt push`](/docs/cli/remote#wt-push).
-- `.wt-tree/` is never snapshotted: tree configuration, ignore files, hooks and access files are local to the worktree. Tree access policies reach the server only through [`wt access apply`](/docs/cli/iam#wt-access).
+- Since v0.7 a tree's `.wt-tree/config.toml`, `ignore`, `hooks/**` and `access/**` are **shared**: snapshotted, pushed and cloned with the tree. Only `.wt-tree/local.toml` (the identity) stays local. Existing trees migrate on the next scan and start tracking the shared files on their next snapshot. See [Shared tree files](/docs/cli/configuration#shared-tree-files).
+- Pushed access files are not applied automatically: tree access policies reach the server only through [`wt access apply`](/docs/cli/iam#wt-access).
 
 <Callout type="info">
 Design patterns for splitting a project into trees are covered in [Nested trees](/guides/nested-trees). The marker directory is specified in [DotWtTree.md](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/dot-wt-tree/DotWtTree.md).

@@ -88,19 +88,24 @@ Payloads are not a stable contract yet. Route on `type`, `tenant_id`, `tree_id` 
 | `tree.deleted` | A tree is deleted. | `name` |
 | `branch.pushed` | A push is accepted or a merge request is merged. | `branch`, `old_tip`, `new_tip`, `count`; after a merge also `merge_request` and `merge_method` |
 | `branch.created`, `branch.deleted` | A branch is created or deleted over REST. | branch |
-| `tag.pushed`, `tag.deleted` | A tag is created (gRPC or REST) or deleted. | `tag`, `target` |
+| `tag.pushed`, `tag.deleted` | A tag is created (gRPC or REST) or deleted. | `tag`, `target`; `verified` for [signed tags](/docs/server/release-integrity#signed-tags) |
 | `snapshot.staged` | `wt stage` or the daemon uploads a staged snapshot. | the staged snapshot |
 | `staged.cleared` | A staged snapshot is removed by a push, `wt unstage` or expiry. | `branch_name`, `snapshot_id`, `author`, `reason` (`pushed` or `expired`) |
 | `mr.opened`, `mr.approved`, `mr.reviewed`, `mr.commented`, `mr.merged`, `mr.closed` | Merge-request activity. | merge request summary |
+| `mr.review_requested` | Reviewers are requested, explicitly or as [path owners](/docs/server/review-workflow#review-requests). | `number`, `reviewers` (newly added), `requested_by` |
+| `mr.ready` | A [draft](/docs/server/review-workflow#draft-merge-requests) is marked ready for review. | the merge request |
+| `mr.suggestion_applied` | A [suggested change](/docs/server/review-workflow#suggested-changes) is applied as a snapshot on the source branch. | `number`, `comment_id`, `path`, `snapshot_id`, `applied_by` |
 | `group.merged` | A linked group of merge requests is merged. | group |
 | `ci.status` | A CI check is reported. | the CI status |
 | `todo.created`, `todo.updated` | A TODO is created from a dependency or changed (published in the target tenant). | the TODO |
-| `release.created`, `release.deleted` | Release activity. | release |
+| `release.created`, `release.updated`, `release.deleted` | Release activity. | release |
+| `mirror.synced`, `mirror.failed` | A [Git mirror](/docs/server/mirrors) sync finished or failed (`actor` is the requesting user or `system`). | `mirror_id`, `url`, `commits`, `refs`, `pushed`; or `status`, `error` |
+| `notification.created` | A [notification](/docs/server/notifications) is created. Delivered only to its own account, only on streams without `tenant`/`tree`, never to webhooks. | the notification |
 | `access.applied` | A declarative access document is applied. | plan |
 | `policy.changed` | A policy version is recorded: create, update, delete, rollback or access apply. See [Policy history](/docs/server/policy-history). | `policy_id`, `name`, `version`, `change`, `comment` |
 | `webhook.failing` | A webhook was deactivated after 20 consecutive failed deliveries (`actor` is `system`). See [Webhooks](/docs/server/webhooks#retries-and-deactivation). | `webhook_id`, `url`, `failure_count`, `last_status`, `last_error` |
 
-Every event type can also be delivered to an HTTP endpoint with a [webhook](/docs/server/webhooks).
+Every event type except `notification.created` can also be delivered to an HTTP endpoint with a [webhook](/docs/server/webhooks).
 
 ## Recent events
 

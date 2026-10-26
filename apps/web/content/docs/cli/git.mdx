@@ -7,6 +7,10 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 `wt git` bridges Git and W0rkTree. It is implemented by the `worktree-git` crate (libgit2) and can read from and write to local repositories as well as clone from and push to Git hosts over HTTPS, SSH and `file://`.
 
+<Callout type="info" title="Server-side mirrors">
+  To keep a Git copy of a server tree up to date without a working copy, add a [Git mirror](/docs/server/mirrors) (`wt mirror add URL`): the server exports the same deterministic commits as `wt git export` and pushes after every push.
+</Callout>
+
 ## `wt git`
 
 ```text

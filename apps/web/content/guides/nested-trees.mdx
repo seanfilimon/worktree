@@ -17,8 +17,21 @@ A worktree always has one **root tree**, created by `wt init` and named after th
 | Tags | Ignore rules |
 | Reflog (`.wt/trees/<tree>/reflog.jsonl`) | The daemon watch (one per worktree) |
 | Remote-tracking refs and a server tree `<tenant>/<tree>` | |
+| Shared `.wt-tree/` files: tree-level config, ignore rules, hooks, deny policies (snapshotted with the tree) | |
 
 A tree's snapshots **exclude the paths of trees nested inside it**. The root tree never records files under `apps/frontend/` once `apps/frontend` is its own tree, so each history contains only its own files.
+
+## The `.wt-tree/` directory
+
+| File | Shared? | Purpose |
+|---|---|---|
+| `local.toml` | No, local only | The marker: the tree's `name` and `id`. Written by `wt tree add`. |
+| `config.toml` | Yes | Tree-level `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` overrides. |
+| `ignore` | Yes | Tree-level ignore patterns (additive to the root rules). |
+| `hooks/` | Yes | Tree-level `pre-snapshot` / `post-snapshot` hooks. |
+| `access/` | Yes | Tree-scoped deny policies, applied with `wt access apply --tree-doc NAME`. |
+
+Since v0.7 the shared files are ordinary tracked files of the tree they configure: they show up in `wt status`, are snapshotted, pushed and cloned, so tree configuration and hooks are reviewed with the code. A parent tree never includes a nested tree's `.wt-tree/`. `wt tree init-config NAME` scaffolds them. Trees created with an older `wt` keep working: the next scan moves the identity from `config.toml` to `local.toml`, and the shared files are tracked from the next snapshot. See [Shared tree files](/docs/cli/configuration#shared-tree-files).
 
 ## Managing trees
 
@@ -37,7 +50,7 @@ wt tree add api services/api
 wt tree list
 ```
 
-`PATH` is relative to the worktree root and is created if missing. `wt tree add` writes the marker `PATH/.wt-tree/config.toml` and registers the tree under `.wt/trees/NAME/`. The new tree starts with an empty default branch.
+`PATH` is relative to the worktree root and is created if missing. `wt tree add` writes the marker `PATH/.wt-tree/local.toml` and registers the tree under `.wt/trees/NAME/`. The new tree starts with an empty default branch.
 
 </Step>
 <Step>
@@ -68,7 +81,7 @@ wt snapshot -m "Move frontend and api into their own trees"
 
 ## Selecting a tree
 
-Tree-scoped commands (`status`, `snapshot`, `log`, `diff`, `branch`, `switch`, `merge`, `tag`, `reflog`, `revert`, `restore`, `archive`, `push`, `fetch`, `pull`, `stage`, `git export`) act on:
+Tree-scoped commands (`status`, `snapshot`, `log`, `diff`, `branch`, `switch`, `merge`, `tag`, `reflog`, `revert`, `restore`, `archive`, `push`, `fetch`, `pull`, `sync`, `sparse`, `stage`, `git export`) act on:
 
 1. the tree named by the global flag `--tree <name>`, if given;
 2. otherwise the **deepest** tree whose directory contains the current directory (or the `-C` path);
@@ -112,12 +125,13 @@ Each tree is pushed to its own server tree. With `[remote.origin]` set to tenant
 wt push                       # root tree
 wt --tree frontend push
 wt --tree api push --branch main
+wt sync --all-trees           # fetch, integrate and push every tree on its current branch
 ```
 
 The first push of each tree creates its server tree. Access control, visibility, branch protection and license rules are configured per server tree, so a nested tree can, for example, be `public` while the root tree stays `private`. See [Multi-tenancy](/guides/multi-tenancy) and [Access control](/docs/server/access-control).
 
 <Callout type="info" title="Cloning">
-`wt clone URL TENANT/TREE` links the new worktree's root tree to one server tree. Nested trees are separate server trees and are not brought along: clone each one separately where you need it (for example `wt clone URL acme/frontend`). Reassembling a multi-tree worktree from the server is not automated in v0.2.0.
+`wt clone URL TENANT/TREE` links the new worktree's root tree to one server tree. Nested trees are separate server trees and are not brought along: clone each one separately where you need it (for example `wt clone URL acme/frontend`). A cloned tree's shared `.wt-tree/` files land at the new worktree's root and apply to it. Reassembling a multi-tree worktree from the server is not automated yet. To work on part of a large tree instead, use a [sparse clone](/docs/cli/sparse-checkout) (`wt clone URL acme/monorepo --sparse services/api`).
 </Callout>
 
 ## When to use nested trees
@@ -128,7 +142,7 @@ The first push of each tree creates its server tree. Access control, visibility,
 
 If everything always ships together, a single tree with directories is simpler.
 
-## Not in v0.2.0
+## Not built yet
 
 <Callout type="warn" title="Roadmap">
 Switching several trees together and reassembling a multi-tree worktree from the server are planned but not shipped. Trees can already be coordinated on the server: snapshot dependencies create TODOs in other trees (`wt snapshot --depend`, `wt deps graph`), and merge requests of several trees can be linked so they merge together (`wt mr link`). See [Dependencies, TODOs and releases](/docs/cli/dependencies) and the [roadmap](/roadmap).

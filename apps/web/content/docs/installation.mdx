@@ -1,19 +1,69 @@
 ---
 title: Installation
-description: Build the wt CLI, the worktree-bg daemon, the Go server, and the admin panel from source, then verify the install and run the test suites.
+description: Install wt and worktree-bg with the checksum-verifying installers or from release archives, run the server from its container image, or build everything from source; then verify the install and run the test suites.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-W0rkTree is built from source. The repository contains everything: the Rust workspace (`wt`, `worktree-bg`, the SDK, the protocol crate, the Git bridge), the Go server in `services/server-go`, and the admin panel in `apps/admin`.
+W0rkTree ships three programs and a static web application: `wt` (the CLI) and `worktree-bg` (the background daemon) for developer machines, `worktree-server` (the Go server) and the admin panel it serves. There are three ways to get them:
 
-<Callout type="warn" title="Roadmap">
-  Prebuilt binaries and package-manager installs (Homebrew, winget, crates.io, npm, install scripts) are not available yet. Build from source as described below. For the server, the repository also has a `Dockerfile.server` and a `docker-compose.yml`; see [Containers](/docs/server/deployment#containers).
+| Way | What you get | Section |
+|---|---|---|
+| Installers (`scripts/install.sh`, `scripts/install.ps1`) | `wt`, `worktree-bg` (and optionally `worktree-server`) from a release archive, SHA-256 verified | [Installers](#installers) |
+| Container images (`deploy/docker/Dockerfile`, `deploy/docker/Dockerfile.cli`) | The server with the admin panel and `git`; static CLI binaries | [Container images](#container-images) |
+| Source | Everything, built with Cargo, Go and Node | [Build from source](#build-from-source) |
+
+## Installers
+
+`scripts/install.sh` (Linux, macOS, Git Bash) and `scripts/install.ps1` (Windows PowerShell 5.1 or newer, PowerShell 7 on any OS) pick the release archive for your OS and architecture, verify its SHA-256 against the release's `SHA256SUMS`, and install `wt` and `worktree-bg` into `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\worktree\bin`). Nothing is installed when the checksum does not match.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+bash scripts/install.sh --version v0.7.0
+bash scripts/install.sh --version v0.7.0 --dir /usr/local/bin --with-server
+bash scripts/install.sh --base-url https://mirror.example.com/worktree/v0.7.0
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+.\scripts\install.ps1 -Version v0.7.0 -AddToPath
+.\scripts\install.ps1 -Version v0.7.0 -WithServer -AddToPath
+.\scripts\install.ps1 -BaseUrl \\fileserver\worktree\v0.7.0
+```
+
+</Tab>
+</Tabs>
+
+By default the installers download from the project's GitHub releases. A `--base-url` (`-BaseUrl`) can instead name an internal mirror, a `file://` URL or a plain directory, for example the `dist/` directory written by `scripts/release.sh`, which builds the same archives (`worktree-<version>-<target>.tar.gz` or `.zip` with `wt`, `worktree-bg` and `worktree-server`, the admin panel archive and `SHA256SUMS`) on your machine. `--from-source` (`-FromSource`) builds with Cargo instead of downloading. All options are listed in [Deployment](/docs/server/deployment#installing-the-clients).
+
+<Callout type="info" title="Release availability">
+  Release archives and images are produced by `scripts/release.sh` and the release workflow for each `v<version>` tag. If no release has been published for the version you need, build the archives locally (`bash scripts/release.sh`, then `install.sh --base-url ./dist`) or build from source. Package-manager installs (Homebrew, winget, crates.io) are on the [roadmap](/roadmap).
 </Callout>
 
-## Prerequisites
+## Container images
+
+The server image bundles the server, the admin panel (served at `/admin/`) and `git` (for [Git mirrors](/docs/server/mirrors)); it runs as a non-root user with its data in the `/data` volume:
+
+```bash
+docker build -f deploy/docker/Dockerfile -t worktree-server .
+docker run -d --name worktree -p 7420:7420 -v wt-data:/data \
+  -e WT_ADMIN_PASSWORD='change-me-now' worktree-server
+curl http://localhost:7420/healthz
+```
+
+`deploy/docker/Dockerfile.cli` builds statically linked `wt` and `worktree-bg` for CI jobs and Linux hosts. `deploy/docker-compose.yml` runs the server with optional MinIO (S3) and Mailpit (SMTP) profiles, and `deploy/helm/worktree` is a Helm chart. See [Deployment](/docs/server/deployment) and the operator guide [`docs/deploy.md`](https://github.com/seanfilimon/worktree/blob/main/docs/deploy.md).
+
+## Build from source
+
+The repository contains everything: the Rust workspace (`wt`, `worktree-bg`, the SDK, the protocol crate, the Git bridge), the Go server in `services/server-go`, and the admin panel in `apps/admin`.
+
+### Prerequisites
 
 | Toolchain | Version | Needed for |
 |---|---|---|
@@ -30,7 +80,7 @@ go version
 node --version   # only if you build the admin panel
 ```
 
-## Build and install
+### Build and install
 
 <Steps>
 <Step>
@@ -162,7 +212,7 @@ Continue with the [Quick start](/guides/quick-start) to push to the server.
 Windows is a first-class platform; W0rkTree is developed on it.
 
 - **Shell.** All commands work in PowerShell. Where shell syntax differs (environment variables, paths, quoting), the docs show a PowerShell variant. Use `curl.exe` rather than the `curl` alias of older Windows PowerShell versions.
-- **PATH.** `cargo install` places `wt.exe` and `worktree-bg.exe` in `%USERPROFILE%\.cargo\bin`. If `wt` is not found, add that directory to your user `PATH` and open a new terminal.
+- **PATH.** `install.ps1` installs into `%LOCALAPPDATA%\Programs\worktree\bin` (`-AddToPath` adds it to your user `PATH`); `cargo install` places `wt.exe` and `worktree-bg.exe` in `%USERPROFILE%\.cargo\bin`. If `wt` is not found, add the directory to your user `PATH` and open a new terminal.
 - **Per-user state.** `$WT_HOME` defaults to `%USERPROFILE%\.wt` and holds `credentials.toml`, the user `config.toml`, signing keys in `keys\`, and the daemon files `bg.json`, `bg.toml` and `bg.log`. Override it with an environment variable:
 
 ```powershell
@@ -214,4 +264,4 @@ cargo test --workspace
 - [Quick start](/guides/quick-start): create a worktree and push it.
 - [CLI reference](/docs/cli): every command and flag.
 - [Local configuration](/docs/cli/configuration): user, worktree and tree settings, hooks, and secret scanning.
-- [Server deployment](/docs/server/deployment): TLS, reverse proxies, and running as a service.
+- [Server deployment](/docs/server/deployment): Docker, Compose, Helm, systemd, TLS, reverse proxies and upgrades.

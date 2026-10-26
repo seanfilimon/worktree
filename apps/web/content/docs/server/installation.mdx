@@ -1,14 +1,20 @@
 ---
 title: Server Installation
-description: Build worktree-server from source, run it for the first time, and serve the admin panel.
+description: Get worktree-server from a release archive, the container image or a source build, run it for the first time, and serve the admin panel.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-<Callout type="info" title="Build from source only">
-  W0rkTree is pre-1.0. There are no prebuilt server binaries, packages or published container images yet; you build the server from the repository (directly, or as a container image with the repository's `Dockerfile.server`, see [Deployment](/docs/server/deployment#containers)). Prebuilt binaries are on the [roadmap](/roadmap).
+There are three ways to get the server:
+
+- **Release archives.** Every `worktree-<version>-<target>` archive built by `scripts/release.sh` (and the release workflow) contains `worktree-server` next to `wt` and `worktree-bg`, and `worktree-admin-<version>.tar.gz` holds the admin panel. `scripts/install.sh --with-server` (`install.ps1 -WithServer`) installs it with SHA-256 verification. See [Installing the clients](/docs/server/deployment#installing-the-clients).
+- **Container image.** `deploy/docker/Dockerfile` builds an image with the server, the admin panel and `git`; Compose and Helm deployments use it. See [Deployment](/docs/server/deployment#docker).
+- **Source.** The steps below.
+
+<Callout type="info" title="Pre-1.0">
+  W0rkTree is pre-1.0. Images and archives are produced per release tag; if none has been published for the version you need, build them locally or from source. Read the [changelog](/changelog) before upgrading.
 </Callout>
 
 ## Requirements

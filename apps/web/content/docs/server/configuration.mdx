@@ -6,7 +6,7 @@ description: Every command-line flag and environment variable accepted by worktr
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-The server is configured with command-line flags and `WT_*` environment variables only. There is no configuration file. Run `worktree-server --help` for the list below, and `worktree-server --version` to print the version.
+The server is configured with command-line flags and `WT_*` environment variables only. There is no configuration file. Run `worktree-server --help` for the list below, and `worktree-server --version` to print the version. `worktree-server restore` is the only subcommand (offline restore of a backup, see [S3 storage and backups](/docs/server/storage-backends#restore)).
 
 ## Flags and environment variables
 
@@ -15,7 +15,7 @@ The server is configured with command-line flags and `WT_*` environment variable
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
 | `--addr` | `WT_ADDR` | `:7420` | Listen address. One port serves gRPC, REST, SSE, `/healthz`, `/metrics` and `/admin/`. Use `127.0.0.1:7420` to listen on loopback only (recommended behind a reverse proxy). |
-| `--data` | `WT_DATA` | `./wt-data` | Data directory holding `meta.db` (bbolt metadata) and `objects/`. Created if missing. See [Storage](/docs/server/storage). |
+| `--data` | `WT_DATA` | `./wt-data` | Data directory holding `meta.db` (bbolt metadata), `objects/` (with the disk object store), `backups/`, `codeindex/` and `mirrors/`. Created if missing. See [Storage](/docs/server/storage). |
 | `--admin-user` | `WT_ADMIN_USER` | `admin` | Username of the server admin account managed at startup. |
 | `--admin-password` | `WT_ADMIN_PASSWORD` | unset | When set, the server ensures the admin account exists at startup: it is created if missing; an existing account is made server admin and its password is reset to this value when it differs (existing tokens stay valid). |
 | `--admin-dir` | `WT_ADMIN_DIR` | unset | Static admin panel build (normally `apps/admin/dist`) served at `/admin/` with `index.html` fallback. When unset, the panel is not served. |
@@ -69,11 +69,63 @@ Per-tenant overrides are set with `wt admin limits`. See [Quotas](/docs/server/o
 |---|---|---|---|
 | `--compress-objects` | `WT_COMPRESS_OBJECTS` | `true` | Store new objects zstd-compressed when that saves at least 10 %. With `false`, new objects are written raw; compressed objects are still read. See [Object compression](/docs/server/operations#object-compression). |
 | `--webhook-allow-private` | `WT_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow webhook targets on loopback, link-local and private addresses (disables the SSRF guard for every tenant). See [Webhook targets](/docs/server/operations#webhook-targets). |
+
+### Object storage and backups
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--object-store` | `WT_OBJECT_STORE` | `disk` | `disk` (objects in `<data>/objects/`) or `s3`. `meta.db` always stays in the data directory. |
+| `--s3-endpoint` | `WT_S3_ENDPOINT` | unset | S3 API `host:port` or `http(s)://host:port`, for example `s3.amazonaws.com` or `minio:9000`; `http://` implies `--s3-insecure`. Required for `s3`. |
+| `--s3-bucket` | `WT_S3_BUCKET` | unset | Bucket holding the objects; created when missing. Required for `s3`. |
+| `--s3-prefix` | `WT_S3_PREFIX` | unset | Key prefix inside the bucket, for example `wt/`. |
+| `--s3-region` | `WT_S3_REGION` | discovered | Bucket region. |
+| `--s3-access-key`, `--s3-secret-key` | `WT_S3_ACCESS_KEY`, `WT_S3_SECRET_KEY` | unset | Static credentials, given together; prefer the environment variables. When empty, the `AWS_*` / `MINIO_*` environment and then the instance role are used. |
+| `--s3-insecure` | `WT_S3_INSECURE` | `false` | Plain HTTP to the S3 endpoint. |
+| `--backup-interval` | `WT_BACKUP_INTERVAL` | `0` | Period of scheduled backups into `<data>/backups` (at least `1m`); `0` disables them. |
+| `--backup-keep` | `WT_BACKUP_KEEP` | `7` | Scheduled backups to keep; `0` keeps all. Backups made by people are never pruned. |
+
+See [S3 storage and backups](/docs/server/storage-backends). Restoring is a separate subcommand, `worktree-server restore`, described [there](/docs/server/storage-backends#restore).
+
+### Notifications (SMTP)
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--smtp-url` | `WT_SMTP_URL` | unset | Send notification email through `smtp://user:pass@host:587` (STARTTLS when offered) or `smtps://user:pass@host:465` (implicit TLS). Without it no email is sent. Prefer the environment variable; the URL is never logged. |
+| `--smtp-from` | `WT_SMTP_FROM` | `"W0rkTree" <noreply@HOST>` | From address; `HOST` is the host of `--public-url`, else `localhost`. |
+
+See [Notifications](/docs/server/notifications#email).
+
+### Code search index
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--code-index-memory` | `WT_CODE_INDEX_MEMORY` | `256MiB` | Memory cap of loaded index segments (`256MiB`, `1G`, `512MB` or bytes; `0` = unlimited). Evicted segments stay on disk in `<data>/codeindex/`. |
+| `--code-index-branches` | `WT_CODE_INDEX_BRANCHES` | `10` | Most branches indexed per tree (1-1000), used by `branches=all` searches. |
+
+See [Code search](/docs/server/code-search#the-persistent-index).
+
+### Git mirrors
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--git-binary` | `WT_GIT_BINARY` | `git` | git executable (2.31 or newer) used by Git mirrors. When it is missing, mirrors stay configurable but are disabled. |
+| `--mirror-allow-local` | `WT_MIRROR_ALLOW_LOCAL` | `false` | Allow `file://` mirror remotes and mirror hosts on loopback, link-local and private addresses. |
+
+See [Git mirrors](/docs/server/mirrors).
+
+### Profiling
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--pprof` | `WT_PPROF` | `false` | Serve Go runtime profiles at `/debug/pprof` to server admins (`404` without the flag). |
+
+See [Performance](/docs/server/performance#profiling-a-running-server). A hidden `--webhook-retry-schedule` flag replaces the webhook retry delays and exists for tests only.
+
 ### Precedence and syntax
 
 - A flag on the command line overrides the matching environment variable, which overrides the default.
 - Durations use Go syntax: `90s`, `15m`, `24h`, `720h`.
-- `--allow-registration` and `--compress-objects` are boolean flags; turn them off with an explicit value, `--allow-registration=false`. The environment variables accept `true` or `false`.
+- `--allow-registration`, `--compress-objects`, `--s3-insecure`, `--mirror-allow-local`, `--webhook-allow-private` and `--pprof` are boolean flags; turn them off with an explicit value, `--allow-registration=false`. The environment variables accept `true` or `false`.
 - Invalid values make the server exit with code `2`; a runtime error exits with `1`.
 
 ### Fixed settings
@@ -88,9 +140,11 @@ Per-tenant overrides are set with `wt admin limits`. See [Quotas](/docs/server/o
 | Audit query page | 100 events by default, at most 1000 (`format=ndjson` has no limit) |
 | Webhook delivery timeout and retries | 10 seconds; retries after 1 m, 5 m, 30 m, 2 h; deactivated after 20 consecutive failures |
 | Webhook delivery log | 200 newest deliveries per hook, at most 30 days |
-| Code search | Default-branch tips, text files up to 1 MiB, at most 1000 hits and 5 seconds per query |
+| Code search | Text files up to 1 MiB, at most 1000 hits and 5 seconds per query |
+| Notification retention | 1000 per account, 90 days; email retries after 30 s, 2 m, 10 m, 30 m |
+| Git mirrors | 10 per tree; automatic syncs 5 seconds after a push, retried after 1 m, 5 m, 30 m, 2 h; 10 minute push timeout |
 
-Single sign-on is not a flag: a server admin configures it at runtime with [`wt sso set`](/docs/cli/iam#wt-sso) or `PUT /api/v1/admin/sso`. Encryption at rest is not built yet (see the [roadmap](/roadmap)); use volume encryption.
+Single sign-on is not a flag: a server admin configures it at runtime with [`wt sso set`](/docs/cli/iam#wt-sso) or `PUT /api/v1/admin/sso`. Encryption at rest is not built yet (see the [roadmap](/roadmap)); use volume encryption or your object store's server-side encryption.
 
 ## Examples
 
@@ -131,6 +185,9 @@ export WT_PUBLIC_URL=https://wt.example.com
 export WT_LOG_FORMAT=json
 export WT_AUDIT_RETENTION=8760h
 export WT_DEFAULT_MAX_STORAGE=10737418240
+export WT_BACKUP_INTERVAL=24h
+export WT_SMTP_URL='smtp://wt-mailer:secret@smtp.example.com:587'
+export WT_SMTP_FROM='W0rkTree <worktree@example.com>'
 ./worktree-server
 ```
 

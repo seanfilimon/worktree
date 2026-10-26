@@ -1,0 +1,161 @@
+---
+title: Performance and Load Testing
+description: Load-test a server with worktree-bench, run the Go benchmarks, profile a running server with --pprof, and know the measured v0.7 numbers, hard limits and tuning flags.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+This page shows how to measure a W0rkTree server, what was measured for v0.7, which limits a deployment runs into and which flags tune them. The full before/after tables and the analysis of each hotspot are in [`docs/performance.md`](https://github.com/seanfilimon/worktree/blob/main/docs/performance.md); the [Performance specification](https://github.com/seanfilimon/worktree/blob/main/crates/worktree-protocol/specs/server/Performance.md) fixes the limits.
+
+## Load testing with worktree-bench
+
+`worktree-bench` (crate `crates/worktree-bench`) drives concurrent workloads through the Rust SDK in-process, so the numbers are those of a real client: snapshotting, negotiation, object upload and download, push and REST calls.
+
+<Tabs items={['bash', 'PowerShell']}>
+<Tab value="bash">
+
+```bash
+cargo build -p worktree-bench --release
+
+# Start a throw-away server, run every workload, stop the server.
+target/release/worktree-bench --concurrency 8 --iterations 5 --files 200 --file-size 4k
+
+# Against an existing server, with an existing account.
+WT_BENCH_PASSWORD=... target/release/worktree-bench --server https://wt.example.com \
+  --user alice --workload push,search --json
+```
+
+</Tab>
+<Tab value="PowerShell">
+
+```powershell
+cargo build -p worktree-bench --release
+.\target\release\worktree-bench.exe --concurrency 8 --iterations 5 --files 200 --file-size 4k
+$env:WT_BENCH_PASSWORD = '...'
+.\target\release\worktree-bench.exe --server https://wt.example.com --user alice --workload push,search --json
+```
+
+</Tab>
+</Tabs>
+
+Without `--server`, the bench starts the Go server (`--server-bin`, `WT_SERVER_BIN`, a built `worktree-server`, or `go build`) on a free localhost port with a temporary data directory and `--rate-limit 0`, and stops it on exit. Without `--user` it registers a fresh account (the server must allow registration). `WT_HOME` points at a temporary directory, so your own credentials are never read or written.
+
+| Workload | What each worker does | Reported operations |
+|---|---|---|
+| `push` | Its own tree of `--files` files of `--file-size` bytes. Round 0 writes every file; later rounds rewrite `--changed` files (0 = all). Each round snapshots locally, then pushes | `push`, `snapshot (local)` |
+| `clone` | Clones a seeded tree `--iterations` times into fresh directories | `clone` |
+| `search` | One cold code search (builds the index), then `--iterations` searches over the bench tenant's trees | `search (cold)`, `search` |
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--workload LIST` | `push,clone,search` | Any subset, run in order |
+| `-c, --concurrency N` | `4` | Concurrent workers |
+| `-n, --iterations N` | `5` | Rounds per worker |
+| `--files N`, `--file-size SIZE` | `100`, `4k` | Tree shape |
+| `--changed N` | `0` | Files rewritten per push round after the first (0 = all) |
+| `--policies N` | `0` | Create N non-matching access policies first, so every authorization evaluates them |
+| `--query TEXT` | `benchneedle` | Code search query |
+| `--server-arg FLAG` | | Extra flag for the started server (repeatable) |
+| `--cpu-profile FILE`, `--profile-workload W`, `--profile-seconds N` | | Capture a server CPU profile during a workload (see [profiling](#profiling-a-running-server)) |
+| `--json` | | Configuration and results as one JSON document |
+| `--keep` | | Keep the temporary directory (worktrees, server data, logs) |
+
+Each row reports count, errors, p50/p95/p99/max/mean latency (nearest-rank percentiles of successful operations), throughput (successful operations per second of wall time) and MB/s where meaningful. The bench exits non-zero when any operation failed and prints the tail of the started server's log.
+
+<Callout type="warn" title="Rate limits">
+  A load test from one account hits the default rate limit (1,200 requests per minute per principal). The started server runs with `--rate-limit 0`; against your own server, raise `--rate-limit` or use a test server.
+</Callout>
+
+## Go benchmarks
+
+```bash
+cd services/server-go
+go test ./internal/syncsvc    -run '^$' -bench . -benchmem   # push validation, manifest diffing, negotiate
+go test ./internal/authz      -run '^$' -bench . -benchmem   # authorization evaluation
+go test ./internal/codesearch -run '^$' -bench . -benchmem   # code search queries, index build
+```
+
+| Package | Benchmarks | Fixture |
+|---|---|---|
+| `syncsvc` | `DecodeManifest`, `DiffManifests`, `Push`, `CheckObjects`, `Negotiate` | 10k-entry manifests, 10 entries changed per push, memory or disk object store |
+| `authz` | `Authorize`, `EvaluateBranchPush`, `EffectivePermissions`, `CompilePolicies` | 300 policies, 200 tree grants, 50 teams |
+| `codesearch` | `Search` (literal, case folding, regex, path filter, no match), `IndexBuild`, and the v2 index benchmarks | 2,000 to 3,000 source files |
+
+The `store=disk` sub-benchmarks write 20k objects per fixture; use `-bench memory` for a quick run.
+
+## Profiling a running server
+
+`worktree-server --pprof` (`WT_PPROF=true`, default off) serves Go runtime profiles to **server administrators**. Anonymous callers get `401`, other users `403`; without the flag both routes answer `404 not_found`, like unknown paths.
+
+| Route | Content |
+|---|---|
+| `GET /debug/pprof` | HTML index with links and sample counts |
+| `GET /debug/pprof/{profile}` | `heap`, `allocs`, `goroutine`, `block`, `mutex`, `threadcreate`, `profile` (CPU, `?seconds=N`, default 30), `trace`, `cmdline`, `symbol` |
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -o cpu.pprof "https://wt.example.com/debug/pprof/profile?seconds=20"
+go tool pprof -top -cum worktree-server cpu.pprof
+```
+
+The flag costs nothing while no profile is being taken. `worktree-bench --cpu-profile cpu.pprof --profile-workload search --profile-seconds 10` captures a profile during a workload (a started server gets `--pprof`; against `--server`, the bench user must be a server admin and the server must run with `--pprof`).
+
+## Measured numbers (v0.7)
+
+Reference host: AMD Ryzen Threadripper PRO 9995WX, Windows 11, NTFS, Go 1.27, server and bench on one host over loopback. File system calls are slow on this host, so treat absolute disk-bound numbers as pessimistic and compare relative changes. "Before" is the start of the v0.7 hardening pass.
+
+| Scenario | Before | v0.7 |
+|---|---:|---:|
+| Push p50, 8 workers, 200 files of 4 KiB | 2,658 ms | 1,409 ms |
+| Push p50, 1 worker, 200 files of 4 KiB | 906 ms | 486 ms |
+| Clone p50, 1 worker, 200 files of 4 KiB | 1,059 ms | 796 ms |
+| Incremental push p50 (10 of 5,000 files changed), 4 workers | 828 ms | 146 ms |
+| Initial push, 5,000 files of 512 B, 4 workers | 40.3 s | 26.9 s |
+| Code search p50, 8 workers, 9 trees, 300 policies | 46.4 ms | 23.8 ms |
+| `Push` RPC with a 10k-entry manifest, disk store (Go benchmark) | 1,152 ms | 8.1 ms |
+| `Authorize` with 300 policies (Go benchmark) | about 470 µs | about 120 µs |
+
+What changed:
+
+- **Parallel transfers.** The client splits object uploads and downloads into up to **4 concurrent streams** over one HTTP/2 connection (batches of at most 1,024 objects or 128 MiB upload, 2,048 hashes download).
+- **Incremental pushes.** The client neither offers nor uploads objects already referenced by a server-known parent, and the server does not re-check the blobs of a parent that is the current tip of a branch of the tree.
+- **Authorization caching.** Compiled policies are cached per tenant (reused only while the stored policies are identical, so changes apply at once), and a code search reads the caller's memberships, grants and policies once instead of per tree.
+
+[Code search](/docs/server/code-search#the-persistent-index) has its own numbers: a 3,000-file tree loads from disk in about 10 ms after a restart, and typical literal and symbol queries take well under 5 ms.
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| gRPC message size (both directions) | 64 MiB |
+| Largest object | 64 MiB; files above 8 MiB are chunked (FastCDC) |
+| Largest file | 4 GiB |
+| Snapshots per push | 100,000 |
+| HTTP/2 | 250 concurrent streams per connection; 16 MiB receive buffer per connection, 8 MiB per stream |
+| HTTP header read / idle timeout | 10 s / 2 min (no read or write timeout: transfers and SSE are long-lived) |
+| REST JSON body | 1 MiB |
+| Rate limit | 1,200 requests per minute per principal or anonymous IP (`--rate-limit`; `/healthz` and `/metrics` exempt) |
+| Policy statements per policy | 100 |
+| Code search | Files up to 1 MiB indexed, queries up to 1,000 bytes, at most 1,000 hits, 5 s per query |
+| Blame | Files up to 32 MiB |
+| Diff / compare | 1 MiB per diffed file, 32 MiB per compared blob, 250 snapshots per compare |
+| Event bus | 64 buffered events per subscriber, 200 in history |
+
+## Tuning flags
+
+| Flag (env) | Default | Effect |
+|---|---|---|
+| `--rate-limit` (`WT_RATE_LIMIT`) | `1200` | Requests per minute per principal; `0` disables |
+| `--compress-objects` (`WT_COMPRESS_OBJECTS`) | `true` | Less disk, more CPU on write and read |
+| `--gc-interval`, `--gc-grace` | `24h`, `720h` | GC walks every tree; schedule it off-peak |
+| `--code-index-memory` (`WT_CODE_INDEX_MEMORY`) | `256MiB` | Memory cap of the loaded [code search index](/docs/server/code-search#the-persistent-index) |
+| `--code-index-branches` (`WT_CODE_INDEX_BRANCHES`) | `10` | Branches indexed per tree |
+| `--default-max-storage` | `0` | Storage quotas add a size computation per push |
+| `--pprof` (`WT_PPROF`) | `false` | Profiling endpoints |
+| `--log-level` (`WT_LOG_LEVEL`) | `info` | `debug` logs per-object detail; keep `info` under load |
+
+Clients compress object transfers with gRPC gzip by default and fall back automatically when a server cannot decode it.
+
+<Callout type="info" title="Known hotspots">
+  Per-object fsync and rename in the disk store remain the largest cost of uploads; batched durability, a decoded-manifest cache, parallelism inside `Negotiate` and `DownloadObjects`, and benchmark tracking in CI are planned. See `docs/performance.md`.
+</Callout>
