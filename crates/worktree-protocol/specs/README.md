@@ -65,6 +65,7 @@ is authoritative; the spec is a bug.
 | **One-step sync** | [`sync/OneStepSync.md`](./sync/OneStepSync.md) | `wt sync` (fetch, merge or rebase, push; conflicts and `--continue`), the offline outbox (`wt push --queue`, `wt sync queue/flush/drop`), daemon auto-flush and auto-sync |
 | **Review workflow** | [`server/ReviewWorkflow.md`](./server/ReviewWorkflow.md) | Path owners (server config and `OWNERS` file), review requests, owner approval, draft merge requests, suggested changes, storage quotas on server-written snapshots |
 | **Performance** | [`server/Performance.md`](./server/Performance.md) | Measurements (`worktree-bench`, Go benchmarks), parallel transfer and incremental push checks, policy caching, hard limits, tuning flags, admin-only `/debug/pprof` |
+| **Device authorization** | [`security/DeviceAuth.md`](./security/DeviceAuth.md) | RFC 8628 device flow (`wt login --device`, admin `/device` approval with MFA), 1-hour access tokens with rotating single-use refresh tokens, reuse detection, SDK transparent refresh |
 
 Suggested reading order: this README → `WorkTree.md` → `tree/Tree.md` →
 `dot-wt/DotWt.md` → `dot-wt-tree/DotWtTree.md` → `bgprocess/BgProcess.md` →

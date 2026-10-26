@@ -4,11 +4,16 @@
 //! [servers."http://localhost:7420"]
 //! username = "alice"
 //! token = "wt_..."
+//! # since v0.8 (device-auth, §16.6): logins are token pairs
+//! refresh_token = "wtrt_..."
+//! expires_at = "2026-10-26T12:00:00Z"
 //! ```
 //!
+//! `token` is the bearer token (an access token valid one hour for logins
+//! since v0.8); `refresh_token` renews it and is replaced on every renewal.
 //! Keys are normalized server URLs (see [`normalize_server_url`]). The file
 //! is rewritten atomically (temp file + rename) and, on Unix, created with
-//! mode `0600` because it holds bearer tokens.
+//! mode `0600` because it holds bearer and refresh tokens.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -53,7 +58,7 @@ fn env_credential() -> Option<Credential> {
         .ok()
         .filter(|u| !u.trim().is_empty())
         .unwrap_or_else(|| "token".into());
-    Some(Credential { username, token })
+    Some(Credential::new(username, token))
 }
 
 impl CredentialStore {
@@ -165,10 +170,7 @@ mod tests {
     use super::*;
 
     fn cred(user: &str, token: &str) -> Credential {
-        Credential {
-            username: user.into(),
-            token: token.into(),
-        }
+        Credential::new(user, token)
     }
 
     fn store() -> (tempfile::TempDir, CredentialStore) {
@@ -258,6 +260,39 @@ mod tests {
             store.get("localhost:7420"),
             Err(crate::SdkError::Serialization(_))
         ));
+    }
+
+    #[test]
+    fn refresh_tokens_round_trip_and_old_files_still_parse() {
+        let (_dir, store) = store();
+        let mut c = cred("alice", "wt_access");
+        c.refresh_token = Some("wtrt_refresh".into());
+        c.expires_at = Some(
+            chrono::DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        );
+        store.put("localhost:7420", &c).unwrap();
+        assert_eq!(store.get("localhost:7420").unwrap(), Some(c));
+        let text = std::fs::read_to_string(store.path()).unwrap();
+        assert!(text.contains("refresh_token = \"wtrt_refresh\""), "{text}");
+
+        // A pre-v0.8 file (no refresh token) and a plain token are unchanged.
+        std::fs::write(
+            store.path(),
+            "[servers.\"http://localhost:7420\"]\nusername = \"bob\"\ntoken = \"wt_old\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            store.get("localhost:7420").unwrap(),
+            Some(cred("bob", "wt_old"))
+        );
+        store.put("localhost:7420", &cred("bob", "wt_new")).unwrap();
+        let text = std::fs::read_to_string(store.path()).unwrap();
+        assert!(
+            !text.contains("refresh_token") && !text.contains("expires_at"),
+            "{text}"
+        );
     }
 
     #[test]

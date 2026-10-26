@@ -57,6 +57,15 @@ type Options struct {
 
 	// Clock returns the current time (default time.Now). For tests.
 	Clock func() time.Time
+
+	// device-auth (§16.6): token pairs and the device authorization grant
+	// (refresh.go, device.go). Zero values use the Default* constants.
+	AccessTTL         time.Duration // access sessions issued with refresh tokens (1 h)
+	RefreshTTL        time.Duration // refresh tokens (30 days)
+	RefreshReuseGrace time.Duration // previous-token race window (10 s; negative = none)
+	// PublicURL is the server's external base URL; device verification
+	// links point at <PublicURL>/admin/device. "" = derived per request.
+	PublicURL string
 }
 
 // Service implements domain.Authenticator, domain.Authorizer and
@@ -90,6 +99,8 @@ type Service struct {
 
 	touchMu sync.Mutex
 	touched map[string]time.Time // token id -> last persisted use
+
+	device deviceLimits // device-auth (§16.6): rate limits of device.go (zero value ready)
 }
 
 var (
@@ -575,7 +586,8 @@ func (s *Service) RevokeToken(ctx context.Context, accountID, tokenID string) er
 	s.touchMu.Lock()
 	delete(s.touched, tokenID)
 	s.touchMu.Unlock()
-	return nil
+	// device-auth (§16.6): signing out a session also ends its refresh token.
+	return s.revokeSessionRefresh(ctx, tokenID)
 }
 
 // SetPassword validates and stores a new password for accountID. Existing

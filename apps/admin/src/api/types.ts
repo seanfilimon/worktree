@@ -224,6 +224,9 @@ export interface Health {
 export interface AuthResponse {
   token: string;
   account: Account;
+  // v0.8 device-auth (§16.6): `token` is an access token renewed with this.
+  refresh_token?: string;
+  expires_in?: number;
 }
 
 export interface MeResponse {

@@ -94,7 +94,68 @@ pub enum LoginOutcome {
 pub struct Credential {
     pub username: String,
     pub token: String,
+    // --- device-auth (ENGINEERING_PLAN §16.6): token pairs ---
+    /// Single-use refresh token renewing `token` (`wtrt_...`); logins since
+    /// v0.8 have one. The SDK refreshes transparently (see [`auth`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// When `token` expires (access tokens live one hour), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
+
+impl Credential {
+    /// A credential holding a bearer token that is not renewed (an API
+    /// token, a service-account key or a pre-v0.8 session).
+    pub fn new(username: impl Into<String>, token: impl Into<String>) -> Self {
+        Self {
+            username: username.into(),
+            token: token.into(),
+            refresh_token: None,
+            expires_at: None,
+        }
+    }
+}
+
+// --- device-auth (ENGINEERING_PLAN §16.6) ---
+mod device;
+pub use device::{DeviceAuthorization, DevicePoll};
+
+/// `POST /api/v1/auth/device`: start an OAuth device authorization for
+/// this machine (`client_name` is shown to the approving user; `scopes`
+/// restricts the resulting token, empty = full access). Show the user
+/// code and verification URL, then call [`login_device_wait`].
+pub async fn login_device_start(
+    server: &str,
+    client_name: &str,
+    scopes: &[String],
+) -> Result<DeviceAuthorization> {
+    device::start(server, client_name, scopes).await
+}
+
+/// Poll `POST /api/v1/auth/device/token` until the user approves (the
+/// credential is saved), denies (`PermissionDenied`) or the code expires.
+/// `on_poll` is called before every poll with the current interval.
+pub async fn login_device_wait(
+    auth: &DeviceAuthorization,
+    on_poll: impl FnMut(DevicePoll),
+) -> Result<LoginInfo> {
+    device::wait(&CredentialStore::default_location(), auth, on_poll).await
+}
+
+/// Renew the saved credential for `server` with its refresh token
+/// (`POST /api/v1/auth/refresh`). `None` when there is no credential, it
+/// has no refresh token or the server rejected it (log in again).
+pub async fn refresh_credential(server: &str) -> Result<Option<Credential>> {
+    auth::refresh(&CredentialStore::default_location(), server, None).await
+}
+
+/// The saved credential for `server`, renewed first when its access token
+/// expires within two minutes (for callers that send the token themselves).
+pub async fn fresh_credential(server: &str) -> Result<Option<Credential>> {
+    auth::fresh_credential(&CredentialStore::default_location(), server).await
+}
+// --- end device-auth ---
 
 /// Load the credential for `server` (normalized URL, no trailing slash).
 pub fn load_credential(server: &str) -> Result<Option<Credential>> {
@@ -175,10 +236,18 @@ pub struct PingInfo {
 
 /// gRPC Ping with the saved credential (if any).
 pub async fn ping(server: &str) -> Result<PingInfo> {
-    SyncClient::connect_with_store(&CredentialStore::default_location(), server)
-        .await?
-        .ping()
-        .await
+    let store = CredentialStore::default_location();
+    let mut client = SyncClient::connect_with_store(&store, server).await?;
+    match client.ping().await {
+        // device-auth (§16.6): renew an expired access token once.
+        Err(err @ crate::error::SdkError::NotLoggedIn(_)) => {
+            match session::reconnect_after_refresh(&store, client.server(), None).await? {
+                Some(mut fresh) => fresh.ping().await,
+                None => Err(err),
+            }
+        }
+        other => other,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -262,7 +262,8 @@ impl SyncClient {
 
     /// Connect with the credential saved in `store` for `server`, if any.
     pub async fn connect_with_store(store: &CredentialStore, server: &str) -> Result<Self> {
-        let cred = store.get(server)?;
+        // device-auth (§16.6): renew an access token about to expire.
+        let cred = super::session::saved_credential(store, server).await?;
         Self::connect(server, cred.as_ref().map(|c| c.token.as_str())).await
     }
 

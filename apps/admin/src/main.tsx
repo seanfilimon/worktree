@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router";
 import { ApiClient } from "@/api/client";
 import { createApi } from "@/api/endpoints";
-import { createPersistentValue, TOKEN_STORAGE_KEY } from "@/api/storage";
+import { createPersistentValue, REFRESH_STORAGE_KEY, TOKEN_STORAGE_KEY } from "@/api/storage";
 import { AppProviders } from "@/app/AppProviders";
 import { createQueryClient } from "@/app/queryClient";
 import { routes } from "@/app/routes";
@@ -15,6 +15,7 @@ const api = createApi(
   new ApiClient({
     baseUrl: import.meta.env.VITE_WT_SERVER_URL ?? "",
     tokenStore: createPersistentValue(TOKEN_STORAGE_KEY),
+    refreshStore: createPersistentValue(REFRESH_STORAGE_KEY), // v0.8 device-auth (§16.6)
   }),
 );
 const queryClient = createQueryClient({ onMutationError: (err) => toasts.error(err) });

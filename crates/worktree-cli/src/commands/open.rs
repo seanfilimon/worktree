@@ -138,7 +138,7 @@ pub fn launcher(os: &str, url: &str, browser: Option<&str>) -> Launch {
     }
 }
 
-fn spawn(launch: &Launch) -> std::io::Result<()> {
+pub(crate) fn spawn(launch: &Launch) -> std::io::Result<()> {
     let mut command = Command::new(&launch.program);
     if launch.raw {
         #[cfg(windows)]

@@ -42,4 +42,6 @@ export function createPersistentValue(key: string, storage?: Storage): KeyValueS
 }
 
 export const TOKEN_STORAGE_KEY = "wt.admin.token";
+/** v0.8 device-auth (§16.6): the refresh token renewing the access token. */
+export const REFRESH_STORAGE_KEY = "wt.admin.refresh";
 export const THEME_STORAGE_KEY = "wt.admin.theme";

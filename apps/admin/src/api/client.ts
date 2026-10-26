@@ -96,8 +96,24 @@ export interface ApiClientOptions {
   /** Origin (or prefix) of the server; "" = same origin. */
   baseUrl?: string;
   tokenStore: KeyValueStore;
+  /**
+   * v0.8 device-auth (§16.6): where the refresh token lives (default: in
+   * memory). With one, a 401 renews the access token once and retries.
+   */
+  refreshStore?: KeyValueStore;
   /** Defaults to the global fetch, resolved at call time. */
   fetch?: typeof fetch;
+}
+
+/** A KeyValueStore kept in memory only. */
+function memoryValue(): KeyValueStore {
+  let value: string | null = null;
+  return {
+    get: () => value,
+    set: (v) => {
+      value = v;
+    },
+  };
 }
 
 /** Encodes each path segment; keeps "/" separators. */
@@ -131,10 +147,14 @@ export class ApiClient {
   private readonly tokens: KeyValueStore;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly listeners = new Set<UnauthorizedListener>();
+  // ---- v0.8 device-auth (§16.6): refresh tokens ----
+  private readonly refreshTokens: KeyValueStore;
+  private refreshing: Promise<boolean> | null = null;
 
   constructor(opts: ApiClientOptions) {
     this.baseUrl = (opts.baseUrl ?? "").replace(/\/+$/, "");
     this.tokens = opts.tokenStore;
+    this.refreshTokens = opts.refreshStore ?? memoryValue();
     this.fetchImpl = opts.fetch;
   }
 
@@ -142,9 +162,67 @@ export class ApiClient {
     return this.tokens.get();
   }
 
+  /**
+   * Stores a new access token and drops any refresh token (it belonged to
+   * the previous session); call setRefreshToken afterwards for a token pair.
+   */
   setToken(token: string | null): void {
     this.tokens.set(token);
+    this.refreshTokens.set(null);
   }
+
+  get refreshToken(): string | null {
+    return this.refreshTokens.get();
+  }
+
+  /** Stores the refresh token returned by a login (v0.8, §16.6). */
+  setRefreshToken(token: string | null): void {
+    this.refreshTokens.set(token);
+  }
+
+  /**
+   * After a 401 for `failed`: renew the access token with the refresh token
+   * (one request shared by concurrent callers). True when a different
+   * token is available to retry with.
+   */
+  private async renew(failed: string): Promise<boolean> {
+    const current = this.token;
+    if (current && current !== failed) return true; // renewed meanwhile
+    if (!this.refreshTokens.get()) return false;
+    this.refreshing ??= this.doRefresh().finally(() => {
+      this.refreshing = null;
+    });
+    return this.refreshing;
+  }
+
+  private async doRefresh(): Promise<boolean> {
+    const refresh = this.refreshTokens.get();
+    if (!refresh) return false;
+    const doFetch = this.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    try {
+      // No Authorization header: the refresh token is the credential.
+      const res = await doFetch(this.url("/api/v1/auth/refresh"), {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refresh }),
+      });
+      if (!res.ok) {
+        // Another tab sharing the storage may have rotated it just now.
+        const now = this.refreshTokens.get();
+        if (now && now !== refresh) return true;
+        this.refreshTokens.set(null);
+        return false;
+      }
+      const body = (await res.json()) as { token?: string; refresh_token?: string };
+      if (!body.token) return false;
+      this.tokens.set(body.token);
+      this.refreshTokens.set(body.refresh_token ?? null);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  // ---- end device-auth ----
 
   /** Subscribe to "session expired" (401 on an authenticated call). */
   onUnauthorized(listener: UnauthorizedListener): () => void {
@@ -157,7 +235,7 @@ export class ApiClient {
   }
 
   /** Performs the request and returns the raw successful Response. */
-  async raw(path: string, opts: RequestOptions = {}): Promise<Response> {
+  async raw(path: string, opts: RequestOptions = {}, retried = false): Promise<Response> {
     const headers = new Headers({ Accept: "application/json" });
     const token = this.token;
     if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -186,6 +264,10 @@ export class ApiClient {
     }
 
     if (!res.ok) {
+      // v0.8 device-auth (§16.6): renew an expired access token once.
+      if (res.status === 401 && !opts.skipAuthRedirect && token && !retried && (await this.renew(token))) {
+        return this.raw(path, opts, true);
+      }
       const error = await parseErrorResponse(res);
       if (res.status === 401 && !opts.skipAuthRedirect) {
         this.setToken(null);

@@ -146,7 +146,12 @@ pub fn run(ctx: &Context, args: DoctorArgs) -> Result<()> {
         );
     } else {
         for (url, label) in &servers {
-            let token = remote::load_credential(url).ok().flatten().map(|c| c.token);
+            // device-auth (§16.6): renew an access token about to expire.
+            let token = runtime
+                .block_on(remote::fresh_credential(url))
+                .ok()
+                .flatten()
+                .map(|c| c.token);
             checks.extend(runtime.block_on(server_checks(label, url, token, timeout, live_ping)));
         }
     }
@@ -545,7 +550,19 @@ where
     let (credential, valid) = credential_check(&name("credential"), &client, url, timeout).await;
     out.push(credential);
     if valid {
-        out.push(expiry_check(&name("token"), &client, timeout, Utc::now()).await);
+        // device-auth (§16.6): logins with a refresh token renew themselves.
+        let renews = remote::load_credential(url)
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.refresh_token.is_some());
+        if renews {
+            out.push(Check::ok(
+                name("token"),
+                "the access token renews automatically (refresh token)",
+            ));
+        } else {
+            out.push(expiry_check(&name("token"), &client, timeout, Utc::now()).await);
+        }
     }
     out
 }

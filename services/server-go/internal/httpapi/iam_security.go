@@ -85,8 +85,12 @@ func (a *api) handleLoginMFA(w http.ResponseWriter, r *http.Request) error {
 	if acct == nil {
 		return errors.New("mfa login returned no account")
 	}
+	resp, err := a.loginSession(r, token, acct) // device-auth (§16.6): token pair
+	if err != nil {
+		return err
+	}
 	a.auditAs(r, acct, "auth.login", acct.TenantID, "account", acct.ID, map[string]string{"mfa": "true"})
-	writeJSON(w, http.StatusOK, sessionResponse{Token: token, Account: acct})
+	writeJSON(w, http.StatusOK, resp)
 	return nil
 }
 

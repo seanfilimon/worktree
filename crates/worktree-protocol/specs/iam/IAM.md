@@ -447,7 +447,7 @@ and SSO internals are in [Security](../security/Security.md).
 
 | Token kind | Issued by | Notes |
 |---|---|---|
-| `session` | Password login (`POST /auth/login`), MFA login (`/auth/login/mfa`), SSO callback | Valid for 30 days by default. Records `last_ip`, `user_agent`, `mfa`. Listed by `GET /auth/sessions` and `wt session list`. |
+| `session` | Password login (`POST /auth/login`), MFA login (`/auth/login/mfa`), SSO callback, device login (`wt login --device`, v0.8) | Password, MFA and device logins: an access token valid 1 hour, renewed with a rotating refresh token ([DeviceAuth](../security/DeviceAuth.md)); SSO sessions: 30 days. Records `last_ip`, `user_agent`, `mfa`. Listed by `GET /auth/sessions` and `wt session list`. |
 | `api` | `POST /auth/tokens {name, ttl_hours, scopes}`, `wt token create` | Personal token, optionally scoped and expiring |
 | `service` | `POST /tenants/{t}/service-accounts/{name}/keys`, `wt sa key-create` | Service-account key. `AccountID` is empty. Optionally scoped. |
 

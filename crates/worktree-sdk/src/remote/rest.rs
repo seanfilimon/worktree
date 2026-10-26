@@ -12,7 +12,7 @@ use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::auth::map_api_error;
+use super::auth::{map_api_error, TokenCell};
 use super::client::error_chain;
 use super::credentials::CredentialStore;
 use super::server_url::normalize_server_url;
@@ -42,7 +42,9 @@ pub fn path_segs(path: &str) -> String {
 pub struct RestClient {
     server: String,
     username: Option<String>,
-    token: Option<String>,
+    // device-auth (§16.6): the bearer token, renewed through the
+    // credential store for saved logins.
+    token: TokenCell,
     http: reqwest::Client,
 }
 
@@ -57,19 +59,22 @@ impl RestClient {
         Ok(Self {
             server,
             username: None,
-            token,
+            token: TokenCell::fixed(token),
             http,
         })
     }
 
     /// A client for `server` with its saved credential; `NotLoggedIn` if
-    /// there is none.
+    /// there is none. An expired access token is renewed transparently with
+    /// the saved refresh token (device-auth, §16.6).
     pub fn for_server(server: &str) -> Result<Self> {
         let server = normalize_server_url(server)?;
-        let cred = CredentialStore::default_location()
+        let store = CredentialStore::default_location();
+        let cred = store
             .get(&server)?
             .ok_or_else(|| SdkError::NotLoggedIn(server.clone()))?;
-        let mut client = Self::new(&server, Some(cred.token))?;
+        let mut client = Self::new(&server, None)?;
+        client.token = TokenCell::saved(store, &server, &cred);
         client.username = Some(cred.username);
         Ok(client)
     }
@@ -187,7 +192,8 @@ impl RestClient {
             .timeout(UPLOAD_TIMEOUT)
             .header(reqwest::header::CONTENT_TYPE, content_type)
             .body(body);
-        if let Some(t) = &self.token {
+        self.token.ensure_fresh().await;
+        if let Some(t) = self.token.get() {
             req = req.bearer_auth(t);
         }
         let resp = req.send().await.map_err(|e| self.unreachable(&e))?;
@@ -234,7 +240,8 @@ impl RestClient {
             .http
             .get(self.url("/api/v1/events"))
             .query(&non_empty(query));
-        if let Some(t) = &self.token {
+        self.token.ensure_fresh().await;
+        if let Some(t) = self.token.get() {
             req = req.bearer_auth(t);
         }
         let resp = req.send().await.map_err(|e| self.unreachable(&e))?;
@@ -290,23 +297,37 @@ impl RestClient {
         query: &[(&str, String)],
         body: Option<&B>,
     ) -> Result<Vec<u8>> {
-        let mut req = self
-            .http
-            .request(method, self.url(path))
-            .timeout(TIMEOUT)
-            .query(&non_empty(query));
-        if let Some(t) = &self.token {
-            req = req.bearer_auth(t);
-        }
-        if let Some(b) = body {
-            req = req.json(b);
-        }
-        let resp = req.send().await.map_err(|e| self.unreachable(&e))?;
-        let status = resp.status();
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| SdkError::Remote(format!("reading response from {}: {e}", self.server)))?;
+        self.token.ensure_fresh().await;
+        let mut retried = false;
+        let (status, bytes) = loop {
+            let mut req = self
+                .http
+                .request(method.clone(), self.url(path))
+                .timeout(TIMEOUT)
+                .query(&non_empty(query));
+            let token = self.token.get();
+            if let Some(t) = &token {
+                req = req.bearer_auth(t);
+            }
+            if let Some(b) = body {
+                req = req.json(b);
+            }
+            let resp = req.send().await.map_err(|e| self.unreachable(&e))?;
+            let status = resp.status();
+            let bytes = resp.bytes().await.map_err(|e| {
+                SdkError::Remote(format!("reading response from {}: {e}", self.server))
+            })?;
+            // device-auth (§16.6): renew a rejected access token once.
+            if status == StatusCode::UNAUTHORIZED && !retried {
+                if let Some(t) = &token {
+                    if self.token.renew_after(t).await.unwrap_or(false) {
+                        retried = true;
+                        continue;
+                    }
+                }
+            }
+            break (status, bytes);
+        };
         if status.is_success() || status == StatusCode::NOT_MODIFIED {
             return Ok(bytes.to_vec());
         }
@@ -374,6 +395,77 @@ mod tests {
             Some(("branch.pushed".into(), "{\"a\":1}".into()))
         );
         assert_eq!(parse_sse_frame(": heartbeat\n\n"), None);
+    }
+
+    /// device-auth (§16.6): a 401 renews the saved access token once and
+    /// retries the request with the new one.
+    #[tokio::test]
+    async fn renews_rejected_access_tokens_once() {
+        use axum::http::{HeaderMap, StatusCode as AxStatus};
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post};
+        use axum::{Json, Router};
+        use serde_json::{json, Value};
+
+        async fn me(headers: HeaderMap) -> axum::response::Response {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            if auth == "Bearer tok-2" {
+                Json(json!({"ok": true})).into_response()
+            } else {
+                (
+                    AxStatus::UNAUTHORIZED,
+                    Json(json!({"error": {"code": "unauthenticated", "message": "invalid or expired token"}})),
+                )
+                    .into_response()
+            }
+        }
+        async fn refresh(Json(body): Json<Value>) -> axum::response::Response {
+            if body["refresh_token"] == "wtrt_1" {
+                Json(
+                    json!({"token": "tok-2", "expires_in": 3600, "refresh_token": "wtrt_2",
+                            "account": {"id": "a1", "username": "ada"}}),
+                )
+                .into_response()
+            } else {
+                (
+                    AxStatus::UNAUTHORIZED,
+                    Json(json!({"error": {"code": "invalid_grant", "message": "no"}})),
+                )
+                    .into_response()
+            }
+        }
+        let app = Router::new()
+            .route("/api/v1/auth/me", get(me))
+            .route(super::super::auth::REFRESH_PATH, post(refresh));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let server = format!("http://{addr}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut cred = super::super::Credential::new("ada", "tok-1");
+        cred.refresh_token = Some("wtrt_1".into());
+        store.put(&server, &cred).unwrap();
+        let mut client = RestClient::new(&server, None).unwrap();
+        client.token = TokenCell::saved(store.clone(), &server, &cred);
+
+        let v: Value = client.get("/api/v1/auth/me").await.unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(store.get(&server).unwrap().unwrap().token, "tok-2");
+        // The renewed token is used from now on.
+        let v: Value = client.get("/api/v1/auth/me").await.unwrap();
+        assert_eq!(v["ok"], true);
+
+        // Without a usable refresh token the 401 surfaces as NotLoggedIn.
+        let fixed = RestClient::new(&server, Some("tok-1".into())).unwrap();
+        assert!(matches!(
+            fixed.get::<Value>("/api/v1/auth/me").await,
+            Err(SdkError::NotLoggedIn(_))
+        ));
     }
 
     #[test]

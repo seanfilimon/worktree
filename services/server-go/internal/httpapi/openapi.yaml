@@ -247,7 +247,9 @@ paths:
       operationId: login
       summary: Sign in
       description: |
-        Exchanges a username and password for a session token. Accounts with
+        Exchanges a username and password for a session token: since v0.8 an
+        access token valid 1 hour plus a refresh token (`refresh_token`,
+        30 days, single use) for `POST /api/v1/auth/refresh`. Accounts with
         MFA enabled get `{"mfa_required":true,"mfa_token":...}` instead;
         complete the login with `POST /api/v1/auth/login/mfa`. Wrong
         credentials answer 401 without revealing whether the username exists.
@@ -279,6 +281,236 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
+  /api/v1/auth/refresh:
+    post:
+      operationId: refreshToken
+      summary: Renew an access token
+      description: |
+        Exchanges a refresh token (returned by login, registration, the MFA
+        login step and the device flow) for a new access token and a new
+        refresh token. Refresh tokens are single use: the presented token
+        and the previous access token stop working. Presenting a token that
+        was already rotated revokes the whole login (every token derived
+        from it) and is audited as `auth.refresh_reuse`, except when it is
+        the immediately previous token presented within 10 seconds of its
+        rotation (a client race), which is only rejected. Send no
+        `Authorization` header. Access tokens live 1 hour, refresh tokens
+        30 days from their issue. `Cache-Control: no-store`.
+      tags: [Auth]
+      x-wt-action: public
+      security:
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: A new token pair.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPairResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: "`invalid_grant`: unknown, expired, revoked or reused refresh token."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/auth/device:
+    post:
+      operationId: startDeviceAuthorization
+      summary: Start a device authorization (RFC 8628)
+      description: |
+        Starts the OAuth 2.0 device authorization grant for a client without
+        a browser (`wt login --device`). Show `user_code` and
+        `verification_uri` (the admin panel's `/admin/device` page) to the
+        user, or open `verification_uri_complete`, then poll
+        `POST /api/v1/auth/device/token` every `interval` seconds until
+        `expires_in` (600) passes. The body is optional: `client_name`
+        (shown to the approving user; default the User-Agent), `client_id`
+        and `scopes` (or the RFC 6749 space-separated `scope`) restricting
+        the issued tokens like scoped API tokens. User codes are
+        `XXXX-XXXX` from an alphabet without vowels. Each client address
+        may start 30 authorizations per 10 minutes (429 `rate_limited`).
+      tags: [Auth]
+      x-wt-action: public
+      security:
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceAuthorizationRequest"
+      responses:
+        "200":
+          description: The device and user codes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceAuthorizationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/auth/device/token:
+    post:
+      operationId: pollDeviceToken
+      summary: Poll for the device's tokens (RFC 8628)
+      description: |
+        The device's token request. Until the user decides it answers 400
+        with the error code `authorization_pending`; polling faster than
+        the interval answers `slow_down` (add 5 seconds to the interval);
+        a denied request answers `access_denied`, an expired one
+        `expired_token`, an unknown or already redeemed device code
+        `invalid_grant`. After approval it returns a token pair whose
+        access token is a session named `device: <client name>` (listed by
+        `GET /api/v1/auth/sessions`), carrying the requested scopes and the
+        MFA flag of the approval. The device code is single use. `grant_type`
+        is optional and must be `urn:ietf:params:oauth:grant-type:device_code`
+        when given. Audited as `auth.login` with `method=device`.
+      tags: [Auth]
+      x-wt-action: public
+      security:
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceTokenRequest"
+      responses:
+        "200":
+          description: Approved; the token pair.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPairResponse"
+        "400":
+          description: "`authorization_pending`, `slow_down`, `access_denied`, `expired_token`, `invalid_grant`, `unsupported_grant_type` or `bad_request`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/auth/device/{user_code}:
+    parameters:
+      - $ref: "#/components/parameters/DeviceUserCode"
+    get:
+      operationId: getDeviceRequest
+      summary: Review a device authorization
+      description: |
+        The device authorization with this user code (any case, hyphen and
+        spaces optional) for the signed-in user to review: client name and
+        id, requested scopes (empty = full account access), the device's
+        address and user agent, status and expiry. `mfa_required` tells
+        whether approving needs a second-factor code (the account has MFA
+        and this session was created without it). Unknown or expired codes
+        answer 404; ten failures per account per 10 minutes answer 429.
+        Not available to scoped tokens or service accounts.
+      tags: [Auth]
+      x-wt-action: self
+      responses:
+        "200":
+          description: The device request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceRequestView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/auth/device/{user_code}/approve:
+    parameters:
+      - $ref: "#/components/parameters/DeviceUserCode"
+    post:
+      operationId: approveDevice
+      summary: Approve a device authorization
+      description: |
+        Approves the pending request; the device's next poll receives
+        tokens for the caller's account. When the request reports
+        `mfa_required`, `code` must be a current TOTP or unused recovery
+        code (403 otherwise; wrong codes count against the account's MFA
+        rate limit). Requests that are no longer pending answer 409. Not
+        available to scoped tokens or service accounts. Audited as
+        `auth.device_approve`.
+      tags: [Auth]
+      x-wt-action: self
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceApproveRequest"
+      responses:
+        "200":
+          description: The approved request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceRequestView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/auth/device/{user_code}/deny:
+    parameters:
+      - $ref: "#/components/parameters/DeviceUserCode"
+    post:
+      operationId: denyDevice
+      summary: Deny a device authorization
+      description: |
+        Denies the pending request; the device's next poll answers
+        `access_denied`. Requests that are no longer pending answer 409.
+        Audited as `auth.device_deny`.
+      tags: [Auth]
+      x-wt-action: self
+      responses:
+        "200":
+          description: The denied request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceRequestView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
   /api/v1/auth/logout:
     post:
       operationId: logout
@@ -7877,6 +8109,13 @@ components:
         type: string
         enum: [default, all]
         default: default
+    DeviceUserCode:
+      name: user_code
+      in: path
+      required: true
+      description: "v0.8 (§16.6). User code of a device authorization (`XXXX-XXXX`; any case, hyphen optional)."
+      schema:
+        type: string
     Tenant:
       name: tenant
       in: path
@@ -10678,6 +10917,7 @@ components:
             $ref: "#/components/schemas/APIToken"
     SessionResponse:
       type: object
+      description: "A completed login. Since v0.8 (§16.6) `token` is an access token valid `expires_in` seconds (1 hour) and `refresh_token` renews it via `POST /api/v1/auth/refresh`."
       required: [token, account]
       properties:
         token:
@@ -10686,6 +10926,137 @@ components:
           anyOf:
             - $ref: "#/components/schemas/Account"
             - type: "null"
+        token_type:
+          type: string
+          description: "`Bearer` (with a refresh token)."
+        expires_in:
+          type: integer
+          description: "Access token lifetime in seconds."
+        refresh_token:
+          type: string
+          description: "Single-use refresh token (`wtrt_…`)."
+        refresh_expires_in:
+          type: integer
+          description: "Refresh token lifetime in seconds."
+    # ---- device-auth (§16.6) ----
+    DeviceApproveRequest:
+      type: object
+      properties:
+        code:
+          type: string
+          description: "A TOTP or recovery code, needed when the device request reports `mfa_required`."
+    DeviceAuthorizationRequest:
+      type: object
+      properties:
+        client_id:
+          type: string
+          description: "Optional client identifier (`[A-Za-z0-9._-]`, up to 64)."
+        client_name:
+          type: string
+          description: "Shown to the approving user (default: the User-Agent)."
+        scopes:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Action patterns restricting the issued tokens (empty = full account access)."
+        scope:
+          type: string
+          description: "The RFC 6749 space-separated form of `scopes`."
+    DeviceAuthorizationResponse:
+      type: object
+      required: [device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval]
+      properties:
+        device_code:
+          type: string
+          description: "Secret polled with (`wtd_…`); never shown to the user."
+        user_code:
+          type: string
+          description: "`XXXX-XXXX`, shown to the user."
+        verification_uri:
+          type: string
+          description: "`<public URL>/admin/device`."
+        verification_uri_complete:
+          type: string
+          description: "`verification_uri` with `?code=<user_code>` (the page prefills the code)."
+        expires_in:
+          type: integer
+          description: "Seconds until the codes expire (600)."
+        interval:
+          type: integer
+          description: "Minimum seconds between polls (5)."
+    DeviceRequestView:
+      type: object
+      description: "A device authorization as the approving user sees it."
+      required: [user_code, client_name, scopes, status, created_at, expires_at, mfa_required]
+      properties:
+        user_code:
+          type: string
+        client_id:
+          type: string
+          description: "What the device said about itself."
+        client_name:
+          type: string
+        scopes:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "Requested scopes; empty = full account access."
+        status:
+          type: string
+          enum: [pending, approved, denied]
+        remote_ip:
+          type: string
+          description: "Address of the device."
+        user_agent:
+          type: string
+          description: "User agent of the device."
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        mfa_required:
+          type: boolean
+          description: "Approving needs a TOTP or recovery code (the account has MFA and this session was created without it)."
+    DeviceTokenRequest:
+      type: object
+      properties:
+        device_code:
+          type: string
+        grant_type:
+          type: string
+          description: "Optional; `urn:ietf:params:oauth:grant-type:device_code`."
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+    TokenPairResponse:
+      type: object
+      description: "An access token (a session) plus the refresh token renewing it."
+      required: [token, token_type, expires_in, refresh_token, refresh_expires_in, account]
+      properties:
+        token:
+          type: string
+          description: "Access token (send as `Authorization: Bearer`)."
+        token_type:
+          type: string
+          description: "`Bearer`."
+        expires_in:
+          type: integer
+          description: "Access token lifetime in seconds (3600)."
+        refresh_token:
+          type: string
+          description: "Single-use refresh token (`wtrt_…`)."
+        refresh_expires_in:
+          type: integer
+          description: "Refresh token lifetime in seconds (30 days)."
+        account:
+          anyOf:
+            - $ref: "#/components/schemas/Account"
+            - type: "null"
+    # ---- end device-auth ----
     SessionView:
       type: object
       required: [id, account_id, name, created_at, current]
