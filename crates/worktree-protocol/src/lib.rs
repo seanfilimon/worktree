@@ -31,6 +31,10 @@ pub mod feature;
 // Coexists with feature::sync_protocol during the WT-PROTO migration.
 pub mod proto;
 
+// compliance (ENGINEERING_PLAN §16.7): secret scanning rules shared with the
+// Go server.
+pub mod scan_rules;
+
 // Re-exports for convenience
 pub use feature::archive;
 pub use feature::audit;

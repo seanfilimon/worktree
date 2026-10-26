@@ -283,6 +283,7 @@ only as stubs.
 | License-aware archives (server and local), `LICENSES/NOTICE`, `wt git export` | Built (v0.5) |
 | `wt license detect [--apply]` | Built (v0.5) |
 | `license.CheckExport` | Built, used by the export tooling |
+| License audit (`GET {tree}/compliance/licenses`, `wt license audit`): files per license, unlicensed paths, proprietary paths reachable by grants, strict SPDX check against the embedded SPDX License List 3.25; server-wide summary and admin views | Built (v0.8, [`SecretScanning.md`](../security/SecretScanning.md) §10) |
 
 ## 14. Roadmap
 
@@ -293,8 +294,9 @@ built:
   `[[license.grant]]` in `.wt/config.toml` / `.wt-tree/config.toml`), and
   root → tree → path inheritance of a default license. Rules are server-side
   per tree.
-- **Strict SPDX-list validation** (`spdx_strict`, SPDX list 3.21+). Validation
-  is syntactic only.
+- **Rejecting non-SPDX identifiers when rules are set** (`spdx_strict`). The
+  strict SPDX-list check runs in the license audit (v0.8); rule validation on
+  `PUT {tree}/licenses` stays syntactic.
 - **`attribution_required`**, a generated root `LICENSE` file with a section
   per license, and **license-header injection** into exported source files.
   Exports carry `LICENSES/NOTICE` only.
@@ -304,9 +306,8 @@ built:
   not" matters.
 - **`wt git mirror`** with public and private remotes, **forks or copies**
   across tenants, and checks on **cross-tenant merges**.
-- **`wt license audit`**, `wt archive --include-all`, `--license-report`, and
-  a license compliance dashboard. Use `wt audit` and the admin tree Licenses
-  view.
+- `wt archive --include-all` and `--license-report` (`wt license audit` and
+  the admin compliance views are built in v0.8).
 - **Grantees by email** (`tenant = "bob@contractor.io"`). Grantees are tenant
   slugs.
 - **Several grants on one glob.** Grants for several tenants on the same path

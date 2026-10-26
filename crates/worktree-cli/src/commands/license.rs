@@ -14,6 +14,9 @@ use crate::output::Text;
 /// `wt license detect` (git-export, §13.8).
 mod detect;
 
+/// `wt license audit` (compliance, §16.7).
+mod audit;
+
 #[derive(Debug, Args)]
 pub struct LicenseArgs {
     #[command(subcommand)]
@@ -83,6 +86,26 @@ pub enum LicenseCommand {
         #[arg(long, requires = "apply")]
         yes: bool,
     },
+    // ---- compliance (§16.7) ----
+    /// Audit a tree's license compliance on the server
+    ///
+    /// For a snapshot (default: the default branch): files per license,
+    /// paths no rule covers, proprietary paths other tenants can read
+    /// through a grant, and a strict check of every rule's SPDX expression
+    /// against the SPDX License List (unknown, deprecated or mis-cased
+    /// identifiers, unknown exceptions). Needs tree:admin.
+    Audit {
+        #[arg(id = "tree_ref", value_name = "TREE")]
+        tree: Option<TreeRef>,
+        /// Branch, tag or snapshot id to audit
+        #[arg(long = "ref", value_name = "REF")]
+        reference: Option<String>,
+        /// Exit 1 when a rule fails the strict SPDX check or a proprietary
+        /// path is exposed
+        #[arg(long)]
+        strict: bool,
+    },
+    // ---- end compliance ----
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -151,6 +174,15 @@ pub fn run(ctx: &Context, args: LicenseArgs) -> Result<()> {
     {
         return detect::run(ctx, path, apply, grant, yes);
     }
+    // compliance (§16.7).
+    if let LicenseCommand::Audit {
+        tree,
+        reference,
+        strict,
+    } = args.command
+    {
+        return audit::run(ctx, tree, reference, strict);
+    }
     let api = Api::connect(ctx)?;
     let out = &ctx.out;
     match args.command {
@@ -185,8 +217,8 @@ pub fn run(ctx: &Context, args: LicenseArgs) -> Result<()> {
                 ));
             })
         }
-        // Handled before connecting (git-export, §13.8).
-        LicenseCommand::Detect { .. } => Ok(()),
+        // Handled before connecting (git-export, §13.8; compliance, §16.7).
+        LicenseCommand::Detect { .. } | LicenseCommand::Audit { .. } => Ok(()),
         LicenseCommand::Remove { tree, glob, yes } => {
             let tree = tree_or_default(ctx, tree)?;
             confirm(

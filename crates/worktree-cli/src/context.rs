@@ -94,7 +94,9 @@ impl Context {
     pub fn rest(&self) -> Result<RestClient> {
         let repo = Repository::open(&self.cwd).ok();
         Ok(RestClient::resolve(
-            self.server.as_deref(),
+            // compliance (§16.7): an empty value (bare `wt compliance scan
+            // --server`) means "the default server".
+            self.server.as_deref().filter(|s| !s.is_empty()),
             repo.as_ref(),
             "origin",
         )?)

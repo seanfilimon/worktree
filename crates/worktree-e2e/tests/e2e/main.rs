@@ -65,3 +65,5 @@ mod review_v07; // search-v2 (§15.9)
                 // v0.7 hardening (ENGINEERING_PLAN §15.10).
 mod hardening_gaps;
 mod wt_tree_sharing;
+// v0.8 compliance (ENGINEERING_PLAN §16.7).
+mod server_secret_scan;
