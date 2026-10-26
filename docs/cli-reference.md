@@ -7,11 +7,11 @@ embedding program can do too.
 - [Conventions](#conventions) — global flags, exit codes, JSON output, revisions, environment
 - [Local history](#local-history) — `init`, `status`, `snapshot`, `log`, `show`, `diff`, `blame`, `reflog`
 - [Branches and merging](#branches-and-merging) — `branch`, `switch`, `merge`, `cherry-pick`, `rebase`, `stash`, `revert`, `restore`, `tag`
-- [Worktree structure and configuration](#worktree-structure-and-configuration) — `tree`, `ignore`, `config`, `gc`, `fsck`, `doctor`, `completions`
-- [Servers and sync](#servers-and-sync) — `remote`, `register`, `login`, `logout`, `whoami`, `password-reset`, `push`, `fetch`, `pull`, `clone`, `stage`, `unstage`
-- [Export and interop](#export-and-interop) — `archive`, `git`
+- [Worktree structure and configuration](#worktree-structure-and-configuration) — `tree`, `sparse`, `ignore`, `config`, `gc`, `fsck`, `doctor`, `completions`
+- [Servers and sync](#servers-and-sync) — `remote`, `register`, `login`, `logout`, `whoami`, `password-reset`, `push`, `fetch`, `pull`, `sync`, `clone`, `stage`, `unstage`
+- [Export and interop](#export-and-interop) — `archive`, `git`, `mirror`
 - [Background daemon](#background-daemon) — `daemon`
-- [Collaboration](#collaboration) — `tenant`, `trees`, `mr`, `ci`, `protect`, `license`, `todo`, `deps`, `release`, `webhook`, `search`, `events`, `open`
+- [Collaboration](#collaboration) — `tenant`, `trees`, `mr`, `owners`, `ci`, `protect`, `license`, `todo`, `deps`, `release`, `webhook`, `inbox`, `search`, `events`, `open`
 - [Administration](#administration) — `admin`, `audit`, `api`
 - [Identity and access](#identity-and-access) — `team`, `role`, `policy`, `grant`, `access`, `sa`, `token`, `session`, `mfa`, `invite`, `iam`, `sso`, `identity`
 
@@ -90,6 +90,8 @@ Passwords are read from the first line of stdin with `--password-stdin`, else fr
 else from an interactive prompt that does not echo.
 
 ---
+
+<!-- Everything below is generated from `wt ... --help`; do not edit by hand. -->
 
 <!-- Everything below is generated from `wt ... --help`; do not edit by hand. -->
 
@@ -895,21 +897,30 @@ Options:
 List, create or delete tags
 
 ```text
-Usage: wt tag [OPTIONS] [COMMAND]
+Usage: wt tag [OPTIONS] [NAME] [REV]
+       wt tag <COMMAND>
 
 Commands:
   list    List tags (the default)
   create  Tag a snapshot
   delete  Delete a tag
+  verify  Verify a tag's signature against local (and optionally an account's registered) keys
+  push    Push one tag to the server (reports a refusal, e.g. an unsigned tag under require_signed)
   help    Print this message or the help of the given subcommand(s)
 
+Arguments:
+  [NAME]  Tag name
+  [REV]   Revision to tag (default: HEAD)
+
 Options:
-      --json          Print machine-readable JSON (one document) on stdout
-  -C <PATH>           Run as if wt was started in PATH
-      --tree <NAME>   Operate on this tree instead of the one containing the current directory
-      --no-color      Disable colored output
-      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
-  -V, --version       Print version
+      --json           Print machine-readable JSON (one document) on stdout
+  -C <PATH>            Run as if wt was started in PATH
+      --tree <NAME>    Operate on this tree instead of the one containing the current directory
+      --no-color       Disable colored output
+      --server <URL>   Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -m, --message <MSG>  Tag message (makes an annotated tag)
+      --sign           Sign the tag with your signing key ([signing] key, else "default"); `[signing] auto = true` signs every tag
+  -V, --version        Print version
 ```
 
 #### `wt tag list`
@@ -943,6 +954,7 @@ Options:
       --json           Print machine-readable JSON (one document) on stdout
   -m, --message <MSG>  Tag message (makes an annotated tag)
   -C <PATH>            Run as if wt was started in PATH
+      --sign           Sign the tag with your signing key ([signing] key, else "default")
       --tree <NAME>    Operate on this tree instead of the one containing the current directory
       --no-color       Disable colored output
       --server <URL>   Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
@@ -961,6 +973,48 @@ Arguments:
 
 Options:
       --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt tag verify`
+
+Verify a tag's signature against local (and optionally an account's registered) keys
+
+```text
+Usage: wt tag verify [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --account <USERNAME>  Also trust the registered keys of this server account
+      --json                Print machine-readable JSON (one document) on stdout
+  -C <PATH>                 Run as if wt was started in PATH
+      --remote              Verify the server's copy of the tag instead of the local one
+      --from <R>            Remote for --remote (default: [sync].remote, usually origin)
+      --tree <NAME>         Operate on this tree instead of the one containing the current directory
+      --no-color            Disable colored output
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version             Print version
+```
+
+#### `wt tag push`
+
+Push one tag to the server (reports a refusal, e.g. an unsigned tag under require_signed)
+
+```text
+Usage: wt tag push [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+      --remote <R>    Remote (default: [sync].remote, usually origin)
   -C <PATH>           Run as if wt was started in PATH
       --tree <NAME>   Operate on this tree instead of the one containing the current directory
       --no-color      Disable colored output
@@ -1077,6 +1131,162 @@ Usage: wt tree init-config [OPTIONS] [NAME]
 
 Arguments:
   [NAME]  
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+### `wt sparse`
+
+Sparse checkout: check out and fetch only the paths you need
+
+```text
+Usage: wt sparse [OPTIONS] <COMMAND>
+
+Commands:
+  set      Enable sparse checkout with exactly these patterns
+  add      Add patterns and check out the files they bring in
+  remove   Remove patterns and the unmodified files that leave the set
+  list     Show the patterns and how much of the tree is checked out
+  disable  Turn sparse checkout off and check out every file
+  reapply  Make the working directory match the patterns again
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Print machine-readable JSON (one document) on stdout
+
+  -C <PATH>
+          Run as if wt was started in PATH
+
+      --tree <NAME>
+          Operate on this tree instead of the one containing the current directory
+
+      --no-color
+          Disable colored output
+
+      --server <URL>
+          Server for server-side commands (default: this worktree's origin, else the only saved login)
+          
+          [env: WT_SERVER=]
+
+  -V, --version
+          Print version
+
+Patterns are relative to the tree root. A pattern without glob characters
+names a file or directory and everything below it (`src`, `docs/guide`);
+other patterns use gitignore syntax (`*.md`, `/*` for every top-level
+entry) and `!pattern` excludes again; the deepest matching level wins.
+Files outside the sparse set are not written, not reported by `wt status`
+and keep their content in new snapshots. Patterns are stored in
+.wt/trees/<tree>/sparse.
+
+In a sparse clone (`wt clone --sparse PATTERN...`) and after a `wt fetch`
+or `wt pull` with sparse checkout on, only content of sparse paths is
+downloaded; anything else (diff or merge of other paths, `wt sparse add`)
+is downloaded on demand, which needs the server to be reachable.
+```
+
+#### `wt sparse set`
+
+Enable sparse checkout with exactly these patterns
+
+```text
+Usage: wt sparse set [OPTIONS] <PATTERN>...
+
+Arguments:
+  <PATTERN>...  Paths or gitignore-style patterns
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt sparse add`
+
+Add patterns and check out the files they bring in
+
+```text
+Usage: wt sparse add [OPTIONS] <PATTERN>...
+
+Arguments:
+  <PATTERN>...  
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt sparse remove`
+
+Remove patterns and the unmodified files that leave the set
+
+```text
+Usage: wt sparse remove [OPTIONS] <PATTERN>...
+
+Arguments:
+  <PATTERN>...  
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt sparse list`
+
+Show the patterns and how much of the tree is checked out
+
+```text
+Usage: wt sparse list [OPTIONS]
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt sparse disable`
+
+Turn sparse checkout off and check out every file
+
+```text
+Usage: wt sparse disable [OPTIONS]
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt sparse reapply`
+
+Make the working directory match the patterns again
+
+```text
+Usage: wt sparse reapply [OPTIONS]
 
 Options:
       --json          Print machine-readable JSON (one document) on stdout
@@ -1554,6 +1764,7 @@ Options:
       --remote <R>    Remote to push to (default: [sync].remote, usually origin)
       --branch <B>    Branch to push (default: the current branch)
   -C <PATH>           Run as if wt was started in PATH
+      --queue         If the server is unreachable, queue the push in the offline outbox instead of failing (`wt sync queue` lists it, `wt sync flush` retries; the daemon delivers it automatically with `sync.auto_flush`)
       --tree <NAME>   Operate on this tree instead of the one containing the current directory
       --no-color      Disable colored output
       --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
@@ -1598,6 +1809,144 @@ Options:
   -V, --version       Print version
 ```
 
+### `wt sync`
+
+Fetch, integrate (merge or rebase) and push in one step; manage the offline queue
+
+```text
+Usage: wt sync [OPTIONS]
+       wt sync <COMMAND>
+
+Commands:
+  queue  List pushes queued while the server was unreachable
+  flush  Retry queued pushes now
+  drop   Forget queued push N (as numbered by `wt sync queue`) without pushing it
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Print machine-readable JSON (one document) on stdout
+
+  -C <PATH>
+          Run as if wt was started in PATH
+
+      --tree <NAME>
+          Operate on this tree instead of the one containing the current directory
+
+      --no-color
+          Disable colored output
+
+      --rebase
+          Integrate by replaying your unpushed snapshots onto the remote branch
+
+      --merge
+          Integrate with a three-way merge (the default unless `sync.strategy = "rebase"`)
+
+      --server <URL>
+          Server for server-side commands (default: this worktree's origin, else the only saved login)
+          
+          [env: WT_SERVER=]
+
+      --no-push
+          Fetch and integrate only; do not push
+
+      --all-trees
+          Sync every tree of the worktree (each on its current branch)
+
+      --remote <R>
+          Remote to sync with (default: [sync].remote, usually origin)
+
+      --continue
+          Finish a sync stopped by conflicts (after resolving them) and push
+
+      --abort
+          Undo the merge or rebase of a sync stopped by conflicts
+
+      --status
+          List queued pushes (same as `wt sync queue`)
+
+  -V, --version
+          Print version
+
+`wt sync` fetches every branch of the remote, integrates the remote copy of
+the current branch, then pushes the result:
+
+  * the remote has nothing new: just push (if there is anything to push);
+  * only the remote moved: fast-forward;
+  * both moved: merge (`sync.strategy = "merge"`, the default; one merge
+    snapshot) or rebase (`sync.strategy = "rebase"`; your unpushed
+    snapshots are replayed on top of the remote branch). `--merge` and
+    `--rebase` override the configured strategy.
+
+Integrating needs a clean working tree (snapshot or stash your changes
+first). Conflicts stop the sync with exit code 3, exactly like `wt merge` /
+`wt rebase`: fix the files (`wt merge status`, `wt merge resolve PATH
+--ours|--theirs`), then run `wt sync --continue` to finish and push, or `wt
+sync --abort` to undo the integration.
+
+When the server cannot be reached, unpushed snapshots are queued in the
+offline outbox (`.wt/trees/<tree>/outbox.jsonl`) instead: `wt sync queue`
+(or `--status`) lists queued pushes, `wt sync flush` retries them, `wt sync
+drop N` forgets one. `wt push --queue` queues explicitly. With
+`sync.auto_flush = true` (the default) the background daemon delivers queued
+pushes as soon as the server is reachable again, and with
+`sync.auto_sync_secs = N` it runs `wt sync` every N seconds for each clean
+tree (conflicting integrations are undone and left for you).
+```
+
+#### `wt sync queue`
+
+List pushes queued while the server was unreachable
+
+```text
+Usage: wt sync queue [OPTIONS]
+
+Options:
+      --all-trees     List the queues of every tree
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt sync flush`
+
+Retry queued pushes now
+
+```text
+Usage: wt sync flush [OPTIONS]
+
+Options:
+      --all-trees     Flush the queues of every tree
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt sync drop`
+
+Forget queued push N (as numbered by `wt sync queue`) without pushing it
+
+```text
+Usage: wt sync drop [OPTIONS] <N>
+
+Arguments:
+  <N>  Entry number (1 = oldest)
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
 ### `wt clone`
 
 Clone a tree from a server
@@ -1611,14 +1960,15 @@ Arguments:
   [DEST]         Destination directory (default: ./TREE)
 
 Options:
-      --depth <N>     Clone only the newest N snapshots of each branch (shallow clone)
-      --json          Print machine-readable JSON (one document) on stdout
-  -C <PATH>           Run as if wt was started in PATH
-      --watch         Start the background daemon (if needed) and auto-snapshot the clone
-      --tree <NAME>   Operate on this tree instead of the one containing the current directory
-      --no-color      Disable colored output
-      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
-  -V, --version       Print version
+      --depth <N>            Clone only the newest N snapshots of each branch (shallow clone)
+      --json                 Print machine-readable JSON (one document) on stdout
+  -C <PATH>                  Run as if wt was started in PATH
+      --sparse <PATTERN>...  Sparse clone: check out and download only these paths or patterns (other content is downloaded on demand; see `wt sparse --help`)
+      --tree <NAME>          Operate on this tree instead of the one containing the current directory
+      --watch                Start the background daemon (if needed) and auto-snapshot the clone
+      --no-color             Disable colored output
+      --server <URL>         Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version              Print version
 ```
 
 ### `wt stage`
@@ -1894,6 +2244,157 @@ Options:
       --no-color      Disable colored output
       --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
   -V, --version       Print version
+```
+
+### `wt mirror`
+
+Live Git mirrors of a server tree: list, add, update, remove, sync now
+
+```text
+Usage: wt mirror [OPTIONS] <COMMAND>
+
+Commands:
+  list    List the Git mirrors of a tree with their last sync status
+  add     Add a Git mirror (https://, http://, ssh:// or user@host:path remote)
+  show    Show a mirror
+  update  Change a mirror (only the given fields)
+  remove  Remove a mirror (the remote repository is left as it is)
+  sync    Export and push a mirror now (exits 1 when the sync fails)
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt mirror list`
+
+List the Git mirrors of a tree with their last sync status
+
+```text
+Usage: wt mirror list [OPTIONS]
+
+Options:
+      --json                Print machine-readable JSON (one document) on stdout
+      --tree <TENANT/TREE>  Mirrors of this server tree (TENANT/TREE; default: the current worktree's tree)
+  -C <PATH>                 Run as if wt was started in PATH
+      --no-color            Disable colored output
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version             Print version
+```
+
+#### `wt mirror add`
+
+Add a Git mirror (https://, http://, ssh:// or user@host:path remote)
+
+```text
+Usage: wt mirror add [OPTIONS] <URL>
+
+Arguments:
+  <URL>  Git remote URL (no password in it: use --token-env)
+
+Options:
+  -b, --branch <GLOB>       Mirror only branches matching this glob (`*` within a segment, `**` across segments; repeatable; default: every branch)
+      --json                Print machine-readable JSON (one document) on stdout
+  -C <PATH>                 Run as if wt was started in PATH
+      --no-tags             Do not mirror tags
+      --token-env <VAR>     Read the remote credential (a token or `user:password`) from this environment variable (http(s) remotes only)
+      --inactive            Create it paused
+      --no-color            Disable colored output
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+      --tree <TENANT/TREE>  Mirrors of this server tree (TENANT/TREE; default: the current worktree's tree)
+  -V, --version             Print version
+```
+
+#### `wt mirror show`
+
+Show a mirror
+
+```text
+Usage: wt mirror show [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --json                Print machine-readable JSON (one document) on stdout
+      --tree <TENANT/TREE>  Mirrors of this server tree (TENANT/TREE; default: the current worktree's tree)
+  -C <PATH>                 Run as if wt was started in PATH
+      --no-color            Disable colored output
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version             Print version
+```
+
+#### `wt mirror update`
+
+Change a mirror (only the given fields)
+
+```text
+Usage: wt mirror update [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --json                Print machine-readable JSON (one document) on stdout
+      --url <URL>           New remote URL (forgets what was pushed to the old one)
+  -b, --branch <GLOB>       Replace the branch globs (repeatable)
+  -C <PATH>                 Run as if wt was started in PATH
+      --all-branches        Mirror every branch
+      --no-color            Disable colored output
+      --tags                Mirror tags
+      --no-tags             Stop mirroring tags
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+      --token-env <VAR>     Replace the credential with the value of this environment variable
+      --clear-token         Remove the credential
+      --active              Resume syncing
+      --inactive            Pause syncing
+      --tree <TENANT/TREE>  Mirrors of this server tree (TENANT/TREE; default: the current worktree's tree)
+  -V, --version             Print version
+```
+
+#### `wt mirror remove`
+
+Remove a mirror (the remote repository is left as it is)
+
+```text
+Usage: wt mirror remove [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --json                Print machine-readable JSON (one document) on stdout
+  -y, --yes                 Do not ask for confirmation
+  -C <PATH>                 Run as if wt was started in PATH
+      --tree <TENANT/TREE>  Mirrors of this server tree (TENANT/TREE; default: the current worktree's tree)
+      --no-color            Disable colored output
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version             Print version
+```
+
+#### `wt mirror sync`
+
+Export and push a mirror now (exits 1 when the sync fails)
+
+```text
+Usage: wt mirror sync [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --json                Print machine-readable JSON (one document) on stdout
+      --no-wait             Start the sync on the server and return at once
+  -C <PATH>                 Run as if wt was started in PATH
+      --tree <TENANT/TREE>  Mirrors of this server tree (TENANT/TREE; default: the current worktree's tree)
+      --no-color            Disable colored output
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version             Print version
 ```
 
 ## Background daemon
@@ -2737,21 +3238,26 @@ Merge requests: list, open, review, approve, merge, close
 Usage: wt mr [OPTIONS] <COMMAND>
 
 Commands:
-  list          List merge requests
-  show          Show a merge request
-  create        Open a merge request
-  approve       Approve a merge request
-  merge         Merge a merge request into its target on the server
-  mergeability  Show which merge methods can merge a merge request, and its conflicts
-  close         Close a merge request without merging
-  review        Review a merge request: approve, request changes or comment
-  comment       Comment on a merge request, optionally on a file line
-  comments      List the comments of a merge request
-  checks        Show whether a merge request can be merged, and what blocks it
-  link          Link merge requests of several trees into a group that merges atomically
-  merge-group   Merge every merge request of a linked group, all or nothing
-  groups        List the linked groups of a tenant
-  help          Print this message or the help of the given subcommand(s)
+  list              List merge requests
+  show              Show a merge request
+  create            Open a merge request
+  ready             Mark a draft merge request ready for review
+  reviewers         Show, request or withdraw review requests of a merge request
+  owners            Show the owners of every path a merge request changes and whether they approved
+  suggest           Suggest a change to lines of a file on the source branch
+  apply-suggestion  Apply a suggested change: a new snapshot on the source branch
+  approve           Approve a merge request
+  merge             Merge a merge request into its target on the server
+  mergeability      Show which merge methods can merge a merge request, and its conflicts
+  close             Close a merge request without merging
+  review            Review a merge request: approve, request changes or comment
+  comment           Comment on a merge request, optionally on a file line
+  comments          List the comments of a merge request
+  checks            Show whether a merge request can be merged, and what blocks it
+  link              Link merge requests of several trees into a group that merges atomically
+  merge-group       Merge every merge request of a linked group, all or nothing
+  groups            List the linked groups of a tenant
+  help              Print this message or the help of the given subcommand(s)
 
 Options:
       --json          Print machine-readable JSON (one document) on stdout
@@ -2822,8 +3328,206 @@ Options:
       --tree <NAME>      Operate on this tree instead of the one containing the current directory
       --description <D>  
       --no-color         Disable colored output
+      --draft            Open it as a draft: it cannot be merged until marked ready (`wt mr ready N`), and owners are asked for review only then
       --server <URL>     Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+      --reviewer <WHO>   Request a review from WHO (repeatable): user:NAME, team:SLUG, NAME, @NAME or @TENANT/SLUG
   -V, --version          Print version
+```
+
+#### `wt mr ready`
+
+Mark a draft merge request ready for review
+
+```text
+Usage: wt mr ready [OPTIONS] <NUMBER> [TREE]
+
+Arguments:
+  <NUMBER>  
+  [TREE]    
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt mr reviewers`
+
+Show, request or withdraw review requests of a merge request
+
+```text
+`wt mr reviewers 3` lists the requested reviewers, `wt mr reviewers 3 add alice team:core` requests reviews and `wt mr reviewers 3 acme/web remove alice` withdraws them. WHO is user:NAME, team:SLUG, NAME, @NAME or @TENANT/SLUG.
+
+Usage: wt mr reviewers [OPTIONS] <NUMBER> [TREE] [COMMAND]
+
+Commands:
+  add     Request reviews from users or teams
+  remove  Withdraw review requests
+  help    Print this message or the help of the given subcommand(s)
+
+Arguments:
+  <NUMBER>
+          
+
+  [TREE]
+          
+
+Options:
+      --json
+          Print machine-readable JSON (one document) on stdout
+
+  -C <PATH>
+          Run as if wt was started in PATH
+
+      --tree <NAME>
+          Operate on this tree instead of the one containing the current directory
+
+      --no-color
+          Disable colored output
+
+      --server <URL>
+          Server for server-side commands (default: this worktree's origin, else the only saved login)
+          
+          [env: WT_SERVER=]
+
+  -V, --version
+          Print version
+```
+
+##### `wt mr reviewers add`
+
+Request reviews from users or teams
+
+```text
+Usage: wt mr reviewers <NUMBER> add [OPTIONS] <WHO>...
+
+Arguments:
+  <WHO>...  user:NAME, team:SLUG, NAME, @NAME or @TENANT/SLUG
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+##### `wt mr reviewers remove`
+
+Withdraw review requests
+
+```text
+Usage: wt mr reviewers <NUMBER> remove [OPTIONS] <WHO>...
+
+Arguments:
+  <WHO>...  user:NAME, team:SLUG, NAME, @NAME or @TENANT/SLUG
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt mr owners`
+
+Show the owners of every path a merge request changes and whether they approved
+
+```text
+Usage: wt mr owners [OPTIONS] <NUMBER> [TREE]
+
+Arguments:
+  <NUMBER>  
+  [TREE]    
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt mr suggest`
+
+Suggest a change to lines of a file on the source branch
+
+```text
+The replacement (-m TEXT or --file F) replaces lines A-B of --path as of the source tip; an empty replacement deletes them. Reviewers or the author apply it with `wt mr apply-suggestion N COMMENT_ID`.
+
+Usage: wt mr suggest [OPTIONS] --path <PATH> --lines <A-B> <--file <F>|--message <TEXT>> <NUMBER> [TREE]
+
+Arguments:
+  <NUMBER>
+          
+
+  [TREE]
+          
+
+Options:
+      --json
+          Print machine-readable JSON (one document) on stdout
+
+      --path <PATH>
+          File the suggestion changes
+
+  -C <PATH>
+          Run as if wt was started in PATH
+
+      --lines <A-B>
+          Lines to replace: A-B, or A for a single line (1-based, inclusive)
+
+      --file <F>
+          Read the replacement text from F (`-` = stdin)
+
+      --tree <NAME>
+          Operate on this tree instead of the one containing the current directory
+
+  -m, --message <TEXT>
+          The replacement text
+
+      --no-color
+          Disable colored output
+
+  -b, --body <TEXT>
+          Comment text shown with the suggestion
+
+      --server <URL>
+          Server for server-side commands (default: this worktree's origin, else the only saved login)
+          
+          [env: WT_SERVER=]
+
+  -V, --version
+          Print version
+```
+
+#### `wt mr apply-suggestion`
+
+Apply a suggested change: a new snapshot on the source branch
+
+```text
+Usage: wt mr apply-suggestion [OPTIONS] <NUMBER> <COMMENT_ID> [TREE]
+
+Arguments:
+  <NUMBER>      
+  <COMMENT_ID>  Id of the comment carrying the suggestion (see `wt mr comments N`)
+  [TREE]        
+
+Options:
+      --json           Print machine-readable JSON (one document) on stdout
+  -m, --message <MSG>  Message of the new snapshot (default: chosen by the server)
+  -C <PATH>            Run as if wt was started in PATH
+      --tree <NAME>    Operate on this tree instead of the one containing the current directory
+      --no-color       Disable colored output
+      --server <URL>   Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version        Print version
 ```
 
 #### `wt mr approve`
@@ -3130,6 +3834,103 @@ Options:
   -V, --version        Print version
 ```
 
+### `wt owners`
+
+Path owners of a server tree (who reviews which paths): show, set
+
+```text
+Usage: wt owners [OPTIONS] <COMMAND>
+
+Commands:
+  show  Show the owner rules of a tree and where they come from
+  set   Replace the owner rules of a tree with those of an OWNERS-format file
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt owners show`
+
+Show the owner rules of a tree and where they come from
+
+```text
+Rules come from the server configuration (`wt owners set`), else from an OWNERS file at the tree root on the default branch.
+
+Usage: wt owners show [OPTIONS] [TREE]
+
+Arguments:
+  [TREE]
+          
+
+Options:
+      --json
+          Print machine-readable JSON (one document) on stdout
+
+  -C <PATH>
+          Run as if wt was started in PATH
+
+      --tree <NAME>
+          Operate on this tree instead of the one containing the current directory
+
+      --no-color
+          Disable colored output
+
+      --server <URL>
+          Server for server-side commands (default: this worktree's origin, else the only saved login)
+          
+          [env: WT_SERVER=]
+
+  -V, --version
+          Print version
+```
+
+#### `wt owners set`
+
+Replace the owner rules of a tree with those of an OWNERS-format file
+
+```text
+One rule per line: a pattern followed by its owners, e.g. `docs/**  @alice @acme/docs` (also user:NAME / team:SLUG). Lines starting with `#` and blank lines are ignored. Patterns are globs anchored at the tree root (`docs/` = everything below docs, `**/*.go` at any depth, `*.go` top level only); the last matching rule wins. `--clear` removes the server configuration so an OWNERS file in the tree applies again (`wt owners set --clear [TREE]`).
+
+Usage: wt owners set [OPTIONS] [FILE] [TREE]
+
+Arguments:
+  [FILE]
+          OWNERS-format file (`-` = stdin)
+
+  [TREE]
+          
+
+Options:
+      --clear
+          Remove the server configuration instead
+
+      --json
+          Print machine-readable JSON (one document) on stdout
+
+  -C <PATH>
+          Run as if wt was started in PATH
+
+      --tree <NAME>
+          Operate on this tree instead of the one containing the current directory
+
+      --no-color
+          Disable colored output
+
+      --server <URL>
+          Server for server-side commands (default: this worktree's origin, else the only saved login)
+          
+          [env: WT_SERVER=]
+
+  -V, --version
+          Print version
+```
+
 ### `wt ci`
 
 CI check results: report a status, show checks of a snapshot or branch
@@ -3327,6 +4128,9 @@ Options:
       --block-on-todos
           Open blocking TODOs of the source branch block merging
 
+      --require-owner-approval
+          Every changed path needs an approval (of the current source tip) from one of its owners (see `wt owners show`)
+
       --merge-methods <METHODS>
           Merge methods allowed for merge requests into matching branches, comma-separated (fast-forward, merge, squash; default: all)
 
@@ -3413,15 +4217,16 @@ Arguments:
   <PATTERN>  Tag name or glob, e.g. "v*"
 
 Options:
-      --json          Print machine-readable JSON (one document) on stdout
-      --no-delete     Matching tags cannot be deleted
-  -C <PATH>           Run as if wt was started in PATH
-      --no-move       Matching tags cannot be replaced (moved to another snapshot)
-      --tagger <U>    Account allowed to create, move or delete matching tags (repeatable; default: anyone with write access)
-      --tree <NAME>   Operate on this tree instead of the one containing the current directory
-      --no-color      Disable colored output
-      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
-  -V, --version       Print version
+      --json            Print machine-readable JSON (one document) on stdout
+      --no-delete       Matching tags cannot be deleted
+  -C <PATH>             Run as if wt was started in PATH
+      --no-move         Matching tags cannot be replaced (moved to another snapshot)
+      --tagger <U>      Account allowed to create, move or delete matching tags (repeatable; default: anyone with write access)
+      --tree <NAME>     Operate on this tree instead of the one containing the current directory
+      --no-color        Disable colored output
+      --require-signed  Matching tags must carry a verified signature (`wt tag NAME --sign`)
+      --server <URL>    Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version         Print version
 ```
 
 ##### `wt protect tag remove`
@@ -3833,14 +4638,17 @@ Releases of a server tree: list, create, show, edit, delete, assets
 Usage: wt release [OPTIONS] <COMMAND>
 
 Commands:
-  list      List releases (newest first; drafts only if you may create releases)
-  create    Create a release (the tag is created at --snapshot when it does not exist)
-  show      Show a release and its assets
-  edit      Edit a release
-  delete    Delete a release (its tag is kept)
-  upload    Upload files as release assets (replacing assets of the same name)
-  download  Download release assets (all of them without ASSET)
-  help      Print this message or the help of the given subcommand(s)
+  list       List releases (newest first; drafts only if you may create releases)
+  create     Create a release (the tag is created at --snapshot when it does not exist)
+  show       Show a release and its assets
+  edit       Edit a release
+  delete     Delete a release (its tag is kept)
+  upload     Upload files as release assets (replacing assets of the same name)
+  download   Download release assets (all of them without ASSET)
+  checksums  Print the SHA256SUMS of a release's assets
+  sbom       Generate an SPDX 2.3 SBOM of the release's snapshot and attach it as sbom.spdx.json
+  verify     Check downloaded assets against the release checksums and verify the tag signature
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --json          Print machine-readable JSON (one document) on stdout
@@ -3893,6 +4701,7 @@ Options:
       --prerelease         Mark it as a pre-release
       --server <URL>       Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
       --snapshot <REV>     Snapshot (id, branch or tag) to tag when TAG does not exist yet
+      --sbom               Also generate an SPDX 2.3 SBOM of the snapshot and attach it as sbom.spdx.json
   -V, --version            Print version
 ```
 
@@ -4005,6 +4814,70 @@ Options:
       --no-color          Disable colored output
       --server <URL>      Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
   -V, --version           Print version
+```
+
+#### `wt release checksums`
+
+Print the SHA256SUMS of a release's assets
+
+```text
+Usage: wt release checksums [OPTIONS] <TAG> [TREE]
+
+Arguments:
+  <TAG>   
+  [TREE]  
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt release sbom`
+
+Generate an SPDX 2.3 SBOM of the release's snapshot and attach it as sbom.spdx.json
+
+```text
+Usage: wt release sbom [OPTIONS] <TAG> [TREE]
+
+Arguments:
+  <TAG>   
+  [TREE]  
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt release verify`
+
+Check downloaded assets against the release checksums and verify the tag signature
+
+```text
+Usage: wt release verify [OPTIONS] <TAG>
+
+Arguments:
+  <TAG>  
+
+Options:
+  -d, --dir <DIR>           Directory holding the downloaded assets [default: .]
+      --json                Print machine-readable JSON (one document) on stdout
+  -C <PATH>                 Run as if wt was started in PATH
+      --in <TENANT/TREE>    Server tree (default: the tree of the current worktree)
+      --account <USERNAME>  Also trust the registered keys of this account (the signer's are always trusted)
+      --tree <NAME>         Operate on this tree instead of the one containing the current directory
+      --allow-unsigned      Accept a release whose tag is not signed (checksums are still checked)
+      --no-color            Disable colored output
+      --ignore-missing      Skip assets that were not downloaded instead of failing
+      --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version             Print version
 ```
 
 ### `wt webhook`
@@ -4205,6 +5078,154 @@ Options:
   -V, --version             Print version
 ```
 
+### `wt inbox`
+
+Your notifications: list, read, mark done, watch settings
+
+```text
+Usage: wt inbox [OPTIONS]
+       wt inbox <COMMAND>
+
+Commands:
+  read      Mark notifications read (`--all` marks every notification read)
+  done      Mark notifications done (removes them from the inbox)
+  watch     Show or set your watch level for a tree (or with --tenant, a tenant)
+  watches   List your stored watch settings
+  settings  Show or change your notification settings
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+      --all           Also list notifications you have already read
+  -n, --limit <N>     Maximum number of notifications to list [default: 50]
+  -V, --version       Print version
+```
+
+#### `wt inbox read`
+
+Mark notifications read (`--all` marks every notification read)
+
+```text
+Usage: wt inbox read [OPTIONS] [ID]...
+
+Arguments:
+  [ID]...  Notification ids (or unique prefixes)
+
+Options:
+      --all           Mark every unread notification read
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt inbox done`
+
+Mark notifications done (removes them from the inbox)
+
+```text
+Usage: wt inbox done [OPTIONS] <ID>...
+
+Arguments:
+  <ID>...  Notification ids (or unique prefixes)
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt inbox watch`
+
+Show or set your watch level for a tree (or with --tenant, a tenant)
+
+```text
+participating: only what involves you (review requests, mentions, your merge requests, CI failures on them, TODOs assigned to you); watching: also every merge request event, CI failure and release; ignoring: nothing at all. A tree's setting overrides its tenant's.
+
+Usage: wt inbox watch [OPTIONS] [TREE]
+
+Arguments:
+  [TREE]
+          TENANT/TREE (default: the tree of the current worktree)
+
+Options:
+      --json
+          Print machine-readable JSON (one document) on stdout
+
+      --tenant <TENANT>
+          Watch a whole tenant (every tree) instead of one tree
+
+  -C <PATH>
+          Run as if wt was started in PATH
+
+      --level <LEVEL>
+          New watch level (omit to show the current one)
+          
+          [possible values: participating, watching, ignoring]
+
+      --email
+          Also email watching notifications (when the server sends email)
+
+      --tree <NAME>
+          Operate on this tree instead of the one containing the current directory
+
+      --no-color
+          Disable colored output
+
+      --no-email
+          Do not email watching notifications
+
+      --server <URL>
+          Server for server-side commands (default: this worktree's origin, else the only saved login)
+          
+          [env: WT_SERVER=]
+
+  -V, --version
+          Print version
+```
+
+#### `wt inbox watches`
+
+List your stored watch settings
+
+```text
+Usage: wt inbox watches [OPTIONS]
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt inbox settings`
+
+Show or change your notification settings
+
+```text
+Usage: wt inbox settings [OPTIONS]
+
+Options:
+      --email <on|off>  Email participating notifications (review requests, mentions, ...) [possible values: on, off]
+      --json            Print machine-readable JSON (one document) on stdout
+  -C <PATH>             Run as if wt was started in PATH
+      --tree <NAME>     Operate on this tree instead of the one containing the current directory
+      --no-color        Disable colored output
+      --server <URL>    Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version         Print version
+```
+
 ### `wt search`
 
 Search tenants, trees, branches and accounts on the server (`wt search code`: file contents)
@@ -4214,7 +5235,7 @@ Usage: wt search [OPTIONS] <QUERY>
        wt search <COMMAND>
 
 Commands:
-  code  Search file contents on the default branch of trees (grep-like output)
+  code  Search file contents or symbol definitions in trees (grep-like output)
   help  Print this message or the help of the given subcommand(s)
 
 Arguments:
@@ -4232,10 +5253,10 @@ Options:
 
 #### `wt search code`
 
-Search file contents on the default branch of trees (grep-like output)
+Search file contents or symbol definitions in trees (grep-like output)
 
 ```text
-Searches every tree you may read, or the trees of one tenant (--tenant), or one tree (the global --tree TENANT/TREE). Prints TENANT/TREE:PATH:LINE:TEXT per matching line; context lines use "-" instead of ":" and groups are separated by "--". Paths you may not read (access policies, license rules) are never searched. Binary files, files over 1 MiB and chunked files are not indexed.
+Searches every tree you may read, or the trees of one tenant (--tenant), or one tree (the global --tree TENANT/TREE), on the default branch unless --branch or --all-branches is given. Prints TENANT/TREE:PATH:LINE:TEXT per matching line (TENANT/TREE@BRANCH with a branch option); context lines use "-" instead of ":" and groups are separated by "--". With --symbol, QUERY matches the names of functions, methods, types and constants (Go, Rust, TypeScript, JavaScript, Python, Java, C/C++), best matches first: exact, then prefix, then substring. Paths you may not read (access policies, license rules) are never searched. Binary files, files over 1 MiB and chunked files are not indexed.
 
 Usage: wt search code [OPTIONS] <QUERY>
 
@@ -4277,7 +5298,21 @@ Options:
           [env: WT_SERVER=]
 
   -n, --limit <N>
-          Maximum number of matching lines (1-1000; server default 50)
+          Maximum number of matching lines or symbols (1-1000; server default 50)
+
+      --symbol
+          Search symbol definitions whose names contain QUERY (case-insensitive) instead of lines
+
+      --kind <KIND>
+          With --symbol: only these kinds (function, method, class, struct, interface, trait, enum, type, const; comma-separated or repeated)
+          
+          [possible values: function, method, class, struct, interface, trait, enum, type, const]
+
+      --branch <B>
+          Search this branch instead of each tree's default branch
+
+      --all-branches
+          Search every branch tip (the server indexes up to 10 branches per tree by default)
 
   -V, --version
           Print version
@@ -4285,6 +5320,8 @@ Options:
 Examples:
   wt search code 'fn main' --path '*.rs'
   wt search code -E -i 'todo|fixme' --tree acme/web --context 1
+  wt search code --symbol parse --kind function,method
+  wt search code needle --all-branches
 ```
 
 ### `wt events`
@@ -4431,6 +5468,8 @@ Commands:
   gc              Run server garbage collection now: mark unreachable objects, delete those past the grace period, expire staged snapshots and audit events
   gc-status       Show the garbage-collection configuration and recent runs
   fsck            Verify the server's object store: re-hash every object and check that every snapshot reachable from a branch or tag has its manifest, blobs and chunks (exits 1 on problems)
+  backup          Create, list, download and delete server backups (restore offline with `worktree-server restore --data DIR FILE`)
+  code-index      Show the code search index (memory, disk, indexed trees and branches) or rebuild it (`wt admin code-index rebuild [TENANT/TREE]`)
   limits          Show or change a tenant's quotas (unset limits use the server defaults; 0 unsets a limit)
   usage           Show a tenant's resource usage against its effective limits
   help            Print this message or the help of the given subcommand(s)
@@ -4614,6 +5653,141 @@ Verify the server's object store: re-hash every object and check that every snap
 
 ```text
 Usage: wt admin fsck [OPTIONS]
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt admin backup`
+
+Create, list, download and delete server backups (restore offline with `worktree-server restore --data DIR FILE`)
+
+```text
+Usage: wt admin backup [OPTIONS] <COMMAND>
+
+Commands:
+  create    Back up the server now: a consistent snapshot of the metadata database plus every object, written to <data>/backups/<id>.wtbak on the server (waits until the backup is complete)
+  list      List backups with the backup schedule and object store
+  download  Download a backup archive
+  delete    Delete a backup from the server
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+##### `wt admin backup create`
+
+Back up the server now: a consistent snapshot of the metadata database plus every object, written to <data>/backups/<id>.wtbak on the server (waits until the backup is complete)
+
+```text
+Usage: wt admin backup create [OPTIONS]
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+      --note <TEXT>   Note stored with the backup, e.g. "before upgrading to 0.8"
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+##### `wt admin backup list`
+
+List backups with the backup schedule and object store
+
+```text
+Usage: wt admin backup list [OPTIONS]
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+##### `wt admin backup download`
+
+Download a backup archive
+
+```text
+Usage: wt admin backup download [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Backup id (from `wt admin backup list`)
+
+Options:
+      --json           Print machine-readable JSON (one document) on stdout
+  -o, --output <FILE>  Output file (default: ./<id>.wtbak)
+  -C <PATH>            Run as if wt was started in PATH
+      --tree <NAME>    Operate on this tree instead of the one containing the current directory
+      --no-color       Disable colored output
+      --server <URL>   Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version        Print version
+```
+
+##### `wt admin backup delete`
+
+Delete a backup from the server
+
+```text
+Usage: wt admin backup delete [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Backup id
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -y, --yes           Do not ask for confirmation
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+#### `wt admin code-index`
+
+Show the code search index (memory, disk, indexed trees and branches) or rebuild it (`wt admin code-index rebuild [TENANT/TREE]`)
+
+```text
+Usage: wt admin code-index [OPTIONS] [COMMAND]
+
+Commands:
+  rebuild  Discard a tree's code search index and rebuild it from stored objects (every indexed tree when TREE is omitted)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json          Print machine-readable JSON (one document) on stdout
+  -C <PATH>           Run as if wt was started in PATH
+      --tree <NAME>   Operate on this tree instead of the one containing the current directory
+      --no-color      Disable colored output
+      --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+  -V, --version       Print version
+```
+
+##### `wt admin code-index rebuild`
+
+Discard a tree's code search index and rebuild it from stored objects (every indexed tree when TREE is omitted)
+
+```text
+Usage: wt admin code-index rebuild [OPTIONS] [TREE]
+
+Arguments:
+  [TREE]  TENANT/TREE to rebuild
 
 Options:
       --json          Print machine-readable JSON (one document) on stdout
