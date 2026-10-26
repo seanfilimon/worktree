@@ -49,6 +49,9 @@ func newCodeSearchFixture(t *testing.T) *codeSearchFixture {
 	for _, u := range []string{"alice", "bob", "olga"} { // the accounts of newPathsFixture
 		users[u] = &domain.Principal{AccountID: "a-" + u, Username: u, TenantID: "t-" + u}
 	}
+	// search-v2: a server admin.
+	must(t, f.store.CreateAccount(ctx, &domain.Account{ID: "a-root", Username: "root", Email: "root@example.com", IsAdmin: true, CreatedAt: t0}))
+	users["root"] = &domain.Principal{AccountID: "a-root", Username: "root", IsAdmin: true}
 	az := authz.New(f.store, authz.Options{})
 	f.h = New(Deps{
 		Store:      f.store,
@@ -242,4 +245,160 @@ func TestCodeSearchErrors(t *testing.T) {
 	plain := newPathsFixture(t)
 	rec := plain.do(t, http.MethodGet, "/api/v1/search/code?q=abc", "alice", nil)
 	wantStatus(t, rec, http.StatusNotImplemented, "not_implemented")
+}
+
+// ---- search-v2 (§15.9): symbols, branches, index administration ----
+
+// commitOn stores a snapshot with files as the new tip of branch.
+func (f *codeSearchFixture) commitOn(t *testing.T, tree *domain.Tree, branch, id string, files map[string]string) {
+	t.Helper()
+	ctx := context.Background()
+	old := ""
+	if b, err := f.store.GetBranch(ctx, tree.ID, branch); err == nil {
+		old = b.Tip
+	}
+	must(t, f.store.PutSnapshot(ctx, &domain.Snapshot{ID: id, TreeID: tree.ID, BranchName: branch, ManifestHash: f.manifest(t, files), Author: "alice", Message: id, CreatedAt: t0}))
+	must(t, f.store.CompareAndSwapBranchTip(ctx, tree.ID, branch, old, id))
+}
+
+type symbolBody struct {
+	Symbols       []codesearch.SymbolHit `json:"symbols"`
+	Truncated     bool                   `json:"truncated"`
+	SearchedTrees int                    `json:"searched_trees"`
+}
+
+func (f *codeSearchFixture) symbols(t *testing.T, as string, params url.Values) symbolBody {
+	t.Helper()
+	rec := f.do(t, http.MethodGet, "/api/v1/search/symbols?"+params.Encode(), as, nil)
+	wantStatus(t, rec, http.StatusOK, "")
+	return decode[symbolBody](t, rec)
+}
+
+func symLocs(b symbolBody) []string {
+	out := []string{}
+	for _, s := range b.Symbols {
+		out = append(out, fmt.Sprintf("%s/%s@%s:%s:%d %s %s %s", s.TenantSlug, s.Tree, s.Branch, s.Path, s.Line, s.Kind, s.Name, s.Match))
+	}
+	return out
+}
+
+func TestSymbolSearchEndpoint(t *testing.T) {
+	f := newCodeSearchFixture(t)
+	f.commit(t, f.priv, "priv-2", "priv-1", map[string]string{
+		"needle.txt":    "the needle\n",
+		"src/needle.go": "package src\n\nfunc FindNeedle() {}\n\ntype Needle struct{}\n\nfunc (n *Needle) Sharpen() {}\n",
+	})
+	f.commitOn(t, f.tree, "main", "snap-p3", map[string]string{"src/a.go": "package a\n\nfunc NeedleApp() {}\n", "secret/key.go": "package secret\n\nfunc NeedleSecret() {}\n"})
+	eq := func(got, want []string) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("symbols = %v\nwant %v", got, want)
+		}
+	}
+
+	// Ranking, kinds, container, signature.
+	b := f.symbols(t, "alice", q("q", "needle", "tree", "acme/priv"))
+	eq(symLocs(b), []string{"acme/priv@main:src/needle.go:5 struct Needle exact", "acme/priv@main:src/needle.go:3 function FindNeedle substring"})
+	if b.Symbols[0].Signature != "type Needle struct{}" || b.Symbols[0].Language != "go" || b.SearchedTrees != 1 {
+		t.Fatalf("symbol = %+v", b.Symbols[0])
+	}
+	b = f.symbols(t, "alice", q("q", "sharp", "tree", "acme/priv", "kind", "method"))
+	if len(b.Symbols) != 1 || b.Symbols[0].Container != "Needle" || b.Symbols[0].Match != "prefix" {
+		t.Fatalf("method = %+v", b.Symbols)
+	}
+	eq(symLocs(f.symbols(t, "alice", q("q", "needle", "tree", "acme/priv", "kind", "function,const"))),
+		[]string{"acme/priv@main:src/needle.go:3 function FindNeedle substring"})
+
+	// Read restrictions: bob may not read secret/** of acme/app; anonymous
+	// callers only see public trees.
+	eq(symLocs(f.symbols(t, "alice", q("q", "needle", "tree", "acme/app"))),
+		[]string{"acme/app@main:src/a.go:3 function NeedleApp prefix", "acme/app@main:secret/key.go:3 function NeedleSecret prefix"})
+	eq(symLocs(f.symbols(t, "bob", q("q", "needle", "tree", "acme/app"))), []string{"acme/app@main:src/a.go:3 function NeedleApp prefix"})
+	for _, s := range f.symbols(t, "", q("q", "needle")).Symbols {
+		if s.Tree == "priv" {
+			t.Fatalf("anonymous caller saw a private symbol: %+v", s)
+		}
+	}
+
+	// Raw JSON field names.
+	rec := f.do(t, http.MethodGet, "/api/v1/search/symbols?q=zzznone&tree=acme/priv", "alice", nil)
+	wantStatus(t, rec, http.StatusOK, "")
+	if got := rec.Body.String(); got != `{"symbols":[],"truncated":false,"searched_trees":1}`+"\n" {
+		t.Fatalf("body = %s", got)
+	}
+
+	for _, c := range []struct {
+		query  string
+		status int
+		code   string
+	}{
+		{"", 400, "bad_request"},
+		{"q=%20", 400, "bad_request"},
+		{"q=x&kind=widget", 400, "bad_request"},
+		{"q=x&branch=dev&branches=all", 400, "bad_request"},
+		{"q=x&branches=some", 400, "bad_request"},
+		{"q=x&limit=0", 400, "bad_request"},
+		{"q=x&path=%5Bx", 400, "bad_request"},
+		{"q=x&tree=acme/nope", 404, "not_found"},
+	} {
+		wantStatus(t, f.do(t, http.MethodGet, "/api/v1/search/symbols?"+c.query, "alice", nil), c.status, c.code)
+	}
+	wantStatus(t, f.do(t, http.MethodGet, "/api/v1/search/symbols?q=x&tree=acme/priv", "olga", nil), http.StatusForbidden, "")
+	plain := newPathsFixture(t)
+	wantStatus(t, plain.do(t, http.MethodGet, "/api/v1/search/symbols?q=abc", "alice", nil), http.StatusNotImplemented, "not_implemented")
+}
+
+func TestCodeSearchBranches(t *testing.T) {
+	f := newCodeSearchFixture(t)
+	f.commitOn(t, f.priv, "dev", "priv-dev", map[string]string{"needle.txt": "a\nb\nthe needle\nc\nd\ne\n", "dev.txt": "dev needle\n"})
+	b := f.search(t, "alice", q("q", "needle", "tree", "acme/priv", "branch", "dev"))
+	if got := hitLocs(b); !reflect.DeepEqual(got, []string{"acme/priv:dev.txt:1", "acme/priv:needle.txt:3"}) || b.Hits[0].Branch != "dev" {
+		t.Fatalf("branch=dev: %+v", b.Hits)
+	}
+	b = f.search(t, "alice", q("q", "needle", "tree", "acme/priv", "branches", "all"))
+	got := []string{}
+	for _, h := range b.Hits {
+		got = append(got, h.Branch+":"+h.Path)
+	}
+	// The unchanged needle.txt of dev is not reported again.
+	if want := []string{"main:needle.txt", "main:src/deep/needle.go", "dev:dev.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("branches=all: %v, want %v", got, want)
+	}
+	wantStatus(t, f.do(t, http.MethodGet, "/api/v1/search/code?q=needle&branch=dev&branches=all", "alice", nil), 400, "bad_request")
+	wantStatus(t, f.do(t, http.MethodGet, "/api/v1/search/code?q=needle&branches=every", "alice", nil), 400, "bad_request")
+}
+
+func TestCodeIndexAdminEndpoints(t *testing.T) {
+	f := newCodeSearchFixture(t)
+	f.search(t, "alice", q("q", "needle"))
+
+	wantStatus(t, f.do(t, http.MethodGet, "/api/v1/admin/code-index", "alice", nil), http.StatusForbidden, "")
+	wantStatus(t, f.do(t, http.MethodGet, "/api/v1/admin/code-index", "", nil), http.StatusUnauthorized, "")
+	rec := f.do(t, http.MethodGet, "/api/v1/admin/code-index", "root", nil)
+	wantStatus(t, rec, http.StatusOK, "")
+	st := decode[codesearch.IndexStatus](t, rec)
+	names := []string{}
+	for _, tr := range st.Trees {
+		names = append(names, tr.TenantSlug+"/"+tr.Tree)
+	}
+	if !reflect.DeepEqual(names, []string{"acme/app", "acme/priv", "partner-org/pub"}) || st.Builds != 3 || st.FormatVersion != codesearch.FormatVersion {
+		t.Fatalf("status = %+v (%v)", st, names)
+	}
+
+	wantStatus(t, f.do(t, http.MethodPost, "/api/v1/admin/code-index/rebuild?tree=acme/priv", "bob", nil), http.StatusForbidden, "")
+	rec = f.do(t, http.MethodPost, "/api/v1/admin/code-index/rebuild?tree=acme/priv", "root", nil)
+	wantStatus(t, rec, http.StatusOK, "")
+	rb := decode[codesearch.RebuildResult](t, rec)
+	if rb.Rebuilt != 1 || len(rb.Trees) != 1 || rb.Trees[0].Tree != "priv" || rb.Trees[0].Files != 2 {
+		t.Fatalf("rebuild = %+v", rb)
+	}
+	rec = f.do(t, http.MethodPost, "/api/v1/admin/code-index/rebuild", "root", nil)
+	wantStatus(t, rec, http.StatusOK, "")
+	if rb := decode[codesearch.RebuildResult](t, rec); rb.Rebuilt != 3 {
+		t.Fatalf("rebuild all = %+v", rb)
+	}
+	wantStatus(t, f.do(t, http.MethodPost, "/api/v1/admin/code-index/rebuild?tree=priv", "root", nil), 400, "bad_request")
+	wantStatus(t, f.do(t, http.MethodPost, "/api/v1/admin/code-index/rebuild?tree=acme/nope", "root", nil), 404, "not_found")
+	plain := newPathsFixture(t)
+	wantStatus(t, plain.do(t, http.MethodGet, "/api/v1/admin/code-index", "alice", nil), http.StatusForbidden, "")
 }

@@ -3,7 +3,6 @@ package codesearch
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/content"
-	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 )
@@ -22,42 +20,35 @@ const MaxFileSize = 1 << 20
 // binarySniff is how many leading bytes are checked for a NUL byte.
 const binarySniff = 8000
 
-// doc is one indexed text file. Docs are immutable and shared between
-// successive indexes of a tree while their content hash is unchanged.
-type doc struct {
-	path    string
-	hash    hash.Hash
-	content []byte
-	tri     []trigram // distinct trigrams, sorted
-}
-
-// treeIndex is the immutable index of one snapshot of a tree's default
-// branch.
-type treeIndex struct {
-	treeID     string
-	branch     string
-	snapshotID string // "" = the branch is missing or empty
-	docs       []*doc // sorted by path
-	postings   map[trigram][]uint32
-	skipped    map[string]hash.Hash // binary files (path -> hash), not re-read on rebuilds
-	meta       Meta
-}
-
-// Meta describes a built index; it is stored in the code_index_meta
-// collection under the tree id.
+// Meta describes the index of one branch; the default branch's Meta is
+// stored in the code_index_meta collection under the tree id.
 type Meta struct {
 	TreeID         string    `json:"tree_id"`
 	Branch         string    `json:"branch"`
 	SnapshotID     string    `json:"snapshot_id"`
+	Manifest       string    `json:"manifest,omitempty"` // manifest hash (= segment) of the snapshot
 	Files          int       `json:"files"`
 	Bytes          int64     `json:"bytes"`
 	Trigrams       int       `json:"trigrams"`
+	Symbols        int       `json:"symbols"`
 	SkippedBinary  int       `json:"skipped_binary"`
 	SkippedLarge   int       `json:"skipped_large"`
 	SkippedChunked int       `json:"skipped_chunked"`
-	Reused         int       `json:"reused"` // files carried over from the previous index
+	Reused         int       `json:"reused"` // files carried over from a previous index
 	BuiltAt        time.Time `json:"built_at"`
 	BuildMS        int64     `json:"build_ms"`
+}
+
+// metaOf combines a segment's statistics with branch information.
+func metaOf(treeID, branch, snapshotID string, manifest hash.Hash, st segStats) Meta {
+	m := Meta{TreeID: treeID, Branch: branch, SnapshotID: snapshotID,
+		Files: st.Files, Bytes: st.Bytes, Trigrams: st.Trigrams, Symbols: st.Symbols,
+		SkippedBinary: st.SkippedBinary, SkippedLarge: st.SkippedLarge, SkippedChunked: st.SkippedChunked,
+		Reused: st.Reused, BuiltAt: st.BuiltAt, BuildMS: st.BuildMS}
+	if !manifest.IsZero() {
+		m.Manifest = manifest.Hex()
+	}
+	return m
 }
 
 // isBinary reports whether data looks like a binary file.
@@ -88,132 +79,117 @@ func fileTrigrams(data []byte, scratch []uint64) []trigram {
 	return out
 }
 
-// build indexes tree's default branch, reusing the documents of prev
-// whose content hash is unchanged.
-func (ix *Index) build(ctx context.Context, tree *domain.Tree, prev *treeIndex) (*treeIndex, error) {
-	start := time.Now()
-	out := &treeIndex{
-		treeID:   tree.ID,
-		branch:   tree.DefaultBranch,
-		postings: map[trigram][]uint32{},
-		skipped:  map[string]hash.Hash{},
-	}
-	tip, err := ix.tip(ctx, tree)
-	if err != nil {
-		return nil, err
-	}
-	out.snapshotID = tip
-	if tip != "" {
-		if err := ix.fill(ctx, out, prev); err != nil {
-			return nil, err
+// reuseSet holds the content of files of earlier segments of a tree, so
+// that unchanged blobs are not read from the object store again.
+type reuseSet struct {
+	text   map[hash.Hash][]byte
+	binary map[hash.Hash]bool
+}
+
+func newReuseSet(segs ...*segment) *reuseSet {
+	r := &reuseSet{text: map[hash.Hash][]byte{}, binary: map[hash.Hash]bool{}}
+	for _, s := range segs {
+		if s == nil {
+			continue
+		}
+		for _, d := range s.docs {
+			r.text[d.hash] = d.content
+		}
+		for _, b := range s.binary {
+			r.binary[b.hash] = true
 		}
 	}
-	out.meta.TreeID, out.meta.Branch, out.meta.SnapshotID = tree.ID, out.branch, out.snapshotID
-	out.meta.Files = len(out.docs)
-	out.meta.Trigrams = len(out.postings)
-	out.meta.BuiltAt = time.Now().UTC()
-	out.meta.BuildMS = time.Since(start).Milliseconds()
-	return out, nil
+	return r
 }
 
-// tip returns the default-branch tip of tree ("" when there is none).
-func (ix *Index) tip(ctx context.Context, tree *domain.Tree) (string, error) {
-	b, err := ix.d.Store.GetBranch(ctx, tree.ID, tree.DefaultBranch)
-	if errors.Is(err, domain.ErrNotFound) {
-		return "", nil
-	}
+// readManifest loads and decodes a manifest object.
+func (ix *Index) readManifest(ctx context.Context, h hash.Hash) (*syncpb.ManifestRecord, error) {
+	raw, err := ix.d.Objects.Get(ctx, h)
 	if err != nil {
-		return "", err
-	}
-	return b.Tip, nil
-}
-
-func (ix *Index) fill(ctx context.Context, out, prev *treeIndex) error {
-	snap, err := ix.d.Store.GetSnapshot(ctx, out.snapshotID)
-	if err != nil {
-		return fmt.Errorf("codesearch: snapshot %s: %w", out.snapshotID, err)
-	}
-	raw, err := ix.d.Objects.Get(ctx, snap.ManifestHash)
-	if err != nil {
-		return fmt.Errorf("codesearch: manifest of %s: %v", snap.ID, err)
+		return nil, fmt.Errorf("codesearch: manifest %s: %v", h, err)
 	}
 	var m syncpb.ManifestRecord
 	if err := proto.Unmarshal(raw, &m); err != nil {
-		return fmt.Errorf("codesearch: decode manifest of %s: %w", snap.ID, err)
+		return nil, fmt.Errorf("codesearch: decode manifest %s: %w", h, err)
 	}
-	reuse := map[string]*doc{}
-	var reuseBinary map[string]hash.Hash
-	if prev != nil {
-		for _, d := range prev.docs {
-			reuse[d.path] = d
-		}
-		reuseBinary = prev.skipped
-	}
-	entries := m.GetEntries()
+	return &m, nil
+}
+
+// buildSegment indexes the files of manifest m and returns the encoded
+// segment. Blobs found in reuse are not read from the object store.
+func (ix *Index) buildSegment(ctx context.Context, m *syncpb.ManifestRecord, reuse *reuseSet) ([]byte, error) {
+	start := time.Now()
+	in := &segInput{postings: map[trigram][]uint32{}}
+	entries := append([]*syncpb.ManifestEntry(nil), m.GetEntries()...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].GetPath() < entries[j].GetPath() })
 	var scratch []uint64
 	for _, e := range entries {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		switch {
 		case e.GetChunked():
-			out.meta.SkippedChunked++
+			in.stats.SkippedChunked++
 			continue
 		case e.GetSize() > MaxFileSize:
-			out.meta.SkippedLarge++
+			in.stats.SkippedLarge++
 			continue
 		}
 		h, err := content.EntryHash(e)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if d := reuse[e.GetPath()]; d != nil && d.hash == h {
-			out.docs = append(out.docs, d)
-			out.meta.Reused++
-			out.meta.Bytes += int64(len(d.content))
+		if reuse.binary[h] {
+			in.binary = append(in.binary, skipEntry{path: e.GetPath(), hash: h})
+			in.stats.SkippedBinary++
 			continue
 		}
-		if bh, ok := reuseBinary[e.GetPath()]; ok && bh == h {
-			out.skipped[e.GetPath()] = h
-			out.meta.SkippedBinary++
-			continue
-		}
-		data, err := ix.d.Objects.Get(ctx, h)
-		if err != nil {
-			return fmt.Errorf("codesearch: blob of %s: %v", e.GetPath(), err)
-		}
-		if len(data) > MaxFileSize {
-			out.meta.SkippedLarge++
-			continue
-		}
-		if isBinary(data) {
-			out.skipped[e.GetPath()] = h
-			out.meta.SkippedBinary++
-			continue
+		data, ok := reuse.text[h]
+		if ok {
+			in.stats.Reused++
+		} else {
+			if data, err = ix.d.Objects.Get(ctx, h); err != nil {
+				return nil, fmt.Errorf("codesearch: blob of %s: %v", e.GetPath(), err)
+			}
+			if len(data) > MaxFileSize {
+				in.stats.SkippedLarge++
+				continue
+			}
+			if isBinary(data) {
+				in.binary = append(in.binary, skipEntry{path: e.GetPath(), hash: h})
+				in.stats.SkippedBinary++
+				continue
+			}
 		}
 		if scratch == nil {
 			scratch = make([]uint64, 1<<24/64)
 		}
-		out.docs = append(out.docs, &doc{path: e.GetPath(), hash: h, content: data, tri: fileTrigrams(data, scratch)})
-		out.meta.Bytes += int64(len(data))
-	}
-	for id, d := range out.docs {
-		for _, t := range d.tri {
-			out.postings[t] = append(out.postings[t], uint32(id))
+		id := uint32(len(in.docs))
+		in.docs = append(in.docs, segDoc{path: e.GetPath(), hash: h, content: data})
+		in.stats.Bytes += int64(len(data))
+		for _, t := range fileTrigrams(data, scratch) {
+			in.postings[t] = append(in.postings[t], id)
+		}
+		for _, s := range ExtractSymbols(e.GetPath(), data) {
+			in.syms = append(in.syms, symbol{Name: s.Name, Kind: s.Kind, Line: s.Line, Container: s.Container, Signature: s.Signature, doc: id})
 		}
 	}
-	return nil
+	in.stats.Files = len(in.docs)
+	in.stats.Trigrams = len(in.postings)
+	in.stats.Symbols = len(in.syms)
+	in.stats.BuiltAt = time.Now().UTC()
+	in.stats.BuildMS = time.Since(start).Milliseconds()
+	return encodeSegment(in)
 }
 
 // candidates returns the ids (ascending, i.e. in path order) of the docs
 // that satisfy q.
-func (t *treeIndex) candidates(q *tquery) []uint32 {
-	ids, all := t.eval(q)
+func (s *segment) candidates(q *tquery) []uint32 {
+	ids, all := s.eval(q)
 	if !all {
 		return ids
 	}
-	out := make([]uint32, len(t.docs))
+	out := make([]uint32, len(s.docs))
 	for i := range out {
 		out[i] = uint32(i)
 	}
@@ -221,7 +197,7 @@ func (t *treeIndex) candidates(q *tquery) []uint32 {
 }
 
 // eval returns the matching doc ids, or all=true when q matches every doc.
-func (t *treeIndex) eval(q *tquery) (ids []uint32, all bool) {
+func (s *segment) eval(q *tquery) (ids []uint32, all bool) {
 	switch q.op {
 	case qAll:
 		return nil, true
@@ -231,7 +207,7 @@ func (t *treeIndex) eval(q *tquery) (ids []uint32, all bool) {
 		var acc []uint32
 		have := false
 		for _, tr := range q.tri {
-			p := t.postings[tr]
+			p := s.postings(tr)
 			if !have {
 				acc, have = p, true
 			} else {
@@ -241,8 +217,8 @@ func (t *treeIndex) eval(q *tquery) (ids []uint32, all bool) {
 				return nil, false
 			}
 		}
-		for _, s := range q.sub {
-			ids, all := t.eval(s)
+		for _, sub := range q.sub {
+			ids, all := s.eval(sub)
 			if all {
 				continue
 			}
@@ -262,10 +238,10 @@ func (t *treeIndex) eval(q *tquery) (ids []uint32, all bool) {
 	case qOr:
 		var acc []uint32
 		for _, tr := range q.tri {
-			acc = union(acc, t.postings[tr])
+			acc = union(acc, s.postings(tr))
 		}
-		for _, s := range q.sub {
-			ids, all := t.eval(s)
+		for _, sub := range q.sub {
+			ids, all := s.eval(sub)
 			if all {
 				return nil, true
 			}

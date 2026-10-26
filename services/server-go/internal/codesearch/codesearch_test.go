@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"regexp/syntax"
@@ -66,6 +67,8 @@ func newWorld(t *testing.T) *world {
 	t.Helper()
 	w := &world{store: meta.NewMemory(), objs: &countingObjects{Store: objstore.New(t.TempDir()), gets: map[hash.Hash]int{}}}
 	w.ix = New(Deps{Store: w.store, Objects: w.objs, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	// search-v2 (§15.9): every test also exercises the on-disk index.
+	w.ix.Configure(Options{Dir: filepath.Join(t.TempDir(), "codeindex")})
 	return w
 }
 

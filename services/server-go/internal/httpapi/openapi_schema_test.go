@@ -267,6 +267,14 @@ var openAPITypes = map[string]any{
 	"ReviewersRequest":       reviewersRequest{},
 	"ApplySuggestionRequest": applySuggestionRequest{},
 	// ---- end v0.7 review ----
+	// v0.7 search-v2 (§15.9)
+	"SymbolSearchResult":     codesearch.SymbolResult{},
+	"SymbolHit":              codesearch.SymbolHit{},
+	"CodeIndexStatus":        codesearch.IndexStatus{},
+	"CodeIndexTree":          codesearch.CodeIndexTree{},
+	"CodeIndexBranch":        codesearch.CodeIndexBranch{},
+	"CodeIndexRebuildResult": codesearch.RebuildResult{},
+	// end search-v2
 }
 
 // openAPICommentDirs are the package directories whose doc comments feed

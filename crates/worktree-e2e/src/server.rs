@@ -24,6 +24,8 @@ pub struct Server {
     pub data_dir: PathBuf,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+    // search-v2 (§15.9): the flags it was started with, for [`Server::restart`].
+    extra_args: Vec<String>,
 }
 
 fn free_port() -> u16 {
@@ -117,6 +119,7 @@ impl Server {
             data_dir,
             stdout_path,
             stderr_path,
+            extra_args: extra_args.iter().map(|s| s.to_string()).collect(),
         };
 
         let probe = reqwest::blocking::Client::builder()
@@ -281,6 +284,79 @@ impl Server {
             let _ = child.wait();
         }
     }
+
+    // --- search-v2 (§15.9): restarts on the same data, port and flags ---
+
+    /// Stop the server and start it again on the same port with the same
+    /// data directory, admin password and flags, so that everything the
+    /// server persisted (accounts, tokens, trees, indexes) is kept and
+    /// clients keep working. Logs go to new `server-restart-N.*` files.
+    #[track_caller]
+    pub fn restart_with_start_flags(&mut self) {
+        self.stop();
+        let bin = bins::server_bin();
+        let dir = self
+            .stdout_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let addr = format!("127.0.0.1:{}", self.port);
+        let mut last_err = String::new();
+        for attempt in 1..=20 {
+            let n = (1..)
+                .find(|n| !dir.join(format!("server-restart-{n}.stdout.log")).exists())
+                .unwrap_or(1);
+            self.stdout_path = dir.join(format!("server-restart-{n}.stdout.log"));
+            self.stderr_path = dir.join(format!("server-restart-{n}.stderr.log"));
+            let out = File::create(&self.stdout_path).expect("create restart stdout log");
+            let err = File::create(&self.stderr_path).expect("create restart stderr log");
+            let child = Command::new(&bin)
+                .arg("--addr")
+                .arg(&addr)
+                .arg("--data")
+                .arg(&self.data_dir)
+                .arg("--admin-user")
+                .arg(&self.admin_user)
+                .arg("--admin-password")
+                .arg(&self.admin_password)
+                .args(&self.extra_args)
+                .current_dir(&dir)
+                .env_remove("WT_ADDR")
+                .env_remove("WT_DATA")
+                .env_remove("WT_ADMIN_USER")
+                .env_remove("WT_ADMIN_PASSWORD")
+                .env_remove("WT_ADMIN_DIR")
+                .env_remove("WT_ALLOW_REGISTRATION")
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(out))
+                .stderr(Stdio::from(err))
+                .spawn()
+                .unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()));
+            self.child = Some(child);
+            let started = Instant::now();
+            loop {
+                if let Some(Ok(Some(status))) = self.child.as_mut().map(|c| c.try_wait()) {
+                    // The port may still be held briefly by the old process.
+                    last_err = format!("server exited during restart ({status})\n{}", self.logs());
+                    self.child = None;
+                    break;
+                }
+                if read_lossy(&self.stdout_path).contains(READY_LINE) {
+                    return;
+                }
+                if started.elapsed() > START_TIMEOUT {
+                    let logs = self.logs();
+                    self.stop();
+                    panic!("server not ready after a restart on {addr}\n{logs}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            eprintln!("restart attempt {attempt} failed; retrying");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("failed to restart worktree-server on {addr}\n{last_err}");
+    }
+    // --- end search-v2 ---
 }
 
 fn tail(s: &str) -> String {

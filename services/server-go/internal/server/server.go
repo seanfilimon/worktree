@@ -153,6 +153,8 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	// v0.6 components (docs/ENGINEERING_PLAN.md §14).
 	hooks := webhooks.New(webhooks.Deps(v5))
 	codeIndex := codesearch.New(codesearch.Deps(v5))
+	// search-v2 (§15.9): persistent index under <data>/codeindex, memory cap, branch cap.
+	codeIndex.Configure(codesearch.Options{Dir: filepath.Join(cfg.DataDir, "codeindex"), MemoryLimit: cfg.CodeIndexMemory, MaxBranches: cfg.CodeIndexBranches})
 	// v0.7 components (docs/ENGINEERING_PLAN.md §15).
 	notifier := notify.New(notify.Deps(v5))
 	mirrors := mirror.New(mirror.Deps(v5))

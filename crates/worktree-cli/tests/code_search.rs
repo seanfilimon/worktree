@@ -269,6 +269,91 @@ fn code_search_usage_errors() {
     assert!(sb.server.seen().is_empty(), "{:?}", sb.server.seen());
 }
 
+// --- search-v2 (§15.9): symbols, branches, wt admin code-index ---
+
+#[test]
+fn symbol_search_sends_kinds_and_branches() {
+    let sb = Sandbox::new();
+    sb.server.on(
+        "/api/v1/search/symbols",
+        json!({"symbols": [
+            {"tenant": "acme", "tree": "web", "branch": "dev", "snapshot_id": "s", "path": "src/lib.rs", "line": 4,
+             "name": "parse_args", "kind": "function", "signature": "pub fn parse_args()", "language": "rust", "match": "prefix"}
+        ], "truncated": false, "searched_trees": 1}),
+    );
+    let out = sb.ok(&[
+        "search",
+        "code",
+        "parse",
+        "--symbol",
+        "--kind",
+        "function,method",
+        "--branch",
+        "dev",
+        "--tree",
+        "acme/web",
+    ]);
+    assert_eq!(
+        out,
+        "acme/web@dev:src/lib.rs:4: function parse_args  pub fn parse_args()\n"
+    );
+    let seen = sb.server.seen();
+    assert!(seen[0].starts_with("/api/v1/search/symbols?"), "{seen:?}");
+    let p = params(&seen[0]);
+    for (k, v) in [
+        ("q", "parse"),
+        ("kind", "function,method"),
+        ("branch", "dev"),
+        ("tree", "acme/web"),
+    ] {
+        assert!(p.contains(&(k.into(), v.into())), "{k}: {p:?}");
+    }
+    // A one-character symbol query is fine; code search needs three.
+    sb.ok(&["search", "code", "p", "--symbol"]);
+
+    sb.server.on("/api/v1/search/code", hits());
+    sb.ok(&["search", "code", "main", "--all-branches"]);
+    let seen = sb.server.seen();
+    let p = params(seen.last().unwrap());
+    assert!(p.contains(&("branches".into(), "all".into())), "{p:?}");
+}
+
+#[test]
+fn admin_code_index_status_and_rebuild() {
+    let sb = Sandbox::new();
+    let tree = json!({"tree_id": "t1", "tenant": "acme", "tree": "web", "default_branch": "main", "state": "ready",
+        "files": 3, "bytes": 10, "symbols": 7, "trigrams": 5, "built_at": "2026-10-25T10:00:00Z", "branch_count": 1,
+        "segments": 1, "memory_bytes": 100, "disk_bytes": 200, "branches": []});
+    sb.server.on(
+        "/api/v1/admin/code-index",
+        json!({"format_version": 1, "persistent": true, "memory_bytes": 100, "memory_limit": 268435456,
+               "loaded_segments": 1, "evictions": 0, "disk_bytes": 200, "max_branches": 10, "builds": 1,
+               "disk_loads": 0, "trees": [tree.clone()]}),
+    );
+    sb.server.on(
+        "/api/v1/admin/code-index/rebuild",
+        json!({"rebuilt": 1, "trees": [tree]}),
+    );
+    let out = sb.ok(&["admin", "code-index"]);
+    assert!(out.contains("1 built, 0 loaded from disk"), "{out}");
+    assert!(out.contains("acme/web"), "{out}");
+    let out = sb.ok(&["admin", "code-index", "rebuild", "acme/web"]);
+    assert!(
+        out.starts_with("Rebuilt the code index of 1 tree\n"),
+        "{out}"
+    );
+    let seen = sb.server.seen();
+    let last = seen.last().unwrap();
+    assert!(
+        last.starts_with("/api/v1/admin/code-index/rebuild?"),
+        "{seen:?}"
+    );
+    assert_eq!(
+        params(last),
+        vec![("tree".to_string(), "acme/web".to_string())]
+    );
+}
+
 #[test]
 fn name_search_is_unchanged() {
     let sb = Sandbox::new();

@@ -90,6 +90,16 @@ impl TestEnv {
             .as_mut()
             .expect("this TestEnv has no server (use TestEnv::with_server)")
     }
+    // --- search-v2 (§15.9) ---
+    /// Restart the server on the same port and data (see [`Server::restart`]).
+    #[track_caller]
+    pub fn restart_server(&mut self) {
+        self.server
+            .as_mut()
+            .expect("this TestEnv has no server (use TestEnv::with_server)")
+            .restart_with_start_flags();
+    }
+    // --- end search-v2 ---
 
     /// Server base URL.
     pub fn url(&self) -> String {

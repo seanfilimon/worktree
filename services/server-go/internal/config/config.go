@@ -161,6 +161,18 @@ type Config struct {
 	// --smtp-from, env WT_SMTP_FROM.
 	SMTPFrom string
 	// ---- end notifications ----
+	// ---- code search v2 (§15.9) ----
+
+	// CodeIndexMemory caps the decoded code search index segments kept in
+	// memory (bytes; 0 = unlimited); the index itself lives under
+	// <data>/codeindex. Flag --code-index-memory (e.g. 256MiB, 1G), env
+	// WT_CODE_INDEX_MEMORY (default 256 MiB).
+	CodeIndexMemory int64
+	// CodeIndexBranches is the most branches indexed per tree for
+	// branches=all searches. Flag --code-index-branches, env
+	// WT_CODE_INDEX_BRANCHES (default 10).
+	CodeIndexBranches int
+	// ---- end code search v2 ----
 
 	// The fields below are set programmatically, not from flags.
 
@@ -331,6 +343,10 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 	str("WT_SMTP_URL", &cfg.SMTPURL)
 	str("WT_SMTP_FROM", &cfg.SMTPFrom)
 	// ---- end notifications ----
+
+	// ---- code search v2 (§15.9) ----
+	errs = append(errs, codeIndexFromEnv(&cfg, lookup)...)
+	// ---- end code search v2 ----
 	return cfg, errors.Join(errs...)
 }
 
@@ -386,6 +402,8 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 	// Notifications (§15.3).
 	fs.StringVar(&cfg.SMTPURL, "smtp-url", cfg.SMTPURL, "send notification emails through this SMTP server: smtp://user:pass@host:587 (STARTTLS) or smtps://... (env WT_SMTP_URL; prefer the env var)")
 	fs.StringVar(&cfg.SMTPFrom, "smtp-from", cfg.SMTPFrom, "From `address` of notification emails, e.g. \"W0rkTree <wt@example.com>\" (env WT_SMTP_FROM)")
+	// Code search v2 (§15.9).
+	codeIndexFlags(fs, cfg)
 	return fs
 }
 
@@ -452,8 +470,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, c.validateOps()...)
-	errs = append(errs, c.validateBackends()...) // storage backends (§15.2)
-	errs = append(errs, c.validateSMTP()...)     // notifications (§15.3)
+	errs = append(errs, c.validateBackends()...)  // storage backends (§15.2)
+	errs = append(errs, c.validateSMTP()...)      // notifications (§15.3)
+	errs = append(errs, c.validateCodeIndex()...) // code search v2 (§15.9)
 	return errors.Join(errs...)
 }
 
