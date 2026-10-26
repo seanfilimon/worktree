@@ -1917,6 +1917,200 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
+  # ---- v0.8 abac (§16.5): ABAC attributes ----
+  /api/v1/tenants/{tenant}/attributes:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+    get:
+      operationId: getTenantAttributes
+      summary: Tenant attributes
+      description: The tenant's ABAC attributes, tested by policy conditions on `tenant.<key>` (v0.8, §16.5).
+      tags: [Tenants, IAM]
+      x-wt-action: tenant:read
+      responses:
+        "200":
+          description: The attributes (`{}` when none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: putTenantAttributes
+      summary: Replace the tenant attributes
+      description: |
+        Replaces the whole attribute set (`{"attributes": {}}` clears it).
+        Keys `[a-z][a-z0-9_.-]{0,63}`, values 1..256 bytes without control
+        characters, at most 64 entries. Audited as
+        `tenant.attributes.update` (changed keys only, never values).
+      tags: [Tenants, IAM]
+      x-wt-action: tenant:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttributesRequest"
+      responses:
+        "200":
+          description: The new attributes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+  /api/v1/admin/accounts/{username}/attributes:
+    parameters:
+      - name: username
+        in: path
+        required: true
+        description: Account username.
+        schema:
+          type: string
+    get:
+      operationId: adminGetAccountAttributes
+      summary: Account attributes
+      description: An account's ABAC attributes, tested by policy conditions on `principal.<key>` (v0.8, §16.5).
+      tags: [Admin, IAM]
+      x-wt-action: server:admin
+      responses:
+        "200":
+          description: The attributes (`{}` when none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: adminPutAccountAttributes
+      summary: Replace an account's attributes
+      description: |
+        Replaces the whole attribute set (`{"attributes": {}}` clears it);
+        same rules as the tenant attributes. Accounts cannot change their
+        own attributes: only server administrators can. Audited as
+        `account.attributes.update`.
+      tags: [Admin, IAM]
+      x-wt-action: server:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttributesRequest"
+      responses:
+        "200":
+          description: The new attributes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+  /api/v1/me/attributes:
+    get:
+      operationId: getMyAttributes
+      summary: Your account attributes
+      description: The caller's own account attributes (`{}` for service accounts, which have none).
+      tags: [Auth, IAM]
+      x-wt-action: self
+      responses:
+        "200":
+          description: The attributes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/trees/{tenant}/{tree}/attributes:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    get:
+      operationId: getTreeAttributes
+      summary: Tree attributes
+      description: The tree's ABAC attributes, tested by policy conditions on `tree.<key>` (v0.8, §16.5).
+      tags: [Trees, IAM]
+      x-wt-action: tree:read
+      responses:
+        "200":
+          description: The attributes (`{}` when none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: putTreeAttributes
+      summary: Replace the tree attributes
+      description: |
+        Replaces the whole attribute set (`{"attributes": {}}` clears it);
+        same rules as the tenant attributes. Audited as
+        `tree.attributes.update`.
+      tags: [Trees, IAM]
+      x-wt-action: tree:admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttributesRequest"
+      responses:
+        "200":
+          description: The new attributes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+  # ---- end abac ----
   /api/v1/openapi.yaml:
     get:
       operationId: openAPI
@@ -5333,7 +5527,7 @@ paths:
     post:
       operationId: iamSimulate
       summary: Simulate an authorization decision
-      description: "Evaluates `action` for a principal (default the caller) on a tenant, tree, branch or path with the full policy engine and returns the Decision with its reasons. Inspecting principals other than the caller needs iam:read on the tenant. `candidate_policies` replaces the tenant's stored policies for this evaluation (dry run of a policy change; at most 200)."
+      description: "Evaluates `action` for a principal (default the caller) on a tenant, tree, branch or path with the full policy engine and returns the Decision with its reasons. Inspecting principals other than the caller needs iam:read on the tenant. `candidate_policies` replaces the tenant's stored policies for this evaluation (dry run of a policy change; at most 200). v0.8: `context.attributes` overrides stored ABAC attributes (`principal.<k>`, `tree.<k>`, `tenant.<k>`; null unsets); the response adds the attributes the evaluation saw and the outcome of every attribute condition (`conditions`)."
       tags: [IAM]
       x-wt-action: iam:read
       requestBody:
@@ -5344,11 +5538,11 @@ paths:
               $ref: "#/components/schemas/SimulateRequest"
       responses:
         "200":
-          description: The decision.
+          description: The decision, with the attribute explanation.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Decision"
+                $ref: "#/components/schemas/SimulateResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -10094,6 +10288,11 @@ components:
           format: date-time
         time_window:
           $ref: "#/components/schemas/TimeWindow"
+        attributes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributeCondition"
+          description: "Attributes (v0.8 ABAC, §16.5; see domain/abac.go): every condition must hold."
     PolicyDiff:
       type: object
       description: "DiffResult answers GET .../policies/{id}/diff (policyhist.DiffResult)."
@@ -10767,6 +10966,113 @@ components:
           type: string
         mfa:
           type: boolean
+        attributes:
+          type: object
+          additionalProperties:
+            type: [string, "null"]
+          description: "Attributes (v0.8 ABAC, §16.5) override stored attributes for this evaluation: keys \"principal.<k>\", \"tree.<k>\", \"tenant.<k>\"; a null value unsets the attribute."
+    SimulateResponse:
+      type: object
+      description: "simulateResponse is the Decision of POST /iam/simulate plus (v0.8) the attributes the evaluation saw and the outcome of every attribute condition of the statements that otherwise matched."
+      required: [allowed, effect, reasons, attributes, conditions]
+      properties:
+        allowed:
+          type: boolean
+        effect:
+          type: string
+          description: "\"allow\" | \"deny\" (explicit) | \"implicit_deny\""
+        reasons:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/DecisionReason"
+        attributes:
+          $ref: "#/components/schemas/AttributeSet"
+        conditions:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/AttributeCheck"
+    # ---- v0.8 abac (§16.5) ----
+    AttributeCondition:
+      type: object
+      description: "AttributeCondition tests one attribute. Key is \"<scope>.<attribute key>\" with scope principal, tree or tenant (for example \"principal.department\", \"tree.classification\", \"tenant.region\"). Comparisons are exact and case-sensitive. An unset attribute fails equals / in / starts_with / exists and satisfies not_equals / not_in / not_exists."
+      required: [key, op]
+      properties:
+        key:
+          type: string
+        op:
+          type: string
+          enum: [equals, not_equals, in, not_in, starts_with, exists, not_exists]
+        values:
+          type: array
+          items:
+            type: string
+    AttributesRequest:
+      type: object
+      description: "attributesRequest is the body of the attribute PUT endpoints."
+      properties:
+        attributes:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+          description: "Attributes is the complete new set: keys [a-z][a-z0-9_.-]{0,63}, values 1..256 bytes, at most 64 entries. Required ({} clears)."
+    AttributesResponse:
+      type: object
+      description: "attributesResponse is the attribute set of a tenant, account or tree."
+      required: [attributes]
+      properties:
+        attributes:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+    AttributeSet:
+      type: object
+      description: "AttributeSet is the set of attributes an evaluation sees, by scope."
+      required: [principal, tree, tenant]
+      properties:
+        principal:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+        tree:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+        tenant:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+    AttributeCheck:
+      type: object
+      description: "AttributeCheck is the outcome of one attribute condition of a statement whose other parts matched the request (POST /iam/simulate)."
+      required: [policy, policy_id, statement, effect, key, op, values, value, matched]
+      properties:
+        policy:
+          type: string
+          description: "policy name"
+        policy_id:
+          type: string
+          description: "policy id (\"\" for unsaved candidates)"
+        statement:
+          type: string
+          description: "sid, or \"#<n>\" (1-based position)"
+        effect:
+          type: string
+          description: "allow | deny"
+        key:
+          type: string
+          description: "\"principal.department\""
+        op:
+          type: string
+        values:
+          type: [array, "null"]
+          items:
+            type: string
+        value:
+          type: [string, "null"]
+          description: "the attribute's value; null when unset"
+        matched:
+          type: boolean
+    # ---- end abac ----
     SimulatePrincipal:
       type: object
       required: [type, name, tenant]

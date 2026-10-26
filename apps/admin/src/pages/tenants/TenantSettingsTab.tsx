@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/toast/store";
+import { TenantAttributesCard } from "./TenantAttributesCard";
 import { TenantLimitsCard } from "./TenantLimitsCard";
 import { TenantStatusCard } from "./TenantStatusCard";
 
@@ -154,6 +155,7 @@ export function TenantSettingsTab({ tenant, editable }: { tenant: Tenant; editab
       )}
       <TenantStatusCard tenant={tenant} editable={isAdmin} />
       <TenantLimitsCard slug={tenant.slug} editable={isAdmin} />
+      <TenantAttributesCard slug={tenant.slug} editable={editable} />
     </div>
   );
 }

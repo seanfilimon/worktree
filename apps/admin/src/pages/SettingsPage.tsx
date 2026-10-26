@@ -1,3 +1,4 @@
+import { MyAttributesCard } from "@/components/abac/MyAttributesCard";
 import { PageHeader } from "@/components/PageHeader";
 import { AppearanceCard } from "@/components/people/settings/AppearanceCard";
 import { ChangePasswordCard } from "@/components/people/settings/ChangePasswordCard";
@@ -31,6 +32,7 @@ export function SettingsPage() {
         </section>
         <div className="grid gap-4 lg:grid-cols-2">
           <AppearanceCard />
+          <MyAttributesCard />
         </div>
       </div>
     </>

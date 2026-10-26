@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/accesscfg"
+	"github.com/seanfilimon/worktree/services/server-go/internal/authz"
 	"github.com/seanfilimon/worktree/services/server-go/internal/ci"
 	"github.com/seanfilimon/worktree/services/server-go/internal/codesearch"
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
@@ -275,12 +276,20 @@ var openAPITypes = map[string]any{
 	"CodeIndexBranch":        codesearch.CodeIndexBranch{},
 	"CodeIndexRebuildResult": codesearch.RebuildResult{},
 	// end search-v2
+	// v0.8 abac (§16.5)
+	"AttributeCondition": domain.AttributeCondition{},
+	"AttributesRequest":  attributesRequest{},
+	"AttributesResponse": attributesResponse{},
+	"SimulateResponse":   simulateResponse{},
+	"AttributeSet":       authz.AttributeSet{},
+	"AttributeCheck":     authz.AttributeCheck{},
+	// end abac
 }
 
 // openAPICommentDirs are the package directories whose doc comments feed
 // generated schema descriptions.
 var openAPICommentDirs = []string{".", "../domain", "../ci", "../limits", "../todo", "../release", "../accesscfg", "../review",
-	"../webhooks", "../codesearch", "../policyhist"}
+	"../webhooks", "../codesearch", "../policyhist", "../authz"}
 
 // jsonField is one member of a struct's JSON object encoding.
 type jsonField struct {

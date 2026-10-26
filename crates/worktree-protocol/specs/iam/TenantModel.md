@@ -284,6 +284,7 @@ wt remote add NAME URL --tenant T        # binds a worktree remote to a tenant
 | Per-tenant limits, server defaults, usage endpoint, quota enforcement | Built (v0.5) |
 | Tenant grants and `tenant:<slug>` principals | Built (v0.5) |
 | Tree visibility `private` / `internal` / `public` | Built |
+| ABAC attributes on tenants, accounts and trees (`/attributes` endpoints, `wt attr`) | Built (v0.8), see [ABAC](./ABAC.md) |
 | Rust `worktree_protocol::iam::tenant` types | Legacy model, not used by the server |
 
 ## 15. Roadmap
@@ -298,7 +299,6 @@ built:
 - **Tenant deletion** with a recovery window and data purge.
 - **Plan-driven limits.** Fixed quotas per plan, `max_snapshot_size`, and a
   billing integration. Limits are server defaults plus per-tenant overrides.
-- **Tenant attributes for ABAC** (`department`, `location`, `clearance`, …).
 - **`shared` visibility** with discovery lists.
 - **`[[tenant_access]]` shorthand** in `.wt/config.toml`.
 - **Revoking tokens on suspension**, and pausing cross-tenant grants that

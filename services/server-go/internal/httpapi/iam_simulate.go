@@ -27,6 +27,19 @@ type simulatePrincipal struct {
 type simulateContext struct {
 	IP  string `json:"ip"`
 	MFA bool   `json:"mfa"`
+	// Attributes (v0.8 ABAC, §16.5) override stored attributes for this
+	// evaluation: keys "principal.<k>", "tree.<k>", "tenant.<k>"; a null
+	// value unsets the attribute.
+	Attributes map[string]*string `json:"attributes,omitempty"`
+}
+
+// simulateResponse is the Decision of POST /iam/simulate plus (v0.8) the
+// attributes the evaluation saw and the outcome of every attribute
+// condition of the statements that otherwise matched.
+type simulateResponse struct {
+	domain.Decision
+	Attributes authz.AttributeSet     `json:"attributes"`
+	Conditions []authz.AttributeCheck `json:"conditions"`
 }
 
 type simulateRequest struct {
@@ -300,6 +313,14 @@ func (a *api) handleIAMSimulate(w http.ResponseWriter, r *http.Request) error {
 		}
 		ctx = authz.WithCandidatePolicies(ctx, t.ID, cands)
 	}
+	// v0.8 ABAC: attribute overrides and the per-condition trace.
+	if ov := req.Context.Attributes; len(ov) > 0 {
+		if err := authz.ValidateAttributeOverrides(ov); err != nil {
+			return badRequestf("context.attributes: %v", err)
+		}
+		ctx = authz.WithAttributeOverrides(ctx, ov)
+	}
+	ctx, trace := authz.WithAttributeTrace(ctx)
 	sim := *pr.p
 	sim.MFA = req.Context.MFA
 	dec, err := ev.Evaluate(ctx, &sim, domain.Action(req.Action), res, env)
@@ -307,7 +328,11 @@ func (a *api) handleIAMSimulate(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	dec.Reasons = nonNil(dec.Reasons)
-	writeJSON(w, http.StatusOK, dec)
+	writeJSON(w, http.StatusOK, simulateResponse{
+		Decision:   dec,
+		Attributes: authz.EffectiveAttributes(pr.acct, res.Tree, t, req.Context.Attributes),
+		Conditions: trace.Checks(),
+	})
 	return nil
 }
 

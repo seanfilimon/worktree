@@ -38,7 +38,9 @@ const maxSidLen = 128
 //     names may contain "*";
 //   - conditions: ip_ranges are CIDRs (or single addresses), not_before is
 //     before not_after, time_window days are mon..sun, start/end are HH:MM
-//     and differ, timezone is an IANA name.
+//     and differ, timezone is an IANA name; attributes (v0.8) have keys
+//     principal.<k> / tree.<k> / tenant.<k>, a known op and the number of
+//     values the op takes (attributes.go).
 func ValidateStatements(statements []domain.PolicyStatement) []ValidationError {
 	var errs []ValidationError
 	for i, st := range statements {
@@ -117,6 +119,7 @@ func ValidateStatements(statements []domain.PolicyStatement) []ValidationError {
 				}
 			}
 		}
+		errs = append(errs, validateAttributeConditions(i, c.Attributes)...)
 	}
 	return errs
 }

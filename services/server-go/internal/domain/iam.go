@@ -94,6 +94,9 @@ type PolicyConditions struct {
 	NotBefore  *time.Time  `json:"not_before,omitempty"`
 	NotAfter   *time.Time  `json:"not_after,omitempty"`
 	TimeWindow *TimeWindow `json:"time_window,omitempty"`
+	// Attributes (v0.8 ABAC, §16.5; see domain/abac.go): every condition
+	// must hold.
+	Attributes []AttributeCondition `json:"attributes,omitempty"`
 }
 
 // TimeWindow is a recurring weekly window, e.g. office hours.

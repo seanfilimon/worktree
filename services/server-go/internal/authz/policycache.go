@@ -82,7 +82,8 @@ func sameStatement(x, y *domain.PolicyStatement) bool {
 
 func sameConditions(x, y *domain.PolicyConditions) bool {
 	if x.RequireMFA != y.RequireMFA || !slices.Equal(x.IPRanges, y.IPRanges) ||
-		!sameTime(x.NotBefore, y.NotBefore) || !sameTime(x.NotAfter, y.NotAfter) {
+		!sameTime(x.NotBefore, y.NotBefore) || !sameTime(x.NotAfter, y.NotAfter) ||
+		!slices.EqualFunc(x.Attributes, y.Attributes, sameAttrCond) { // v0.8 ABAC
 		return false
 	}
 	switch {
@@ -92,6 +93,10 @@ func sameConditions(x, y *domain.PolicyConditions) bool {
 		v, w := x.TimeWindow, y.TimeWindow
 		return slices.Equal(v.Days, w.Days) && v.Start == w.Start && v.End == w.End && v.Timezone == w.Timezone
 	}
+}
+
+func sameAttrCond(a, b domain.AttributeCondition) bool {
+	return a.Key == b.Key && a.Op == b.Op && slices.Equal(a.Values, b.Values)
 }
 
 // sameTime compares instants and locations (the location shows in
@@ -128,6 +133,12 @@ func clonePolicies(pols []domain.Policy) []domain.Policy {
 				tw := *c.TimeWindow
 				tw.Days = slices.Clone(tw.Days)
 				c.TimeWindow = &tw
+			}
+			if c.Attributes != nil { // v0.8 ABAC
+				c.Attributes = slices.Clone(c.Attributes)
+				for k := range c.Attributes {
+					c.Attributes[k].Values = slices.Clone(c.Attributes[k].Values)
+				}
 			}
 		}
 		out[i].Statements = sts

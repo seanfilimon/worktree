@@ -8,6 +8,7 @@
  */
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
+import type { AttributeCheck, AttributeCondition, AttributeOverrides, SimulatedAttributes } from "./abac";
 import type { ApiClient } from "./client";
 import { useApi } from "./context";
 import type { Account, APIToken, ISODateString, Tenant } from "./types";
@@ -92,6 +93,8 @@ export interface PolicyConditions {
   not_before?: ISODateString;
   not_after?: ISODateString;
   time_window?: TimeWindow;
+  /** v0.8 ABAC (§16.5): all must hold. */
+  attributes?: AttributeCondition[];
 }
 
 export interface PolicyStatement {
@@ -249,7 +252,7 @@ export interface SimulateRequest {
   tree?: string;
   branch?: string;
   path?: string;
-  context: { ip?: string; mfa?: boolean };
+  context: { ip?: string; mfa?: boolean; attributes?: AttributeOverrides };
 }
 
 export type ReasonSource =
@@ -276,6 +279,9 @@ export interface Decision {
   allowed: boolean;
   effect: "allow" | "deny" | "implicit_deny";
   reasons: DecisionReason[];
+  /** v0.8 ABAC (simulator only): attributes the evaluation saw and every attribute condition checked. */
+  attributes?: SimulatedAttributes;
+  conditions?: AttributeCheck[] | null;
 }
 
 export interface EffectiveQuery {

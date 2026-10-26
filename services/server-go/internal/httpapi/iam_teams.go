@@ -184,7 +184,7 @@ func (a *api) handleGetTeam(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		members = append(members, teamMemberView{Account: *acct, Role: m.Role})
+		members = append(members, teamMemberView{Account: memberAccount(*acct), Role: m.Role}) // abac: no attributes
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].Account.Username < members[j].Account.Username })
 	grants, err := a.d.Store.ListSubjectGrants(ctx, domain.SubjectTeam, team.ID)
@@ -288,7 +288,7 @@ func (a *api) handlePutTeamMember(w http.ResponseWriter, r *http.Request) error 
 	}
 	a.audit(r, "team.member.set", t.ID, "team", team.ID,
 		map[string]string{"team": team.Slug, "username": acct.Username, "role": m.Role, "previous_role": prev})
-	writeJSON(w, http.StatusOK, teamMemberView{Account: *acct, Role: m.Role})
+	writeJSON(w, http.StatusOK, teamMemberView{Account: memberAccount(*acct), Role: m.Role}) // abac: no attributes
 	return nil
 }
 

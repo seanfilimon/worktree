@@ -4,6 +4,7 @@
 //! applied access control entries (ACEs) that bind IAM subjects to specific
 //! version control resources.
 
+pub mod attributes;
 pub mod branch_access;
 pub mod declarative;
 pub mod resource;

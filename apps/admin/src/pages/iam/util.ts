@@ -1,5 +1,6 @@
 import { ROLES, type Role } from "@/api/types";
 import type { PolicyStatement, PolicyValidationError, SubjectType } from "@/api/iam";
+import { cleanAttributeConditions, parseAttributeConditions } from "@/components/abac/abac";
 
 export const SUBJECT_LABEL: Record<SubjectType, string> = { user: "User", team: "Team", service_account: "Service account" };
 
@@ -46,6 +47,7 @@ export function cleanStatement(s: PolicyStatement): PolicyStatement {
   if (c.not_before) conditions.not_before = c.not_before;
   if (c.not_after) conditions.not_after = c.not_after;
   if (c.time_window) conditions.time_window = c.time_window;
+  if (c.attributes?.length) conditions.attributes = cleanAttributeConditions(c.attributes);
   const out: PolicyStatement = {
     effect: s.effect,
     actions: s.actions,
@@ -104,6 +106,7 @@ export function parseStatementsJson(text: string): ParsedStatements {
               },
             }
           : {}),
+        ...(Array.isArray(cond.attributes) && cond.attributes.length ? { attributes: parseAttributeConditions(cond.attributes) } : {}),
       },
     });
   }

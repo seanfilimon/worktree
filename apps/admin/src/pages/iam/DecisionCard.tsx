@@ -13,6 +13,7 @@ import {
   ScrollText,
   ShieldCheck,
   ShieldX,
+  Tags,
   Users,
   X,
   type LucideIcon,
@@ -38,6 +39,7 @@ const SOURCE_ICON: Record<string, LucideIcon> = {
   token_scope: KeyRound,
   policy: ScrollText,
   default: CircleDashed,
+  attribute: Tags,
 };
 
 const EFFECT_LABEL: Record<Decision["effect"], string> = {

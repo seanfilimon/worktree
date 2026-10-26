@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { ActionPicker } from "./ActionPicker";
+import { AttributeConditionsSection } from "./AttributeConditionsSection";
 import { FieldErrors } from "./shared";
 import { fieldErrors, fromLocalInput, PRINCIPAL_EXAMPLES, RESOURCE_EXAMPLES, toLocalInput, WEEKDAYS } from "./util";
 
@@ -79,7 +80,7 @@ export function StatementCard({ index, tenant, statement: s, actions, errors, on
   const id = useId();
   const c = s.conditions;
   const condCount =
-    (c.ip_ranges?.length ? 1 : 0) + (c.require_mfa ? 1 : 0) + (c.not_before ? 1 : 0) + (c.not_after ? 1 : 0) + (c.time_window ? 1 : 0);
+    (c.ip_ranges?.length ? 1 : 0) + (c.require_mfa ? 1 : 0) + (c.not_before ? 1 : 0) + (c.not_after ? 1 : 0) + (c.time_window ? 1 : 0) + (c.attributes?.length ?? 0);
   const [condOpen, setCondOpen] = useState(condCount > 0);
   const errs = (f: string) => fieldErrors(errors, index, f);
   const setCond = (patch: Partial<PolicyConditions>) => onChange({ ...s, conditions: { ...c, ...patch } });
@@ -201,7 +202,7 @@ export function StatementCard({ index, tenant, statement: s, actions, errors, on
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="grid gap-4 border-t p-3">
-          <FieldErrors messages={condErrors.filter((m) => !errs("conditions.ip_ranges").includes(m))} />
+          <FieldErrors messages={condErrors.filter((m) => !errs("conditions.ip_ranges").includes(m) && !errs("conditions.attributes").includes(m))} />
           <Field id={`${id}-ip`} label="IP ranges" errors={errs("conditions.ip_ranges")} hint="CIDR ranges; the request IP must be in one, e.g. 10.0.0.0/8.">
             <ChipsInput
               id={`${id}-ip`}
@@ -297,6 +298,13 @@ export function StatementCard({ index, tenant, statement: s, actions, errors, on
               </>
             )}
           </div>
+          <AttributeConditionsSection
+            id={id}
+            index={index}
+            conditions={c.attributes ?? []}
+            errors={errors}
+            onChange={(attributes) => setCond({ attributes })}
+          />
         </CollapsibleContent>
       </Collapsible>
     </Card>

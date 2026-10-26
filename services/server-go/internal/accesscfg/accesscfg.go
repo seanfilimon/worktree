@@ -704,6 +704,16 @@ func canonStatements(in []domain.PolicyStatement) []domain.PolicyStatement {
 			tw.Days = orNil(tw.Days)
 			c.TimeWindow = &tw
 		}
+		// v0.8 ABAC attribute conditions (abac workstream).
+		if len(c.Attributes) == 0 {
+			c.Attributes = nil
+		} else {
+			attrs := make([]domain.AttributeCondition, len(c.Attributes))
+			for j, a := range c.Attributes {
+				attrs[j] = domain.AttributeCondition{Key: strings.TrimSpace(a.Key), Op: strings.ToLower(strings.TrimSpace(a.Op)), Values: orNil(a.Values)}
+			}
+			c.Attributes = attrs
+		}
 		out[i] = st
 	}
 	return out
