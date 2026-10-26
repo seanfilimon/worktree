@@ -118,6 +118,8 @@ export interface StagedSnapshot {
   files_deleted: number;
   message: string;
   staged_at: ISODateString;
+  // staged-v2 (§16.8): named slot per (account, branch); absent or "" = the default slot.
+  label?: string;
 }
 
 export interface BranchProtection {

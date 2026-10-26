@@ -11,7 +11,7 @@ func TestOpsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.GCInterval != 24*time.Hour || cfg.GCGrace != 720*time.Hour || cfg.StagedRetention != 168*time.Hour ||
+	if cfg.GCInterval != 24*time.Hour || cfg.GCGrace != 720*time.Hour || cfg.StagedRetention != 720*time.Hour ||
 		cfg.AuditRetention != 0 || cfg.RateLimit != 1200 || cfg.DefaultMaxTrees != 0 || cfg.DefaultMaxStorage != 0 ||
 		cfg.TLSCert != "" || cfg.TLSKey != "" || cfg.TLSClientCA != "" || cfg.TLSEnabled() {
 		t.Fatalf("ops defaults = %+v", cfg)

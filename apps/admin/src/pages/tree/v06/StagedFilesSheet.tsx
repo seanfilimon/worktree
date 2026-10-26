@@ -108,7 +108,14 @@ export function StagedFilesSheet({ staged, onClose }: StagedFilesSheetProps) {
           </SheetTitle>
           {staged && (
             <SheetDescription>
-              <span className="font-medium text-foreground">{staged.author}</span> on <span className="font-mono">{staged.branch_name}</span> · staged{" "}
+              <span className="font-medium text-foreground">{staged.author}</span> on <span className="font-mono">{staged.branch_name}</span>
+              {staged.label ? (
+                <>
+                  {" "}
+                  · label <span className="font-mono text-foreground">{staged.label}</span>
+                </>
+              ) : null}{" "}
+              · staged{" "}
               <RelativeTime value={staged.staged_at} /> · <span className="font-mono">{shortId(staged.snapshot_id)}</span>
             </SheetDescription>
           )}

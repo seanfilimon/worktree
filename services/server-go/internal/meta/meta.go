@@ -87,6 +87,17 @@ const sep = "\x00"
 // key joins key components with sep.
 func key(parts ...string) string { return strings.Join(parts, sep) }
 
+// stagedKey is the key of a staged entry (v0.8, §16.8): the default,
+// unlabeled slot keeps the pre-v0.8 key, so entries stored before labels
+// existed are the default slot without a data migration; a label adds one
+// trailing component.
+func stagedKey(parts ...string) string {
+	if n := len(parts); n > 0 && parts[n-1] == "" {
+		parts = parts[:n-1]
+	}
+	return key(parts...)
+}
+
 // prefix returns the scan prefix for keys whose first component is first.
 func prefix(first string) string { return first + sep }
 
@@ -357,7 +368,10 @@ func sortStaged(ss []domain.StagedSnapshot) {
 		if c := strings.Compare(a.AccountID, b.AccountID); c != 0 {
 			return c
 		}
-		return strings.Compare(a.BranchName, b.BranchName)
+		if c := strings.Compare(a.BranchName, b.BranchName); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Label, b.Label) // v0.8 (§16.8)
 	})
 }
 

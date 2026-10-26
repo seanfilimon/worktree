@@ -1212,7 +1212,7 @@ func (b *Bolt) PutStaged(ctx context.Context, s *domain.StagedSnapshot) error {
 		if err := prepareStaged(s); err != nil {
 			return err
 		}
-		return putJSON(tx.Bucket(bktStaged), []byte(key(s.TreeID, s.AccountID, s.BranchName)), normStaged(*s))
+		return putJSON(tx.Bucket(bktStaged), []byte(stagedKey(s.TreeID, s.AccountID, s.BranchName, s.Label)), normStaged(*s))
 	})
 }
 
@@ -1236,11 +1236,17 @@ func (b *Bolt) ListStaged(ctx context.Context, treeID, branch string) ([]domain.
 	return out, nil
 }
 
-// DeleteStaged implements domain.MetaStore. Deleting a missing entry is a
-// no-op.
+// DeleteStaged implements domain.MetaStore (the default, unlabeled slot).
+// Deleting a missing entry is a no-op.
 func (b *Bolt) DeleteStaged(ctx context.Context, treeID, accountID, branch string) error {
+	return b.DeleteStagedLabel(ctx, treeID, accountID, branch, "")
+}
+
+// DeleteStagedLabel implements domain.MetaStore (v0.8, §16.8). Deleting a
+// missing entry is a no-op.
+func (b *Bolt) DeleteStagedLabel(ctx context.Context, treeID, accountID, branch, label string) error {
 	return b.update(ctx, func(tx *bolt.Tx) error {
-		return tx.Bucket(bktStaged).Delete([]byte(key(treeID, accountID, branch)))
+		return tx.Bucket(bktStaged).Delete([]byte(stagedKey(treeID, accountID, branch, label)))
 	})
 }
 

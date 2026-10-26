@@ -10,7 +10,8 @@ use crate::commands::{
     compliance, config, daemon, deps, diff, doctor, events, fork, fsck, gc, git, grant, history,
     iam, identity, ignore, inbox, init, invite, license, merge, mfa, mirror, mr, open, owners,
     policy, protect, rebase, release, remote, role, sa, search, session, snapshot, sparse, sso,
-    stash, status, sync, synchronize, tag, team, tenant, todo, token, tree, trees, undo, webhook,
+    staged, stash, status, sync, synchronize, tag, team, tenant, todo, token, tree, trees, undo,
+    webhook,
 };
 
 #[derive(Debug, Parser)]
@@ -73,6 +74,9 @@ pub enum Command {
     Branch(branch::BranchArgs),
     /// Switch branches
     Switch(branch::SwitchArgs),
+    // staged-v2 (§16.8)
+    /// Check out a teammate's staged work into a new local branch (--staged USER[/LABEL])
+    Checkout(staged::CheckoutArgs),
     /// Merge a branch into the current branch
     Merge(merge::MergeArgs),
     /// Create a snapshot that undoes another snapshot

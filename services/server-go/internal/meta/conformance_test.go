@@ -63,6 +63,7 @@ func runConformance(t *testing.T, newStore storeFactory) {
 		{"Snapshots", testSnapshots},
 		{"Tags", testTags},
 		{"Staged", testStaged},
+		{"StagedLabels", testStagedLabels}, // staged-v2 (§16.8), staged_labels_test.go
 		{"Protections", testProtections},
 		{"MergeRequests", testMergeRequests},
 		{"Audit", testAudit},

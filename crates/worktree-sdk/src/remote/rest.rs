@@ -165,6 +165,16 @@ impl RestClient {
         self.send(Method::DELETE, path, &[], None::<&()>).await
     }
 
+    /// staged-v2 (§16.8): DELETE with query parameters, decoding the JSON
+    /// response body.
+    pub async fn delete_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        self.json(Method::DELETE, path, query, None::<&()>).await
+    }
+
     /// Raw response bytes (blob downloads, `/metrics`).
     pub async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
         let text = self.request(Method::GET, path, &[], None::<&()>).await?;

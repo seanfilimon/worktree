@@ -75,7 +75,9 @@ type MetaStore interface {
 	// Staged snapshots (keyed by tree+account+branch; Put replaces)
 	PutStaged(ctx context.Context, s *StagedSnapshot) error
 	ListStaged(ctx context.Context, treeID, branch string) ([]StagedSnapshot, error) // branch "" = all
-	DeleteStaged(ctx context.Context, treeID, accountID, branch string) error
+	DeleteStaged(ctx context.Context, treeID, accountID, branch string) error        // default (unlabeled) slot
+	// v0.8 (§16.8): the key also has the label; "" is the default slot.
+	DeleteStagedLabel(ctx context.Context, treeID, accountID, branch, label string) error
 	CountStaged(ctx context.Context) (int, error)
 
 	// Branch protection (keyed by tree+pattern)

@@ -152,6 +152,11 @@ func prepareStaged(s *domain.StagedSnapshot) error {
 	if err := checkKeys("tree id", s.TreeID, "account id", s.AccountID, "branch name", s.BranchName); err != nil {
 		return err
 	}
+	if s.Label != "" { // v0.8 (§16.8): optional trailing key component
+		if err := checkKey("label", s.Label); err != nil {
+			return err
+		}
+	}
 	if s.StagedAt.IsZero() {
 		s.StagedAt = now()
 	}

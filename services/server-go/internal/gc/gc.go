@@ -275,7 +275,7 @@ func (c *Collector) collect(ctx context.Context, rep *domain.GCReport, now time.
 
 // stagedKey identifies a staged entry.
 func stagedKey(s domain.StagedSnapshot) string {
-	return domain.DocKey(s.TreeID, s.AccountID, s.BranchName)
+	return domain.DocKey(s.TreeID, s.AccountID, s.BranchName, s.Label) // staged-v2 (§16.8): + label
 }
 
 // expireStaged deletes (or, in a dry run, counts) staged snapshots older
@@ -300,7 +300,7 @@ func (c *Collector) expireStaged(ctx context.Context, rep *domain.GCReport, tree
 			if rep.DryRun {
 				continue
 			}
-			if err := c.d.Store.DeleteStaged(ctx, s.TreeID, s.AccountID, s.BranchName); err != nil && !errors.Is(err, domain.ErrNotFound) {
+			if err := c.d.Store.DeleteStagedLabel(ctx, s.TreeID, s.AccountID, s.BranchName, s.Label); err != nil && !errors.Is(err, domain.ErrNotFound) {
 				return nil, fmt.Errorf("delete staged snapshot: %w", err)
 			}
 			if c.d.Bus != nil {

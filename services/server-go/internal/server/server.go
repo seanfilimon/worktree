@@ -180,6 +180,9 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 	rev.SetPushChecks(pathACL, limiter, signer)
 	// ---- end review-v07 ----
 	rev.Start(ctx)
+	// staged-v2 (§16.8): TTL expiry ticker, history pruning, tree.deleted cleanup.
+	stg.MaxAge, stg.Logger = cfg.StagedRetention, log
+	stg.Start(ctx)
 	ciSvc.Start(ctx)
 	// deps-releases (§13.5): bus subscribers creating TODOs from pushed
 	// dependencies and cleaning up TODOs/releases of deleted trees.

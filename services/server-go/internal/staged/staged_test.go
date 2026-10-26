@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
+	"github.com/seanfilimon/worktree/services/server-go/internal/meta"
 )
 
 // ---- fakes ---------------------------------------------------------------
 
 type fakeStore struct {
-	domain.MetaStore // unimplemented methods panic
+	domain.MetaStore // meta.Memory for the methods not overridden
 
 	mu      sync.Mutex
 	staged  map[string]domain.StagedSnapshot
@@ -25,17 +26,26 @@ type fakeStore struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{staged: make(map[string]domain.StagedSnapshot)}
+	// Methods not overridden below (branches, snapshots, docs) use memory.
+	return &fakeStore{MetaStore: meta.NewMemory(), staged: make(map[string]domain.StagedSnapshot)}
 }
 
-func key(tree, acct, branch string) string { return tree + "|" + acct + "|" + branch }
+func key(tree, acct, branch string, label ...string) string {
+	k := tree + "|" + acct + "|" + branch
+	for _, l := range label {
+		if l != "" {
+			k += "|" + l
+		}
+	}
+	return k
+}
 
 func (f *fakeStore) PutStaged(_ context.Context, s *domain.StagedSnapshot) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := *s
 	cp.FilesChanged = append([]string(nil), s.FilesChanged...)
-	f.staged[key(s.TreeID, s.AccountID, s.BranchName)] = cp
+	f.staged[key(s.TreeID, s.AccountID, s.BranchName, s.Label)] = cp
 	f.puts++
 	return nil
 }
@@ -57,10 +67,14 @@ func (f *fakeStore) ListStaged(_ context.Context, treeID, branch string) ([]doma
 	return out, nil
 }
 
-func (f *fakeStore) DeleteStaged(_ context.Context, treeID, accountID, branch string) error {
+func (f *fakeStore) DeleteStaged(ctx context.Context, treeID, accountID, branch string) error {
+	return f.DeleteStagedLabel(ctx, treeID, accountID, branch, "")
+}
+
+func (f *fakeStore) DeleteStagedLabel(_ context.Context, treeID, accountID, branch, label string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	k := key(treeID, accountID, branch)
+	k := key(treeID, accountID, branch, label)
 	if _, ok := f.staged[k]; !ok {
 		return fmt.Errorf("staged %s: %w", k, domain.ErrNotFound)
 	}
@@ -132,6 +146,7 @@ var (
 	alice = &domain.Principal{AccountID: "acct-alice", Username: "alice", TenantID: "t-alice"}
 	bob   = &domain.Principal{AccountID: "acct-bob", Username: "bob", TenantID: "t-bob"}
 	carol = &domain.Principal{AccountID: "acct-carol", Username: "carol", TenantID: "t-carol"}
+	dave  = &domain.Principal{AccountID: "acct-dave", Username: "dave", TenantID: "t-dave"}
 )
 
 type clock struct {
@@ -374,7 +389,11 @@ func TestListAuthzAndOrder(t *testing.T) {
 	e.clock.advance(time.Second)
 	stage(t, e, carol, "dev", "s3")
 
-	got, err := e.svc.List(context.Background(), nil, tree, "") // anonymous read allowed by fake
+	// v0.8 (§16.8): anonymous readers see nothing.
+	if anon, err := e.svc.List(context.Background(), nil, tree, ""); err != nil || anon == nil || len(anon) != 0 {
+		t.Fatalf("anonymous list = %v, %v", anon, err)
+	}
+	got, err := e.svc.List(context.Background(), dave, tree, "")
 	if err != nil {
 		t.Fatal(err)
 	}

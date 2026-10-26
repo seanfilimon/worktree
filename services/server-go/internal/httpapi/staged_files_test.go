@@ -70,7 +70,8 @@ func TestStagedFilesList(t *testing.T) {
 		{"owner sees everything", "alice", "wip-1", 200, "", []string{"README.md", "secret/key.txt", "vendor/lib.c"}, 0},
 		{"path deny hides secret", "bob", "wip-1", 200, "", []string{"README.md", "vendor/lib.c"}, 1},
 		{"license hides vendor", "olga", "wip-1", 200, "", []string{"README.md", "secret/key.txt"}, 1},
-		{"anonymous on a public tree", "", "wip-1", 200, "", []string{"README.md", "secret/key.txt"}, 1},
+		// staged-v2 (§16.8): staged metadata is hidden from anonymous readers.
+		{"anonymous on a public tree", "", "wip-1", 404, "not_found", nil, 0},
 		{"unknown staged snapshot", "alice", "nope", 404, "not_found", nil, 0},
 		{"committed snapshot is not staged", "alice", f.p2, 404, "not_found", nil, 0},
 		{"no manifest", "alice", "wip-none", 404, "not_found", nil, 0},
@@ -110,7 +111,7 @@ func TestStagedFileContent(t *testing.T) {
 		{"path denied", "bob", "wip-1", "secret/key.txt", 403, codePathDenied, ""},
 		{"path denied hides existence", "bob", "wip-1", "secret/other.txt", 403, codePathDenied, ""},
 		{"license restricted", "olga", "wip-1", "vendor/lib.c", 451, codeLicenseRestricted, ""},
-		{"anonymous license restricted", "", "wip-1", "vendor/lib.c", 451, codeLicenseRestricted, ""},
+		{"anonymous sees no staged entry", "", "wip-1", "README.md", 404, "not_found", ""}, // staged-v2 (§16.8)
 		{"missing file", "alice", "wip-1", "nope.txt", 404, "not_found", ""},
 		{"unknown staged snapshot", "alice", "nope", "README.md", 404, "not_found", ""},
 		{"invalid path", "alice", "wip-1", "a/../README.md", 400, "bad_request", ""},

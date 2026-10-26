@@ -28,10 +28,10 @@ const (
 	DefaultAdminUser       = "admin"
 	DefaultShutdownTimeout = 15 * time.Second
 
-	// Operations defaults (§13.3).
+	// Operations defaults (§13.3). staged-v2 (§16.8): staged TTL 30 days.
 	DefaultGCInterval      = 24 * time.Hour
 	DefaultGCGrace         = 720 * time.Hour
-	DefaultStagedRetention = 168 * time.Hour
+	DefaultStagedRetention = 720 * time.Hour
 	DefaultRateLimit       = 1200 // requests per minute per principal / IP
 )
 
@@ -94,7 +94,8 @@ type Config struct {
 	// deleted. Flag --gc-grace, env WT_GC_GRACE.
 	GCGrace time.Duration
 	// StagedRetention expires staged snapshots older than this (0 keeps
-	// them). Flag --staged-retention, env WT_STAGED_RETENTION.
+	// them). Flags --staged-ttl / --staged-retention, env WT_STAGED_TTL /
+	// WT_STAGED_RETENTION (staged-v2, §16.8: default 30 days).
 	StagedRetention time.Duration
 	// AuditRetention deletes audit events older than this (0 keeps them).
 	// Flag --audit-retention, env WT_AUDIT_RETENTION.
@@ -302,6 +303,7 @@ func fromEnv(lookup lookupFunc) (Config, error) {
 	dur("WT_GC_INTERVAL", &cfg.GCInterval)
 	dur("WT_GC_GRACE", &cfg.GCGrace)
 	dur("WT_STAGED_RETENTION", &cfg.StagedRetention)
+	dur("WT_STAGED_TTL", &cfg.StagedRetention) // staged-v2 (§16.8): preferred name
 	dur("WT_AUDIT_RETENTION", &cfg.AuditRetention)
 	integer := func(key string, dst *int64) {
 		if v, ok := lookup(key); ok && v != "" {
@@ -414,7 +416,9 @@ func newFlagSet(cfg *Config, out io.Writer) *flag.FlagSet {
 	fs.StringVar(&cfg.TLSClientCA, "tls-client-ca", cfg.TLSClientCA, "PEM CA bundle `file`; requires client certificates signed by it (mTLS) (env WT_TLS_CLIENT_CA)")
 	fs.DurationVar(&cfg.GCInterval, "gc-interval", cfg.GCInterval, "garbage-collection `period`; 0 disables automatic runs (env WT_GC_INTERVAL)")
 	fs.DurationVar(&cfg.GCGrace, "gc-grace", cfg.GCGrace, "how long unreachable objects stay marked before deletion (env WT_GC_GRACE)")
-	fs.DurationVar(&cfg.StagedRetention, "staged-retention", cfg.StagedRetention, "expire staged snapshots older than this `age`; 0 keeps them (env WT_STAGED_RETENTION)")
+	// staged-v2 (§16.8): --staged-ttl is the preferred name; --staged-retention is kept as an alias.
+	fs.DurationVar(&cfg.StagedRetention, "staged-ttl", cfg.StagedRetention, "expire staged snapshots older than this `age` (status expired, kept 30 days in the staged history); 0 keeps them (env WT_STAGED_TTL)")
+	fs.DurationVar(&cfg.StagedRetention, "staged-retention", cfg.StagedRetention, "alias of --staged-ttl (env WT_STAGED_RETENTION)")
 	fs.DurationVar(&cfg.AuditRetention, "audit-retention", cfg.AuditRetention, "delete audit events older than this `age`; 0 keeps them (env WT_AUDIT_RETENTION)")
 	fs.IntVar(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "requests per minute per principal or anonymous IP; 0 disables (env WT_RATE_LIMIT)")
 	fs.IntVar(&cfg.DefaultMaxTrees, "default-max-trees", cfg.DefaultMaxTrees, "default maximum trees per tenant; 0 = unlimited (env WT_DEFAULT_MAX_TREES)")

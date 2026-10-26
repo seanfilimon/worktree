@@ -52,6 +52,7 @@ pub mod session;
 pub mod snapshot;
 pub mod sparse;
 pub mod sso;
+pub mod staged; // staged-v2 (§16.8)
 pub mod stash;
 pub mod status;
 pub mod sync;
@@ -81,6 +82,7 @@ pub fn run(ctx: &Context, command: Command) -> Result<()> {
         Command::Diff(args) => diff::run(ctx, args),
         Command::Branch(args) => branch::run(ctx, args),
         Command::Switch(args) => branch::switch(ctx, args),
+        Command::Checkout(args) => staged::checkout(ctx, args), // staged-v2 (§16.8)
         Command::Merge(args) => merge::run(ctx, args),
         Command::Revert(args) => merge::revert(ctx, args),
         Command::Restore(args) => merge::restore(ctx, args),

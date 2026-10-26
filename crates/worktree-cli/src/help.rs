@@ -22,6 +22,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         &[
             "branch",
             "switch",
+            "checkout",
             "merge",
             "revert",
             "restore",

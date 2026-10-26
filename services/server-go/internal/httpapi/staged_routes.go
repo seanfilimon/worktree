@@ -28,6 +28,9 @@ func (a *api) registerStagedRoutes(tree string) {
 	// v0.6 (§14.9): browse a staged entry's working manifest.
 	a.handle("GET "+tree+"/staged/{snapshot}/files", a.handleStagedFiles)
 	a.handle("GET "+tree+"/staged/{snapshot}/files/{path...}", a.handleStagedFile)
+	// v0.8 (§16.8): history and push-time overlaps (staged_v2.go).
+	a.handle("GET "+tree+"/staged/history", a.handleStagedHistory)
+	a.handle("GET "+tree+"/staged/overlaps", a.handleStagedOverlaps)
 }
 
 // stagedFilesResponse is the body of GET {tree}/staged/{snapshot}/files.
@@ -122,6 +125,10 @@ func (a *api) handleStagedFiles(w http.ResponseWriter, r *http.Request) error {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	st.FilesChanged = nonNil(st.FilesChanged)
+	// staged-v2 (§16.8): restricted paths are not listed in the metadata either.
+	if err := a.filterStagedFiles(ctx, principal(r), tree, 1, func(int) *[]string { return &st.FilesChanged }); err != nil {
+		return err
+	}
 	writeJSON(w, http.StatusOK, stagedFilesResponse{Staged: *st, Files: files, RestrictedCount: restricted})
 	return nil
 }
@@ -232,7 +239,22 @@ func (a *api) handleUnstage(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
-	removed, err := u.Unstage(r.Context(), p, tree, accountID, branch)
+	var removed []domain.StagedSnapshot
+	if q.Has("label") { // v0.8 (§16.8): one slot ("label=" is the default slot)
+		lu, ok := a.d.Staged.(staged.LabelUnstager)
+		if !ok {
+			return &apiError{status: http.StatusNotImplemented, code: "not_implemented", msg: "staged labels are not supported by this server"}
+		}
+		if branch == "" {
+			return badRequestf("label requires branch")
+		}
+		if err := staged.ValidateLabel(q.Get("label")); err != nil {
+			return badRequestf("invalid label %q (1-64 characters a-z 0-9 _ . -, starting with a letter or digit)", q.Get("label"))
+		}
+		removed, err = lu.UnstageLabel(r.Context(), p, tree, accountID, branch, q.Get("label"))
+	} else {
+		removed, err = u.Unstage(r.Context(), p, tree, accountID, branch)
+	}
 	if err != nil {
 		return err
 	}
@@ -240,6 +262,7 @@ func (a *api) handleUnstage(w http.ResponseWriter, r *http.Request) error {
 		a.audit(r, "staged.unstage", t.ID, "staged", tree.ID+"/"+s.BranchName, map[string]string{
 			"tree":     tree.Name,
 			"branch":   s.BranchName,
+			"label":    s.Label,
 			"author":   s.Author,
 			"snapshot": s.SnapshotID,
 		})

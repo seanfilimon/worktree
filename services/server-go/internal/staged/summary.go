@@ -41,7 +41,8 @@ type AuthorActivity struct {
 	FilesAdded    uint32    `json:"files_added"`
 	FilesModified uint32    `json:"files_modified"`
 	FilesDeleted  uint32    `json:"files_deleted"`
-	FilesListed   int       `json:"files_listed"` // len(FilesChanged) as stored
+	FilesListed   int       `json:"files_listed"`    // len(FilesChanged) as stored
+	Label         string    `json:"label,omitempty"` // v0.8 (§16.8)
 	StagedAt      time.Time `json:"staged_at"`
 }
 
@@ -58,6 +59,7 @@ type Contributor struct {
 	AccountID string `json:"account_id"`
 	Author    string `json:"author"`
 	Branch    string `json:"branch"`
+	Label     string `json:"label,omitempty"` // v0.8 (§16.8)
 }
 
 // Summary aggregates the tree's live staged snapshots per branch, sorted by
@@ -75,6 +77,9 @@ func (s *Service) Summary(ctx context.Context, p *domain.Principal, tree *domain
 	}
 	if err := s.authz.Authorize(ctx, p, domain.ActTreeRead, tree.TenantID, tree); err != nil {
 		return nil, err
+	}
+	if p == nil { // v0.8 (§16.8): hidden from anonymous readers
+		return []BranchActivity{}, nil
 	}
 	live, err := s.listLive(ctx, tree, "")
 	if err != nil {
@@ -107,6 +112,7 @@ func summarize(entries []domain.StagedSnapshot) []BranchActivity {
 			FilesDeleted:  e.FilesDeleted,
 			FilesListed:   len(e.FilesChanged),
 			StagedAt:      e.StagedAt,
+			Label:         e.Label,
 		})
 		ba.FilesAdded += int(e.FilesAdded)
 		ba.FilesModified += int(e.FilesModified)
@@ -114,7 +120,7 @@ func summarize(entries []domain.StagedSnapshot) []BranchActivity {
 		if e.StagedAt.After(ba.LatestAt) {
 			ba.LatestAt = e.StagedAt
 		}
-		c := Contributor{AccountID: e.AccountID, Author: e.Author, Branch: e.BranchName}
+		c := Contributor{AccountID: e.AccountID, Author: e.Author, Branch: e.BranchName, Label: e.Label}
 		seen := make(map[string]struct{}, len(e.FilesChanged))
 		for _, f := range e.FilesChanged {
 			if _, dup := seen[f]; dup {

@@ -55,7 +55,13 @@ pub(crate) fn summarize_changes(base: &Manifest, working: &Manifest) -> ChangeSu
 /// branch head (the server's tip when known locally, else the last fetched
 /// `refs/remotes/<remote>/<branch>`), i.e. everything this user has not
 /// pushed yet — committed or not.
-pub(crate) async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result<StagedInfo> {
+/// staged-v2 (§16.8): `label` names the slot ("" = the default slot).
+pub(crate) async fn stage(
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    label: &str,
+) -> Result<StagedInfo> {
     let tree_name = repo.tree(tree)?.name;
     let branch = repo.current_branch(&tree_name)?;
     let mut session = session::open(repo, &tree_name, remote, Access::Write).await?;
@@ -135,7 +141,7 @@ pub(crate) async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result
         message: message.clone(),
         account_id: None,
         manifest_hash: Some(wire_hash(&manifest_hash)),
-        ..Default::default()
+        label: label.to_string(),
     };
     session.client.stage(req).await?;
 
@@ -149,6 +155,8 @@ pub(crate) async fn stage(repo: &Repository, tree: &str, remote: &str) -> Result
         files_deleted: summary.deleted,
         message,
         staged_at: Utc::now(),
+        label: label.to_string(),
+        manifest_hash: Some(manifest_hash.to_hex()),
     })
 }
 
