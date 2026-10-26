@@ -34,6 +34,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatNumber } from "@/lib/format";
 import { tenantPath, treePath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
+import { WatchControl } from "@/pages/notifications/WatchControl";
 import type { TreeContext } from "./context";
 import { LoadingRows, QueryError } from "./history/shared";
 
@@ -200,6 +201,7 @@ export function TreeLayout() {
             {tree}
           </h1>
           {s && <VisibilityBadge visibility={s.tree.visibility} />}
+          {s && <div className="ml-auto"><WatchControl scope={{ tenant, tree }} /></div> /* notifications (§15.3) */}
         </div>
         {s ? (
           <>

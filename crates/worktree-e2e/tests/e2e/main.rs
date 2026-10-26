@@ -56,3 +56,4 @@ mod webhooks;
 mod sparse_checkout;
 mod backups; // storage-backends (§15.2)
 mod mirrors;
+mod notifications;

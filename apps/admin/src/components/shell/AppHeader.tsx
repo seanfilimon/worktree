@@ -7,6 +7,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Breadcrumbs } from "./Breadcrumbs";
 import type { HeaderTrail } from "./headerTrail";
 import { useLiveStatus } from "./liveStatus";
+import { NotificationBell } from "./NotificationBell";
 import { isApplePlatform } from "./shortcuts";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -44,6 +45,7 @@ export function AppHeader({ trail, onOpenPalette }: AppHeaderProps) {
           </KbdGroup>
         </Button>
         <LiveIndicator status={live} compact />
+        <NotificationBell /> {/* notifications (§15.3) */}
         <ThemeToggle />
       </div>
     </header>

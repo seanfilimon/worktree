@@ -16,6 +16,8 @@ const V05_EVENT_TYPES = [
   "release.created",
   "release.deleted",
   "access.applied",
+  // notifications (§15.3): delivered only to their account.
+  "notification.created",
 ] as const;
 
 /** The subset of EventSource this client relies on (eases testing). */
