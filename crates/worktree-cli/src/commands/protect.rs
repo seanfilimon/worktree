@@ -110,6 +110,10 @@ pub enum TagCommand {
         /// Account allowed to create, move or delete matching tags (repeatable; default: anyone with write access)
         #[arg(long = "tagger", value_name = "U")]
         taggers: Vec<String>,
+        // v0.7 trust (§15.8).
+        /// Matching tags must carry a verified signature (`wt tag NAME --sign`)
+        #[arg(long)]
+        require_signed: bool,
     },
     /// Remove the rule for a tag pattern
     #[command(allow_missing_positional = true)]
@@ -152,6 +156,8 @@ struct TagProtection {
     no_move: bool,
     #[serde(deserialize_with = "nullable")]
     allowed_taggers: Vec<String>,
+    // v0.7 trust (§15.8).
+    require_signed: bool,
 }
 
 pub fn run(ctx: &Context, args: ProtectArgs) -> Result<()> {
@@ -243,6 +249,7 @@ fn run_tag(ctx: &Context, api: &Api, command: TagCommand) -> Result<()> {
             no_delete,
             no_move,
             taggers,
+            require_signed,
         } => {
             let tree = tree_or_default(ctx, tree)?;
             let rule = TagProtection {
@@ -250,6 +257,7 @@ fn run_tag(ctx: &Context, api: &Api, command: TagCommand) -> Result<()> {
                 no_delete,
                 no_move,
                 allowed_taggers: taggers,
+                require_signed,
             };
             let value = api.put(&tag_path(&tree), &rule)?;
             render(out, &value, |t, rule: TagProtection| {
@@ -376,6 +384,9 @@ fn describe_tag(rule: &TagProtection) -> String {
     }
     if !rule.allowed_taggers.is_empty() {
         parts.push(format!("taggers {}", rule.allowed_taggers.join(", ")));
+    }
+    if rule.require_signed {
+        parts.push("signed tags only".into()); // v0.7 trust
     }
     if parts.is_empty() {
         "no restrictions".into()
@@ -580,6 +591,7 @@ mod tests {
             no_delete,
             no_move,
             taggers,
+            require_signed,
         } = tag(&[
             "tag",
             "set",
@@ -588,11 +600,12 @@ mod tests {
             "--no-move",
             "--tagger",
             "ada",
+            "--require-signed",
         ])
         else {
             panic!()
         };
-        assert!(tree.is_none() && no_delete && no_move);
+        assert!(tree.is_none() && no_delete && no_move && require_signed);
         assert_eq!((pattern.as_str(), taggers), ("v*", vec!["ada".to_string()]));
         assert!(matches!(
             tag(&["tag", "remove", "acme/web", "v*", "--yes"]),

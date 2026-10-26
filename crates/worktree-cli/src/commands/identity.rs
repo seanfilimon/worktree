@@ -205,7 +205,7 @@ fn key_fields(t: &mut Text, info: &KeyInfo) {
     );
 }
 
-fn describe(v: &Verification) -> String {
+pub(crate) fn describe(v: &Verification) -> String {
     match v {
         Verification::Unsigned => "unsigned".into(),
         Verification::Valid {
@@ -219,7 +219,7 @@ fn describe(v: &Verification) -> String {
 }
 
 /// Unrevoked registered keys of `username` as trusted keys.
-fn account_keys(ctx: &Context, username: &str) -> Result<Vec<TrustedKey>> {
+pub(crate) fn account_keys(ctx: &Context, username: &str) -> Result<Vec<TrustedKey>> {
     let client = ctx.rest()?;
     let value: Value = call(client.get(&format!("/api/v1/accounts/{}/keys", seg(username))))?;
     let list: Vec<ServerKey> = decode(&value)?;

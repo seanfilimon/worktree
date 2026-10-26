@@ -166,6 +166,7 @@ func (s *Service) List(ctx context.Context, treeID string, withDrafts bool) ([]d
 		}
 		out = append(out, normalize(r))
 	}
+	s.decorate(ctx, treeID, out)
 	slices.SortStableFunc(out, func(a, b domain.Release) int {
 		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
 			return c
@@ -194,8 +195,9 @@ func (s *Service) Get(ctx context.Context, treeID, tag string, withDrafts bool) 
 	if r.Draft && !withDrafts {
 		return nil, errorf(domain.ErrNotFound, "release %q not found", tag)
 	}
-	n := normalize(*r)
-	return &n, nil
+	one := []domain.Release{normalize(*r)}
+	s.decorate(ctx, treeID, one)
+	return &one[0], nil
 }
 
 // ---- create / update / delete --------------------------------------------------
@@ -209,6 +211,10 @@ type CreateInput struct {
 	Draft      bool
 	Prerelease bool
 	SnapshotID string
+
+	// CheckTag, when set, vets a tag the release creates before it is
+	// stored (v0.7 trust: signature and RequireSigned checks).
+	CheckTag func(*domain.Tag) error
 }
 
 func validateText(field, v string, max int) error {
@@ -255,6 +261,13 @@ func (s *Service) Create(ctx context.Context, p *domain.Principal, tenant *domai
 		}
 		tag = &domain.Tag{TreeID: tree.ID, Name: in.Tag, Target: in.SnapshotID,
 			Message: "Release " + in.Tag, Tagger: username(p), CreatedAt: s.now()}
+		// v0.7 trust (§15.8): RequireSigned tag protections refuse the
+		// (unsigned) tag a release would create.
+		if in.CheckTag != nil {
+			if err := in.CheckTag(tag); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.d.Store.PutTag(ctx, tag); err != nil {
 			if errors.Is(err, domain.ErrAlreadyExists) {
 				return nil, errorf(domain.ErrConflict, "tag %q was created concurrently", in.Tag)
@@ -295,6 +308,7 @@ func (s *Service) Create(ctx context.Context, p *domain.Principal, tenant *domai
 		}
 		return nil, err
 	}
+	r.Verified, r.SigningKeyID, r.Signer = tag.Verified, tag.SigningKeyID, tag.Signer // v0.7 trust: computed, not stored
 	s.publish(domain.EventReleaseCreated, tree, p, &r)
 	s.audit(ctx, p, tenant, "release.create", "release", tree.ID+"/"+r.Tag, map[string]string{
 		"tag": r.Tag, "snapshot": r.SnapshotID, "draft": fmt.Sprint(r.Draft), "prerelease": fmt.Sprint(r.Prerelease),
@@ -395,7 +409,9 @@ func (s *Service) mutate(ctx context.Context, p *domain.Principal, tenant *domai
 	if err != nil {
 		return nil, err
 	}
-	n := normalize(*out)
+	one := []domain.Release{normalize(*out)}
+	s.decorate(ctx, tree.ID, one)
+	n := one[0]
 	if changed {
 		s.publish(EventReleaseUpdated, tree, p, &n)
 		s.audit(ctx, p, tenant, action, "release", tree.ID+"/"+tag, details)
@@ -466,6 +482,7 @@ func (s *Service) PutAsset(ctx context.Context, p *domain.Principal, tenant *dom
 	asset := domain.ReleaseAsset{
 		Name: name, Size: int64(len(data)), Hash: h,
 		ContentType: contentType(declaredType, name), UploadedAt: s.now(),
+		SHA256: sha256Hex(data), // v0.7 trust (§15.8)
 	}
 	details := map[string]string{"tag": tag, "asset": name, "size": fmt.Sprint(asset.Size), "hash": h.String()}
 	_, err = s.mutate(ctx, p, tenant, tree, tag, "release.asset.upload", details, func(r *domain.Release, _ time.Time) (bool, error) {

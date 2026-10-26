@@ -502,7 +502,10 @@ mod tests {
         else {
             panic!()
         };
-        let Some(tag::TagCommand::Create { name, rev, message }) = a.action else {
+        let Some(tag::TagCommand::Create {
+            name, rev, message, ..
+        }) = a.action
+        else {
             panic!()
         };
         assert_eq!(name, "v1");

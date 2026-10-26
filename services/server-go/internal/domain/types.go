@@ -157,6 +157,18 @@ type Tag struct {
 	Message   string    `json:"message"`
 	Tagger    string    `json:"tagger"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// v0.7 trust (§15.8): signed tags. Signature is an Ed25519 signature
+	// over the TagRecord with signature fields cleared (signing.TagPayload)
+	// by the key SigningKeyID; Verified is set by the server only after
+	// checking it against a registered, unrevoked key, whose account is
+	// Signer. Tagger stays the authenticated creator; SignedTagger is the
+	// tagger value the signature covers (sent back as the record's tagger).
+	Signature    []byte `json:"signature,omitempty"`
+	SigningKeyID string `json:"signing_key_id,omitempty"`
+	Verified     bool   `json:"verified"`
+	Signer       string `json:"signer,omitempty"`
+	SignedTagger string `json:"signed_tagger,omitempty"`
 }
 
 // StagedSnapshot is a WIP snapshot visible to the team but not part of

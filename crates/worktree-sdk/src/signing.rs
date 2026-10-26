@@ -15,6 +15,10 @@
 //! `[signing] key = "<name>"` selects the key ("" = signing disabled unless
 //! a snapshot asks for it, which then uses the `default` key) and
 //! `auto = true` signs every locally created snapshot.
+//!
+//! v0.7 (§15.8): tags are signed the same way, over their `TagRecord` with
+//! `signature` and `signing_key_id` cleared ([`tag_signed_payload`]);
+//! `auto = true` also signs every tag created with [`create_tag`].
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -26,9 +30,11 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, Verifying
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use worktree_protocol::proto::sync as wire;
+
 use crate::config::SigningSection;
 use crate::error::{Result, SdkError};
-use crate::model::{Snapshot, SnapshotSignature};
+use crate::model::{Snapshot, SnapshotSignature, TagInfo};
 use crate::repo::Repository;
 
 /// The only supported signature algorithm.
@@ -106,17 +112,10 @@ pub fn decode_public_key_base64(text: &str) -> Result<[u8; 32]> {
 /// Whether `snapshot.signature` is a valid signature of its payload by
 /// `public_key` (false for unsigned snapshots and malformed keys).
 pub fn verify_signature(snapshot: &Snapshot, public_key: &[u8; 32]) -> bool {
-    let Some(sig) = &snapshot.signature else {
-        return false;
-    };
-    let Ok(bytes) = <[u8; SIGNATURE_LEN]>::try_from(sig.signature.as_slice()) else {
-        return false;
-    };
-    let Ok(key) = VerifyingKey::from_bytes(public_key) else {
-        return false;
-    };
-    key.verify(&signed_payload(snapshot), &Signature::from_bytes(&bytes))
-        .is_ok()
+    snapshot
+        .signature
+        .as_ref()
+        .is_some_and(|sig| verify_bytes(&signed_payload(snapshot), &sig.signature, public_key))
 }
 
 /// Sign `snapshot` in place when signing is configured for the repository
@@ -145,21 +144,36 @@ pub fn sign_configured(
     snapshot: &mut Snapshot,
     force: bool,
 ) -> Result<bool> {
+    match configured_key(section, keys, force)? {
+        Some(key) => {
+            key.sign(snapshot);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// The key a `[signing]` section selects when signing is wanted (`auto`
+/// with a key name, or `force`), `None` otherwise. `InvalidConfig` when
+/// the key does not exist.
+fn configured_key(
+    section: &SigningSection,
+    keys: &KeyStore,
+    force: bool,
+) -> Result<Option<LocalKey>> {
     let configured = section.key.trim();
     if !force && !(section.auto && !configured.is_empty()) {
-        return Ok(false);
+        return Ok(None);
     }
     let name = if configured.is_empty() {
         DEFAULT_KEY
     } else {
         configured
     };
-    let key = keys.load(name).map_err(|e| match e {
+    keys.load(name).map(Some).map_err(|e| match e {
         SdkError::InvalidArgument(msg) => SdkError::InvalidConfig(msg),
         other => other,
-    })?;
-    key.sign(snapshot);
-    Ok(true)
+    })
 }
 
 /// Result of verifying a snapshot signature.
@@ -215,13 +229,31 @@ impl TrustedKey {
 
 /// Verify `snapshot` against `keys`, matching its key id.
 pub fn verify_with_keys(snapshot: &Snapshot, keys: &[TrustedKey]) -> Verification {
-    let Some(sig) = &snapshot.signature else {
+    verify_payload(
+        snapshot.signature.as_ref(),
+        || signed_payload(snapshot),
+        keys,
+    )
+}
+
+/// Verify `snapshot` against the keys in `<wt home>/keys/`.
+pub fn verify_with_local_keys(snapshot: &Snapshot) -> Result<Verification> {
+    KeyStore::default_location().verify(snapshot)
+}
+
+/// Match `sig` against `keys` and check it over `payload`.
+fn verify_payload(
+    sig: Option<&SnapshotSignature>,
+    payload: impl FnOnce() -> Vec<u8>,
+    keys: &[TrustedKey],
+) -> Verification {
+    let Some(sig) = sig else {
         return Verification::Unsigned;
     };
     let key_id = sig.key_id.clone();
     match keys.iter().find(|k| k.ids.contains(&key_id)) {
         None => Verification::UnknownKey { key_id },
-        Some(k) if verify_signature(snapshot, &k.public_key) => Verification::Valid {
+        Some(k) if verify_bytes(&payload(), &sig.signature, &k.public_key) => Verification::Valid {
             key_id,
             key: k.label.clone(),
             fingerprint: fingerprint(&k.public_key),
@@ -233,9 +265,155 @@ pub fn verify_with_keys(snapshot: &Snapshot, keys: &[TrustedKey]) -> Verificatio
     }
 }
 
-/// Verify `snapshot` against the keys in `<wt home>/keys/`.
-pub fn verify_with_local_keys(snapshot: &Snapshot) -> Result<Verification> {
-    KeyStore::default_location().verify(snapshot)
+/// Whether `signature` is a valid Ed25519 signature of `payload`.
+fn verify_bytes(payload: &[u8], signature: &[u8], public_key: &[u8; 32]) -> bool {
+    let Ok(bytes) = <[u8; SIGNATURE_LEN]>::try_from(signature) else {
+        return false;
+    };
+    let Ok(key) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    key.verify(payload, &Signature::from_bytes(&bytes)).is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// v0.7 trust (ENGINEERING_PLAN §15.8): signed tags
+//
+// The signed payload of a tag is the deterministic protobuf encoding of its
+// `TagRecord` with `signature` and `signing_key_id` cleared. An empty
+// message is encoded as absent (the server does not distinguish "" from no
+// message). The Go server rebuilds the same bytes
+// (`internal/signing.TagPayload`); both sides pin a shared test vector.
+
+/// The unsigned wire record of `tag` (signature fields empty).
+pub(crate) fn tag_record(tag: &TagInfo) -> wire::TagRecord {
+    wire::TagRecord {
+        name: tag.name.clone(),
+        target: Some(wire::SnapshotId {
+            value: tag.target.clone(),
+        }),
+        message: tag.message.clone().filter(|m| !m.is_empty()),
+        tagger: tag.tagger.clone(),
+        created_at: Some(prost_types::Timestamp {
+            seconds: tag.created_at.timestamp(),
+            nanos: tag.created_at.timestamp_subsec_nanos() as i32,
+        }),
+        signature: Vec::new(),
+        signing_key_id: String::new(),
+    }
+}
+
+/// The canonical bytes a tag signature covers.
+pub fn tag_signed_payload(tag: &TagInfo) -> Vec<u8> {
+    use prost::Message;
+    tag_record(tag).encode_to_vec()
+}
+
+/// Whether `tag.signature` is a valid signature by `public_key`.
+pub fn verify_tag_signature(tag: &TagInfo, public_key: &[u8; 32]) -> bool {
+    tag.signature
+        .as_ref()
+        .is_some_and(|sig| verify_bytes(&tag_signed_payload(tag), &sig.signature, public_key))
+}
+
+/// Verify `tag` against `keys`, matching its key id.
+pub fn verify_tag_with_keys(tag: &TagInfo, keys: &[TrustedKey]) -> Verification {
+    verify_payload(tag.signature.as_ref(), || tag_signed_payload(tag), keys)
+}
+
+/// Sign `tag` in place when `[signing]` asks for it (`auto` with a key) or
+/// `force` (`wt tag --sign`); returns whether it was signed.
+pub fn sign_tag_configured(
+    section: &SigningSection,
+    keys: &KeyStore,
+    tag: &mut TagInfo,
+    force: bool,
+) -> Result<bool> {
+    match configured_key(section, keys, force)? {
+        Some(key) => {
+            key.sign_tag(tag);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Create tag `name` at `rev` (default HEAD) like
+/// [`Repository::create_tag`], signed when `[signing] auto` is on or
+/// `sign` is set. The key is loaded first, so a missing key fails before
+/// the tag exists.
+pub fn create_tag(
+    repo: &Repository,
+    tree: &str,
+    name: &str,
+    rev: Option<&str>,
+    message: Option<&str>,
+    sign: bool,
+) -> Result<TagInfo> {
+    let key = configured_key(&repo.config().signing, &KeyStore::default_location(), sign)?;
+    let mut tag = repo.create_tag(tree, name, rev, message)?;
+    if let Some(key) = key {
+        key.sign_tag(&mut tag);
+        repo.put_tag(tree, &tag)?;
+    }
+    Ok(tag)
+}
+
+/// Verify `tag` against the keys in `<wt home>/keys/`.
+pub fn verify_tag_with_local_keys(tag: &TagInfo) -> Result<Verification> {
+    KeyStore::default_location().verify_tag(tag)
+}
+
+// Release integrity helpers (`wt release verify`, §15.8).
+
+/// Lowercase hex SHA-256 of `data`.
+pub fn sha256_hex(data: &[u8]) -> String {
+    encode_hex(&Sha256::digest(data))
+}
+
+/// Standard (padded) base64, as Go encodes `[]byte` in JSON.
+pub fn encode_base64(data: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Decode standard (padded or unpadded) base64, as Go encodes `[]byte`.
+pub fn decode_base64(text: &str) -> Result<Vec<u8>> {
+    let text = text.trim();
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(text))
+        .map_err(|e| SdkError::Serialization(format!("base64: {e}")))
+}
+
+/// Parse a SHA256SUMS file (`<hex>  <name>` or `<hex> *<name>` lines) into
+/// (name, lowercase hex) pairs; blank lines and `#` comments are skipped,
+/// malformed lines are errors.
+pub fn parse_checksums(text: &str) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parsed = line.split_once(' ').and_then(|(sum, rest)| {
+            let name = rest
+                .strip_prefix(' ')
+                .or_else(|| rest.strip_prefix('*'))
+                .unwrap_or(rest);
+            let ok = sum.len() == 64 && sum.chars().all(|c| c.is_ascii_hexdigit());
+            (ok && !name.is_empty()).then(|| (name.to_string(), sum.to_ascii_lowercase()))
+        });
+        match parsed {
+            Some(pair) => out.push(pair),
+            None => {
+                return Err(SdkError::Serialization(format!(
+                    "checksums line {}: expected '<sha256>  <name>'",
+                    i + 1
+                )))
+            }
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +505,15 @@ impl LocalKey {
         snapshot.signature = None;
         let sig = self.secret.sign(&signed_payload(snapshot));
         snapshot.signature = Some(SnapshotSignature {
+            key_id: self.info.signing_id().to_string(),
+            signature: sig.to_bytes().to_vec(),
+        });
+    }
+
+    /// Sign `tag` in place (replacing any earlier signature).
+    pub fn sign_tag(&self, tag: &mut TagInfo) {
+        let sig = self.secret.sign(&tag_signed_payload(tag));
+        tag.signature = Some(SnapshotSignature {
             key_id: self.info.signing_id().to_string(),
             signature: sig.to_bytes().to_vec(),
         });
@@ -496,6 +683,14 @@ impl KeyStore {
             return Ok(Verification::Unsigned);
         }
         Ok(verify_with_keys(snapshot, &self.trusted()?))
+    }
+
+    /// Verify `tag` against the local keys.
+    pub fn verify_tag(&self, tag: &TagInfo) -> Result<Verification> {
+        if tag.signature.is_none() {
+            return Ok(Verification::Unsigned);
+        }
+        Ok(verify_tag_with_keys(tag, &self.trusted()?))
     }
 }
 
@@ -927,6 +1122,159 @@ mod tests {
                 auto: false
             }
         );
+    }
+
+    // ---- v0.7 trust: signed tags --------------------------------------
+
+    /// The fixed tag of the cross-language tag vector (mirrored in
+    /// services/server-go/internal/signing/tags_test.go).
+    fn vector_tag() -> TagInfo {
+        TagInfo {
+            name: "v1.0.0".into(),
+            target: "0f8fad5b-d9cb-469f-a165-70867728950e".into(),
+            message: Some("Release 1.0.0\n\nSigned.".into()),
+            tagger: "Ada Lovelace <ada@example.com>".into(),
+            created_at: DateTime::parse_from_rfc3339("2026-01-02T03:04:05.123456789Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            signature: None,
+        }
+    }
+
+    // Cross-language tag vector (same seed and fingerprint as above); the
+    // Go server asserts the same values.
+    const TAG_VECTOR_PAYLOAD: &str = concat!(
+        "0a0676312e302e3012260a2430663866616435622d643963622d343639662d61",
+        "3136352d3730383637373238393530651a1652656c6561736520312e302e300a",
+        "0a5369676e65642e221e416461204c6f76656c616365203c616461406578616d",
+        "706c652e636f6d3e2a0b08a5ebdcca0610959aef3a",
+    );
+    const TAG_VECTOR_SIGNATURE: &str = concat!(
+        "0dc28f052fa81fe86ff9ad4e67f8a282e4aa97987665958ce5b4cc5d3a3b828a",
+        "fbad99d3824577adca5acd0732d9e3f39eb48a3f6e25c93664ccdf9179d93a0a",
+    );
+
+    #[test]
+    fn tag_cross_language_vector() {
+        let key = LocalKey::from_seed("vector", &vector_seed());
+        let mut tag = vector_tag();
+        tag.signature = Some(SnapshotSignature {
+            key_id: "stale".into(),
+            signature: vec![1, 2, 3],
+        });
+        let payload = encode_hex(&tag_signed_payload(&tag));
+        key.sign_tag(&mut tag);
+        let sig = tag.signature.as_ref().expect("signed");
+        let signature = encode_hex(&sig.signature);
+        assert_eq!(
+            (payload.as_str(), signature.as_str()),
+            (TAG_VECTOR_PAYLOAD, TAG_VECTOR_SIGNATURE)
+        );
+        assert_eq!(sig.key_id, VECTOR_FINGERPRINT);
+    }
+
+    #[test]
+    fn tag_payload_normalizes_empty_message() {
+        let mut a = vector_tag();
+        a.message = None;
+        let mut b = vector_tag();
+        b.message = Some(String::new());
+        assert_eq!(tag_signed_payload(&a), tag_signed_payload(&b));
+        assert_ne!(tag_signed_payload(&a), tag_signed_payload(&vector_tag()));
+    }
+
+    #[test]
+    fn tag_sign_verify_and_tamper() {
+        let key = LocalKey::from_seed("me", &[7; 32]);
+        let keys = trusted(&key);
+        let mut tag = vector_tag();
+        assert_eq!(verify_tag_with_keys(&tag, &keys), Verification::Unsigned);
+        key.sign_tag(&mut tag);
+        assert!(verify_tag_signature(&tag, &key.public_key()));
+        assert!(verify_tag_with_keys(&tag, &keys).is_valid());
+        // JSON round trip (the local tag file).
+        let json: TagInfo =
+            serde_json::from_str(&serde_json::to_string(&tag).expect("json")).expect("parse");
+        assert!(verify_tag_with_keys(&json, &keys).is_valid());
+        type Tamper = Box<dyn Fn(&mut TagInfo)>;
+        let tampers: Vec<Tamper> = vec![
+            Box::new(|t| t.name.push('x')),
+            Box::new(|t| t.target = "other".into()),
+            Box::new(|t| t.message = None),
+            Box::new(|t| t.tagger = "Mallory".into()),
+            Box::new(|t| t.created_at += chrono::Duration::nanoseconds(1)),
+            Box::new(|t| {
+                if let Some(sig) = t.signature.as_mut() {
+                    sig.signature[3] ^= 1;
+                }
+            }),
+        ];
+        for (i, tamper) in tampers.iter().enumerate() {
+            let mut t = tag.clone();
+            tamper(&mut t);
+            assert!(
+                matches!(
+                    verify_tag_with_keys(&t, &keys),
+                    Verification::Invalid { .. }
+                ),
+                "tamper #{i} not detected"
+            );
+        }
+        // Unsigned tags serialize without a signature field.
+        let text = serde_json::to_string(&vector_tag()).expect("json");
+        assert!(!text.contains("signature"), "{text}");
+        let old: TagInfo = serde_json::from_str(
+            r#"{"name":"v","target":"s","message":null,"tagger":"a","created_at":"2026-01-01T00:00:00Z"}"#,
+        )
+        .expect("old tag file");
+        assert!(old.signature.is_none());
+    }
+
+    #[test]
+    fn tag_signing_follows_the_signing_section() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = KeyStore::new(dir.path());
+        let mut tag = vector_tag();
+        let off = SigningSection::default();
+        assert!(!sign_tag_configured(&off, &store, &mut tag, false).expect("off"));
+        assert!(tag.signature.is_none());
+        assert!(sign_tag_configured(&off, &store, &mut tag, true).is_err());
+        store.import_seed("work", &[5; 32], false).expect("import");
+        let auto = SigningSection {
+            key: "work".into(),
+            auto: true,
+        };
+        assert!(sign_tag_configured(&auto, &store, &mut tag, false).expect("auto"));
+        assert!(store.verify_tag(&tag).expect("verify").is_valid());
+        assert_eq!(
+            store.verify_tag(&vector_tag()).expect("verify"),
+            Verification::Unsigned
+        );
+    }
+
+    #[test]
+    fn release_integrity_helpers() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(decode_base64("AQID").expect("b64"), vec![1, 2, 3]);
+        assert_eq!(decode_base64("AQI").expect("unpadded"), vec![1, 2]);
+        assert!(decode_base64("!!").is_err());
+        let sum = sha256_hex(b"x");
+        let text = format!(
+            "# comment\n{sum}  app.zip\n\n{} *b in.bin\r\n",
+            sum.to_uppercase()
+        );
+        assert_eq!(
+            parse_checksums(&text).expect("parse"),
+            vec![
+                ("app.zip".to_string(), sum.clone()),
+                ("b in.bin".to_string(), sum.clone())
+            ]
+        );
+        assert!(parse_checksums("nothex  a\n").is_err());
+        assert!(parse_checksums(&format!("{sum}\n")).is_err());
     }
 
     #[test]

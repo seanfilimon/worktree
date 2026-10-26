@@ -167,6 +167,12 @@ type tagPolicy interface {
 	CheckTagPush(ctx context.Context, p *domain.Principal, tree *domain.Tree, name string, replace bool) error
 }
 
+// tagSignatureChecker verifies tag signatures and enforces RequireSigned
+// tag protections (internal/signing.Service, v0.7 trust §15.8).
+type tagSignatureChecker interface {
+	CheckTagSignature(ctx context.Context, p *domain.Principal, tree *domain.Tree, t *domain.Tag) error
+}
+
 // maxTagMessageLen bounds tag annotations.
 const maxTagMessageLen = 64 << 10
 
@@ -236,6 +242,32 @@ func (s *Service) PushTag(ctx context.Context, req *syncpb.PushTagRequest) (*syn
 			return nil, s.toStatus(ctx, err, "tag protection")
 		}
 	}
+	// v0.7 trust (§15.8): a signed tag must verify (it is then stored with
+	// Verified and Signer); RequireSigned tag protections refuse unsigned
+	// tags. The verifier is the signing service among the push checks.
+	tag.Signature = append([]byte(nil), rec.GetSignature()...)
+	tag.SigningKeyID = rec.GetSigningKeyId()
+	tag.SignedTagger = rec.GetTagger()
+	verified := false
+	for _, c := range s.d.PushChecks {
+		ts, ok := c.(tagSignatureChecker)
+		if !ok {
+			continue
+		}
+		if err := ts.CheckTagSignature(ctx, p, t, tag); err != nil {
+			var denied *domain.PushDenied
+			if errors.As(err, &denied) {
+				return &syncpb.PushTagResponse{Accepted: false, Error: proto.String(denied.Reason)}, nil
+			}
+			return nil, s.toStatus(ctx, err, "tag signature")
+		}
+		verified = true
+		break
+	}
+	if !verified {
+		// No verifier configured: never store an unchecked signature.
+		tag.Signature, tag.SigningKeyID, tag.SignedTagger = nil, "", ""
+	}
 	if err := s.d.Store.PutTag(ctx, tag); err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
 			return &syncpb.PushTagResponse{Accepted: false, Error: proto.String("tag " + tag.Name + " already exists")}, nil
@@ -248,7 +280,7 @@ func (s *Service) PushTag(ctx context.Context, req *syncpb.PushTagRequest) (*syn
 		TenantID: t.TenantID,
 		TreeID:   t.ID,
 		Actor:    p.Username,
-		Payload:  map[string]any{"tag": tag.Name, "target": tag.Target},
+		Payload:  map[string]any{"tag": tag.Name, "target": tag.Target, "verified": tag.Verified},
 	})
 	s.audit(ctx, p, domain.AuditEvent{
 		TenantID:     t.TenantID,

@@ -51,3 +51,6 @@ mod rewrite;
 mod server_merges;
 mod storage;
 mod webhooks;
+
+// v0.7 trust (ENGINEERING_PLAN §15.8).
+mod release_integrity;
