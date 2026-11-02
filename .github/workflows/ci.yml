@@ -28,7 +28,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -52,8 +52,8 @@ jobs:
         shell: bash
         working-directory: services/server-go
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: services/server-go/go.sum
@@ -84,12 +84,12 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: services/server-go/go.sum
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           working-directory: services/server-go
@@ -98,9 +98,9 @@ jobs:
     name: proto drift
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: services/server-go/go.sum
@@ -128,8 +128,8 @@ jobs:
       run:
         working-directory: apps/admin
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -144,7 +144,7 @@ jobs:
         run: npx vitest run
       - name: build
         run: npm run build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: admin-dist
           path: apps/admin/dist
@@ -154,8 +154,8 @@ jobs:
     name: web (apps/web)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -171,14 +171,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: services/server-go/go.sum
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: admin-dist
           path: apps/admin/dist
@@ -191,20 +191,20 @@ jobs:
     name: packaging (lint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: |
             services/server-go/go.sum
             deploy/helm/check/go.sum
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - name: npm ci (js-yaml for the file checks)
         run: npm ci --no-audit --no-fund
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Install actionlint
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Validate packaging assets
@@ -221,10 +221,10 @@ jobs:
       matrix:
         image: [server, cli]
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/${{ matrix.image == 'server' && 'Dockerfile' || 'Dockerfile.cli' }}
@@ -264,16 +264,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: release
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: services/server-go/go.sum
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -305,7 +305,7 @@ jobs:
           ./scripts/install.ps1 -BaseUrl "$PWD/dist" -InstallDir "$env:RUNNER_TEMP/psbin" -WithServer
           & "$env:RUNNER_TEMP/psbin/wt" --version
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-smoke-dist
           path: dist/*

@@ -34,7 +34,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
       - id: v
@@ -72,7 +72,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
@@ -81,13 +81,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/server-go/go.mod
           cache-dependency-path: services/server-go/go.sum
       - name: scripts/release.sh
         run: bash scripts/release.sh --strict --target "${{ matrix.target }}" --skip-admin --no-sums --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: dist/*
@@ -98,17 +98,17 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci --no-audit --no-fund
       - name: scripts/release.sh --admin-only
         run: bash scripts/release.sh --admin-only --no-sums --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-admin
           path: dist/*
@@ -119,10 +119,10 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Lint and package
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -133,7 +133,7 @@ jobs:
           helm package deploy/helm/worktree --version "$VERSION" --app-version "$VERSION" -d dist
           (cd dist && sha256sum "worktree-$VERSION.tgz" > "worktree-$VERSION.tgz.sha256")
           ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-chart
           path: dist/*
@@ -158,11 +158,11 @@ jobs:
           - { image: server, dockerfile: deploy/docker/Dockerfile, name: worktree-server }
           - { image: cli, dockerfile: deploy/docker/Dockerfile.cli, name: worktree-cli }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -172,7 +172,7 @@ jobs:
       # Each architecture builds natively on its own runner (the CLI image
       # compiles Rust; emulation would take far longer) and pushes an
       # arch-suffixed tag that the manifest job merges.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -194,8 +194,8 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -225,7 +225,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist
