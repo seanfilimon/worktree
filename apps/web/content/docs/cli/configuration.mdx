@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: How wt layers user, worktree and tree configuration, every configuration key, ignore rule evaluation, snapshot hooks and secret-scanning settings.
+description: How wt layers user, worktree and tree configuration, every configuration key, ignore rule evaluation, hooks and secret-scanning settings.
 ---
 
 
@@ -114,7 +114,7 @@ url = "https://example.com/acme/web.git"
 | `secret_scanning.block_on_match` | bool | `true` | all | `false` = report findings as warnings and snapshot anyway. |
 | `secret_scanning.exclude` | list | empty | all | Comma-separated globs (in `wt config set`) never scanned. |
 | `secret_scanning.patterns.<name>` | regex | | all | One extra rule; an empty value removes it. |
-| `hooks.enabled` | bool | `true` | worktree, tree | Run snapshot hooks. |
+| `hooks.enabled` | bool | `true` | worktree, tree | Run hooks (all phases). |
 | `hooks.timeout_secs` | integer | `60` | worktree, tree | Kill a hook after this many seconds (`0` = no limit). |
 | `signing.key` | string | empty | user, worktree | Key name under `$WT_HOME/keys/` (empty = signing off). |
 | `signing.auto` | bool | `false` | user, worktree | Sign every snapshot, not only `wt snapshot --sign`, and every tag created with `wt tag`. Also re-signs snapshots created by `wt rebase` and `wt cherry-pick`. |
@@ -164,7 +164,7 @@ Since v0.7 a tree's `.wt-tree/` directory is split into one local file and a sha
 | `.wt-tree/local.toml` | **Local only**, never snapshotted | The tree's identity: `name` and `id` (rewritten to the server tree id on first contact). Written by `wt tree add`. |
 | `.wt-tree/config.toml` | Shared | Tree-level `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` overrides |
 | `.wt-tree/ignore` | Shared | Tree-level ignore patterns |
-| `.wt-tree/hooks/**` | Shared | Tree-level snapshot hooks (tracked with their executable bit) |
+| `.wt-tree/hooks/**` | Shared | Tree-level hooks (tracked with their executable bit) |
 | `.wt-tree/access/**` | Shared | Tree-scoped deny policies for [`wt access apply --tree-doc`](/docs/cli/iam#wt-access) |
 
 Shared files are snapshotted, pushed, fetched and cloned like any other file of the tree they configure, so configuration, hooks and policies are reviewed and versioned with the code. A parent tree never includes a nested tree's `.wt-tree/`. Manifests may contain `.wt-tree/` paths only at the tree root and only for the shared files above; the SDK and the server refuse anything else (and any `.wt/` path). Pushed `access/` files still need an explicit `wt access apply` to take effect on the server.
@@ -173,28 +173,48 @@ Shared files are snapshotted, pushed, fetched and cloned like any other file of 
 
 ## Hooks
 
-Hooks are executables that run around every snapshot, including daemon auto-snapshots.
+Hooks are executables that run around snapshots (including daemon auto-snapshots), pushes, merges and branch switches.
 
 | Phase | When | On failure |
 |---|---|---|
 | `pre-snapshot` | Before the working state is read | Non-zero exit (or timeout) aborts the snapshot: `pre-snapshot hook failed: ...` with the tail of its output. |
 | `post-snapshot` | After the snapshot is written | Reported on stderr; the snapshot is kept. |
+| `pre-push` | Once the server's branch tip is known and the push is possible, before anything is negotiated or uploaded. Not run when the server is already up to date. | Aborts the push (`pre-push hook failed: ...`); nothing is uploaded and the server branch is unchanged. |
+| `post-push` | After the server accepted the push | Reported on stderr; the push is kept. |
+| `pre-merge` | Before `wt merge`, or the integration step of `wt pull` / `wt sync`, changes the branch or the files (fast-forwards included). Not run when already up to date. | Aborts the merge (`pre-merge hook failed: ...`) with the branch, the files and the merge state unchanged. For a pull, the fetch is kept. |
+| `post-merge` | After the merge: a fast-forward, a merge snapshot, or a merge that stopped with conflicts | Reported on stderr; the merge (or the conflict state) is kept. |
+| `post-switch` | After `wt switch` changed the branch, or `--force` rewrote the files (with `on_branch_switch = "stash"`, after the auto-stash is restored). Not run when switching to the current branch. | Reported on stderr; the switch is kept. |
 
 Discovery and order:
 
-- `.wt/hooks/<phase>` runs first, then `<tree>/.wt-tree/hooks/<phase>` of every tree enclosing the snapshotted tree (outermost first), then the tree's own.
-- On Unix the file must be executable. On Windows `<phase>.exe`, `<phase>.cmd`, `<phase>.bat`, `<phase>.ps1` (run with PowerShell) and an extensionless `<phase>` script (run with `sh`) are recognized; the first one found per directory runs.
-- The working directory is the tree root; stdin is empty; output goes to stderr (never stdout, which may carry `--json`).
+- `.wt/hooks/<phase>` runs first, then `<tree>/.wt-tree/hooks/<phase>` of every tree enclosing the tree (outermost first), then the tree's own.
+- On Unix the file must be executable. On Windows `<phase>.exe`, `<phase>.cmd`, `<phase>.bat`, `<phase>.ps1` (run with PowerShell) and an extensionless `<phase>` script (run with `sh`) are recognized; the first one found per directory runs. [`wt doctor`](/docs/cli/ergonomics#wt-doctor) reports hooks that never run (not executable, or a misspelled name such as `pre-commit` or `pre-psuh`, with the phase it probably meant).
+- The working directory is the tree root; output goes to stderr (never stdout, which may carry `--json`).
+- stdin is empty, except: the push hooks read the ids of the snapshots being pushed (oldest first) and `post-merge` reads the conflicted paths, one per line.
 
-| Variable | Value |
-|---|---|
-| `WT_HOOK` | `pre-snapshot` or `post-snapshot` (also `WT_HOOK_PHASE`) |
-| `WT_TREE` | Tree name (also `WT_TREE_NAME`) |
-| `WT_TREE_PATH` | Absolute tree directory |
-| `WT_BRANCH` | Current branch |
-| `WT_ROOT` | Worktree root |
-| `WT_USER` | Snapshot author |
-| `WT_SNAPSHOT` | New snapshot id, post hooks only (also `WT_SNAPSHOT_ID`) |
+| Variable | Phases | Value |
+|---|---|---|
+| `WT_HOOK` | all | Phase name (also `WT_HOOK_PHASE`) |
+| `WT_TREE` | all | Tree name (also `WT_TREE_NAME`) |
+| `WT_TREE_PATH` | all | Absolute tree directory |
+| `WT_BRANCH` | all | Current branch; the pushed branch for push hooks; the new branch for `post-switch` |
+| `WT_ROOT` | all | Worktree root |
+| `WT_USER` | all | Snapshot author |
+| `WT_SNAPSHOT` | `post-snapshot` | New snapshot id (also `WT_SNAPSHOT_ID`) |
+| `WT_REMOTE` | push hooks; merge hooks of `wt pull` / `wt sync` | Remote name |
+| `WT_REMOTE_URL` | push hooks | Server URL of the remote |
+| `WT_PUSH_OLD_TIP` / `WT_PUSH_NEW_TIP` | push hooks | Server tip before the push (empty for a new branch) / tip being pushed |
+| `WT_PUSH_FORCE` | push hooks | `1` for `--force`, else `0` |
+| `WT_PUSH_SNAPSHOTS` | push hooks | Number of snapshots being pushed |
+| `WT_MERGE_SOURCE` | merge hooks | Source as given; `<remote>/<branch>` for a pull |
+| `WT_MERGE_SOURCE_TIP` / `WT_MERGE_OLD_TIP` | merge hooks | Snapshot merged in / branch tip before (empty for an empty branch) |
+| `WT_MERGE_KIND` | merge hooks | `fast-forward` or `merge` |
+| `WT_MERGE_RESULT` | `post-merge` | `fast-forward`, `merged` or `conflicts` |
+| `WT_MERGE_CONFLICTS` | `post-merge` | Number of conflicted paths |
+| `WT_MERGE_NEW_TIP` | `post-merge` | Branch tip afterwards (unchanged on conflicts) |
+| `WT_SWITCH_FROM` / `WT_SWITCH_TO` | `post-switch` | Previous / new branch |
+| `WT_SWITCH_OLD_TIP` / `WT_SWITCH_NEW_TIP` | `post-switch` | Their tips (empty for an empty branch) |
+| `WT_SWITCH_CREATED` | `post-switch` | `1` with `wt switch -c`, else `0` |
 
 ```bash
 #!/bin/sh
@@ -202,7 +222,20 @@ Discovery and order:
 cargo fmt --check
 ```
 
-Skip hooks for one snapshot with `wt snapshot --no-verify`, or turn them off with `wt config set hooks.enabled false`. `wt tree init-config` creates an empty `hooks/` directory for a nested tree.
+```bash
+#!/bin/sh
+# .wt/hooks/pre-push: no force pushes to main, at most 20 snapshots at once
+if [ "$WT_BRANCH" = main ] && [ "$WT_PUSH_FORCE" = 1 ]; then
+  echo "force-pushing main is not allowed" >&2
+  exit 1
+fi
+count=$(wc -l | tr -d ' ')   # stdin: one snapshot id per line
+[ "$count" -le 20 ] || { echo "pushing $count snapshots; split the push" >&2; exit 1; }
+```
+
+Skip a command's hooks with `--no-verify` (`wt snapshot`, `wt push`, `wt merge`, `wt pull`), or turn them all off with `wt config set hooks.enabled false`. The daemon runs the hooks for its auto-snapshots, queued push deliveries and auto-sync too. `wt tree init-config` creates an empty `hooks/` directory for a nested tree.
+
+There is no `post-pull` hook: `post-merge` runs for every pull that integrates something, with `WT_REMOTE` set. Compared with Git, `pre-merge` also runs before fast-forwards (Git's `pre-merge-commit` only guards merge commits), `post-merge` also runs when a merge stops with conflicts, and hooks get their context from environment variables and stdin rather than arguments.
 
 ## Secret scanning
 

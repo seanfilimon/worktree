@@ -31,7 +31,7 @@ pub struct CreateArgs {
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
     /// Revision to tag (default: HEAD)
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub rev: Option<String>,
     /// Tag message (makes an annotated tag)
     #[arg(short, long, value_name = "MSG")]
@@ -50,7 +50,7 @@ pub enum TagCommand {
     Create {
         name: String,
         /// Revision to tag (default: HEAD)
-        #[arg(value_name = "REV")]
+        #[arg(value_name = "REV", add = crate::complete::rev())]
         rev: Option<String>,
         /// Tag message (makes an annotated tag)
         #[arg(short, long, value_name = "MSG")]
@@ -61,6 +61,7 @@ pub enum TagCommand {
     },
     /// Delete a tag (locally; with --remote also on the server)
     Delete {
+        #[arg(add = crate::complete::tag())]
         name: String,
         /// Also delete the tag on the server (needs write access; tag
         /// protections apply). The local tag is deleted when it exists, so
@@ -68,11 +69,12 @@ pub enum TagCommand {
         #[arg(long)]
         remote: bool,
         /// Remote for --remote (default: [sync].remote, usually origin)
-        #[arg(long = "from", value_name = "R", requires = "remote")]
+        #[arg(long = "from", value_name = "R", requires = "remote", add = crate::complete::remote())]
         from: Option<String>,
     },
     /// Verify a tag's signature against local (and optionally an account's registered) keys
     Verify {
+        #[arg(add = crate::complete::tag())]
         name: String,
         /// Also trust the registered keys of this server account
         #[arg(long, value_name = "USERNAME")]
@@ -81,14 +83,15 @@ pub enum TagCommand {
         #[arg(long)]
         remote: bool,
         /// Remote for --remote (default: [sync].remote, usually origin)
-        #[arg(long = "from", value_name = "R", requires = "remote")]
+        #[arg(long = "from", value_name = "R", requires = "remote", add = crate::complete::remote())]
         from: Option<String>,
     },
     /// Push one tag to the server (reports a refusal, e.g. an unsigned tag under require_signed)
     Push {
+        #[arg(add = crate::complete::tag())]
         name: String,
         /// Remote (default: [sync].remote, usually origin)
-        #[arg(long, value_name = "R")]
+        #[arg(long, value_name = "R", add = crate::complete::remote())]
         remote: Option<String>,
     },
 }

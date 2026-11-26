@@ -55,6 +55,43 @@ fn create_and_list_branches() {
 }
 
 #[test]
+fn ref_name_listings() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "1");
+    let s1 = fx.snap("one");
+    for name in ["feature/login", "dev", "old"] {
+        fx.repo.create_branch(&fx.tree, name, None).unwrap();
+    }
+    fx.repo.archive_branch(&fx.tree, "old").unwrap();
+    fx.repo
+        .create_tag(&fx.tree, "release/v1", None, None)
+        .unwrap();
+    fx.repo.create_tag(&fx.tree, "v0", None, None).unwrap();
+    fx.repo
+        .set_remote_tip(&fx.tree, "origin", "feature/x", Some(&s1.id))
+        .unwrap();
+
+    assert_eq!(
+        fx.repo.branch_names(&fx.tree).unwrap(),
+        [
+            ("dev".to_string(), false),
+            ("feature/login".to_string(), false),
+            ("main".to_string(), false),
+            ("old".to_string(), true),
+        ]
+    );
+    assert_eq!(fx.repo.tag_names(&fx.tree).unwrap(), ["release/v1", "v0"]);
+    assert_eq!(
+        fx.repo.remote_branch_names(&fx.tree).unwrap(),
+        ["origin/feature/x"]
+    );
+    assert!(matches!(
+        fx.repo.branch_names("no-such-tree"),
+        Err(SdkError::TreeNotFound(_))
+    ));
+}
+
+#[test]
 fn switch_rewrites_working_directory() {
     let fx = Fixture::new();
     fx.write("shared.txt", "base\n");

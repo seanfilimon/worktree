@@ -15,6 +15,9 @@ use crate::store::ObjectHash;
 /// Minimum length of an abbreviated snapshot id.
 const MIN_PREFIX_LEN: usize = 4;
 
+/// Cached snapshot records per repository handle; past it the cache starts over.
+const SNAPSHOT_CACHE_MAX: usize = 200_000;
+
 /// One step of a revision suffix: `~N` (N first-parent steps) or `^N`
 /// (the N-th parent, 1-based).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,7 +280,29 @@ impl Repository {
         if !is_valid_id(id) {
             return Ok(None);
         }
-        fsutil::read_json_opt(&self.snapshot_path(id))
+        if let Some(snap) = self.snapshot_cache().get(id) {
+            return Ok(Some(Snapshot::clone(snap)));
+        }
+        let snap: Option<Snapshot> = fsutil::read_json_opt(&self.snapshot_path(id))?;
+        if let Some(snap) = &snap {
+            let mut cache = self.snapshot_cache();
+            if cache.len() >= SNAPSHOT_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert(id.to_string(), std::sync::Arc::new(snap.clone()));
+        }
+        Ok(snap)
+    }
+
+    fn snapshot_cache(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, std::sync::Arc<Snapshot>>> {
+        self.snapshots.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Drop cached snapshot records (after snapshot files were deleted).
+    pub(crate) fn forget_snapshots(&self) {
+        self.snapshot_cache().clear();
     }
 
     /// Manifest of an optional tip (empty for `None`).

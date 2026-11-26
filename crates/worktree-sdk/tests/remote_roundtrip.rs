@@ -154,6 +154,64 @@ async fn remote_push_then_clone_round_trip() {
     assert_eq!((again.snapshots_sent, again.objects_sent), (0, 0));
 }
 
+/// A symlink survives snapshot → push → clone and a later pull: the target
+/// text travels as an ordinary blob and the entry keeps its symlink flag.
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_symlinks_survive_push_clone_and_pull() {
+    use std::os::unix::fs::symlink;
+
+    let (_home, server) = setup().await;
+    let a_dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(a_dir.path(), &server);
+    write(&repo, "docs/guide.md", "# guide\n");
+    symlink("guide.md", repo.root().join("docs/latest")).unwrap();
+    symlink("../outside", repo.root().join("out")).unwrap();
+    let s1 = snap(&repo, "links");
+    let report = remote::push(&repo, &tree(&repo), "origin", None)
+        .await
+        .unwrap();
+    assert_eq!(report.objects_sent, 4, "1 file + 2 link targets + manifest");
+
+    let b_dir = tempfile::tempdir().unwrap();
+    let dest = b_dir.path().join("clone");
+    let cloned = clone_to(&server, &dest).await;
+    let link_target = |repo: &Repository, rel: &str| {
+        std::fs::read_link(repo.root().join(rel))
+            .unwrap_or_else(|e| panic!("{rel} is not a symlink: {e}"))
+            .to_string_lossy()
+            .into_owned()
+    };
+    assert_eq!(link_target(&cloned, "docs/latest"), "guide.md");
+    assert_eq!(link_target(&cloned, "out"), "../outside");
+    assert_eq!(read(&cloned, "docs/latest"), "# guide\n");
+    assert!(cloned.status(&tree(&cloned)).unwrap().is_clean());
+    let manifest = cloned
+        .manifest_of(&cloned.resolve(&tree(&cloned), "HEAD").unwrap())
+        .unwrap();
+    assert_eq!(
+        manifest,
+        repo.manifest_of(&s1).unwrap(),
+        "identical manifests"
+    );
+    assert!(manifest.get("docs/latest").unwrap().symlink);
+    assert!(!manifest.get("docs/guide.md").unwrap().symlink);
+
+    // Retarget, push, pull into the clone.
+    write(&repo, "docs/v2.md", "# v2\n");
+    std::fs::remove_file(repo.root().join("docs/latest")).unwrap();
+    symlink("v2.md", repo.root().join("docs/latest")).unwrap();
+    snap(&repo, "retarget");
+    remote::push(&repo, &tree(&repo), "origin", None)
+        .await
+        .unwrap();
+    remote::pull(&cloned, &tree(&cloned), "origin", None)
+        .await
+        .unwrap();
+    assert_eq!(link_target(&cloned, "docs/latest"), "v2.md");
+    assert!(cloned.status(&tree(&cloned)).unwrap().is_clean());
+}
+
 #[tokio::test]
 async fn remote_fetch_then_pull_fast_forwards() {
     let (_home, server) = setup().await;

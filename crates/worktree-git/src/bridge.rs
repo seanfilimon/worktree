@@ -11,8 +11,13 @@
 //!
 //! * Snapshot ids of imported commits are UUID v5 of the commit SHA
 //!   ([`crate::ident::snapshot_id_for_commit`]), so re-imports are stable.
-//! * Regular files keep their executable bit (`100755`); symlinks and
-//!   submodule gitlinks are skipped with a warning.
+//! * Regular files keep their executable bit (`100755`) and symbolic links
+//!   (`120000`) stay links, their target stored verbatim.
+//! * Git LFS pointer files are replaced by their verified content when it
+//!   is available ([`crate::lfs`]); export writes that content as ordinary
+//!   blobs.
+//! * Submodule gitlinks are recorded in a tracked `.wtsubmodules` file and
+//!   written back as gitlinks on export ([`crate::submodule`]).
 //! * Each commit is attributed to the first branch containing it, the
 //!   checked-out branch first, then the others by name.
 //! * Exported commits use the snapshot author as author and committer, the
@@ -26,9 +31,11 @@ use std::path::{Path, PathBuf};
 use worktree_sdk::Repository;
 
 use crate::error::{GitCompatError, Result};
+pub use crate::lfs::{LfsMode, LfsReport};
 use crate::license::LicensePolicy;
 use crate::remote::auth::GitAuth;
 use crate::remote::PushOptions;
+pub use crate::submodule::{SubmoduleMode, SubmoduleReport};
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
@@ -43,6 +50,13 @@ pub struct ImportOptions {
     pub name: Option<String>,
     /// Import tags.
     pub include_tags: bool,
+    /// What to do with Git LFS files (see [`crate::lfs`]).
+    pub lfs: LfsMode,
+    /// Download LFS content missing from the local LFS store with
+    /// `git lfs fetch` / `git lfs smudge` (needs `git-lfs`).
+    pub lfs_fetch: bool,
+    /// How to map submodules (see [`crate::submodule`]).
+    pub submodules: SubmoduleMode,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -57,6 +71,11 @@ pub struct ImportReport {
     pub tags: usize,
     /// Branch checked out in the working directory.
     pub checked_out: Option<String>,
+    /// Git LFS files of the converted commits.
+    pub lfs: LfsReport,
+    /// Submodules of the checked-out commit (pins of every commit are in
+    /// its snapshot's [`crate::submodule::PINS_FILE`]).
+    pub submodules: Vec<SubmoduleReport>,
 }
 
 /// Create a new worktree at `dest` from the Git repository at `git_path`.
@@ -104,6 +123,11 @@ pub struct ExportReport {
     pub tags: usize,
     /// Paths left out of at least one commit by the license policy (sorted).
     pub restricted: Vec<String>,
+    /// Gitlinks written from submodule pins into the Git trees this export
+    /// built (reused commits are not counted).
+    pub gitlinks: usize,
+    /// Pins that could not be exported as gitlinks (and why), deduplicated.
+    pub warnings: Vec<String>,
 }
 
 /// Export `repo` into the Git repository at `git_path` (created if missing).
@@ -138,6 +162,8 @@ pub struct PushRepoReport {
     pub refs: Vec<String>,
     /// See [`ExportReport::restricted`].
     pub restricted: Vec<String>,
+    /// See [`ExportReport::warnings`].
+    pub warnings: Vec<String>,
 }
 
 /// The bare "bridge" Git repository a tree is exported into before pushing:
@@ -209,6 +235,7 @@ pub fn push_repository(
         commits: export.commits,
         refs: pushed.refs,
         restricted: export.restricted,
+        warnings: export.warnings,
     })
 }
 
@@ -347,8 +374,7 @@ mod tests {
     }
 
     /// Match source and exported commits by message and check that trees
-    /// (except where the source has a skipped symlink) and parent
-    /// structure are identical.
+    /// (symlinks included) and parent structure are identical.
     fn assert_same_shape(
         src: &git2::Repository,
         src_tip: Oid,
@@ -364,14 +390,7 @@ mod tests {
             .collect();
         for (message, (oid, parents, tree)) in &a {
             let (_, dst_parents, dst_tree) = &b[message];
-            let has_link = src
-                .find_tree(*tree)
-                .unwrap()
-                .iter()
-                .any(|e| e.filemode() == i32::from(git2::FileMode::Link));
-            if !has_link {
-                assert_eq!(tree, dst_tree, "tree of {oid}");
-            }
+            assert_eq!(tree, dst_tree, "tree of {oid}");
             let expected: Vec<Oid> = parents.iter().map(|p| translate[p]).collect();
             assert_eq!(&expected, dst_parents, "parents of {oid}");
         }
@@ -435,13 +454,15 @@ mod tests {
         );
         assert!(manifest.get("scripts/build.sh").unwrap().executable);
         assert!(!manifest.get("README.md").unwrap().executable);
-        // The symlink on feature is skipped.
+        // The symlink on feature is imported as a symlink entry whose blob
+        // is the target text.
         let f2 = repo.get_snapshot(&snapshot_id_for_commit(s.f2)).unwrap();
-        assert!(repo
-            .manifest_of(&f2)
-            .unwrap()
-            .get("link-to-readme")
-            .is_none());
+        let f2_manifest = repo.manifest_of(&f2).unwrap();
+        let link = f2_manifest.get("link-to-readme").unwrap();
+        assert!(link.symlink && !link.executable && !link.chunked);
+        assert_eq!(link.size, "README.md".len() as u64);
+        assert_eq!(repo.store().read_entry(link).unwrap(), b"README.md");
+        assert!(manifest.get("link-to-readme").is_none(), "not on main");
 
         // Working directory holds main's files.
         assert_eq!(

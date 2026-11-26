@@ -68,6 +68,7 @@ wt switch main --force
 - With `auto_snapshot.on_branch_switch = "snapshot"` and the daemon watching the worktree, `wt switch` first asks the daemon to auto-snapshot the tree, so the switch can proceed. With `stash`, it stashes the changes as `auto-stash on <branch>` and restores them when you switch back to that branch (see [Auto-stash](/docs/cli/history-rewriting#auto-stash-on-branch-switch)). See [`on_branch_switch`](/docs/cli/configuration#branch-switches-with-uncommitted-changes).
 - To set changes aside by hand, use [`wt stash`](/docs/cli/history-rewriting#wt-stash).
 - Switching is refused while a merge is in progress. Appends a `switch` entry to the reflog.
+- After a switch the `post-switch` [hooks](/docs/cli/configuration#hooks) run (with an auto-stash, after it is restored); their failures are warnings.
 
 ## `wt merge`
 
@@ -86,6 +87,7 @@ Merge `SOURCE` (a branch or any revision, for example `origin/main`) into the cu
 | `-s, --strategy <STRATEGY>` | How conflicting changes are resolved: `manual` (default) writes conflict markers and stops; `ours` / `theirs` resolve every conflicting hunk and file in favour of that side while still combining non-conflicting changes. |
 | `--continue` | Finish a conflicted merge after resolving all conflicts. |
 | `--abort` | Abandon a conflicted merge and restore the pre-merge state (same as `wt merge abort`). |
+| `--no-verify` | Skip the `pre-merge` and `post-merge` [hooks](/docs/cli/configuration#hooks). |
 
 | Subcommand | Description |
 |---|---|

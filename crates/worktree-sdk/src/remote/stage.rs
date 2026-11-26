@@ -24,13 +24,13 @@ pub(crate) struct ChangeSummary {
     pub deleted: u32,
 }
 
-/// Compare `base` → `working` by path (content hash or executable bit
-/// differences count as modifications).
+/// Compare `base` → `working` by path (content hash, executable bit or
+/// file/symlink differences count as modifications).
 pub(crate) fn summarize_changes(base: &Manifest, working: &Manifest) -> ChangeSummary {
-    let index = |m: &Manifest| -> BTreeMap<String, (ObjectHash, bool)> {
+    let index = |m: &Manifest| -> BTreeMap<String, (ObjectHash, bool, bool)> {
         m.entries
             .iter()
-            .map(|e: &ManifestEntry| (e.path.clone(), (e.hash, e.executable)))
+            .map(|e: &ManifestEntry| (e.path.clone(), (e.hash, e.executable, e.symlink)))
             .collect()
     };
     let (old, new) = (index(base), index(working));
@@ -182,6 +182,7 @@ mod tests {
             size: content.len() as u64,
             executable,
             chunked: false,
+            symlink: false,
         }
     }
 

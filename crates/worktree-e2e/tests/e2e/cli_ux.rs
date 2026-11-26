@@ -34,13 +34,23 @@ fn cli_ux() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
         let out = alice.wt().args(["completions", shell]).ok();
         assert!(
-            out.stdout.len() > 1000 && out.stdout.contains("cherry-pick"),
-            "{shell} completions look incomplete ({} bytes)",
-            out.stdout.len()
+            out.stdout.contains("WT_COMPLETE"),
+            "{shell} completions are not a dynamic hook:\n{}",
+            out.stdout
         );
     }
     let bash = alice.wt().args(["completions", "bash"]).ok();
-    assert!(bash.stdout.contains("_wt"), "bash completion function");
+    assert!(
+        bash.stdout.contains("_clap_complete_wt"),
+        "bash completion function"
+    );
+    // The hook asks wt for candidates: commands, and branch names.
+    let cands = a
+        .wt()
+        .env("WT_COMPLETE", "fish")
+        .args(["--", "wt", "switch", "ma"])
+        .ok();
+    assert_eq!(cands.stdout.trim(), "main\tbranch", "{cands}");
     alice.wt().args(["completions", "tcsh"]).code(2);
 
     // --- aliases
@@ -90,9 +100,16 @@ fn cli_ux() {
         status,
         "an alias must not shadow `status`"
     );
-    // Aliases appear in completion scripts generated afterwards.
-    let bash = a.wt().args(["completions", "bash"]).ok();
-    assert!(bash.stdout.contains("last"), "aliases are completed");
+    // Aliases are completed as soon as they exist.
+    let cands = a
+        .wt()
+        .env("WT_COMPLETE", "fish")
+        .args(["--", "wt", "las"])
+        .ok();
+    assert!(
+        cands.stdout.contains("last\t"),
+        "aliases are completed: {cands}"
+    );
     // Unknown commands keep the "did you mean" hint.
     let out = a.wt().arg("statsu").code(2);
     assert!(out.mentions("status"), "{out}");

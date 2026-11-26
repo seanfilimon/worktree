@@ -78,6 +78,11 @@ pub enum ConversionError {
     #[error("invalid manifest path `{path}`: {reason}")]
     InvalidPath { path: String, reason: &'static str },
 
+    /// A manifest entry's fields violated the wire contract (e.g. a symlink
+    /// flagged executable or chunked, or with an out-of-range target size).
+    #[error("invalid manifest entry `{path}`: {reason}")]
+    InvalidManifestEntry { path: String, reason: &'static str },
+
     /// A content-addressed object's bytes do not hash to its declared hash.
     #[error("object hash mismatch: declared {expected}, computed {actual}")]
     HashMismatch {
@@ -871,42 +876,107 @@ fn path_to_wire(path: &std::path::Path) -> Result<String, ConversionError> {
 
 use crate::object::manifest::{EntryKind, Manifest, ManifestEntry as DomainManifestEntry};
 
-/// Domain → wire. Only regular files are representable on the wire
-/// (directories are implied by paths; symlinks are not supported by
-/// `ManifestRecord`), so other kinds are rejected.
+/// Longest symlink target (in bytes) a manifest entry may record. Matches
+/// the usual `PATH_MAX`; the Go server enforces the same bound.
+pub const MAX_SYMLINK_TARGET_LEN: u64 = 4096;
+
+/// Check the symlink rules of the wire contract for one entry: a symlink is
+/// never executable or chunked, its `size` (the target's length in bytes)
+/// is in `1..=MAX_SYMLINK_TARGET_LEN`, and it never lives in the tree's
+/// shared `.wt-tree/` directory (configuration, hooks and access rules are
+/// always regular files, so reading them never leaves the tree).
+/// Non-symlink entries pass.
+///
+/// The target bytes themselves live in the blob; whoever reads them must
+/// check them with [`validate_symlink_target`].
+pub fn validate_symlink_entry(entry: &wire::ManifestEntry) -> Result<(), ConversionError> {
+    if !entry.symlink {
+        return Ok(());
+    }
+    let invalid = |reason: &'static str| ConversionError::InvalidManifestEntry {
+        path: entry.path.clone(),
+        reason,
+    };
+    if entry.executable {
+        return Err(invalid("a symlink cannot be executable"));
+    }
+    if entry.chunked {
+        return Err(invalid("a symlink cannot be chunked"));
+    }
+    if entry.size == 0 {
+        return Err(invalid("empty symlink target"));
+    }
+    if entry.size > MAX_SYMLINK_TARGET_LEN {
+        return Err(invalid("symlink target is too long"));
+    }
+    if entry.path == ".wt-tree" || entry.path.starts_with(".wt-tree/") {
+        return Err(invalid("a symlink cannot be stored in .wt-tree/"));
+    }
+    Ok(())
+}
+
+/// Check the bytes of a symlink target: non-empty, at most
+/// [`MAX_SYMLINK_TARGET_LEN`] bytes and free of NUL. The target is otherwise
+/// opaque (it may be absolute or point outside the tree); the reason is
+/// returned for the caller to wrap with the entry's path.
+pub fn validate_symlink_target(target: &[u8]) -> Result<(), &'static str> {
+    if target.is_empty() {
+        return Err("empty symlink target");
+    }
+    if target.len() as u64 > MAX_SYMLINK_TARGET_LEN {
+        return Err("symlink target is too long");
+    }
+    if target.contains(&0) {
+        return Err("NUL byte in symlink target");
+    }
+    Ok(())
+}
+
+/// Domain → wire. Regular files and symlinks are representable on the wire;
+/// directories are implied by paths and rejected here. A symlink entry
+/// carries the hash of the blob holding its target and the target's length
+/// as `size` (see [`DomainManifestEntry::with_size`]).
 impl TryFrom<&DomainManifestEntry> for wire::ManifestEntry {
     type Error = ConversionError;
 
     fn try_from(e: &DomainManifestEntry) -> Result<Self, Self::Error> {
-        if e.kind != EntryKind::File {
+        if e.kind == EntryKind::Directory {
             return Err(ConversionError::Unsupported(
-                "only file entries can be encoded in a ManifestRecord",
+                "directory entries cannot be encoded in a ManifestRecord",
             ));
         }
-        Ok(Self {
+        let entry = Self {
             path: path_to_wire(&e.path)?,
             blob_hash: Some(e.hash.into()),
             size: e.size,
             executable: e.executable,
             chunked: false,
-        })
+            symlink: e.kind == EntryKind::Symlink,
+        };
+        validate_symlink_entry(&entry)?;
+        Ok(entry)
     }
 }
 
-/// Wire → domain. Produces a [`EntryKind::File`] entry after validating the
-/// path and hash.
+/// Wire → domain. Produces a [`EntryKind::File`] entry, or a
+/// [`EntryKind::Symlink`] entry when the symlink flag is set, after
+/// validating the path, the hash and the symlink rules.
 impl TryFrom<wire::ManifestEntry> for DomainManifestEntry {
     type Error = ConversionError;
 
     fn try_from(w: wire::ManifestEntry) -> Result<Self, Self::Error> {
         validate_manifest_path(&w.path)?;
+        validate_symlink_entry(&w)?;
         let hash = required_hash(w.blob_hash.as_ref(), "ManifestEntry.blob_hash")?;
+        if w.symlink {
+            return Ok(DomainManifestEntry::symlink(w.path, hash).with_size(w.size));
+        }
         Ok(DomainManifestEntry::file(w.path, hash, w.size).with_executable(w.executable))
     }
 }
 
 /// Domain → wire. Directory entries are dropped (implied by file paths);
-/// symlinks are rejected. Entries are sorted by path string (byte-wise, as
+/// symlinks are kept as symlinks. Entries are sorted by path string (byte-wise, as
 /// the wire contract and the Go server require — note this differs from
 /// `Path` ordering) and must be unique.
 impl TryFrom<&Manifest> for wire::ManifestRecord {
@@ -940,11 +1010,13 @@ impl wire::ManifestRecord {
     }
 
     /// Check the wire contract: every path valid, paths strictly increasing
-    /// (sorted and unique), and every blob hash present and 32 bytes.
+    /// (sorted and unique), every blob hash present and 32 bytes, and
+    /// symlink entries well-formed ([`validate_symlink_entry`]).
     pub fn validate(&self) -> Result<(), ConversionError> {
         let mut previous: Option<&str> = None;
         for entry in &self.entries {
             validate_manifest_path(&entry.path)?;
+            validate_symlink_entry(entry)?;
             required_hash(entry.blob_hash.as_ref(), "ManifestEntry.blob_hash")?;
             if let Some(prev) = previous {
                 if prev >= entry.path.as_str() {
@@ -1840,6 +1912,7 @@ mod record_tests {
             size: data.len() as u64,
             executable: false,
             chunked: false,
+            symlink: false,
         }
     }
 
@@ -1900,11 +1973,138 @@ mod record_tests {
     }
 
     #[test]
-    fn manifest_record_rejects_symlinks_and_bad_paths() {
+    fn manifest_record_symlink_roundtrip_via_domain() {
+        let tree = TreeId::new();
+        let target = b"../shared/config.toml";
+        let mut m = Manifest::new(tree);
+        m.add_entry(DomainEntry::file("a.txt", hash_bytes(b"1"), 1));
+        m.add_entry(
+            DomainEntry::symlink("link", hash_bytes(target)).with_size(target.len() as u64),
+        );
+
+        let record = wire::ManifestRecord::try_from(&m).unwrap();
+        record.validate().unwrap();
+        assert!(!record.entries[0].symlink);
+        let link = &record.entries[1];
+        assert!(link.symlink && !link.executable && !link.chunked);
+        assert_eq!(link.size, target.len() as u64);
+
+        // Through bytes and back to the domain.
+        let bytes = prost::Message::encode_to_vec(&record);
+        let decoded: wire::ManifestRecord = prost::Message::decode(bytes.as_slice()).unwrap();
+        let back = decoded.into_manifest(tree).unwrap();
+        let e = back.find_entry(std::path::Path::new("link")).unwrap();
+        assert_eq!(e.kind, EntryKind::Symlink);
+        assert_eq!(e.hash, hash_bytes(target));
+        assert_eq!(e.size, target.len() as u64);
+        assert!(!e.executable);
+        assert_eq!(wire::ManifestRecord::try_from(&back).unwrap(), record);
+    }
+
+    /// Manifests written before the symlink field existed decode unchanged,
+    /// and a non-symlink entry still encodes to exactly the old bytes (the
+    /// default `false` is not put on the wire), so manifest hashes are
+    /// stable.
+    #[test]
+    fn manifest_without_symlinks_keeps_its_bytes_and_hash() {
+        // Hand-encoded pre-symlink entry: path=1, blob_hash=2{value=1},
+        // size=3, executable=4 — no field 6.
+        let hash = hash_bytes(b"old");
+        let mut entry = vec![0x0A, 0x05];
+        entry.extend_from_slice(b"a.txt");
+        entry.extend_from_slice(&[0x12, 0x22, 0x0A, 0x20]);
+        entry.extend_from_slice(hash.as_bytes());
+        entry.extend_from_slice(&[0x18, 0x03, 0x20, 0x01]);
+        let mut old_bytes = vec![0x0A, entry.len() as u8];
+        old_bytes.extend_from_slice(&entry);
+
+        let decoded: wire::ManifestRecord = prost::Message::decode(old_bytes.as_slice()).unwrap();
+        assert_eq!(decoded.entries.len(), 1);
+        let e = &decoded.entries[0];
+        assert_eq!(e.path, "a.txt");
+        assert_eq!(e.size, 3);
+        assert!(e.executable && !e.chunked && !e.symlink);
+        decoded.validate().unwrap();
+        assert_eq!(prost::Message::encode_to_vec(&decoded), old_bytes);
+        assert_eq!(decoded.content_hash(), hash_bytes(&old_bytes));
+
+        // Flagging an entry appends field 6 = true (and so changes the hash).
+        let mut link = wire_entry("a.txt", b"old");
+        let plain =
+            prost::Message::encode_to_vec(&wire::ManifestRecord::from_entries(vec![link.clone()]));
+        link.symlink = true;
+        let flagged =
+            prost::Message::encode_to_vec(&wire::ManifestRecord::from_entries(vec![link]));
+        assert_eq!(flagged.len(), plain.len() + 2);
+        assert!(flagged.ends_with(&[0x30, 0x01]));
+    }
+
+    #[test]
+    fn manifest_record_rejects_malformed_symlinks() {
+        let link = |f: fn(&mut wire::ManifestEntry)| {
+            let mut e = wire_entry("ln", b"target");
+            e.symlink = true;
+            f(&mut e);
+            wire::ManifestRecord { entries: vec![e] }
+        };
+        link(|_| {}).validate().unwrap();
+        for bad in [
+            link(|e| e.executable = true),
+            link(|e| e.chunked = true),
+            link(|e| e.size = 0),
+            link(|e| e.size = MAX_SYMLINK_TARGET_LEN + 1),
+            link(|e| e.path = ".wt-tree/hooks/pre-snapshot".into()),
+        ] {
+            assert!(
+                matches!(
+                    bad.validate(),
+                    Err(ConversionError::InvalidManifestEntry { .. })
+                ),
+                "{bad:?}"
+            );
+            assert!(bad.into_manifest(TreeId::new()).is_err());
+        }
+        link(|e| e.size = MAX_SYMLINK_TARGET_LEN)
+            .validate()
+            .unwrap();
+
+        // Domain side: a symlink without a size, or an executable one,
+        // cannot be encoded.
         let mut m = Manifest::new(TreeId::new());
         m.add_entry(DomainEntry::symlink("ln", hash_bytes(b"t")));
         assert!(matches!(
             wire::ManifestRecord::try_from(&m),
+            Err(ConversionError::InvalidManifestEntry { .. })
+        ));
+        let mut m = Manifest::new(TreeId::new());
+        m.add_entry(
+            DomainEntry::symlink("ln", hash_bytes(b"t"))
+                .with_size(1)
+                .with_executable(true),
+        );
+        assert!(matches!(
+            wire::ManifestRecord::try_from(&m),
+            Err(ConversionError::InvalidManifestEntry { .. })
+        ));
+    }
+
+    #[test]
+    fn symlink_target_validation() {
+        assert!(validate_symlink_target(b"../a/b").is_ok());
+        assert!(validate_symlink_target(b"/abs/olute").is_ok());
+        assert!(validate_symlink_target(&[0xFF, 0xFE]).is_ok(), "raw bytes");
+        assert!(validate_symlink_target(b"").is_err());
+        assert!(validate_symlink_target(b"a\0b").is_err());
+        assert!(validate_symlink_target(&[b'a'; 4096]).is_ok());
+        assert!(validate_symlink_target(&[b'a'; 4097]).is_err());
+    }
+
+    #[test]
+    fn manifest_record_rejects_directories_and_bad_paths() {
+        let mut m = Manifest::new(TreeId::new());
+        m.add_entry(DomainEntry::directory("dir"));
+        assert!(matches!(
+            wire::ManifestEntry::try_from(&m.entries[0]),
             Err(ConversionError::Unsupported(_))
         ));
 

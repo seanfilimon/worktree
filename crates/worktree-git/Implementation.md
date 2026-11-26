@@ -13,6 +13,10 @@ src/
 │                     import_repository, export_repository (+ end-to-end tests)
 ├── import.rs         Git -> W0rkTree (TreeConverter, branch walk, tags, ignore)
 ├── export.rs         W0rkTree -> Git (TreeWriter, deterministic commits, tags)
+├── lfs.rs            Git LFS pointer parsing, local-store / git-lfs content
+│                     lookup with SHA-256 verification, LfsMode, LfsReport
+├── submodule.rs      .gitmodules parser, .wtsubmodules pins (encode/decode),
+│                     nested-tree import of local submodules, export split
 ├── license.rs        license rules (glob/SPDX ports of the Go server), cache in
 │                     .wt/trees/<tree>/licenses.json, redistribution filter,
 │                     generated LICENSES/NOTICE
@@ -28,6 +32,14 @@ src/
 │   ├── mod.rs        push (local Git repo -> URL), fetch_mirror (URL -> bare mirror)
 │   ├── auth.rs       GitAuth (auto / SSH key / credential helper callbacks)
 │   └── transport.rs  GitTransport (HTTPS / SSH / local detection)
+├── remote_helper/    git-remote-wt: `git clone wt::https://host/tenant/tree`
+│   ├── mod.rs        Helper (list / fetch / push over the SDK), run()
+│   ├── protocol.rs   gitremote-helpers(7) line protocol: parse, serve a Backend
+│   ├── target.rs     remote URL -> server, tenant, tree
+│   ├── cache.rs      $GIT_DIR/wt/<remote>/ cache worktree, pushed tag objects
+│   ├── to_git.rs     server branches/tags -> Git objects (no refs touched)
+│   └── to_wt.rs      new commits -> snapshots; refuses unsupported content
+├── bin/git-remote-wt.rs   the helper binary (thin wrapper around run())
 └── test_support.rs   (tests only) Git fixtures and in-memory blob store
 ```
 
@@ -40,15 +52,20 @@ src/
 3. Walk all selected tips with `TOPOLOGICAL | REVERSE` (parents first; shared
    commits converted once). Each commit is attributed to the first branch
    containing it (checked-out branch first, then by name).
-4. Per commit: blobs -> object store (each Git blob once), manifest (sorted
-   paths, `100755` = executable; symlinks/gitlinks skipped with a warning;
-   cached per Git tree), snapshot with id = UUID v5(commit sha), parents
-   mapped, author `Name <email>`, committer time, message without trailing
-   whitespace.
+4. Per commit (skipped if its snapshot already exists — snapshot records
+   are immutable): blobs -> object store (each Git blob once; LFS pointers
+   with `filter=lfs` replaced by verified content, see `lfs.rs`), manifest
+   (sorted paths, `100755` = executable, `120000` = symlink entry whose blob is the
+   link target;
+   gitlinks recorded in a `.wtsubmodules` entry; cached per Git tree),
+   snapshot with id = UUID v5(commit sha), parents mapped, author
+   `Name <email>`, committer time, message without trailing whitespace.
+   A conversion error removes the `.wt/` of a new worktree again.
 5. Branch tips, tags (annotated keep message/tagger/time; tags outside the
    imported history are skipped), `.wt/git-map.json`, forced checkout of the
-   default branch, root `.gitignore` patterns -> `.wt/ignore`, warning for
-   Git LFS patterns from `.gitattributes`.
+   default branch, root `.gitignore` patterns -> `.wt/ignore`, submodule
+   report (and, with `SubmoduleMode::Nested`, nested-tree import of local
+   submodules).
 
 ## Export
 
@@ -57,7 +74,7 @@ src/
 2. For each branch tip: if the tip is mapped and the commit exists in the
    target, nothing to do; otherwise walk `ancestry(tip)` and build missing
    commits: manifest -> nested Git trees (file modes, cached by manifest
-   hash; blobs cached by BLAKE3), author = committer = parsed snapshot author
+   hash; blobs cached by BLAKE3; `.wtsubmodules` entries become gitlinks), author = committer = parsed snapshot author
    at the snapshot time (UTC), message + trailing newline. Commits are
    written via `commit_create_buffer` so only new objects are counted.
 3. `refs/heads/<branch>` is force-updated; tags become lightweight or

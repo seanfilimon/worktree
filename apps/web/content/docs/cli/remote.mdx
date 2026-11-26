@@ -192,6 +192,7 @@ Upload a branch of the selected tree to the server.
 | `--force` (alias `--force-with-lease`) | v0.8: rewind the server branch when it has snapshots your branch lacks. Needs `branch:force_push`; refused by `no_force_push` rules. Lease semantics: refused unless the server tip is the last remote tip you fetched. See [Force push](/docs/cli/force-push-and-undo#force-push). |
 | `--bypass-protection` | v0.8: push past branch protection (owners, `branch:bypass_protection`; always audited). See [Protection bypass](/docs/cli/force-push-and-undo#protection-bypass). |
 | `--no-pack` | v0.8: upload whole objects instead of a pack with deltas (for debugging; same as `WT_NO_PACK=1`). See [Pack and delta transfer](/docs/protocol/packs). |
+| `--no-verify` | Skip the `pre-push` and `post-push` [hooks](/docs/cli/configuration#hooks). Not with `--queue` (queued pushes run the hooks when they are delivered). |
 
 What happens:
 
@@ -283,6 +284,7 @@ Fetch, then integrate `<remote>/<branch>` into the local branch: nothing if it i
 | `--remote <R>` | Remote to pull from. Default: `[sync] remote`, usually `origin`. |
 | `--branch <B>` | Branch to integrate. Default: the current branch. |
 | `--depth <N>` | Fetch at most `N` new snapshots per branch (shallow history). |
+| `--no-verify` | Skip the `pre-merge` and `post-merge` [hooks](/docs/cli/configuration#hooks) of the integration. |
 
 ```bash
 wt pull

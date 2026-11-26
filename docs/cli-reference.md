@@ -278,9 +278,25 @@ Options:
   -b, --branch <BRANCH>  Only entries of this branch (numbered as `BRANCH@{N}`)
       --tree <NAME>      Operate on this tree instead of the one containing the current directory
       --no-color         Disable colored output
+      --remote           Show the server reflog of the tree (pushes, force pushes, restores)
+      --from <R>         Remote for --remote (default: [sync].remote, usually origin)
       --server <URL>     Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
   -V, --version          Print version
 ```
+
+`wt reflog --remote [--from R] [-b BRANCH] [-n N]` reads the server reflog
+(`GET {tree}/reflog`, needs read access): every branch move the server
+accepted in the last 90 days, newest first, one line each:
+
+```text
+5e6f7a8b origin/main: restore by alice: 9c0d1e2f -> 5e6f7a8b [forced] (2 minutes ago)
+9c0d1e2f origin/main: push by bob: 5e6f7a8b -> 9c0d1e2f (1 hour ago)
+```
+
+Kinds are `push`, `force_push` and `restore`. A tip listed there can be
+restored on the server with `POST {tree}/reflog/restore` (admin panel:
+History tab, "Restore"; needs `branch:force_push`); `wt undo` does this for
+your newest push.
 
 #### `wt reflog expire`
 
@@ -540,6 +556,7 @@ Options:
   -s, --strategy <STRATEGY>  How conflicting changes are resolved: `manual` writes conflict markers (labelled `ours (BRANCH ID)` / `theirs (SOURCE ID)`) and stops; `ours` / `theirs` resolve every conflicting hunk and file in favour of that side while still combining non-conflicting changes [default: manual] [possible values: manual, ours, theirs]
       --continue             Finish a conflicted merge after resolving the conflicts
       --abort                Abandon a conflicted merge and restore the pre-merge state
+      --no-verify            Skip the pre-merge and post-merge hooks
   -V, --version              Print version
 ```
 
@@ -919,7 +936,7 @@ Options:
 
 ### `wt undo`
 
-Undo the last local operations (snapshot, merge, rebase, branch moves) from the operation log
+Undo the last operations (snapshot, merge, rebase, branch moves, pushes) from the operation log
 
 ```text
 Usage: wt undo [OPTIONS] [N]
@@ -944,6 +961,12 @@ Options:
       --tree <NAME>
           Operate on this tree instead of the one containing the current directory
 
+  -y, --yes
+          Undo a push without asking for confirmation
+
+      --bypass-protection
+          Undoing a push: ask the server to bypass branch protection (needs branch:bypass_protection)
+
       --no-color
           Disable colored output
 
@@ -964,8 +987,39 @@ operation (`wt undo 3`: the newest three) and checks the restored head out;
 Undoing a stash push gives the stashed changes back to the working tree.
 Both refuse while the working tree has uncommitted changes; --force
 discards them. Snapshots are never deleted, so nothing undone is lost.
-Pushes are not undone on the server (see `wt push --force`).
+
+Pushes are recorded too. When the newest operation is a push, `wt undo`
+moves the server branch back to the tip it had before the push (a restore
+from the server reflog): it shows what will change and asks first (--yes
+skips the question), refuses when someone pushed on top since, and needs
+branch:force_push on the server (admin role), like a force push. Your local
+branch keeps the snapshots: `wt push` publishes them again, and `wt revert`
+is the append-only way to take pushed changes back. Undo a push on its own
+(no N).
 ```
+
+Undoing a push looks like this (`--yes` skips the question; without a
+terminal it is required):
+
+```text
+$ wt undo
+Undoing push: "push main to origin/main (2 snapshots)"
+  origin/main on acme/web (http://localhost:7420) moves back: 9c0d1e2f -> 5e6f7a8b
+  2 snapshots leave the server branch:
+    9c0d1e2f fix typo
+    7a8b9c0d add login form
+  They stay recoverable from the server reflog (`wt reflog --remote`).
+Move origin/main on acme/web back from 9c0d1e2f to 5e6f7a8b? [y/N] y
+Undid push: origin/main moved back from 9c0d1e2f to 5e6f7a8b on acme/web.
+Your local main still has the snapshots: `wt push` publishes them again, `wt revert` takes them back.
+```
+
+Refusals: a push that created the branch (nothing to go back to), a
+server branch that moved since the push (`has moved since your push`: run
+`wt pull` and `wt revert` instead), missing `branch:force_push`
+(`permission denied`), and branch protection (`no_force_push` always;
+`require_linear` / required approvals unless `--bypass-protection` as
+owner). `wt redo` does not re-push an undone push; run `wt push`.
 
 ### `wt redo`
 
@@ -1702,16 +1756,41 @@ Options:
   -V, --version
           Print version
 
-Installing:
-  bash        wt completions bash > ~/.local/share/bash-completion/completions/wt
-  zsh         wt completions zsh > "${fpath[1]}/_wt"   (then restart zsh)
+Installing (load the hook when the shell starts):
+  bash        echo 'source <(wt completions bash)' >> ~/.bashrc
+  zsh         echo 'source <(wt completions zsh)' >> ~/.zshrc   (after compinit)
   fish        wt completions fish > ~/.config/fish/completions/wt.fish
-  powershell  wt completions powershell >> $PROFILE   (or dot-source a saved copy)
-  elvish      wt completions elvish >> ~/.config/elvish/rc.elv
+  powershell  Add-Content $PROFILE 'wt completions powershell | Out-String | Invoke-Expression'
+  elvish      echo 'eval (wt completions elvish | slurp)' >> ~/.config/elvish/rc.elv
 
-Aliases from [alias] are included as of generation time; regenerate the
-script after adding or removing aliases.
+The script calls back into wt on every completion, so branch, tag, remote
+and tree names and aliases are always current. Saving the script to a file
+(bash-completion directory, zsh $fpath as _wt) works too; regenerate it
+after upgrading wt.
 ```
+
+The script is a small hook: on every <kbd>Tab</kbd> the shell runs
+`WT_COMPLETE=<shell> wt -- <words typed so far>` and `wt` prints the candidates. Commands,
+subcommands, flags and enumerated values come from the command definition; aliases from `[alias]`
+are read at completion time (no regeneration needed). Arguments that name refs complete from the
+worktree:
+
+| Argument | Candidates |
+|---|---|
+| `wt switch`, `wt branch archive\|describe\|owner`, `--branch` of `push`, `pull`, `unstage`, `stage list/show`, `checkout`, `wt reflog --branch` | non-archived branches |
+| `wt branch restore` | archived branches only |
+| `wt tag delete\|verify\|push` | tags |
+| `wt merge`, `wt revert`, `wt restore --from`, `wt log`, `wt show`, `wt cherry-pick`, `wt rebase`, `wt archive`, `wt blame --rev`, `wt open snapshot`, `wt branch create --from`, `wt tag [create] NAME REV` | revisions: non-archived branches, tags, remote-tracking `REMOTE/BRANCH` |
+| `wt diff` | revisions as above, then paths |
+| `--remote` of `push`, `pull`, `fetch`, `stage`, `unstage`, `tag push`, `checkout`; `tag delete\|verify --from`; `wt remote remove` | remotes of `.wt/config.toml` |
+| `--tree` (any command), `wt tree remove\|validate\|init-config` | trees of the worktree |
+
+Names are listed straight from the ref directories (`.wt/trees/<tree>/refs/`), so completion stays
+fast on large worktrees: it never scans the working directory, reads snapshots, takes a lock, starts
+the daemon or contacts a server, and it prints nothing but candidates. The tree is the one
+containing the current directory, or the one named by a `--tree` already on the command line; a
+`-C PATH` on the command line is honoured. Outside a worktree, ref names simply do not complete.
+Server-side names (tenants, server trees, merge requests) are not completed.
 
 ## Servers and sync
 
@@ -1913,6 +1992,7 @@ Options:
       --bypass-protection  Push past branch protection (owners: branch:bypass_protection; always audited on the server)
       --server <URL>       Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
       --no-pack            Upload whole objects instead of a pack with deltas (for debugging; same as WT_NO_PACK=1)
+      --no-verify          Skip the pre-push and post-push hooks (queued pushes always run them when they are delivered)
   -V, --version            Print version
 ```
 
@@ -1951,6 +2031,7 @@ Options:
       --tree <NAME>   Operate on this tree instead of the one containing the current directory
       --no-color      Disable colored output
       --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+      --no-verify     Skip the pre-merge and post-merge hooks of the integration
   -V, --version       Print version
 ```
 
@@ -2282,8 +2363,17 @@ Options:
   -C <PATH>
           Run as if wt was started in PATH
 
+      --lfs <MODE>
+          Git LFS files: `auto` imports their content when it is available (else the pointer file, with a warning), `require` fails when content is missing, `skip` imports pointer files as they are
+          
+          [default: auto]
+          [possible values: auto, require, skip]
+
       --tree <NAME>
           Operate on this tree instead of the one containing the current directory
+
+      --lfs-fetch
+          Download Git LFS content missing from the local LFS store with `git lfs fetch` (needs git-lfs)
 
       --no-color
           Disable colored output
@@ -2293,9 +2383,25 @@ Options:
           
           [env: WT_SERVER=]
 
+      --submodules <MODE>
+          Git submodules: `record` keeps each pin in .wtsubmodules, `nested` also imports a submodule's history into a nested tree when its repository is available locally (new worktrees only)
+          
+          [default: record]
+          [possible values: record, nested]
+
   -V, --version
           Print version
 ```
+
+Git LFS content comes from the source's local LFS store (`.git/lfs/objects`), and with `--lfs-fetch`
+from `git lfs fetch --all` / `git lfs smudge`; it is verified against the pointer's SHA-256 and size.
+Every LFS file imported as a pointer, every pointer-shaped file without `filter=lfs` and every
+submodule whose content was not imported is reported on stderr. `--lfs require` exits with code 1
+when content is missing (a new worktree is not created); `--lfs-fetch` with `--lfs skip` is a usage
+error (code 2). The JSON report adds `lfs` (`resolved`, `skipped`, `missing[]` with `path`, `oid`,
+`size`, `reason`, and `untracked[]`) and `submodules[]` (`path`, `commit`, `url`, `nested_tree`,
+`at_pin`, `note`). See [Git compatibility](./git-compatibility.md#git-lfs) for the detection rules and
+the re-import rule.
 
 #### `wt git export`
 
@@ -2318,6 +2424,12 @@ Options:
       --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
   -V, --version             Print version
 ```
+
+A tracked `.wtsubmodules` file (written by `wt git import`) is not exported as a file: each entry
+becomes a gitlink. Pins that cannot be written (files at the pinned path, an unparsable file) are
+reported on stderr and in the JSON `warnings[]`; `gitlinks` counts the gitlinks written. Imported Git
+LFS content is exported as ordinary blobs. `wt git push` reports the same warnings. See
+[Git compatibility](./git-compatibility.md#submodules).
 
 #### `wt git push`
 
@@ -2442,6 +2554,19 @@ Options:
       --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
   -V, --version       Print version
 ```
+
+#### `git-remote-wt`
+
+Not a `wt` command: a separate binary that Git itself starts for remotes whose URL begins with
+`wt::`, so stock Git can clone, fetch and push a server tree.
+
+```bash
+git clone wt::https://wt.example.com/acme/web
+git push origin main
+```
+
+It takes no options; it uses the login saved by `wt login` (or `WT_TOKEN`) and honors `WT_HOME` and
+`WT_LOG`. Behavior, refusals and limits: [Git compatibility](./git-compatibility.md#git-remote-helper-git-remote-wt).
 
 ### `wt mirror`
 

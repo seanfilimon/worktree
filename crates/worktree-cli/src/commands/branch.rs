@@ -36,19 +36,30 @@ pub enum BranchCommand {
     Create {
         name: String,
         /// Revision to start from (default: HEAD)
-        #[arg(long, value_name = "REV")]
+        #[arg(long, value_name = "REV", add = crate::complete::rev())]
         from: Option<String>,
     },
     /// Archive (soft-delete) a branch; its history stays reachable
-    Archive { name: String },
+    Archive {
+        #[arg(add = crate::complete::branch())]
+        name: String,
+    },
     /// Restore an archived branch
-    Restore { name: String },
+    Restore {
+        #[arg(add = crate::complete::archived_branch())]
+        name: String,
+    },
     /// Set the description of a branch on the server (origin); "" clears
     /// it. Branches declared in .wt-tree/branches.toml are changed there.
-    Describe { name: String, text: String },
+    Describe {
+        #[arg(add = crate::complete::branch())]
+        name: String,
+        text: String,
+    },
     /// Set the owner of a branch on the server (origin): user:NAME or
     /// team:SLUG (needs tree:admin)
     Owner {
+        #[arg(add = crate::complete::branch())]
         name: String,
         #[arg(required_unless_present = "clear", value_name = "user:X|team:Y")]
         owner: Option<String>,
@@ -68,6 +79,7 @@ snapshot the tree first; `stash` stashes the changes (new files included) as
 auto-stash again. `-c` carries the changes to the new branch.")]
 pub struct SwitchArgs {
     /// Branch to switch to
+    #[arg(add = crate::complete::branch())]
     pub name: String,
 
     /// Create the branch at the current head first

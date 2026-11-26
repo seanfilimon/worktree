@@ -118,9 +118,10 @@ fn alias_cycles_and_unknown_commands_are_usage_errors() {
 fn completions_for_every_shell() {
     let sb = Sandbox::new();
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        // A dynamic hook: candidates come from `WT_COMPLETE=SHELL wt -- ...`
+        // (tests/completions.rs).
         let script = sb.ok(&["completions", shell]);
-        assert!(script.len() > 1000, "{shell}");
-        assert!(script.contains("snapshot"), "{shell}");
+        assert!(script.contains("WT_COMPLETE"), "{shell}: {script}");
     }
     sb.wt(&["completions", "tcsh"]).assert().code(2);
 }

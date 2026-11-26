@@ -71,8 +71,8 @@ pub fn parse_gitattributes(content: &str) -> Vec<GitAttribute> {
     result
 }
 
-/// Patterns whose paths are stored with Git LFS (`filter=lfs`). Importing
-/// such paths brings in the LFS pointer files, not the large content.
+/// Patterns whose paths are stored with Git LFS (`filter=lfs`). See
+/// [`LfsRules`] for matching paths against them.
 ///
 /// ```
 /// use worktree_git::config::gitattributes::{lfs_patterns, parse_gitattributes};
@@ -88,9 +88,157 @@ pub fn lfs_patterns(attrs: &[GitAttribute]) -> Vec<&str> {
         .collect()
 }
 
+/// The `filter=lfs` decisions of one `.gitattributes` file, compiled for
+/// matching (`wt git import` uses them to decide which pointer-shaped files
+/// are Git LFS files).
+///
+/// Matching follows gitattributes(5) where it matters for LFS: a pattern
+/// without a `/` matches the file name at any depth below the file's
+/// directory, a pattern with a `/` is matched against the path relative to
+/// that directory (`**` crosses directories, `*` does not), the last
+/// matching line wins, and patterns ending in `/` (directories) or starting
+/// with `!` (forbidden in gitattributes) never match files. Macro
+/// definitions (`[attr]...`) and quoted patterns are ignored.
+///
+/// ```
+/// use worktree_git::config::gitattributes::LfsRules;
+///
+/// let rules = LfsRules::parse("*.psd filter=lfs diff=lfs merge=lfs -text\nkeep.psd -filter\n");
+/// assert_eq!(rules.decision("art/cover.psd"), Some(true));
+/// assert_eq!(rules.decision("keep.psd"), Some(false));
+/// assert_eq!(rules.decision("README.md"), None);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct LfsRules {
+    rules: Vec<LfsRule>,
+}
+
+#[derive(Debug, Clone)]
+struct LfsRule {
+    matcher: globset::GlobMatcher,
+    /// Match against the file name only (pattern without `/`).
+    basename: bool,
+    /// `filter=lfs` (true) or any other filter state (false).
+    lfs: bool,
+}
+
+impl LfsRules {
+    /// Compile the lines of `content` that set, unset or change `filter`.
+    /// Lines whose pattern cannot be compiled are skipped.
+    pub fn parse(content: &str) -> Self {
+        let mut rules = Vec::new();
+        for attr in parse_gitattributes(content) {
+            let Some(lfs) = filter_is_lfs(&attr.attributes) else {
+                continue;
+            };
+            let pattern = attr.pattern.as_str();
+            if pattern.starts_with("[attr]")
+                || pattern.starts_with('!')
+                || pattern.starts_with('"')
+                || pattern.ends_with('/')
+            {
+                continue;
+            }
+            let basename = !pattern.contains('/');
+            let pattern = pattern.strip_prefix('/').unwrap_or(pattern);
+            let Ok(glob) = globset::GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .backslash_escape(true)
+                .build()
+            else {
+                continue;
+            };
+            rules.push(LfsRule {
+                matcher: glob.compile_matcher(),
+                basename,
+                lfs,
+            });
+        }
+        Self { rules }
+    }
+
+    /// Whether no line of the file touches `filter`.
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// `Some(true)` if the last line matching `rel_path` (relative to the
+    /// directory of the `.gitattributes` file, `/`-separated) sets
+    /// `filter=lfs`, `Some(false)` if it sets another filter or unsets it,
+    /// `None` if no line matches.
+    pub fn decision(&self, rel_path: &str) -> Option<bool> {
+        let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
+        self.rules
+            .iter()
+            .rev()
+            .find(|rule| {
+                rule.matcher
+                    .is_match(if rule.basename { name } else { rel_path })
+            })
+            .map(|rule| rule.lfs)
+    }
+}
+
+/// The `filter` state set by one line's attributes (the last mention
+/// wins): `Some(true)` for `filter=lfs`, `Some(false)` for another value,
+/// `-filter`, `!filter` or a bare `filter`, `None` if `filter` is absent.
+fn filter_is_lfs(attributes: &[String]) -> Option<bool> {
+    attributes.iter().rev().find_map(|token| {
+        let token = token.as_str();
+        if let Some(value) = token.strip_prefix("filter=") {
+            Some(value == "lfs")
+        } else if matches!(token, "filter" | "-filter" | "!filter") {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lfs_rules_follow_gitattributes_matching() {
+        let rules = LfsRules::parse(
+            "\
+# comment
+*.bin filter=lfs -text
+docs/*.pdf filter=lfs
+/top.dat filter=lfs
+assets/** filter=lfs
+assets/keep.txt -filter
+dir/ filter=lfs
+!neg filter=lfs
+[attr]big filter=lfs
+*.txt text
+*.iso filter=lfs filter=other
+",
+        );
+        assert!(!rules.is_empty());
+        // Basename patterns match at any depth.
+        assert_eq!(rules.decision("a.bin"), Some(true));
+        assert_eq!(rules.decision("deep/er/a.bin"), Some(true));
+        // Patterns with a slash are anchored; `*` does not cross '/'.
+        assert_eq!(rules.decision("docs/a.pdf"), Some(true));
+        assert_eq!(rules.decision("docs/sub/a.pdf"), None);
+        assert_eq!(rules.decision("x/docs/a.pdf"), None);
+        assert_eq!(rules.decision("top.dat"), Some(true));
+        assert_eq!(rules.decision("sub/top.dat"), None);
+        // `**` crosses directories; a later line wins.
+        assert_eq!(rules.decision("assets/img/a.png"), Some(true));
+        assert_eq!(rules.decision("assets/keep.txt"), Some(false));
+        // Directory, negated and macro lines never match files.
+        assert_eq!(rules.decision("dir"), None);
+        assert_eq!(rules.decision("neg"), None);
+        assert_eq!(rules.decision("big"), None);
+        // Lines that do not mention filter are irrelevant.
+        assert_eq!(rules.decision("notes.txt"), None);
+        // Within a line the last filter token wins.
+        assert_eq!(rules.decision("disk.iso"), Some(false));
+        assert!(LfsRules::parse("*.rs text\n").is_empty());
+    }
 
     #[test]
     fn parse_empty_content() {

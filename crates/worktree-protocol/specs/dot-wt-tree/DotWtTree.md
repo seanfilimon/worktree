@@ -16,7 +16,7 @@ and holds:
 - tree-level configuration overrides (`config.toml`: `[auto_snapshot]`,
   `[secret_scanning]`, `[hooks]`) — **shared**;
 - tree-level ignore patterns (`ignore`) — **shared**;
-- tree-level snapshot hooks (`hooks/`) — **shared**;
+- tree-level client hooks (`hooks/`) — **shared**;
 - tree-scoped declarative access policies (`access/`, deny statements
   only) — **shared**;
 - config-as-code server settings (v0.8): branch descriptions and owners
@@ -118,7 +118,7 @@ timeout_secs = 120
 |---|---|
 | `[auto_snapshot]` | Overrides the worktree values for this tree |
 | `[secret_scanning]` | Overrides the worktree/user values for snapshots of this tree |
-| `[hooks]` | Hook settings for this tree's snapshots |
+| `[hooks]` | Hook settings for this tree (`enabled`, `timeout_secs`) |
 
 Resolution: `$WT_HOME/config.toml` < `.wt/config.toml` < this file, key by
 key. Inspect and edit with:
@@ -157,7 +157,9 @@ tree's own shared `.wt-tree/` files themselves.
 
 ## 5. `hooks/`
 
-Same contract as `.wt/hooks/` ([DotWt.md §8](../dot-wt/DotWt.md#8-hooks)):
+Same contract as `.wt/hooks/` ([DotWt.md §8](../dot-wt/DotWt.md#8-hooks)),
+for every phase (`pre-snapshot`, `post-snapshot`, `pre-push`, `post-push`,
+`pre-merge`, `post-merge`, `post-switch`). For a snapshot:
 
 ```
 1. .wt/hooks/pre-snapshot          (abort on failure)
@@ -167,10 +169,13 @@ Same contract as `.wt/hooks/` ([DotWt.md §8](../dot-wt/DotWt.md#8-hooks)):
 5. <tree>/.wt-tree/hooks/post-snapshot
 ```
 
-Hooks run outermost first: the worktree's `.wt/hooks/`, then each enclosing
-parent tree's `.wt-tree/hooks/`, then the tree's own. Environment: `WT_HOOK`,
-`WT_TREE`, `WT_TREE_PATH`, `WT_BRANCH`, `WT_ROOT`, `WT_SNAPSHOT` (post); the
-working directory is the tree root; timeout from `[hooks] timeout_secs`.
+Push, merge and switch hooks follow the same pattern around their
+operation. Hooks run outermost first: the worktree's `.wt/hooks/`, then each
+enclosing parent tree's `.wt-tree/hooks/`, then the tree's own. Environment:
+`WT_HOOK`, `WT_TREE`, `WT_TREE_PATH`, `WT_BRANCH`, `WT_ROOT`, `WT_USER`, plus
+the phase's variables (`WT_SNAPSHOT`, `WT_PUSH_*`, `WT_MERGE_*`,
+`WT_SWITCH_*`, `WT_REMOTE`; see DotWt.md §8); the working directory is the
+tree root; timeout from `[hooks] timeout_secs`.
 
 Hook scripts are tracked with their executable bit (manifest
 `executable`), which checkout, clone and pull restore on Unix. On Windows,
@@ -338,7 +343,7 @@ snapshot; nothing else changes. Older clients ignore (and never write)
 | Root `.wt-tree/` (from a clone) applies to the root tree | Built (v0.7 §15.10) |
 | Tree-level `[auto_snapshot]`, `[secret_scanning]`, `[hooks]` overrides | Built (v0.5 §13.9) |
 | `.wt-tree/ignore` | Built (v0.5 §13.9) |
-| `.wt-tree/hooks/` | Built (v0.5 §13.9) |
+| `.wt-tree/hooks/` | Built (v0.5 §13.9); push, merge and switch phases built after v0.8.0 |
 | `.wt-tree/access/policies.toml` (deny only) | Built (v0.5 §13.7) |
 | `wt tree validate`, `wt tree init-config` | Built (v0.5 §13.9) |
 | Server-side validation of pushed `config.toml`, `branches.toml`, `protections.toml` and `access/**` (located errors) and their application on the default branch | Built (v0.8 §16.3, [ConfigAsCode.md](./ConfigAsCode.md)) |
@@ -364,8 +369,8 @@ Described in earlier drafts, not built:
   (see [ConfigAsCode.md](./ConfigAsCode.md) §14).
 - Policy syntax with `subject`/`not_team`/`unless`/`scope` tables and
   tree-level `allow` statements checked against a computed root ceiling.
-- Hook variables `WT_TREE_NAME`, `WT_CHANGED_FILES`, `WT_USER`,
-  `WT_HOOK_PHASE`.
+- Hook variable `WT_CHANGED_FILES` (`WT_TREE_NAME`, `WT_USER` and
+  `WT_HOOK_PHASE` are set).
 - Warnings for attempted negation of root ignore patterns, and automatic
   migration of deprecated keys.
 

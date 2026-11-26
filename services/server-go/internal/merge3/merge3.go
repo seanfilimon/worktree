@@ -12,6 +12,9 @@
 //     independently.
 //   - When both sides changed a text file it is merged line-wise with diff3
 //     (Text); overlapping edits are a "content" conflict.
+//   - A symbolic link is an opaque value: it is never text-merged and its
+//     target is never read. When both sides changed a path and any of the
+//     three versions is a link, that is a "symlink" conflict.
 //   - Binary files, chunked (large) files, add/add with different content or
 //     different executable bits, modify/delete, and a file that the merge
 //     would place where the other side has a directory are conflicts. The
@@ -37,8 +40,8 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/textdiff"
 )
 
-// Conflict kinds. The first four match the Rust SDK's ConflictKind
-// serialization.
+// Conflict kinds. The first four and "symlink" match the Rust SDK's
+// ConflictKind serialization.
 const (
 	KindContent       = "content"        // both sides changed overlapping lines of a text file
 	KindModifyDelete  = "modify_delete"  // one side modified, the other deleted
@@ -47,6 +50,7 @@ const (
 	KindChunked       = "chunked"        // a chunked (large) file changed on both sides
 	KindExecutable    = "executable"     // both sides added the same content with different executable bits
 	KindFileDirectory = "file_directory" // the merged tree would hold a file and a directory at one path
+	KindSymlink       = "symlink"        // both sides changed a path that is a symbolic link on one of them or in the base
 )
 
 // Conflict is one path the merge cannot resolve.
@@ -227,6 +231,8 @@ func resolve(b, o, t *syncpb.ManifestEntry) resolution {
 			return keep(t) // added on their side only
 		case sameContent(o, t):
 			return clash(KindExecutable) // same content, different mode
+		case o.GetSymlink() || t.GetSymlink():
+			return clash(KindSymlink) // links are never text-merged
 		default:
 			return clash(KindAddAdd)
 		}
@@ -253,6 +259,8 @@ func resolve(b, o, t *syncpb.ManifestEntry) resolution {
 		return keep(withExecutable(o, exec))
 	case sameContent(o, b):
 		return keep(withExecutable(t, exec))
+	case b.GetSymlink() || o.GetSymlink() || t.GetSymlink():
+		return clash(KindSymlink) // links are never text-merged
 	default:
 		return resolution{action: actMergeContent}
 	}
@@ -267,7 +275,10 @@ func mergeExecutable(b, o, t *syncpb.ManifestEntry) bool {
 	return o.GetExecutable()
 }
 
+// withExecutable returns e with the merged executable bit; a symbolic link
+// is never executable.
 func withExecutable(e *syncpb.ManifestEntry, exec bool) *syncpb.ManifestEntry {
+	exec = exec && !e.GetSymlink()
 	if e.GetExecutable() == exec {
 		return e
 	}
@@ -277,12 +288,15 @@ func withExecutable(e *syncpb.ManifestEntry, exec bool) *syncpb.ManifestEntry {
 		Size:       e.GetSize(),
 		Executable: exec,
 		Chunked:    e.GetChunked(),
+		Symlink:    e.GetSymlink(),
 	}
 }
 
-// sameContent reports whether two entries name the same object.
+// sameContent reports whether two entries name the same object of the same
+// kind: a symbolic link and a file holding the link's target text differ.
 func sameContent(a, b *syncpb.ManifestEntry) bool {
-	return a.GetChunked() == b.GetChunked() && bytes.Equal(a.GetBlobHash().GetValue(), b.GetBlobHash().GetValue())
+	return a.GetChunked() == b.GetChunked() && a.GetSymlink() == b.GetSymlink() &&
+		bytes.Equal(a.GetBlobHash().GetValue(), b.GetBlobHash().GetValue())
 }
 
 // entryEqual compares every field of two entries.

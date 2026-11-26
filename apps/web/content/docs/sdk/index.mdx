@@ -22,7 +22,7 @@ description: The worktree-sdk crate — the local W0rkTree engine used by wt, wo
 | `diff` | Pure text diffing: `diff_lines`, `unified_diff`, `word_diff`, `diff_stat`, `similarity`, `is_binary`. See [Merge and diff](/docs/protocol/merge-and-diff#diff). |
 | `merge` | Pure merge algorithms: `merge_text` / `merge_text_with` (diff3, strategies), `merge_manifests`, `merge_executable`, `merge_base`. See [Merge and diff](/docs/protocol/merge-and-diff). |
 | `scan` | Pure content scanning: `scan_secrets` and the configurable `SecretScanner`, `detect_license` (SPDX), `chunk_boundaries` (FastCDC). |
-| `hooks` | Discovery and execution of `pre-snapshot` / `post-snapshot` hooks (`find_hooks`, `Phase`). See [Hooks](/docs/cli/configuration#hooks). |
+| `hooks` | Discovery and execution of the client hooks (`find_hooks`, `Phase`): snapshot, push, merge and switch phases, run by the SDK operations themselves. See [Hooks](/docs/cli/configuration#hooks). |
 | `signing` | Ed25519 snapshot signing: local key store under `$WT_HOME/keys/`, `signed_payload`, `sign_snapshot`, `verify_local`, `verify_with_keys`. See [Snapshot signing](/docs/cli/signing). |
 | `remote` | Client for the server: credentials, login (with MFA) and registration, ping, push, fetch, pull, clone (with shallow options), stage, unstage, list staged, branch watching, declarative access (`remote::access`), a typed gRPC client (`SyncClient`) and a REST client (`RestClient`). See [Remote](/docs/sdk/remote). |
 | `ipc` | CLI ⇄ daemon protocol: request/response types, `bg.json` discovery with the IPC token, `send`. See [Daemon IPC](/docs/sdk/ipc). |
@@ -58,7 +58,7 @@ Every fallible function returns `worktree_sdk::Result<T>`, an alias for `std::re
 | Daemon | `DaemonNotRunning` |
 | Generic | `Io(std::io::Error)`, `Serialization(String)`, `Other(String)` |
 
-A failing `pre-snapshot` hook surfaces as `Other("pre-snapshot hook failed: ...")`, and a shallow history that is too short for an operation as `InvalidArgument` with a hint to run `wt fetch --deepen N`. `std::io::Error`, `serde_json::Error`, and TOML (de)serialization errors convert into `SdkError` automatically, so `?` works on them.
+A failing `pre-snapshot`, `pre-push` or `pre-merge` hook surfaces as `Other("<phase> hook failed: ...")`, and a shallow history that is too short for an operation as `InvalidArgument` with a hint to run `wt fetch --deepen N`. `std::io::Error`, `serde_json::Error`, and TOML (de)serialization errors convert into `SdkError` automatically, so `?` works on them.
 
 ## Minimal example
 

@@ -14,3 +14,10 @@ members = [
 version = "0.8.0"
 edition = "2021"
 license = "LicenseRef-W0rkTree-Public-License-1.0"
+
+# Release binaries (wt, worktree-bg, worktree-bench): whole-program
+# optimization across crates. Slower release builds, faster CPU-bound paths
+# (JSON, protobuf, hashing glue, delta encoding) and smaller binaries.
+[profile.release]
+lto = "fat"
+codegen-units = 1

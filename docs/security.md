@@ -161,6 +161,27 @@ See [audit log](./server-architecture.md#audit-log).
   shut down. Avoid running the daemon on shared multi-user hosts.
 - `.wt/` contains full history in plain files. Anyone who can read the worktree can read its history.
 
+## Symbolic links
+
+A tree can contain symbolic links, and — as in Git — a link's target may be absolute or point
+outside the worktree. Links are treated as data everywhere:
+
+- **Recording.** `wt` reads the link itself (`readlink`), never the file behind it, and never walks
+  into a linked directory. A snapshot cannot pick up content from outside the tree through a link.
+- **Checkout.** Links are recreated with the stored target and nothing is rewritten or dropped. What
+  is refused is acting *through* a link: before writing or deleting a tracked path, every parent
+  directory is checked, and if one is a symbolic link the operation fails
+  (`refusing to touch a/b: a is a symbolic link`). A snapshot that contains both a link `a` and a
+  file `a/b` therefore cannot plant or overwrite files outside the worktree. A link already at the
+  path being written is replaced, not followed.
+- **After checkout.** A checked-out link behaves like any link on your system: tools that open it
+  follow it. Review links in trees you do not trust the same way you review their scripts.
+- **Shared configuration.** `.wt-tree/` (configuration, hooks, access rules) cannot contain
+  symbolic links: they are not recorded, and manifests carrying one are rejected.
+- **Server.** The server stores a target as bytes and returns it as bytes. It validates only the
+  length (1 to 4096 bytes) and the absence of NUL, and never resolves a target — not in the file
+  browser, the blob and archive endpoints, server-side merges, or the Git mirror.
+
 ## Roadmap
 
 Specified in [`specs/security/Security.md`](../crates/worktree-protocol/specs/security/Security.md)

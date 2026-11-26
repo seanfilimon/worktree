@@ -316,6 +316,12 @@ pub enum PathResolution {
 /// is the changed content with the toggled bit (`TakeTheirs`/`KeepOurs`
 /// carrying a combined entry). A modified-vs-deleted path is a
 /// `ModifyDelete` conflict. Binary detection is left to the caller.
+///
+/// A symbolic link is an opaque value: it is never text-merged. When both
+/// sides changed a path and any of the three versions is a symlink (a
+/// retargeted link, or a link on one side and a file on the other), the
+/// result is a `Symlink` conflict. A link and a file with the same bytes
+/// are different content.
 pub fn merge_manifests(
     base: &Manifest,
     ours: &Manifest,
@@ -358,6 +364,14 @@ pub fn merge_executable(
     }
 }
 
+/// `entry` with the merged executable bit (a symlink is never executable).
+fn with_executable(entry: &ManifestEntry, executable: bool) -> ManifestEntry {
+    ManifestEntry {
+        executable: executable && !entry.symlink,
+        ..entry.clone()
+    }
+}
+
 /// The resolution table for one path; `None` when it is absent from both
 /// ours and theirs.
 fn resolve_path(
@@ -379,7 +393,8 @@ fn resolve_path(
         (None, Some(o), None) => KeepOurs(o.clone()),
         (None, None, Some(t)) => TakeTheirs(t.clone()),
         // Added on both sides.
-        (None, Some(o), Some(t)) if o.hash == t.hash => KeepOurs(o.clone()),
+        (None, Some(o), Some(t)) if o.same_content(t) => KeepOurs(o.clone()),
+        (None, Some(o), Some(t)) if o.symlink || t.symlink => conflict(ConflictKind::Symlink),
         (None, Some(o), Some(t)) => MergeContent {
             base: None,
             ours: o.clone(),
@@ -396,17 +411,13 @@ fn resolve_path(
                 TakeTheirs(t.clone())
             } else if t == b {
                 KeepOurs(o.clone())
-            } else if o.hash == t.hash || t.hash == b.hash {
+            } else if o.same_content(t) || t.same_content(b) {
                 // Content is ours'; only the executable bit can differ.
-                KeepOurs(ManifestEntry {
-                    executable,
-                    ..o.clone()
-                })
-            } else if o.hash == b.hash {
-                TakeTheirs(ManifestEntry {
-                    executable,
-                    ..t.clone()
-                })
+                KeepOurs(with_executable(o, executable))
+            } else if o.same_content(b) {
+                TakeTheirs(with_executable(t, executable))
+            } else if b.symlink || o.symlink || t.symlink {
+                conflict(ConflictKind::Symlink)
             } else {
                 MergeContent {
                     base: Some(b.clone()),

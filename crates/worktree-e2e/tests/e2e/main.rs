@@ -78,3 +78,8 @@ mod server_ops; // server-ops (§16.11)
 mod server_secret_scan; // compliance (§16.7)
 mod staged_v2; // staged-v2 (§16.8)
 mod tenant_lifecycle; // tenant-lifecycle (§16.4)
+
+#[cfg(unix)]
+mod symlinks;
+// Git remote helper (`git clone wt::https://...`).
+mod git_remote_helper;

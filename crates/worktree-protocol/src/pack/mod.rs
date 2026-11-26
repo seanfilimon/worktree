@@ -35,7 +35,7 @@ mod writer;
 mod tests;
 
 pub use reader::{PackObject, PackReader};
-pub use writer::{PackStats, PackWriter, WriterOptions};
+pub use writer::{delta_candidate, PackStats, PackWriter, Payload, WriterOptions};
 
 /// First four bytes of every pack.
 pub const MAGIC: [u8; 4] = *b"WTPK";

@@ -2,12 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use colored::Colorize;
 use serde::Serialize;
 use worktree_git::bridge::{
     export_repository, import_into_tree, import_repository, push_repository, ExportOptions,
-    ImportOptions, ImportReport, PushRepoOptions,
+    ImportOptions, ImportReport, LfsMode, LfsReport, PushRepoOptions, SubmoduleMode,
+    SubmoduleReport,
 };
 use worktree_git::remote::auth::GitAuth;
 use worktree_git::remote::transport::GitTransport;
@@ -15,7 +16,7 @@ use worktree_git::source::{self, GitSource};
 use worktree_sdk::config::GitRemoteSection;
 use worktree_sdk::{Repository, SdkError};
 
-use crate::commands::archive::{license_policy, warn_restricted, LicenseFlags, RuleSource};
+use crate::commands::archive::{license_policy, warn, warn_restricted, LicenseFlags, RuleSource};
 use crate::commands::server_common::{Cell, Table};
 use crate::context::Context;
 use crate::error::{CliError, Result};
@@ -57,6 +58,20 @@ pub enum GitCommand {
         /// repository (default: local branches only)
         #[arg(long)]
         all_branches: bool,
+        /// Git LFS files: `auto` imports their content when it is available
+        /// (else the pointer file, with a warning), `require` fails when
+        /// content is missing, `skip` imports pointer files as they are
+        #[arg(long, value_name = "MODE", default_value = "auto")]
+        lfs: LfsArg,
+        /// Download Git LFS content missing from the local LFS store with
+        /// `git lfs fetch` (needs git-lfs)
+        #[arg(long)]
+        lfs_fetch: bool,
+        /// Git submodules: `record` keeps each pin in .wtsubmodules,
+        /// `nested` also imports a submodule's history into a nested tree
+        /// when its repository is available locally (new worktrees only)
+        #[arg(long, value_name = "MODE", default_value = "record")]
+        submodules: SubmodulesArg,
     },
     /// Export this tree's history into a Git repository (created if missing)
     Export {
@@ -94,6 +109,40 @@ pub enum GitCommand {
     },
 }
 
+/// `--lfs MODE` of `wt git import`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LfsArg {
+    Auto,
+    Require,
+    Skip,
+}
+
+impl From<LfsArg> for LfsMode {
+    fn from(arg: LfsArg) -> Self {
+        match arg {
+            LfsArg::Auto => LfsMode::Auto,
+            LfsArg::Require => LfsMode::Require,
+            LfsArg::Skip => LfsMode::Skip,
+        }
+    }
+}
+
+/// `--submodules MODE` of `wt git import`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SubmodulesArg {
+    Record,
+    Nested,
+}
+
+impl From<SubmodulesArg> for SubmoduleMode {
+    fn from(arg: SubmodulesArg) -> Self {
+        match arg {
+            SubmodulesArg::Record => SubmoduleMode::Record,
+            SubmodulesArg::Nested => SubmoduleMode::Nested,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum GitRemoteCommand {
     /// Add a Git remote (local paths are stored absolute)
@@ -115,6 +164,8 @@ struct ImportResult<'a> {
     checked_out: Option<&'a str>,
     /// Git remote recorded for `wt git push` (new worktrees only).
     git_remote: Option<&'a str>,
+    lfs: &'a LfsReport,
+    submodules: &'a [SubmoduleReport],
 }
 
 #[derive(Serialize)]
@@ -125,6 +176,8 @@ struct ExportResult<'a> {
     tags: usize,
     restricted: &'a [String],
     license_rules: RuleSource,
+    gitlinks: usize,
+    warnings: &'a [String],
 }
 
 #[derive(Serialize)]
@@ -150,7 +203,26 @@ pub fn run(ctx: &Context, args: GitArgs) -> Result<()> {
             dest,
             branches,
             all_branches,
-        } => import(ctx, &source, dest, branches, all_branches),
+            lfs,
+            lfs_fetch,
+            submodules,
+        } => {
+            if lfs == LfsArg::Skip && lfs_fetch {
+                return Err(CliError::usage(
+                    "--lfs-fetch cannot be combined with --lfs skip",
+                ));
+            }
+            let opts = ImportOptions {
+                branches,
+                all_branches,
+                name: ctx.tree_flag().map(str::to_owned),
+                include_tags: true,
+                lfs: lfs.into(),
+                lfs_fetch,
+                submodules: submodules.into(),
+            };
+            import(ctx, &source, dest, opts)
+        }
         GitCommand::Export {
             git_path,
             rev,
@@ -170,8 +242,7 @@ fn import(
     ctx: &Context,
     source_arg: &str,
     dest: Option<PathBuf>,
-    branches: Vec<String>,
-    all_branches: bool,
+    opts: ImportOptions,
 ) -> Result<()> {
     if source::is_path(source_arg) && !ctx.absolute(Path::new(source_arg)).is_dir() {
         return Err(CliError::failure(format!(
@@ -180,12 +251,6 @@ fn import(
     }
     let auth = GitAuth::auto();
     let source = GitSource::open(source_arg, ctx.cwd(), &auth)?;
-    let opts = ImportOptions {
-        branches,
-        all_branches,
-        name: ctx.tree_flag().map(str::to_owned),
-        include_tags: true,
-    };
 
     // `--tree NAME` inside a worktree: import into that tree.
     let existing_repo = match ctx.tree_flag() {
@@ -229,6 +294,7 @@ fn import(
         report
     };
     drop(source);
+    warn_import_degradations(&report);
 
     let result = ImportResult {
         dest: &report.dest,
@@ -239,6 +305,8 @@ fn import(
         tags: report.tags,
         checked_out: report.checked_out.as_deref(),
         git_remote: recorded.as_deref(),
+        lfs: &report.lfs,
+        submodules: &report.submodules,
     };
     ctx.out.emit(&result, |t| {
         t.line(format_args!(
@@ -255,7 +323,62 @@ fn import(
         if let Some(url) = &recorded {
             t.line(format_args!("Added Git remote origin -> {url}"));
         }
+        if report.lfs.resolved > 0 {
+            t.line(format_args!(
+                "Imported the content of {}",
+                plural(report.lfs.resolved, "Git LFS object", "Git LFS objects")
+            ));
+        }
+        for sub in &report.submodules {
+            if let Some(tree) = &sub.nested_tree {
+                t.line(format_args!(
+                    "Imported submodule {} into nested tree {}",
+                    sub.path,
+                    tree.bold()
+                ));
+            }
+        }
     })
+}
+
+/// Warn (on stderr) about everything the import could not bring over as
+/// it is in Git: LFS files without content, pointer-shaped files, and
+/// submodules whose content was not imported.
+fn warn_import_degradations(report: &ImportReport) {
+    let lfs = &report.lfs;
+    for missing in &lfs.missing {
+        warn(format_args!(
+            "{}: Git LFS content (sha256:{}, {} bytes) not available: {}; imported the pointer file",
+            missing.path, missing.oid, missing.size, missing.reason
+        ));
+    }
+    if !lfs.missing.is_empty() {
+        warn(format_args!(
+            "Git LFS content missing for {} (pointer files imported); fetch the content \
+             (`git lfs fetch --all`, or `--lfs-fetch`) and import into a new worktree, or use \
+             `--lfs require` to fail instead",
+            plural(lfs.missing.len(), "file", "files")
+        ));
+    }
+    if lfs.skipped > 0 {
+        warn(format_args!(
+            "Git LFS content not imported for {} (--lfs skip; pointer files imported)",
+            plural(lfs.skipped, "file", "files")
+        ));
+    }
+    for path in &lfs.untracked {
+        warn(format_args!(
+            "{path}: looks like a Git LFS pointer but has no filter=lfs attribute; imported as is"
+        ));
+    }
+    for sub in &report.submodules {
+        if let Some(note) = &sub.note {
+            warn(format_args!(
+                "submodule {} (commit {}): {note}",
+                sub.path, sub.commit
+            ));
+        }
+    }
 }
 
 /// Record the import source as Git remote `origin` of a new worktree.
@@ -311,6 +434,9 @@ fn export(ctx: &Context, git_path: &Path, rev: Option<String>, flags: &LicenseFl
     };
     let report = export_repository(&repo, &target, &opts)?;
     warn_restricted(&report.restricted);
+    for warning in &report.warnings {
+        warn(warning);
+    }
     let result = ExportResult {
         git_path: &report.git_path,
         branches: &report.branches,
@@ -318,6 +444,8 @@ fn export(ctx: &Context, git_path: &Path, rev: Option<String>, flags: &LicenseFl
         tags: report.tags,
         restricted: &report.restricted,
         license_rules: rule_source,
+        gitlinks: report.gitlinks,
+        warnings: &report.warnings,
     };
     ctx.out.emit(&result, |t| {
         t.line(format_args!(
@@ -359,6 +487,9 @@ fn push(
     };
     let report = push_repository(&repo, &url, &opts, &GitAuth::auto())?;
     warn_restricted(&report.restricted);
+    for warning in &report.warnings {
+        warn(warning);
+    }
     let result = PushResult {
         url: &report.url,
         branches: &report.branches,

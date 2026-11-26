@@ -31,6 +31,45 @@ type policyCache struct {
 type policyCacheEntry struct {
 	src      []domain.Policy // private deep copy of the compiled policies
 	compiled []compiledPolicy
+	// gen is the store's policy generation read before the policies were
+	// listed (hasGen false when unknown); see policyGenerationer.
+	gen    uint64
+	hasGen bool
+}
+
+// policyGenerationer is implemented by stores that count policy writes
+// (meta.Bolt). While the generation is unchanged the store's policies
+// are too, so the cache can skip listing (and JSON-decoding) them.
+type policyGenerationer interface {
+	PolicyGeneration() uint64
+}
+
+// byGeneration returns the cached compilation for tenantID if it was made
+// from a listing taken at generation gen.
+func (c *policyCache) byGeneration(tenantID string, gen uint64) ([]compiledPolicy, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e := c.m[tenantID]; e != nil && e.hasGen && e.gen == gen {
+		return e.compiled, true
+	}
+	return nil, false
+}
+
+// compileAt is compile for policies listed at generation gen.
+func (c *policyCache) compileAt(tenantID string, pols []domain.Policy, gen uint64) []compiledPolicy {
+	compiled := c.compile(tenantID, pols)
+	c.mu.Lock()
+	if e := c.m[tenantID]; e != nil && sameCompiled(e.compiled, compiled) {
+		e.gen, e.hasGen = gen, true
+	}
+	c.mu.Unlock()
+	return compiled
+}
+
+// sameCompiled reports whether a and b are the same compilation (same
+// backing array), i.e. the entry was not replaced concurrently.
+func sameCompiled(a, b []compiledPolicy) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
 }
 
 // compile returns compilePolicies(pols), reusing the cached result for

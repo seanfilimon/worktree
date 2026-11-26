@@ -84,13 +84,14 @@ mod outbox;
 pub use outbox::OutboxEntry;
 // history-v2 (§16.10): the local operation log (`.wt/oplog.jsonl`), undo/redo.
 mod oplog;
-pub use oplog::{BranchRef, OpKind, OpLogEntry, RefChange, UndoOptions, UndoReport};
+pub use oplog::{BranchRef, OpKind, OpLogEntry, PushUndo, RefChange, UndoOptions, UndoReport};
 
 pub(crate) use trees::TreeRecord;
 // hardening (§15.10): shared `.wt-tree/` files; identity in `local.toml`.
 pub(crate) use trees::read_marker_identity;
 pub use trees::TREE_IDENTITY_FILE;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -128,6 +129,10 @@ pub struct Repository {
     root: PathBuf,
     config: WorktreeConfig,
     store: ObjectStore,
+    /// Snapshot records read so far (history.rs). Records are immutable,
+    /// and history walks (push, pull, merge, log) visit the same ones
+    /// several times per command.
+    snapshots: std::sync::Mutex<HashMap<String, std::sync::Arc<Snapshot>>>,
 }
 
 impl Repository {
@@ -170,6 +175,7 @@ impl Repository {
                 store: ObjectStore::open(wt.join("objects")),
                 root: root.clone(),
                 config,
+                snapshots: Default::default(),
             };
             repo.create_tree_record(&name, "", &default_branch)?;
             Ok(repo)
@@ -189,10 +195,13 @@ impl Repository {
             let wt = dir.join(WT_DIR);
             if wt.is_dir() {
                 let config = WorktreeConfig::load(&wt.join("config.toml"))?;
+                let store = ObjectStore::open(wt.join("objects"))
+                    .with_chunk_threshold(config.storage.chunk_threshold);
                 let mut repo = Repository {
                     root: dir.to_path_buf(),
                     config,
-                    store: ObjectStore::open(wt.join("objects")),
+                    store,
+                    snapshots: Default::default(),
                 };
                 // sparse (§15.4): partial clones download missing content on demand.
                 repo.install_lazy_fetcher();
@@ -221,6 +230,10 @@ impl Repository {
     /// Replace and persist the config.
     pub fn set_config(&mut self, config: WorktreeConfig) -> Result<()> {
         config.save(&self.wt_dir().join("config.toml"))?;
+        self.store = self
+            .store
+            .clone()
+            .with_chunk_threshold(config.storage.chunk_threshold);
         self.config = config;
         Ok(())
     }

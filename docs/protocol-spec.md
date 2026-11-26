@@ -75,12 +75,23 @@ message ManifestEntry {
   ContentHash blob_hash = 2;
   uint64 size = 3;
   bool executable = 4;
+  bool chunked = 5;           // blob_hash names a CHUNK_LIST instead of a BLOB
+  bool symlink = 6;           // symbolic link: the blob is the link target
 }
 ```
 
 Entries are sorted by `path` (byte-wise) and unique, so encoding is canonical: equal file sets
 produce byte-identical manifests and equal hashes. The SDK stores the exact same bytes in
 `.wt/objects/` and the server in its object store.
+
+`symlink` is an additive field: `false` is not encoded, so manifests without symbolic links have the
+same bytes and hash as before it existed. A symlink entry's blob holds the link target as raw bytes
+(1 to 4096 bytes, no NUL) and `size` is its length; the entry must not be `executable` or `chunked`
+and must not be inside `.wt-tree/`. The server refuses a manifest object that breaks these rules on
+upload, so a push naming it fails with `FailedPrecondition`; so does a push whose link target blob
+has a NUL byte or a length other than `size`. Targets are otherwise opaque — absolute paths and
+paths leading out of the tree are stored as they are — and the server never resolves one. See
+[Storage format](./storage-format.md#symbolic-links).
 
 ### Snapshots
 

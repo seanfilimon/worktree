@@ -31,6 +31,10 @@ type fileEntry struct {
 	Hash       hash.Hash `json:"hash"`
 	Size       uint64    `json:"size"`
 	Executable bool      `json:"executable"`
+	// Symlink marks a symbolic link: the entry's content (see the blob
+	// endpoint) is the link's target path, not file data. The server never
+	// resolves the target.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 type snapshotDetail struct {
@@ -157,7 +161,7 @@ func (a *api) handleGetSnapshot(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		files = append(files, fileEntry{Path: e.GetPath(), Hash: h, Size: e.GetSize(), Executable: e.GetExecutable()})
+		files = append(files, fileEntry{Path: e.GetPath(), Hash: h, Size: e.GetSize(), Executable: e.GetExecutable(), Symlink: e.GetSymlink()})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	normalizeSnapshot(s)
@@ -300,9 +304,17 @@ func blobContentType(name string, data []byte) string {
 	return ct
 }
 
+// symlinkHeader is set to "true" on blob responses whose content is the
+// target of a symbolic link.
+const symlinkHeader = "X-Wt-Symlink"
+
 // handleBlob answers GET /api/v1/trees/{tenant}/{tree}/blob/{snapshot}/{path...}
 // with the raw bytes of one file. Supports Range and conditional requests;
 // the response is immutable for a given snapshot.
+//
+// For a symbolic link the bytes are the link's target path — the link is
+// never followed, not even to another path of the same snapshot — served as
+// text/plain with `X-Wt-Symlink: true` so clients can label it.
 func (a *api) handleBlob(w http.ResponseWriter, r *http.Request) error {
 	_, tree, err := a.treeFor(r, domain.ActTreeRead)
 	if err != nil {
@@ -360,6 +372,10 @@ func (a *api) handleBlob(w http.ResponseWriter, r *http.Request) error {
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", blobContentType(filePath, data))
+	if entry.GetSymlink() {
+		hdr.Set("Content-Type", "text/plain; charset=utf-8")
+		hdr.Set(symlinkHeader, "true")
+	}
 	hdr.Set("X-Content-Type-Options", "nosniff")
 	hdr.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	hdr.Set("ETag", `"`+h.Hex()+`"`)

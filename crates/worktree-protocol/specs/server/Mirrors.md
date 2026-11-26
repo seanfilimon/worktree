@@ -299,6 +299,9 @@ refreshes while a sync is running.
 ## 15. Roadmap
 
 - Pull mirrors (import from a Git remote on a schedule) and two-way sync.
+  (Git clients that need to read from or push to a tree directly do not
+  need a mirror: the client-side Git remote helper `git-remote-wt` is
+  built, see `docs/git-compatibility.md`.)
 - SSH deploy keys stored per mirror instead of the server's own keys.
 - Credential encryption at rest (shared with webhook secrets).
 - Signed commits and tags in the mirror from snapshot signatures.

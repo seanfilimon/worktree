@@ -60,6 +60,23 @@ impl Repository {
         Ok(out)
     }
 
+    /// Every branch name of `tree` with its archived flag, sorted by name.
+    ///
+    /// Reads only the ref directory and `branches.meta.json` — no tips, no
+    /// lock — so it stays fast on trees with many branches (shell
+    /// completion). `TreeNotFound` if the tree does not exist.
+    pub fn branch_names(&self, tree: &str) -> Result<Vec<(String, bool)>> {
+        self.load_tree(tree)?;
+        let meta = self.branch_meta(tree)?;
+        Ok(list_ref_files(&self.branches_dir(tree), "")?
+            .into_iter()
+            .map(|name| {
+                let archived = meta.get(&name).is_some_and(|m| m.archived);
+                (name, archived)
+            })
+            .collect())
+    }
+
     /// The branch `HEAD` points at.
     pub fn current_branch(&self, tree: &str) -> Result<String> {
         self.load_tree(tree)?;
@@ -77,7 +94,26 @@ impl Repository {
     /// `DirtyWorkingTree` if there are uncommitted changes and not `force`.
     /// When both branches point at the same snapshot, uncommitted changes
     /// are carried over untouched (unless `force`).
+    ///
+    /// Afterwards the `post-switch` hooks run (failures are reported on
+    /// stderr only); not when `name` is already current and not `force`.
     pub fn switch_branch(&self, tree: &str, name: &str, opts: SwitchOptions) -> Result<()> {
+        if let Some(hook) = self.switch_branch_unhooked(tree, name, opts)? {
+            hook.post(self);
+        }
+        Ok(())
+    }
+
+    /// [`Repository::switch_branch`] without running the `post-switch`
+    /// hooks; returns their context when the switch did something. The
+    /// caller runs them once the switch is complete (after the tree lock
+    /// is released).
+    pub(crate) fn switch_branch_unhooked(
+        &self,
+        tree: &str,
+        name: &str,
+        opts: SwitchOptions,
+    ) -> Result<Option<crate::hooks::SwitchHook>> {
         let _lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         if self.merge_state(tree)?.is_some() {
@@ -91,7 +127,7 @@ impl Repository {
             self.ensure_active_branch(tree, name)?;
         }
         if name == current && !opts.force {
-            return Ok(());
+            return Ok(None);
         }
         let target_tip = self.read_tip(tree, name)?;
         if target_tip != current_tip || opts.force {
@@ -118,10 +154,18 @@ impl Repository {
             tree: tree.to_string(),
             branch: name.to_string(),
             action: "switch".into(),
-            old: current_tip,
-            new: target_tip,
+            old: current_tip.clone(),
+            new: target_tip.clone(),
             message: format!("moving from {current} to {name}"),
-        })
+        })?;
+        Ok(Some(crate::hooks::SwitchHook {
+            tree: rec,
+            from: current,
+            to: name.to_string(),
+            old_tip: current_tip,
+            new_tip: target_tip,
+            created: opts.create,
+        }))
     }
 
     /// Soft-delete (archive) a branch. History stays reachable; the name can
@@ -246,6 +290,13 @@ impl Repository {
         Ok(out)
     }
 
+    /// Every remote-tracking ref of `tree` as `REMOTE/BRANCH` (the revision
+    /// spelling), sorted. Reads only the ref directories (no tips, no lock).
+    pub fn remote_branch_names(&self, tree: &str) -> Result<Vec<String>> {
+        self.load_tree(tree)?;
+        list_ref_files(&self.remotes_dir(tree), "")
+    }
+
     // ----------------------------------------------------------------
     // Tags
     // ----------------------------------------------------------------
@@ -298,6 +349,13 @@ impl Repository {
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+
+    /// Every tag name of a tree, sorted. Reads only the tag directory (no
+    /// tag records, no lock), for fast listings such as shell completion.
+    pub fn tag_names(&self, tree: &str) -> Result<Vec<String>> {
+        self.load_tree(tree)?;
+        list_ref_files(&self.tags_dir(tree), ".json")
     }
 
     /// Delete a tag; `TagNotFound` if absent. The tagged snapshot is kept.
@@ -430,7 +488,9 @@ impl Repository {
         if !path.is_file() {
             self.check_ref_layout(&self.branches_dir(tree), branch)?;
         }
-        fsutil::write_atomic(&path, tip.unwrap_or("").as_bytes())?;
+        // The commit point: objects and snapshot records written so far are
+        // made durable before the ref that makes them reachable.
+        fsutil::write_atomic_commit(&path, tip.unwrap_or("").as_bytes())?;
         let mut meta = self.branch_meta(tree)?;
         if !meta.contains_key(branch) {
             meta.insert(

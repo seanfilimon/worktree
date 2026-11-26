@@ -7,8 +7,8 @@ use std::io;
 use std::path::PathBuf;
 
 use super::snapshotting::compute_changes;
-use super::{names, Repository};
-use crate::diff::{diff_stat, is_binary, similarity, unified_diff, word_diff};
+use super::{fsutil, names, Repository};
+use crate::diff::{diff_stat, is_binary, similarity, unified_diff_with_stat, word_diff};
 use crate::error::Result;
 use crate::model::*;
 
@@ -150,12 +150,20 @@ impl Repository {
                     } else {
                         DEV_NULL
                     };
-                    let patch = if opts.word_diff {
-                        word_diff(old_name, new_name, &old_text, &new_text, opts.context)
+                    let (patch, stat) = if opts.word_diff {
+                        (
+                            word_diff(old_name, new_name, &old_text, &new_text, opts.context),
+                            diff_stat(&old_text, &new_text),
+                        )
                     } else {
-                        unified_diff(old_name, new_name, &old_text, &new_text, opts.context)
+                        unified_diff_with_stat(
+                            old_name,
+                            new_name,
+                            &old_text,
+                            &new_text,
+                            opts.context,
+                        )
                     };
-                    let stat = diff_stat(&old_text, &new_text);
                     diff.added = stat.added;
                     diff.removed = stat.removed;
                     diff.patch = (!patch.is_empty()).then_some(patch);
@@ -166,15 +174,27 @@ impl Repository {
         Ok(out)
     }
 
-    /// Content of a new-side entry (blob, or the working file).
+    /// Content of a new-side entry (blob, or the working file). For a
+    /// symlink entry the content is the link's target text; the link is
+    /// read, never followed.
     fn read_new_side(&self, entry: &ManifestEntry, new_side: &NewSide) -> Result<Vec<u8>> {
         match new_side {
             NewSide::Store => self.store.read_entry(entry),
-            NewSide::Working(dir) => match fs::read(dir.join(&entry.path)) {
-                Ok(d) => Ok(d),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-                Err(e) => Err(e.into()),
-            },
+            NewSide::Working(dir) => {
+                let abs = dir.join(&entry.path);
+                let is_link = entry.symlink
+                    && fsutil::symlink_meta(&abs)?.is_some_and(|m| m.file_type().is_symlink());
+                let read = if is_link {
+                    fsutil::read_link_target(&abs)
+                } else {
+                    fs::read(&abs)
+                };
+                match read {
+                    Ok(d) => Ok(d),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+                    Err(e) => Err(e.into()),
+                }
+            }
         }
     }
 
@@ -206,7 +226,7 @@ impl Repository {
         added.retain(|a| {
             match deleted
                 .iter()
-                .position(|d| d.hash == a.hash && d.chunked == a.chunked)
+                .position(|d| d.same_content(a) && d.chunked == a.chunked)
             {
                 Some(i) => {
                     let d = deleted.remove(i);

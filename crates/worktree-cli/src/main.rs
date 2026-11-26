@@ -6,13 +6,15 @@
 //!
 //! Before clap sees the command line, a leading alias from `[alias]` in the
 //! user or worktree config is expanded ([`alias`]); the root `--help` lists
-//! the commands grouped by topic ([`help`]).
+//! the commands grouped by topic ([`help`]). With `WT_COMPLETE` set, `wt`
+//! answers a shell completion request instead ([`complete`]).
 //!
 //! Exit codes: 0 success, 1 error, 2 usage error, 3 merge conflicts.
 
 mod alias;
 mod cli;
 mod commands;
+mod complete;
 mod context;
 mod error;
 mod help;
@@ -48,6 +50,9 @@ fn main() -> ExitCode {
 }
 
 fn real_main() -> ExitCode {
+    // `WT_COMPLETE=SHELL wt -- WORDS...`: answer a shell completion request
+    // and exit before anything else runs (no stdout output before this).
+    complete::intercept();
     let mut command = help::grouped(Cli::command());
     let args = match alias::expand(std::env::args_os().collect(), &command) {
         Ok(args) => args,

@@ -54,14 +54,15 @@ Rows marked *Roadmap* are specified in [`crates/worktree-protocol/specs/`](./cra
 | Collaboration | Invisible until push | Staged snapshots (`wt stage`, `wt status --team`), live server events over SSE |
 | Identity | Unverified name + email | Server accounts, argon2id passwords, `wt_` bearer tokens |
 | Access control | None | Built-in role matrix (viewer → owner), visibility, branch protection, merge requests |
-| Declarative policies (RBAC + ABAC in TOML) | None | *Roadmap* (access-config documents are stored but not evaluated) |
+| Declarative policies (RBAC + ABAC) | None | Policies with allow/deny statements, attribute conditions, custom roles and an access simulator, evaluated by the server |
 | License tracking | None | Per-path SPDX rules enforced on push |
-| Large files | Git LFS | Stored as whole blobs today; FastCDC chunking and lazy loading are *Roadmap* |
+| Large files | Git LFS | Files above 8 MiB are stored as content-defined chunks (FastCDC); partial clones fetch content on demand. A virtual file system (FUSE/ProjFS) is *Roadmap* |
 | Auto-snapshots | None | `worktree-bg` daemon snapshots on inactivity and stages work automatically |
 | Submodules | Separate system | Nested trees with independent branches |
-| Recovery | Local reflog that expires | Local append-only reflog; server-synced reflog is *Roadmap* |
+| Symbolic links | Mode `120000` entries | Recorded as links (target stored as text, never followed); round-trip through `wt git import` / `export` |
+| Recovery | Local reflog that expires | Local append-only reflog and `wt undo`; server reflog of every branch move (`wt reflog --remote`), branches restorable from it and `wt undo` of a push |
 | Monitoring | None | `/healthz`, Prometheus `/metrics`, append-only audit log, admin panel |
-| Transport security | SSH/HTTPS | Cleartext h2c on one port — terminate TLS in front of the server; native TLS/QUIC and Ed25519 signing are *Roadmap* |
+| Transport security | SSH/HTTPS | Cleartext h2c by default, or native TLS / mutual TLS (`--tls-cert`, `--tls-key`, `--tls-client-ca`); Ed25519 snapshot signing. QUIC is *Roadmap* |
 
 ---
 
@@ -253,12 +254,12 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 | Component | Path | Status | Scope |
 |---|---|---|---|
 | Wire protocol | `crates/worktree-protocol/proto/sync.proto` | v2 | `SyncService` (13 RPCs), object/snapshot records, push rejections |
-| SDK — local engine | `crates/worktree-sdk` | v2 | `.wt/` layout, object store, snapshots, branches, tags, merge (diff3), revert, restore, reflog, ignore, nested trees |
+| SDK — local engine | `crates/worktree-sdk` | v2 | `.wt/` layout, object store, snapshots, branches, tags, merge (diff3), revert, restore, reflog, ignore, nested trees, client hooks (snapshot, push, merge, switch) |
 | SDK — remote client | `crates/worktree-sdk/src/remote` | v2 | login/register, push, fetch, pull, clone, stage, list staged |
-| SDK — scanning | `crates/worktree-sdk/src/scan.rs` | v2 | Secret scanning (pre-snapshot), SPDX detection, FastCDC boundaries (not yet used for storage) |
+| SDK — scanning | `crates/worktree-sdk/src/scan.rs` | v2 | Secret scanning (pre-snapshot), SPDX detection, FastCDC boundaries (used for files above 8 MiB) |
 | CLI `wt` | `crates/worktree-cli` | v2 | 29 top-level commands, `--json` output, exit codes 0/1/2/3 |
 | Daemon `worktree-bg` | `crates/worktree-bg` | v2 | File watching, debounced auto-snapshots, auto-stage, JSON/TCP IPC |
-| Git bridge | `crates/worktree-git` | v2 | `wt git import` / `wt git export` with deterministic, incremental mapping |
+| Git bridge | `crates/worktree-git` | v2 | `wt git import` / `wt git export` with deterministic, incremental mapping; Git LFS content imported (verified), submodule pins kept in `.wtsubmodules` and exported as gitlinks, optional nested-tree import of local submodules |
 | Server | `services/server-go` | v2 | bbolt metadata, CAS objects, IAM, sync, REST, SSE, staged, branch protection, merge requests, license rules, audit, metrics |
 | Admin panel | `apps/admin` | v2 | Dashboard, tenants, trees, file browser, merge requests, audit log, accounts, tokens |
 | End-to-end tests | `crates/worktree-e2e`, `scripts/e2e.sh` | v2 | Drives the real binaries against a live server |
@@ -266,15 +267,17 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 
 ### Roadmap (specified, not implemented)
 
-- Declarative TOML access policies (RBAC + ABAC), custom roles and `.wt-tree/` permission ceilings
-  ([IAM spec](./crates/worktree-protocol/specs/iam/IAM.md)).
-- Large-file chunked storage and lazy loading via FUSE/ProjFS ([Storage spec](./crates/worktree-protocol/specs/storage/Storage.md)).
-- QUIC transport, native TLS, Ed25519 snapshot signing, encryption at rest ([Security spec](./crates/worktree-protocol/specs/security/Security.md)).
-- Tree/branch/snapshot dependencies and auto-generated TODO branches ([Tree spec](./crates/worktree-protocol/specs/tree/Tree.md)).
-- Releases, CI check gates and tenant quotas (the `CiChecksFailed` / `QuotaExceeded` rejections are
-  reserved in the protocol).
-- Live Git mirroring and a Git remote helper.
-- Server-synced reflog and offline sync queue.
+- Git signature preservation on import ([Git compatibility](./docs/git-compatibility.md)).
+- Serving trees over Git's own protocol and pull mirrors (push mirrors and a Git remote helper,
+  `git clone wt::https://host/tenant/tree`, exist: see
+  [Git compatibility](./docs/git-compatibility.md#git-remote-helper-git-remote-wt)).
+- Lazy loading through a virtual file system (FUSE/ProjFS) ([Storage spec](./crates/worktree-protocol/specs/storage/Storage.md)).
+- Restoring an arbitrary server reflog entry from the CLI (`wt undo` of your newest push and the
+  admin panel exist).
+- QUIC transport, encryption at rest and OS keychain credential storage
+  ([Security spec](./crates/worktree-protocol/specs/security/Security.md)).
+- Interactive rebase.
+- A CI runner (CI status reporting and merge gates exist).
 
 ---
 

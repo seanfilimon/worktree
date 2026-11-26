@@ -32,7 +32,7 @@ use super::trees::TreeRecord;
 use super::{fsutil, names, Repository};
 use crate::error::{Result, SdkError};
 use crate::model::ManifestEntry;
-use crate::store::{file_hash, hash_bytes, ObjectFetcher};
+use crate::store::{file_hash_as, hash_bytes, ObjectFetcher};
 
 const SPARSE_FILE: &str = "sparse";
 const PARTIAL_FILE: &str = "partial";
@@ -516,18 +516,37 @@ impl Repository {
     }
 }
 
-/// Whether the file at `abs` still holds `entry`'s content.
+/// Whether the file at `abs` still holds `entry`'s content. A symbolic
+/// link is compared by its target text and never followed; a link where a
+/// file is recorded counts as modified, and so does a file where a link is
+/// recorded (except where links are checked out as placeholder files).
 fn unmodified(abs: &Path, entry: &ManifestEntry) -> Result<bool> {
-    let data = match fs::read(abs) {
+    let Some(meta) = fsutil::symlink_meta(abs)? else {
+        return Ok(true);
+    };
+    let is_link = meta.file_type().is_symlink();
+    if is_link != entry.symlink && (is_link || cfg!(unix)) {
+        return Ok(false);
+    }
+    let read = if is_link {
+        fsutil::read_link_target(abs)
+    } else {
+        fs::read(abs)
+    };
+    let data = match read {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
         Err(e) => return Err(e.into()),
     };
+    if entry.symlink {
+        return Ok(hash_bytes(&data) == entry.hash);
+    }
     if data.len() as u64 != entry.size {
         return Ok(false);
     }
-    // A large file may be recorded either chunked or (legacy) as one blob.
-    Ok(file_hash(&data).0 == entry.hash || hash_bytes(&data) == entry.hash)
+    // Compare in the entry's own form: it may be chunked or one blob
+    // whatever the size (`[storage] chunk_threshold`, legacy entries).
+    Ok(file_hash_as(&data, entry.chunked) == entry.hash)
 }
 
 /// `rel` (root-relative) relative to the tree directory `tree_path`.

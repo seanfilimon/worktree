@@ -16,7 +16,7 @@ pub struct DiffArgs {
     /// Up to two revisions followed by paths. With no revision the working
     /// tree is compared with HEAD; with one, with that revision; with two,
     /// the revisions are compared with each other.
-    #[arg(value_name = "REV|PATH")]
+    #[arg(value_name = "REV|PATH", add = crate::complete::rev_or_path())]
     pub args: Vec<String>,
 
     /// Paths to restrict the diff to (everything after `--`)

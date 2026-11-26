@@ -198,6 +198,7 @@ fn gc_roots_remote_refs_merge_state_stash_and_state_files() {
             size: 25,
             executable: false,
             chunked,
+            symlink: false,
         }]))
         .unwrap();
     let line = serde_json::json!({"message": "wip", "manifest": stash_manifest.to_hex()});
@@ -307,6 +308,7 @@ fn gc_compacts_raw_objects_and_removes_stale_temp_files() {
             size: content.len() as u64,
             executable: false,
             chunked: false,
+            symlink: false,
         }]))
         .unwrap();
     let snap = Snapshot {

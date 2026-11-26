@@ -24,7 +24,7 @@ use crate::output::format::plural;
 #[derive(Debug, Args)]
 pub struct ArchiveArgs {
     /// Snapshot to archive (default: HEAD)
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub rev: Option<String>,
 
     /// Archive file to write
@@ -161,11 +161,14 @@ impl ArchiveFormat {
     }
 }
 
-/// One file to put in an archive.
+/// One file or symbolic link to put in an archive.
 pub struct ArchiveEntry {
     pub path: String,
+    /// File content, or the link target for a symlink.
     pub data: Vec<u8>,
     pub executable: bool,
+    /// Written as a symbolic-link member pointing at `data`.
+    pub symlink: bool,
 }
 
 #[derive(Serialize)]
@@ -219,6 +222,7 @@ pub fn run(ctx: &Context, args: ArchiveArgs) -> Result<()> {
                 path: entry.path.clone(),
                 data,
                 executable: entry.executable,
+                symlink: entry.symlink,
             })
         });
     let file = File::create(&output)
@@ -280,6 +284,20 @@ fn mode(executable: bool) -> u32 {
     }
 }
 
+/// A stored symlink target as a path for a tar link name (raw bytes on
+/// Unix, lossy UTF-8 elsewhere).
+fn link_target(target: &[u8]) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(target))
+    }
+    #[cfg(not(unix))]
+    {
+        std::path::PathBuf::from(String::from_utf8_lossy(target).into_owned())
+    }
+}
+
 fn write_tar_gz<W: Write>(
     writer: W,
     mtime: DateTime<Utc>,
@@ -290,6 +308,16 @@ fn write_tar_gz<W: Write>(
     let mut count = 0;
     for entry in entries {
         let entry = entry?;
+        if entry.symlink {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_mtime(mtime);
+            builder.append_link(&mut header, &entry.path, link_target(&entry.data))?;
+            count += 1;
+            continue;
+        }
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(entry.data.len() as u64);
@@ -316,6 +344,13 @@ fn write_zip<W: Write + Seek>(
     let mut count = 0;
     for entry in entries {
         let entry = entry?;
+        if entry.symlink {
+            let target = String::from_utf8_lossy(&entry.data);
+            zip.add_symlink(entry.path.as_str(), target, base)
+                .map_err(zip_err)?;
+            count += 1;
+            continue;
+        }
         let options = base
             .unix_permissions(mode(entry.executable))
             .large_file(entry.data.len() >= u32::MAX as usize);
@@ -360,16 +395,19 @@ mod tests {
                 path: "README.md".into(),
                 data: b"# hello\n".to_vec(),
                 executable: false,
+                symlink: false,
             }),
             Ok(ArchiveEntry {
                 path: "bin/run.sh".into(),
                 data: b"#!/bin/sh\necho hi\n".to_vec(),
                 executable: true,
+                symlink: false,
             }),
             Ok(ArchiveEntry {
                 path: "empty.txt".into(),
                 data: Vec::new(),
                 executable: false,
+                symlink: false,
             }),
         ]
     }
@@ -454,6 +492,43 @@ mod tests {
         );
     }
 
+    fn link() -> Vec<Result<ArchiveEntry>> {
+        vec![Ok(ArchiveEntry {
+            path: "docs/latest".into(),
+            data: b"../README.md".to_vec(),
+            executable: false,
+            symlink: true,
+        })]
+    }
+
+    #[test]
+    fn symlinks_are_archived_as_links() {
+        let mut buf = Cursor::new(Vec::new());
+        write_archive(ArchiveFormat::TarGz, &mut buf, mtime(), link()).expect("write");
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(buf.get_ref().as_slice()));
+        let entry = archive
+            .entries()
+            .expect("entries")
+            .next()
+            .expect("one")
+            .expect("entry");
+        assert_eq!(entry.header().entry_type(), tar::EntryType::Symlink);
+        assert_eq!(entry.header().size().expect("size"), 0);
+        assert_eq!(
+            entry.link_name().expect("link").expect("target").as_ref(),
+            Path::new("../README.md")
+        );
+
+        let mut buf = Cursor::new(Vec::new());
+        write_archive(ArchiveFormat::Zip, &mut buf, mtime(), link()).expect("write");
+        let mut archive = zip::ZipArchive::new(Cursor::new(buf.into_inner())).expect("zip");
+        let mut file = archive.by_name("docs/latest").expect("entry");
+        assert!(file.is_symlink());
+        let mut target = String::new();
+        file.read_to_string(&mut target).expect("read");
+        assert_eq!(target, "../README.md");
+    }
+
     #[test]
     fn zip_round_trip() {
         let mut buf = Cursor::new(Vec::new());
@@ -484,6 +559,7 @@ mod tests {
                 path: "a".into(),
                 data: b"a".to_vec(),
                 executable: false,
+                symlink: false,
             }),
             Err(CliError::failure("object not found")),
         ];

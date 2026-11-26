@@ -270,36 +270,110 @@ impl Drop for TempPack {
     }
 }
 
+/// Threads storing the objects of a downloaded pack.
+const STORE_WORKERS: usize = 4;
+
+/// Items prepared per window by [`build_pack`]: bounds the memory held by
+/// read objects and encoded payloads.
+const PACK_WINDOW: usize = 256;
+
+/// One item of [`build_pack`] after the parallel stage.
+struct PreparedItem {
+    size: usize,
+    /// The encoded delta and its base, if one pays off.
+    delta: Option<(ObjectHash, pack::Payload)>,
+    /// The whole payload, encoded unless a delta was found (it is then only
+    /// needed when the chain depth forbids that delta).
+    whole: Option<pack::Payload>,
+    data: Vec<u8>,
+}
+
 /// Write the pack of `items` to `path`. A base is used only when the
 /// server has it (`server_has`) or it is an earlier entry, and when it is
 /// stored locally.
+///
+/// Reading, delta encoding and compression run on worker threads, a window
+/// of items at a time; entries are then written in order, so the pack is
+/// byte-identical to adding the items one by one.
 fn build_pack(
     store: &ObjectStore,
     items: &[UploadItem],
     server_has: &HashSet<ObjectHash>,
     path: &Path,
 ) -> Result<pack::PackStats> {
+    use rayon::prelude::*;
+
+    let opts = WriterOptions::default();
     let file = std::fs::File::create(path)?;
-    let mut w = PackWriter::new(BufWriter::new(file), WriterOptions::default())?;
-    for it in items {
-        let data = store.get(&it.hash)?;
-        if data.len() > MAX_OBJECT_SIZE {
-            return Err(SdkError::Remote(format!(
-                "object {} is {} bytes, larger than the 64 MiB transfer limit",
-                it.hash,
-                data.len()
-            )));
+    let mut w = PackWriter::new(BufWriter::new(file), opts)?;
+    // First position of every item: a base is an earlier entry of the pack
+    // exactly when it appears before the item that uses it.
+    let mut first: HashMap<ObjectHash, usize> = HashMap::with_capacity(items.len());
+    for (i, it) in items.iter().enumerate() {
+        first.entry(it.hash).or_insert(i);
+    }
+    for (offset, window) in items.chunks(PACK_WINDOW).enumerate() {
+        let start = offset * PACK_WINDOW;
+        let prepared: Vec<Result<PreparedItem>> = window
+            .par_iter()
+            .enumerate()
+            .map(|(j, it)| {
+                let data = store.get(&it.hash)?;
+                if data.len() > MAX_OBJECT_SIZE {
+                    return Err(SdkError::Remote(format!(
+                        "object {} is {} bytes, larger than the 64 MiB transfer limit",
+                        it.hash,
+                        data.len()
+                    )));
+                }
+                let usable = |b: &ObjectHash| {
+                    server_has.contains(b) || first.get(b).is_some_and(|&k| k < start + j)
+                };
+                let mut delta = None;
+                if let Some(b) = it.base.filter(usable) {
+                    if let Ok(base) = store.get_local(&b) {
+                        delta = pack::delta_candidate(
+                            &opts,
+                            it.hash.as_bytes(),
+                            &data,
+                            b.as_bytes(),
+                            &base,
+                        )?
+                        .map(|p| (b, p));
+                    }
+                }
+                let whole = match delta {
+                    Some(_) => None,
+                    None => Some(pack::Payload::encode(&opts, &data)?),
+                };
+                Ok(PreparedItem {
+                    size: data.len(),
+                    delta,
+                    whole,
+                    data,
+                })
+            })
+            .collect();
+        for (it, prepared) in window.iter().zip(prepared) {
+            let PreparedItem {
+                size,
+                delta,
+                whole,
+                data,
+            } = prepared?;
+            let (base, payload) = delta.unzip();
+            let delta = base.as_ref().map(ObjectHash::as_bytes).zip(payload);
+            w.add_encoded(
+                *it.hash.as_bytes(),
+                kind_byte(it.kind),
+                size,
+                delta,
+                || match whole {
+                    Some(p) => Ok(p),
+                    None => pack::Payload::encode(&opts, &data),
+                },
+            )?;
         }
-        let base = it
-            .base
-            .filter(|b| server_has.contains(b) || w.contains(b.as_bytes()))
-            .and_then(|b| store.get_local(&b).ok().map(|d| (b, d)));
-        w.add(
-            *it.hash.as_bytes(),
-            kind_byte(it.kind),
-            &data,
-            base.as_ref().map(|(h, d)| (h.as_bytes(), d.as_slice())),
-        )?;
     }
     let (_, stats) = w.finish()?;
     Ok(stats)
@@ -615,20 +689,70 @@ async fn download_batch(
                 pack: true,
                 ..TransferStats::default()
             };
-            while let Some(obj) = pr
-                .next_object(|h| store.get_local(&ObjectHash::from_bytes(*h)).ok())
-                .map_err(pack_err)?
-            {
-                let hash = ObjectHash::from_bytes(obj.hash);
-                match obj.data {
-                    Ok(data) => {
-                        store.put_hashed(&hash, &data)?;
-                        stats.objects += 1;
-                        stats.object_bytes += data.len() as u64;
-                        stats.deltas += usize::from(obj.base.is_some());
-                    }
-                    Err(e) => tracing::warn!(%hash, error = %e, "skipping unusable pack entry"),
+            // Objects are reconstructed in pack order here and stored
+            // (compressed, written, synced) by a few workers. Until a worker
+            // is done with it, an object stays in `pending`, where later
+            // entries find it as a delta base.
+            type Pending = std::sync::Mutex<HashMap<ObjectHash, std::sync::Arc<Vec<u8>>>>;
+            let pending: Pending = Default::default();
+            let failed: std::sync::Mutex<Option<SdkError>> = Default::default();
+            fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+                m.lock().unwrap_or_else(|e| e.into_inner())
+            }
+            let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(
+                ObjectHash,
+                std::sync::Arc<Vec<u8>>,
+            )>(2 * STORE_WORKERS);
+            let job_rx = std::sync::Mutex::new(job_rx);
+            std::thread::scope(|scope| -> Result<()> {
+                for _ in 0..STORE_WORKERS {
+                    scope.spawn(|| loop {
+                        let job = lock(&job_rx).recv();
+                        let Ok((hash, data)) = job else { return };
+                        let result = store.put_hashed(&hash, &data);
+                        lock(&pending).remove(&hash);
+                        if let Err(e) = result {
+                            lock(&failed).get_or_insert(e);
+                        }
+                    });
                 }
+                let has_failed = || lock(&failed).is_some();
+                while let Some(obj) = pr
+                    .next_object(|h| {
+                        let h = ObjectHash::from_bytes(*h);
+                        let queued = lock(&pending).get(&h).cloned();
+                        match queued {
+                            Some(data) => Some(data.as_ref().clone()),
+                            None => store.get_local(&h).ok(),
+                        }
+                    })
+                    .map_err(pack_err)?
+                {
+                    if has_failed() {
+                        break;
+                    }
+                    let hash = ObjectHash::from_bytes(obj.hash);
+                    match obj.data {
+                        Ok(data) => {
+                            stats.objects += 1;
+                            stats.object_bytes += data.len() as u64;
+                            stats.deltas += usize::from(obj.base.is_some());
+                            let data = std::sync::Arc::new(data);
+                            lock(&pending).insert(hash, data.clone());
+                            if job_tx.send((hash, data)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(%hash, error = %e, "skipping unusable pack entry")
+                        }
+                    }
+                }
+                drop(job_tx); // workers drain the queue and stop
+                Ok(())
+            })?;
+            if let Some(e) = failed.into_inner().unwrap_or_else(|e| e.into_inner()) {
+                return Err(e);
             }
             stats.wire_bytes = pr.consumed();
             Ok(stats)

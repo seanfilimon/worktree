@@ -11,10 +11,15 @@ use worktree_sdk::{
 };
 
 use crate::bridge::{ImportOptions, ImportReport};
-use crate::config::{gitattributes, gitignore};
+use crate::config::gitignore;
 use crate::error::{GitCompatError, Result};
 use crate::ident;
+use crate::lfs::{Decision, LfsImport, LfsPointer, LfsReport, LfsResolver, MAX_POINTER_SIZE};
 use crate::map::GitMap;
+use crate::submodule::{self, SubmoduleMode, PINS_FILE};
+
+/// How a converted file is stored: (hash, size, chunked).
+type Stored = (ObjectHash, u64, bool);
 
 /// Destination for blob contents read from Git.
 pub(crate) trait BlobSink {
@@ -41,33 +46,111 @@ impl BlobSink for ObjectStore {
 pub(crate) struct TreeConverter<'a, S: BlobSink + ?Sized> {
     git: &'a git2::Repository,
     sink: &'a S,
-    blobs: HashMap<Oid, (ObjectHash, u64, bool)>,
+    blobs: HashMap<Oid, Stored>,
     warned: HashSet<String>,
+    /// Git LFS handling (`None`: pointer files are ordinary files).
+    lfs: Option<LfsImport>,
+    /// Root of the tree being converted (for `.gitattributes` lookups).
+    root: Option<Oid>,
+    /// Stored LFS content by SHA-256, and stored pointer blobs.
+    lfs_content: HashMap<String, Stored>,
+    pointer_blobs: HashMap<Oid, Stored>,
+    /// Gitlinks of the tree being converted (`None`: skip gitlinks).
+    gitlinks: Option<Vec<(String, Oid)>>,
+    pins_blobs: HashSet<ObjectHash>,
 }
 
 impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
+    /// A converter that imports pointer files as they are and skips
+    /// gitlinks; see [`Self::with_lfs`] and [`Self::recording_gitlinks`].
     pub fn new(git: &'a git2::Repository, sink: &'a S) -> Self {
         Self {
             git,
             sink,
             blobs: HashMap::new(),
             warned: HashSet::new(),
+            lfs: None,
+            root: None,
+            lfs_content: HashMap::new(),
+            pointer_blobs: HashMap::new(),
+            gitlinks: None,
+            pins_blobs: HashSet::new(),
         }
+    }
+
+    /// Replace Git LFS pointer files by their content ([`crate::lfs`]).
+    pub fn with_lfs(mut self, lfs: LfsImport) -> Self {
+        self.lfs = Some(lfs);
+        self
+    }
+
+    /// Record gitlinks in a [`PINS_FILE`] entry instead of skipping them.
+    pub fn recording_gitlinks(mut self) -> Self {
+        self.gitlinks = Some(Vec::new());
+        self
     }
 
     /// Number of distinct blobs written to the sink so far.
     pub fn blob_count(&self) -> usize {
-        self.blobs.len()
+        self.blobs.len() + self.lfs_content.len() + self.pointer_blobs.len() + self.pins_blobs.len()
+    }
+
+    /// What happened to Git LFS files so far.
+    pub fn lfs_report(&self) -> LfsReport {
+        self.lfs.as_ref().map(LfsImport::report).unwrap_or_default()
     }
 
     /// Manifest of `tree` (entries sorted by path). Regular and executable
-    /// files are converted; symlinks, submodules and non-UTF-8 names are
-    /// skipped with a warning.
+    /// files and symbolic links (mode 120000) are converted; non-UTF-8 names
+    /// and links with an unusable target are skipped with a
+    /// warning; gitlinks are recorded in [`PINS_FILE`] or skipped with a
+    /// warning.
     pub fn manifest(&mut self, tree: &git2::Tree<'_>) -> Result<Manifest> {
+        self.root = Some(tree.id());
         let mut entries = Vec::new();
         self.collect(tree, "", &mut entries)?;
+        if let Some(links) = self.gitlinks.as_mut().map(std::mem::take) {
+            if !links.is_empty() {
+                let pins = self.pins_entry(tree, &links, &entries)?;
+                entries.push(pins);
+            }
+        }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(Manifest { entries })
+    }
+
+    fn gitlink(&mut self, path: String, commit: Oid) {
+        match self.gitlinks.as_mut() {
+            Some(links) => links.push((path, commit)),
+            None => self.warn_once(&path, "skipping submodule (gitlink)"),
+        }
+    }
+
+    /// The [`PINS_FILE`] entry for the gitlinks of `tree`.
+    fn pins_entry(
+        &mut self,
+        tree: &git2::Tree<'_>,
+        links: &[(String, Oid)],
+        entries: &[ManifestEntry],
+    ) -> Result<ManifestEntry> {
+        if entries.iter().any(|e| e.path == PINS_FILE) {
+            return Err(GitCompatError::ImportError(format!(
+                "Git tree {} has submodules and a {PINS_FILE} file; cannot record the submodule pins",
+                tree.id()
+            )));
+        }
+        let gitmodules = root_text_file(self.git, tree, ".gitmodules")?;
+        let data = submodule::encode_pins(&submodule::pins_for(links, gitmodules.as_deref()))?;
+        let (hash, chunked) = self.sink.put_file(&data)?;
+        self.pins_blobs.insert(hash);
+        Ok(ManifestEntry {
+            path: PINS_FILE.to_owned(),
+            hash,
+            size: data.len() as u64,
+            executable: false,
+            chunked,
+            symlink: false,
+        })
     }
 
     fn collect(
@@ -97,9 +180,16 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
             } else if mode == i32::from(FileMode::BlobExecutable) {
                 out.push(self.file(path, entry.id(), true)?);
             } else if mode == i32::from(FileMode::Link) {
-                self.warn_once(&path, "skipping symbolic link (not supported by W0rkTree)");
+                match self.symlink(&path, entry.id())? {
+                    Some(link) => out.push(link),
+                    None => self.warn_once(
+                        &path,
+                        "skipping symbolic link that cannot be recorded (empty, over-long \
+                         or NUL target, or inside .wt-tree/)",
+                    ),
+                }
             } else if mode == i32::from(FileMode::Commit) {
-                self.warn_once(&path, "skipping submodule (gitlink)");
+                self.gitlink(path, entry.id());
             } else {
                 self.warn_once(&path, &format!("skipping entry with unknown mode {mode:o}"));
             }
@@ -112,10 +202,15 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
             Some(known) => *known,
             None => {
                 let blob = self.git.find_blob(oid)?;
-                let (hash, chunked) = self.sink.put_file(blob.content())?;
-                let stored = (hash, blob.size() as u64, chunked);
-                self.blobs.insert(oid, stored);
-                stored
+                match self.lfs_file(&path, oid, blob.content())? {
+                    Some(stored) => stored,
+                    None => {
+                        let (hash, chunked) = self.sink.put_file(blob.content())?;
+                        let stored = (hash, blob.size() as u64, chunked);
+                        self.blobs.insert(oid, stored);
+                        stored
+                    }
+                }
             }
         };
         Ok(ManifestEntry {
@@ -124,7 +219,72 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
             size,
             executable,
             chunked,
+            symlink: false,
         })
+    }
+
+    /// A symlink entry for the Git link blob `oid` (its content is the
+    /// target, stored verbatim as a plain blob); `None` when the target
+    /// cannot be recorded.
+    fn symlink(&mut self, path: &str, oid: Oid) -> Result<Option<ManifestEntry>> {
+        let blob = self.git.find_blob(oid)?;
+        let target = blob.content();
+        // Links are never recorded inside the shared `.wt-tree/` directory.
+        if path.starts_with(".wt-tree/")
+            || worktree_sdk::validate_symlink_target(path, target).is_err()
+        {
+            return Ok(None);
+        }
+        let hash = self.sink.put_blob(target)?;
+        Ok(Some(ManifestEntry::symlink(
+            path,
+            hash,
+            target.len() as u64,
+        )))
+    }
+
+    /// How a Git LFS pointer blob at `path` is stored (its content, or the
+    /// pointer itself); `None` if `data` is not a pointer or LFS handling
+    /// is off. Pointer blobs are never cached by blob id alone: whether
+    /// one is an LFS file depends on the path's attributes.
+    fn lfs_file(&mut self, path: &str, oid: Oid, data: &[u8]) -> Result<Option<Stored>> {
+        let git = self.git;
+        let (Some(lfs), Some(root)) = (self.lfs.as_mut(), self.root) else {
+            return Ok(None);
+        };
+        if data.len() >= MAX_POINTER_SIZE {
+            return Ok(None);
+        }
+        let Some(pointer) = LfsPointer::parse(data) else {
+            return Ok(None);
+        };
+        let root = git.find_tree(root)?;
+        match lfs.decide(git, &root, path, &pointer)? {
+            Decision::Known => {
+                let stored = self.lfs_content.get(&pointer.oid).copied().ok_or_else(|| {
+                    GitCompatError::ImportError(format!(
+                        "Git LFS object {} was resolved but not stored",
+                        pointer.oid
+                    ))
+                })?;
+                Ok(Some(stored))
+            }
+            Decision::Content(content) => {
+                let (hash, chunked) = self.sink.put_file(&content)?;
+                let stored = (hash, content.len() as u64, chunked);
+                self.lfs_content.insert(pointer.oid, stored);
+                Ok(Some(stored))
+            }
+            Decision::Pointer => {
+                if let Some(stored) = self.pointer_blobs.get(&oid) {
+                    return Ok(Some(*stored));
+                }
+                let (hash, chunked) = self.sink.put_file(data)?;
+                let stored = (hash, data.len() as u64, chunked);
+                self.pointer_blobs.insert(oid, stored);
+                Ok(Some(stored))
+            }
+        }
     }
 
     fn warn_once(&mut self, path: &str, what: &str) {
@@ -324,17 +484,24 @@ struct Converted {
     snapshots: usize,
     blobs: usize,
     known: HashSet<Oid>,
+    lfs: LfsReport,
 }
 
 /// Write a snapshot for every commit reachable from `branches` (commits
 /// shared with `preferred` are attributed to it first) and record them in
 /// `.wt/git-map.json`. Branch refs are not touched.
+///
+/// Commits whose snapshot already exists (an earlier import into this
+/// worktree) are not converted again: snapshot records are immutable, so
+/// re-importing a commit keeps the content it was first imported with
+/// (e.g. LFS pointer files whose content was unavailable then).
 fn convert_history(
     git: &git2::Repository,
     repo: &Repository,
     tree: &TreeInfo,
     branches: &[(String, Oid)],
     preferred: Option<&String>,
+    opts: &ImportOptions,
 ) -> Result<Converted> {
     let mut priority = branches.to_vec();
     priority.sort_by_key(|(name, _)| Some(name) != preferred);
@@ -343,9 +510,17 @@ fn convert_history(
     let known: HashSet<Oid> = order.iter().copied().collect();
 
     let mut map = GitMap::load(&repo.wt_dir())?;
-    let mut converter = TreeConverter::new(git, repo.store());
+    let lfs = LfsImport::new(opts.lfs, LfsResolver::for_repository(git, opts.lfs_fetch));
+    let mut converter = TreeConverter::new(git, repo.store())
+        .with_lfs(lfs)
+        .recording_gitlinks();
     let mut manifests: HashMap<Oid, ObjectHash> = HashMap::new();
     for oid in &order {
+        let id = ident::snapshot_id_for_commit(*oid);
+        if repo.has_snapshot(&id) {
+            map.insert(&id, &oid.to_string());
+            continue;
+        }
         let commit = git.find_commit(*oid)?;
         let manifest = match manifests.get(&commit.tree_id()) {
             Some(hash) => *hash,
@@ -368,6 +543,7 @@ fn convert_history(
         snapshots: order.len(),
         blobs: converter.blob_count(),
         known,
+        lfs: converter.lfs_report(),
     })
 }
 
@@ -391,6 +567,7 @@ pub(crate) fn import_repository(
         .or_else(|| branches.first().map(|(name, _)| name.clone()));
 
     // Validation is done; from here on `dest` is being created.
+    let dest_existed = dest.exists();
     let repo = Repository::init(
         dest,
         InitOptions {
@@ -399,7 +576,19 @@ pub(crate) fn import_repository(
         },
     )?;
     let tree = repo.root_tree()?;
-    let converted = convert_history(&git, &repo, &tree, &branches, checked_out.as_ref())?;
+    let converted = match convert_history(&git, &repo, &tree, &branches, checked_out.as_ref(), opts)
+    {
+        Ok(converted) => converted,
+        Err(e) => {
+            // Nothing is checked out yet: leave no half-imported
+            // worktree behind (e.g. `--lfs require` with missing content).
+            let _ = std::fs::remove_dir_all(repo.wt_dir());
+            if !dest_existed {
+                let _ = std::fs::remove_dir(dest);
+            }
+            return Err(e);
+        }
+    };
 
     for (name, tip) in &branches {
         repo.set_branch_tip(&tree.name, name, Some(&ident::snapshot_id_for_commit(*tip)))?;
@@ -410,12 +599,17 @@ pub(crate) fn import_repository(
         0
     };
 
+    let mut submodules = Vec::new();
     if let Some(branch) = &checked_out {
         let tip = tip_of(&branches, branch)?;
         repo.checkout(&tree.name, &ident::snapshot_id_for_commit(tip), true)?;
         let tip_tree = git.find_commit(tip)?.tree()?;
         import_ignore_rules(&git, &repo, &tip_tree)?;
-        warn_about_lfs(&git, &tip_tree)?;
+        let pins = submodule::pins_of_tree(&git, &tip_tree)?;
+        submodules = match opts.submodules {
+            SubmoduleMode::Record => submodule::recorded(&pins),
+            SubmoduleMode::Nested => submodule::import_nested(&git, &repo, &tree, &pins, opts),
+        };
     }
 
     info!(
@@ -432,6 +626,8 @@ pub(crate) fn import_repository(
         blobs: converted.blobs,
         tags,
         checked_out,
+        lfs: converted.lfs,
+        submodules,
     })
 }
 
@@ -471,7 +667,7 @@ pub(crate) fn import_into_tree(
         .any(|(name, _)| *name == current)
         .then(|| current.clone())
         .or_else(|| head_branch(&git));
-    let converted = convert_history(&git, repo, &tree, &branches, preferred.as_ref())?;
+    let converted = convert_history(&git, repo, &tree, &branches, preferred.as_ref(), opts)?;
 
     // Refuse to rewrite diverged branches before moving anything.
     let existing: HashMap<String, Option<String>> = repo
@@ -526,12 +722,15 @@ pub(crate) fn import_into_tree(
     } else {
         0
     };
+    let mut submodules = Vec::new();
     if let Some(branch) = &checked_out {
         let tip_tree = git.find_commit(tip_of(&branches, branch)?)?.tree()?;
         if tree.path.as_os_str().is_empty() {
             import_ignore_rules(&git, repo, &tip_tree)?;
         }
-        warn_about_lfs(&git, &tip_tree)?;
+        // Nested-tree mapping is for new worktrees only; here pins are
+        // recorded (and reported).
+        submodules = submodule::recorded(&submodule::pins_of_tree(&git, &tip_tree)?);
     }
 
     info!(
@@ -549,6 +748,8 @@ pub(crate) fn import_into_tree(
         blobs: converted.blobs,
         tags,
         checked_out,
+        lfs: converted.lfs,
+        submodules,
     })
 }
 
@@ -604,19 +805,6 @@ fn import_ignore_rules(
     Ok(())
 }
 
-fn warn_about_lfs(git: &git2::Repository, tree: &git2::Tree<'_>) -> Result<()> {
-    if let Some(content) = root_text_file(git, tree, ".gitattributes")? {
-        let attrs = gitattributes::parse_gitattributes(&content);
-        for pattern in gitattributes::lfs_patterns(&attrs) {
-            warn!(
-                pattern,
-                "paths are tracked with Git LFS; their pointer files were imported, not the LFS content"
-            );
-        }
-    }
-    Ok(())
-}
-
 fn root_text_file(
     git: &git2::Repository,
     tree: &git2::Tree<'_>,
@@ -638,7 +826,7 @@ mod tests {
     use crate::test_support::{GitFixture, MemStore, Spec};
 
     #[test]
-    fn manifest_converts_files_and_skips_links_and_submodules() {
+    fn manifest_converts_files_and_links_and_skips_submodules() {
         let fx = GitFixture::new();
         let other = fx.commit(None, &[Spec::File("x", b"x")], &[], "other", 1);
         let tree_oid = fx.tree(&[
@@ -647,6 +835,7 @@ mod tests {
             Spec::File("src/lib/deep/mod.rs", b"pub fn f() {}\n"),
             Spec::File("src/a.rs", b"a"),
             Spec::Link("link", "README.md"),
+            Spec::Link("bad-link", "nul\0target"),
             Spec::Gitlink("vendor/sub", other),
         ]);
         let store = MemStore::default();
@@ -658,8 +847,21 @@ mod tests {
         let paths: Vec<_> = manifest.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(
             paths,
-            vec!["README.md", "bin/run.sh", "src/a.rs", "src/lib/deep/mod.rs"]
+            vec![
+                "README.md",
+                "bin/run.sh",
+                "link",
+                "src/a.rs",
+                "src/lib/deep/mod.rs"
+            ]
         );
+        // A Git link (120000) becomes a symlink entry: the blob is the
+        // target text. A link whose target holds a NUL is skipped.
+        let link = &manifest.entries[2];
+        assert!(link.symlink && !link.executable && !link.chunked);
+        assert_eq!(link.size, 9);
+        assert_eq!(store.get(&link.hash).as_deref(), Some(&b"README.md"[..]));
+        assert!(manifest.entries.iter().filter(|e| e.symlink).count() == 1);
         let run = &manifest.entries[1];
         assert!(run.executable);
         assert_eq!(run.size, 18);
@@ -669,7 +871,7 @@ mod tests {
             Some(&b"hello\n"[..])
         );
         assert_eq!(conv.blob_count(), 4);
-        assert_eq!(store.len(), 4);
+        assert_eq!(store.len(), 5, "four files and one link target");
     }
 
     #[test]

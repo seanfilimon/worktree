@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install W0rkTree (wt + worktree-bg, optionally worktree-server).
+# Install W0rkTree (wt + worktree-bg + git-remote-wt, optionally worktree-server).
 #
 #   curl -fsSL https://raw.githubusercontent.com/seanfilimon/worktree/main/scripts/install.sh | bash
 #
@@ -251,6 +251,11 @@ install_release() {
   for bin in "${BINS[@]}"; do
     install_bin "$TMP/x/$name/$bin$bin_ext" "$bin$bin_ext"
   done
+  # The Git remote helper (git clone wt::https://...); releases before it
+  # existed do not ship it.
+  if [ -f "$TMP/x/$name/git-remote-wt$bin_ext" ]; then
+    install_bin "$TMP/x/$name/git-remote-wt$bin_ext" "git-remote-wt$bin_ext"
+  fi
 }
 
 install_source() {
@@ -270,11 +275,12 @@ install_source() {
   say "Building W0rkTree from source ($src) into $INSTALL_DIR"
   local locked=(); [ -f "$src/Cargo.lock" ] && locked=(--locked)
   local crate
-  for crate in worktree-cli worktree-bg; do
+  for crate in worktree-cli worktree-bg worktree-git; do
     cargo install "${locked[@]+"${locked[@]}"}" --force --root "$TMP/cargo" --path "$src/crates/$crate"
   done
   install_bin "$TMP/cargo/bin/wt$ext" "wt$ext"
   install_bin "$TMP/cargo/bin/worktree-bg$ext" "worktree-bg$ext"
+  install_bin "$TMP/cargo/bin/git-remote-wt$ext" "git-remote-wt$ext"
   if [ "$WITH_SERVER" = 1 ]; then
     need go || die "go not found (needed for --with-server --from-source)"
     (cd "$src/services/server-go" && CGO_ENABLED=0 go build -trimpath -o "$TMP/worktree-server$ext" .)

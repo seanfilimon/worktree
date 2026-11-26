@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
@@ -39,6 +40,14 @@ type DiskStore struct {
 	// compress enables the WTZ1 encoding for new objects (§14.6); reads
 	// accept raw and compressed files either way.
 	compress bool
+
+	// Durability of directory entries (see Flush): fan-out directories
+	// that received a rename since the last flush.
+	dirtyMu sync.Mutex
+	dirty   map[string]struct{}
+	// flushMu serializes Flush, so that a flush never returns while an
+	// earlier one is still syncing directories it took over.
+	flushMu sync.Mutex
 }
 
 // Options configure a DiskStore.
@@ -98,28 +107,98 @@ func (s *DiskStore) Put(ctx context.Context, h hash.Hash, data []byte) error {
 	if hash.Sum(data) != h {
 		return ErrHashMismatch
 	}
+	_, err := s.PutVerified(ctx, h, data)
+	return err
+}
 
+// PutVerified implements VerifiedPutter: Put without re-hashing data. The
+// object is durable when it returns.
+func (s *DiskStore) PutVerified(ctx context.Context, h hash.Hash, data []byte) (bool, error) {
+	stored, err := s.PutDeferred(ctx, h, data)
+	if err != nil || !stored {
+		// An object that already existed may have been installed by a
+		// writer that has not flushed yet: flush for it too.
+		if err == nil {
+			err = s.Flush(ctx)
+		}
+		return stored, err
+	}
+	return true, s.Flush(ctx)
+}
+
+// Flush implements BatchPutter: it makes every object stored with
+// PutDeferred before the call durable — the directory entries of the
+// renames are synced and, where file syncs leave data in the drive's write
+// cache (macOS), that cache is flushed once.
+func (s *DiskStore) Flush(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	s.dirtyMu.Lock()
+	dirs := s.dirty
+	s.dirty = nil
+	s.dirtyMu.Unlock()
+	if len(dirs) == 0 {
+		return nil
+	}
+	fail := func(err error) error {
+		// Keep the directories for the next attempt.
+		s.dirtyMu.Lock()
+		if s.dirty == nil {
+			s.dirty = make(map[string]struct{}, len(dirs))
+		}
+		for d := range dirs {
+			s.dirty[d] = struct{}{}
+		}
+		s.dirtyMu.Unlock()
+		return fmt.Errorf("objstore: sync directory: %w", err)
+	}
+	for d := range dirs {
+		if err := syncDir(d); err != nil {
+			return fail(err)
+		}
+	}
+	// A fan-out directory may itself be new.
+	if err := syncDir(s.objectsDir()); err != nil {
+		return fail(err)
+	}
+	if err := flushDrive(s.objectsDir()); err != nil {
+		return fail(err)
+	}
+	return nil
+}
+
+// PutDeferred implements BatchPutter: PutVerified whose durability is
+// completed by the next Flush. The object's bytes are synced to the drive
+// before it becomes visible; only the directory entry and the drive-cache
+// flush are deferred, so many objects share one of each.
+func (s *DiskStore) PutDeferred(ctx context.Context, h hash.Hash, data []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	// Content-addressed idempotency: if the object already exists, no work to do.
 	if exists, err := s.Has(ctx, h); err != nil {
-		return err
+		return false, err
 	} else if exists {
-		return nil
+		return false, nil
 	}
 
 	// The hash covers the content; the file holds its stored encoding.
 	stored, err := EncodeObject(data, s.compress)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	fanout := s.fanoutDir(h)
 	if err := os.MkdirAll(fanout, 0o755); err != nil {
-		return fmt.Errorf("objstore: mkdir fanout dir: %w", err)
+		return false, fmt.Errorf("objstore: mkdir fanout dir: %w", err)
 	}
 
 	tmp, err := os.CreateTemp(fanout, "tmp-*")
 	if err != nil {
-		return fmt.Errorf("objstore: create temp file: %w", err)
+		return false, fmt.Errorf("objstore: create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	// On any path where the temp file was not renamed into place, ensure
@@ -133,18 +212,26 @@ func (s *DiskStore) Put(ctx context.Context, h hash.Hash, data []byte) error {
 
 	if _, err := tmp.Write(stored); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("objstore: write temp file: %w", err)
+		return false, fmt.Errorf("objstore: write temp file: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := syncData(tmp); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("objstore: sync temp file: %w", err)
+		return false, fmt.Errorf("objstore: sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("objstore: close temp file: %w", err)
+		return false, fmt.Errorf("objstore: close temp file: %w", err)
 	}
 
 	renamed, err = s.install(ctx, tmpPath, s.objectPath(h), data)
-	return err
+	if renamed {
+		s.dirtyMu.Lock()
+		if s.dirty == nil {
+			s.dirty = make(map[string]struct{})
+		}
+		s.dirty[fanout] = struct{}{}
+		s.dirtyMu.Unlock()
+	}
+	return renamed, err
 }
 
 // install renames tmpPath onto final. It reports whether the rename

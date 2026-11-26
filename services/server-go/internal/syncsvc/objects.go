@@ -1,12 +1,15 @@
 package syncsvc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"path"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -48,6 +51,11 @@ func (s *Service) UploadObjects(stream grpc.ClientStreamingServer[syncpb.ObjectD
 	for {
 		obj, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			// One durability flush for the whole upload, before the
+			// client is told its objects are stored.
+			if err := objstore.Flush(ctx, s.d.Objects); err != nil {
+				return s.toStatus(ctx, err, "object store")
+			}
 			return stream.SendAndClose(resp)
 		}
 		if err != nil {
@@ -85,12 +93,26 @@ func (s *Service) storeObject(ctx context.Context, obj *syncpb.ObjectData) (stor
 	if hash.Sum(data) != h {
 		return false, false, nil
 	}
-	switch obj.GetKind() {
+	return s.storeVerified(ctx, h, obj.GetKind(), data)
+}
+
+// storeVerified validates and persists an object whose content the caller
+// has checked against h (and the size limit). Same results as storeObject.
+// The caller must objstore.Flush before acknowledging the object.
+func (s *Service) storeVerified(ctx context.Context, h hash.Hash, kind syncpb.ObjectKind, data []byte) (stored, ok bool, err error) {
+	switch kind {
 	case syncpb.ObjectKind_OBJECT_KIND_MANIFEST:
-		if _, err := decodeManifest(data); err != nil {
+		m, err := decodeManifest(data)
+		if err != nil {
 			s.log.DebugContext(ctx, "rejecting invalid manifest", "hash", h.Hex(), "err", err)
 			return false, false, nil
 		}
+		// The push that follows the upload reads this manifest back.
+		defer func() {
+			if ok {
+				s.manifests.add(h, m, len(data))
+			}
+		}()
 	case syncpb.ObjectKind_OBJECT_KIND_CHUNK_LIST:
 		if _, err := content.DecodeChunkList(data); err != nil {
 			s.log.DebugContext(ctx, "rejecting invalid chunk list", "hash", h.Hex(), "err", err)
@@ -101,14 +123,11 @@ func (s *Service) storeObject(ctx context.Context, obj *syncpb.ObjectData) (stor
 	default:
 		return false, false, nil
 	}
-	exists, err := s.d.Objects.Has(ctx, h)
+	// One existence check and no second hash (the store's own Put would
+	// re-hash and re-check). Durability is completed by the caller's
+	// objstore.Flush before it replies.
+	stored, err = objstore.PutDeferred(ctx, s.d.Objects, h, data)
 	if err != nil {
-		return false, false, s.toStatus(ctx, err, "object store")
-	}
-	if exists {
-		return false, true, nil
-	}
-	if err := s.d.Objects.Put(ctx, h, data); err != nil {
 		if errors.Is(err, objstore.ErrHashMismatch) {
 			return false, false, nil
 		}
@@ -120,15 +139,61 @@ func (s *Service) storeObject(ctx context.Context, obj *syncpb.ObjectData) (stor
 		}
 		return false, false, s.toStatus(ctx, err, "object store")
 	}
-	return true, true, nil
+	return stored, true, nil
 }
 
 // errInvalidManifest wraps every decodeManifest failure.
 var errInvalidManifest = errors.New("invalid manifest")
 
+// maxSymlinkTarget is the longest symbolic-link target, in bytes, that a
+// manifest may record (the Rust client's MAX_SYMLINK_TARGET_LEN).
+const maxSymlinkTarget = 4096
+
+// validateSymlinkEntry checks the symlink rules of the wire contract: a
+// symbolic link is never executable or chunked, records a target of
+// 1..maxSymlinkTarget bytes, and never lives in the tree's shared
+// `.wt-tree/` directory (configuration, hooks and access rules are always
+// regular files). Entries that are not symlinks pass.
+func validateSymlinkEntry(e *syncpb.ManifestEntry) error {
+	if !e.GetSymlink() {
+		return nil
+	}
+	switch {
+	case e.GetExecutable():
+		return errors.New("a symlink cannot be executable")
+	case e.GetChunked():
+		return errors.New("a symlink cannot be chunked")
+	case e.GetSize() == 0:
+		return errors.New("empty symlink target")
+	case e.GetSize() > maxSymlinkTarget:
+		return fmt.Errorf("symlink target is longer than %d bytes", maxSymlinkTarget)
+	case e.GetPath() == treeMarkerDir || strings.HasPrefix(e.GetPath(), treeMarkerDir+"/"):
+		return errors.New("a symlink cannot be stored in " + treeMarkerDir + "/")
+	}
+	return nil
+}
+
+// validateSymlinkTarget checks the stored target of symlink entry e: it
+// must be exactly the recorded size and hold no NUL byte. The server never
+// interprets the target beyond that — it is not resolved, normalised or
+// followed, and may be absolute or lead out of the tree; clients decide
+// what to do with it on checkout.
+func validateSymlinkTarget(e *syncpb.ManifestEntry, target []byte) error {
+	switch {
+	case uint64(len(target)) != e.GetSize():
+		return fmt.Errorf("target is %d bytes, the entry records %d", len(target), e.GetSize())
+	case len(target) == 0 || len(target) > maxSymlinkTarget:
+		return fmt.Errorf("target must be 1..%d bytes", maxSymlinkTarget)
+	case bytes.IndexByte(target, 0) >= 0:
+		return errors.New("target contains a NUL byte")
+	}
+	return nil
+}
+
 // decodeManifest parses and validates a ManifestRecord: entries sorted by
-// path, unique, with clean relative '/'-separated paths and 32-byte blob
-// hashes. Errors wrap errInvalidManifest.
+// path, unique, with clean relative '/'-separated paths, 32-byte blob
+// hashes and well-formed symlink entries (validateSymlinkEntry). Errors
+// wrap errInvalidManifest.
 func decodeManifest(data []byte) (*syncpb.ManifestRecord, error) {
 	var m syncpb.ManifestRecord
 	if err := proto.Unmarshal(data, &m); err != nil {
@@ -146,6 +211,9 @@ func decodeManifest(data []byte) (*syncpb.ManifestRecord, error) {
 		prev = p
 		if len(e.GetBlobHash().GetValue()) != hash.Size {
 			return nil, fmt.Errorf("%w: entry %d (%s): blob hash must be %d bytes", errInvalidManifest, i, p, hash.Size)
+		}
+		if err := validateSymlinkEntry(e); err != nil {
+			return nil, fmt.Errorf("%w: entry %d (%s): %v", errInvalidManifest, i, p, err)
 		}
 	}
 	return &m, nil
@@ -170,13 +238,33 @@ func validateManifestPath(p string) error {
 	return validateReservedComponents(p)
 }
 
-// loadManifest reads and decodes the manifest stored under h.
+// loadManifest reads and decodes the manifest stored under h. The result
+// may be shared with other callers (manifestCache) and must not be
+// modified.
 func (s *Service) loadManifest(ctx context.Context, h hash.Hash) (*syncpb.ManifestRecord, error) {
+	if m, ok := s.manifests.get(h); ok {
+		// Still confirm the object exists (one stat instead of a read and
+		// a decode): callers rely on ErrNotFound for objects that garbage
+		// collection removed.
+		exists, err := s.d.Objects.Has(ctx, h)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return m, nil
+		}
+		return nil, objstore.ErrNotFound
+	}
 	data, err := s.d.Objects.Get(ctx, h)
 	if err != nil {
 		return nil, err
 	}
-	return decodeManifest(data)
+	m, err := decodeManifest(data)
+	if err != nil {
+		return nil, err
+	}
+	s.manifests.add(h, m, len(data))
+	return m, nil
 }
 
 // DownloadObjects streams the requested objects; unknown hashes are
@@ -471,17 +559,80 @@ func (s *Service) Negotiate(ctx context.Context, req *syncpb.NegotiateRequest) (
 	if err != nil {
 		return nil, err
 	}
+	present, err := s.hasAll(ctx, haves)
+	if err != nil {
+		return nil, s.toStatus(ctx, err, "object store")
+	}
 	plan := &syncpb.ObjectTransferPlan{ObjectsToSend: make([]*syncpb.ContentHash, 0)}
-	for _, h := range haves {
-		ok, err := s.d.Objects.Has(ctx, h)
-		if err != nil {
-			return nil, s.toStatus(ctx, err, "object store")
-		}
-		if !ok {
+	for i, h := range haves {
+		if !present[i] {
 			plan.ObjectsToSend = append(plan.ObjectsToSend, hashToPB(h))
 		}
 	}
 	return plan, nil
+}
+
+// hasWorkers bounds the concurrent existence checks of one request (a
+// stat on disk, a HEAD request on S3).
+const hasWorkers = 16
+
+// hasChunk is how many consecutive hashes a worker claims at once.
+const hasChunk = 32
+
+// hasAll reports, in order, which of hashes the object store holds. The
+// checks run concurrently: one at a time, ten thousand objects cost
+// seconds on disk and minutes on S3.
+func (s *Service) hasAll(ctx context.Context, hashes []hash.Hash) ([]bool, error) {
+	out := make([]bool, len(hashes))
+	if len(hashes) < 4*hasChunk {
+		for i, h := range hashes {
+			ok, err := s.d.Objects.Has(ctx, h)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = ok
+		}
+		return out, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		wg       sync.WaitGroup
+		next     atomic.Int64
+		errOnce  sync.Once
+		firstErr error
+	)
+	for w := 0; w < hasWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				// Claim a run of hashes at a time: per-hash hand-off
+				// costs more than a check against a fast store.
+				end := int(next.Add(hasChunk))
+				start := end - hasChunk
+				if start >= len(hashes) || ctx.Err() != nil {
+					return
+				}
+				for i := start; i < min(end, len(hashes)); i++ {
+					ok, err := s.d.Objects.Has(ctx, hashes[i])
+					if err != nil {
+						errOnce.Do(func() { firstErr = err; cancel() })
+						return
+					}
+					out[i] = ok
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // uniqueHashes decodes and dedups a hash list, preserving first-seen order.

@@ -301,19 +301,26 @@ impl Repository {
             )?;
             report.stashed = Some(entry);
         }
-        if let Err(err) = self.switch_branch(tree, name, opts) {
-            if report.stashed.is_some() {
-                // Put the changes back where they were.
-                self.stash_pop(tree, 0)?;
+        let hook = match self.switch_branch_unhooked(tree, name, opts) {
+            Ok(hook) => hook,
+            Err(err) => {
+                if report.stashed.is_some() {
+                    // Put the changes back where they were.
+                    self.stash_pop(tree, 0)?;
+                }
+                return Err(err);
             }
-            return Err(err);
-        }
+        };
         let pending = self
             .stash_list(tree)?
             .iter()
             .position(|e| e.auto && e.branch == name);
         if let Some(index) = pending {
             report.restored = Some(self.stash_pop(tree, index)?);
+        }
+        // hooks: `post-switch` sees the target's auto-stash restored.
+        if let Some(hook) = hook {
+            hook.post(self);
         }
         Ok(report)
     }
@@ -406,7 +413,7 @@ impl Repository {
         self.apply_manifest(rec, &merged, &tracked, &ours, &mut working.index)?;
         let tree_dir = self.tree_dir_of(rec);
         for (path, content) in &result.marker_files {
-            fsutil::write_atomic(&tree_dir.join(path), content)?;
+            self.write_working_file(&tree_dir, path, content)?;
             working.index.remove(path);
         }
         self.save_index(tree, &working.index)?;

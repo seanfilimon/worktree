@@ -264,6 +264,8 @@ export interface SnapshotFile {
   hash: string;
   size: number;
   executable: boolean;
+  /** Symbolic link: the blob is the link's target path, not file data. Omitted for ordinary files. */
+  symlink?: boolean;
 }
 
 export interface SnapshotDetail {

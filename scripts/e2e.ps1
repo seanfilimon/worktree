@@ -26,15 +26,15 @@ $binDir = Join-Path $targetDir 'debug'
 $serverBin = Join-Path $binDir "worktree-server$exe"
 
 $saved = @{}
-foreach ($name in 'WT_E2E', 'WT_BIN', 'WT_BG_BIN', 'WT_SERVER_BIN', 'CGO_ENABLED') {
+foreach ($name in 'WT_E2E', 'WT_BIN', 'WT_BG_BIN', 'WT_GIT_REMOTE_BIN', 'WT_SERVER_BIN', 'CGO_ENABLED') {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
 $code = 1
 Push-Location $Root
 try {
-    Write-Host '==> cargo build -p worktree-cli -p worktree-bg'
-    cargo build -p worktree-cli -p worktree-bg
+    Write-Host '==> cargo build -p worktree-cli -p worktree-bg -p worktree-git'
+    cargo build -p worktree-cli -p worktree-bg -p worktree-git
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
 
     Write-Host '==> go build services/server-go'
@@ -48,6 +48,7 @@ try {
 
     $env:WT_BIN = Join-Path $binDir "wt$exe"
     $env:WT_BG_BIN = Join-Path $binDir "worktree-bg$exe"
+    $env:WT_GIT_REMOTE_BIN = Join-Path $binDir "git-remote-wt$exe"
     $env:WT_SERVER_BIN = $serverBin
     $env:WT_E2E = '1'
 

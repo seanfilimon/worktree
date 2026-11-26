@@ -48,7 +48,7 @@ pub enum OpenTarget {
     /// A snapshot (HEAD, a branch, a tag or an id prefix; resolved locally)
     Snapshot {
         /// Revision to open
-        #[arg(value_name = "REV")]
+        #[arg(value_name = "REV", add = crate::complete::rev())]
         rev: String,
     },
     /// A file or directory in the Files tab, on the current branch

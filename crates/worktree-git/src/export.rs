@@ -23,6 +23,7 @@ use crate::hash_index::store::InMemoryHashIndex;
 use crate::ident;
 use crate::license::LicensePolicy;
 use crate::map::GitMap;
+use crate::submodule;
 
 /// Source of file contents referenced by manifests.
 pub(crate) trait BlobSource {
@@ -76,6 +77,8 @@ pub(crate) struct TreeWriter<'a, S: BlobSource + ?Sized> {
 enum Node<'m> {
     File(&'m ManifestEntry),
     Dir(Dir<'m>),
+    /// A submodule pin (mode `160000`).
+    Gitlink(Oid),
 }
 
 #[derive(Default)]
@@ -93,8 +96,21 @@ impl<'a, S: BlobSource + ?Sized> TreeWriter<'a, S> {
     }
 
     /// Write `manifest` as a Git tree and return its id.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn write(&mut self, manifest: &Manifest) -> Result<Oid> {
-        let root = layout(manifest)?;
+        self.write_with_gitlinks(manifest, &[])
+    }
+
+    /// Write `manifest` plus `gitlinks` (path, pinned commit) as a Git tree.
+    pub fn write_with_gitlinks(
+        &mut self,
+        manifest: &Manifest,
+        gitlinks: &[(String, Oid)],
+    ) -> Result<Oid> {
+        let mut root = layout(manifest)?;
+        for (path, commit) in gitlinks {
+            insert_node(&mut root, path, Node::Gitlink(*commit))?;
+        }
         self.write_dir(&root)
     }
 
@@ -104,7 +120,11 @@ impl<'a, S: BlobSource + ?Sized> TreeWriter<'a, S> {
         for (name, node) in &dir.children {
             let (oid, mode) = match node {
                 Node::File(entry) => {
-                    let mode = if entry.executable {
+                    // A symlink is a Git link (120000) whose blob is the
+                    // target text.
+                    let mode = if entry.symlink {
+                        FileMode::Link
+                    } else if entry.executable {
                         FileMode::BlobExecutable
                     } else {
                         FileMode::Blob
@@ -112,6 +132,7 @@ impl<'a, S: BlobSource + ?Sized> TreeWriter<'a, S> {
                     (self.blob(entry)?, mode)
                 }
                 Node::Dir(sub) => (self.write_dir(sub)?, FileMode::Tree),
+                Node::Gitlink(commit) => (*commit, FileMode::Commit),
             };
             builder.insert(name, oid, i32::from(mode))?;
         }
@@ -133,29 +154,35 @@ impl<'a, S: BlobSource + ?Sized> TreeWriter<'a, S> {
 fn layout(manifest: &Manifest) -> Result<Dir<'_>> {
     let mut root = Dir::default();
     for entry in &manifest.entries {
-        let components = split_path(&entry.path)?;
-        let Some((file, parents)) = components.split_last() else {
-            return Err(invalid_path(&entry.path));
-        };
-        let mut dir = &mut root;
-        for component in parents {
-            let node = dir
-                .children
-                .entry(component)
-                .or_insert_with(|| Node::Dir(Dir::default()));
-            dir = match node {
-                Node::Dir(sub) => sub,
-                Node::File(_) => return Err(path_conflict(&entry.path)),
-            };
-        }
-        match dir.children.entry(file) {
-            Entry::Vacant(slot) => {
-                slot.insert(Node::File(entry));
-            }
-            Entry::Occupied(_) => return Err(path_conflict(&entry.path)),
-        }
+        insert_node(&mut root, &entry.path, Node::File(entry))?;
     }
     Ok(root)
+}
+
+/// Place `node` at `path` below `root`, creating parent directories.
+fn insert_node<'m>(root: &mut Dir<'m>, path: &'m str, node: Node<'m>) -> Result<()> {
+    let components = split_path(path)?;
+    let Some((file, parents)) = components.split_last() else {
+        return Err(invalid_path(path));
+    };
+    let mut dir = root;
+    for component in parents {
+        let child = dir
+            .children
+            .entry(component)
+            .or_insert_with(|| Node::Dir(Dir::default()));
+        dir = match child {
+            Node::Dir(sub) => sub,
+            Node::File(_) | Node::Gitlink(_) => return Err(path_conflict(path)),
+        };
+    }
+    match dir.children.entry(file) {
+        Entry::Vacant(slot) => {
+            slot.insert(node);
+            Ok(())
+        }
+        Entry::Occupied(_) => Err(path_conflict(path)),
+    }
 }
 
 fn split_path(path: &str) -> Result<Vec<&str>> {
@@ -284,6 +311,9 @@ struct Exporter<'a> {
     /// unfiltered commits — is neither consulted nor updated.
     license: Option<&'a LicensePolicy>,
     restricted: BTreeSet<String>,
+    /// Gitlinks written from submodule pins, and pins that were not.
+    gitlinks: usize,
+    warnings: BTreeSet<String>,
 }
 
 impl<'a> Exporter<'a> {
@@ -331,7 +361,18 @@ impl<'a> Exporter<'a> {
         let tree = match self.trees.get(&snapshot.manifest) {
             Some(tree) => *tree,
             None => {
-                let mut manifest = self.repo.read_manifest(&snapshot.manifest)?;
+                let manifest = self.repo.read_manifest(&snapshot.manifest)?;
+                // Submodule pins become gitlinks, not a file (crate::submodule).
+                let source = self.source;
+                let mut warnings = Vec::new();
+                let (mut manifest, gitlinks) =
+                    submodule::split_pins(manifest, |e| source.read_blob(e), &mut warnings)?;
+                for warning in warnings {
+                    if !self.warnings.contains(&warning) {
+                        warn!(snapshot = %snapshot.id, "{warning}");
+                        self.warnings.insert(warning);
+                    }
+                }
                 if let Some(policy) = self.license {
                     // No snapshot-specific header: the tree cache is keyed by
                     // manifest hash and exports must stay deterministic.
@@ -343,7 +384,8 @@ impl<'a> Exporter<'a> {
                     self.restricted.extend(licensed.restricted);
                     manifest = licensed.manifest;
                 }
-                let tree = self.writer.write(&manifest)?;
+                let tree = self.writer.write_with_gitlinks(&manifest, &gitlinks)?;
+                self.gitlinks += gitlinks.len();
                 self.trees.insert(snapshot.manifest, tree);
                 tree
             }
@@ -462,6 +504,8 @@ pub(crate) fn export_repository(
         commits: 0,
         license: opts.license.as_ref(),
         restricted: BTreeSet::new(),
+        gitlinks: 0,
+        warnings: BTreeSet::new(),
     };
     let mut exported = Vec::with_capacity(branches.len());
     for (name, tip) in &branches {
@@ -481,6 +525,8 @@ pub(crate) fn export_repository(
     let restricted: Vec<String> = std::mem::take(&mut exporter.restricted)
         .into_iter()
         .collect();
+    let gitlinks = exporter.gitlinks;
+    let warnings: Vec<String> = std::mem::take(&mut exporter.warnings).into_iter().collect();
     drop(exporter);
     refresh_work_tree(&git, old_head, was_clean)?;
 
@@ -491,6 +537,8 @@ pub(crate) fn export_repository(
         commits,
         tags,
         restricted,
+        gitlinks,
+        warnings,
     })
 }
 
@@ -515,6 +563,7 @@ mod tests {
             size: data.len() as u64,
             executable,
             chunked: false,
+            symlink: false,
         }
     }
 
@@ -568,9 +617,46 @@ mod tests {
     }
 
     #[test]
+    fn symlink_entries_are_written_as_git_links() {
+        let fx = GitFixture::new();
+        let expected = fx.tree(&[
+            Spec::File("README.md", b"hello\n"),
+            Spec::Link("docs/latest", "../README.md"),
+            Spec::Link("out", "/absolute/target"),
+        ]);
+
+        let store = MemStore::default();
+        let link = |path: &str, target: &str| {
+            ManifestEntry::symlink(
+                path,
+                store.put_blob(target.as_bytes()).unwrap(),
+                target.len() as u64,
+            )
+        };
+        let manifest = Manifest {
+            entries: vec![
+                entry(&store, "README.md", b"hello\n", false),
+                link("docs/latest", "../README.md"),
+                link("out", "/absolute/target"),
+            ],
+        };
+        let out = GitFixture::bare();
+        let tree = TreeWriter::new(&out.repo, &store).write(&manifest).unwrap();
+        assert_eq!(tree, expected);
+
+        let written = out.repo.find_tree(tree).unwrap();
+        let latest = written.get_path(Path::new("docs/latest")).unwrap();
+        assert_eq!(latest.filemode(), i32::from(FileMode::Link));
+        let blob = out.repo.find_blob(latest.id()).unwrap();
+        assert_eq!(blob.content(), b"../README.md");
+    }
+
+    #[test]
     fn tree_round_trip_through_manifest_is_identical() {
         let src = GitFixture::new();
         let tree_oid = src.tree(&[
+            Spec::Link("current", "docs/guide.md"),
+            Spec::Link("up", "../elsewhere"),
             Spec::File(".gitignore", b"target/\n"),
             Spec::Exec("scripts/build.sh", b"#!/bin/sh\nmake\n"),
             Spec::File("docs/guide/intro.md", b"# Intro\n"),
@@ -631,6 +717,7 @@ mod tests {
                 size: 12,
                 executable: false,
                 chunked: false,
+                symlink: false,
             }],
         };
         let err = TreeWriter::new(&out.repo, &store)

@@ -59,6 +59,40 @@ fn copy(out: &mut Vec<u8>, offset: usize, len: usize) {
     put_uvarint(out, len as u64);
 }
 
+/// Hasher for the block index. Keys are already rolling-hash fingerprints,
+/// so a single multiply spreads them over the table; the default SipHash
+/// costs far more and runs once per target byte in unmatched regions. The
+/// encoded delta does not depend on the hasher.
+#[derive(Clone, Copy, Default)]
+struct BuildFingerprintHasher;
+
+#[derive(Default)]
+struct FingerprintHasher(u64);
+
+impl std::hash::BuildHasher for BuildFingerprintHasher {
+    type Hasher = FingerprintHasher;
+    fn build_hasher(&self) -> FingerprintHasher {
+        FingerprintHasher(0)
+    }
+}
+
+impl std::hash::Hasher for FingerprintHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    fn write_u32(&mut self, v: u32) {
+        // Fold the high half back in: the table indexes by the low bits,
+        // which a bare multiply would leave depending on the low bits only.
+        let x = u64::from(v).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = x ^ (x >> 32);
+    }
+}
+
 /// Encode `target` as a delta against `base` (see the module docs).
 pub fn encode(base: &[u8], target: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(32);
@@ -71,7 +105,8 @@ pub fn encode(base: &[u8], target: &[u8]) -> Vec<u8> {
         return out;
     }
 
-    let mut index: HashMap<u32, usize> = HashMap::with_capacity(base.len() / BLOCK);
+    let mut index: HashMap<u32, usize, BuildFingerprintHasher> =
+        HashMap::with_capacity_and_hasher(base.len() / BLOCK, BuildFingerprintHasher);
     let mut i = 0;
     while i + BLOCK <= base.len() {
         index.entry(fingerprint(&base[i..i + BLOCK])).or_insert(i);

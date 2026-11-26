@@ -22,12 +22,53 @@ client (.wt/)                               server (--data dir)
 | Kind | Bytes | Addressed by |
 |---|---|---|
 | **Blob** (`OBJECT_KIND_BLOB`) | Raw file content, or one chunk of a large file. | BLAKE3 of the bytes |
-| **Manifest** (`OBJECT_KIND_MANIFEST`) | Protobuf `ManifestRecord`: the complete file list of one snapshot of one tree, `{path, blob_hash, size, executable, chunked}` per file, sorted by path, unique, `/`-separated. | BLAKE3 of the encoded bytes |
+| **Manifest** (`OBJECT_KIND_MANIFEST`) | Protobuf `ManifestRecord`: the complete file list of one snapshot of one tree, `{path, blob_hash, size, executable, chunked, symlink}` per file, sorted by path, unique, `/`-separated. | BLAKE3 of the encoded bytes |
 | **Chunk list** (`OBJECT_KIND_CHUNK_LIST`) | Protobuf `ChunkList{size, chunks[{hash, size}]}` for a chunked file. | BLAKE3 of the encoded bytes |
 
 A manifest is flat: there are no per-directory tree objects. Directories are
 implied by paths. An entry with `chunked = true` points at a chunk list instead
 of a blob.
+
+### Symbolic links
+
+An entry with `symlink = true` is a symbolic link. Its `blob_hash` names an
+ordinary blob holding the link **target as raw bytes**, and `size` is the
+target's length. The flag is field 6 of `ManifestEntry`, added after the
+format was in use: `false` is not encoded, so manifests without links are
+byte-identical to (and hash the same as) those written before it existed.
+
+Rules, enforced when a manifest is decoded by the SDK
+(`Manifest::from_bytes`), the protocol crate (`ManifestRecord::validate`) and
+the server (`decodeManifest`):
+
+- a symlink is never `executable` and never `chunked`;
+- `size` is 1..=4096 bytes (`MAX_SYMLINK_TARGET_LEN`);
+- a symlink never lives in the tree's shared `.wt-tree/` directory
+  (configuration, hooks and access rules are regular files).
+
+The target bytes are checked where they are read: non-empty, at most 4096
+bytes, no NUL. The server checks them (and that their length equals `size`)
+when a push references a new link; the client checks them before creating a
+link. Nothing else is required of a target: it may be relative, absolute, or
+lead outside the tree, exactly as in Git. A target is **data** — it is stored
+and recreated, never resolved:
+
+- The server never dereferences a link. Listings, the blob endpoint, archives
+  and the Git mirror hand out the stored target text (labelled as a link);
+  merges, search, blame and scans see only that text.
+- The client records a link as a link (`readlink`), never the content behind
+  it, and never walks into a linked directory.
+- Checkout recreates the link with the stored target and **never writes or
+  deletes through a link**: writing or removing `a/b` fails when `a` is a
+  symbolic link in the working directory, and a link at the path being
+  written is replaced, not followed.
+- Where links cannot be created (Windows without Developer Mode or the
+  symlink privilege), the target text is written to a regular file and the
+  stat cache keeps the entry a symlink, the same way the executable bit is
+  carried on platforms without one.
+- Merges treat a link as an opaque value: one-sided changes are taken, and a
+  path changed on both sides with a link on either side (or in the base) is a
+  `symlink` conflict — never a text merge.
 
 The following are **not** objects:
 
@@ -60,7 +101,8 @@ The following are **not** objects:
 
 ## Large files
 
-Files larger than **8 MiB** are stored chunked:
+Files larger than the **chunk threshold** (default **8 MiB**, see
+*Threshold* below) are stored chunked:
 
 - **Algorithm.** FastCDC with a Gear rolling hash (`worktree_sdk::scan::cdc`).
   Chunks are at least 256 KiB, average 1 MiB, and at most 4 MiB.
@@ -77,6 +119,33 @@ Files larger than **8 MiB** are stored chunked:
   endpoints; at most 4 GiB in memory).
 - **Bounds.** No single object, chunk or not, may exceed 64 MiB (the gRPC
   message limit).
+- **Threshold.** `[storage] chunk_threshold` in `.wt/config.toml` (worktree
+  layer only; a size such as `"16MiB"`, accepted range 1 MiB to 32 MiB so a
+  single-blob file stays well below the object limit) sets the threshold of
+  the clients of that worktree. It decides the form of **new or modified**
+  content only. When the scanner hashes a file whose content equals its entry
+  in the compared manifest (same size, and the same hash in that entry's
+  form), it keeps that entry — a one-blob entry stays a blob after the
+  threshold is lowered, a chunked entry stays chunked after it is raised — so
+  a configuration change never shows up as a modification and never rewrites
+  history. A stat-cached file that differs from its entry is re-read once if
+  its cached form no longer matches the threshold. Entry/content comparisons
+  elsewhere use the entry's form (`store::file_hash_as`).
+- **Chunk sizes are not configurable.** The 256 KiB / 1 MiB / 4 MiB FastCDC
+  parameters and the gear table are part of the format: a chunk list does
+  not record the parameters it was cut with, so other parameters would
+  re-chunk every modified large file (no deduplication against earlier
+  versions) and give identical content different entry hashes in different
+  clones. Fixed boundaries also guarantee that unchanged content always
+  re-chunks to the same list.
+- **Mixed thresholds.** Identical content written under different thresholds
+  has different entry hashes (blob vs chunk list), so clones of a tree should
+  share one value. The server accepts any valid chunk list and any blob up to
+  the object limit and does not look at the threshold; it does treat chunked
+  entries specially (merge-request merges report a both-sides change to a
+  chunked file as a `chunked` conflict, code search skips chunked files, and
+  files it writes itself — conflict resolutions, at most 8 MiB — are single
+  blobs).
 
 ## Local storage (`.wt/`)
 
@@ -303,7 +372,9 @@ There are no built-in plan tiers with fixed sizes. `Tenant.plan`
 |---|---|
 | BLAKE3 content-addressed store, local (`.wt/objects`) and server (`<data>/objects`), atomic writes, Windows-safe | Built |
 | Flat manifests, snapshot records as metadata, tags, releases with assets in the CAS | Built |
-| FastCDC chunked large files (> 8 MiB) with entry readers on both sides | Built |
+| Symbolic links as manifest entries (target stored as a blob, never followed) | Built |
+| FastCDC chunked large files (> 8 MiB by default) with entry readers on both sides | Built |
+| Configurable large-file threshold (`[storage] chunk_threshold`, 1-32 MiB) that never changes the form of unchanged files | Built |
 | bbolt metadata store (buckets above) and DocStore collections | Built |
 | Fast-forward-only branch updates with compare-and-swap | Built |
 | Mark-and-sweep GC with grace period, staged and audit retention | Built |
@@ -324,8 +395,8 @@ Described in earlier versions of this spec but not built:
   whole (WTZ1) after reconstruction.
 - **Type-specific or dictionary-trained compression** (plain zstd per object
   is built; see Compression.md).
-- **Per-directory tree objects** and symlink entries. Manifests are flat file
-  lists.
+- **Per-directory tree objects**. Manifests are flat file lists. (Symlink
+  entries are built; see [Symbolic links](#symbolic-links).)
 - **Physical tenant isolation**: per-tenant volumes or buckets, dedicated
   workers or endpoints. Storage is one shared CAS plus one bbolt file.
 - **Pluggable storage backends** (S3-compatible object storage, an external
@@ -339,13 +410,19 @@ Described in earlier versions of this spec but not built:
 - **Reflog sync to the server** for disaster recovery.
 - **Automatic re-fetch of corrupt local objects** (`wt fsck` and the server
   `POST /admin/fsck` detect them; see Compression.md).
-- **A configurable large-file threshold and chunk sizes.** Today they are
-  constants: 8 MiB threshold and 256 KiB / 1 MiB / 4 MiB chunks.
+- **Configurable chunk sizes.** The threshold is configurable (see Large
+  files); the 256 KiB / 1 MiB / 4 MiB FastCDC parameters stay constants
+  because they are part of the format. Making them configurable would need
+  the parameters recorded per chunk list and a migration story for
+  deduplication.
+- **A tree-level (shared) threshold**, so every clone of a tree uses the
+  same value; today it is per worktree.
 - **Plan-based default quotas** (fixed tiers per plan).
 
 ## References
 
-- SDK: `crates/worktree-sdk/src/store.rs`, `src/scan/cdc.rs`,
+- SDK: `crates/worktree-sdk/src/store.rs` (`prepare_entry`, threshold),
+  `src/config.rs` (`[storage]`), `src/scan/cdc.rs`,
   `src/repo/mod.rs` (layout), `src/repo/{working,history,refs,reflog,lock}.rs`,
   `src/model.rs`
 - Protocol: `crates/worktree-protocol/proto/sync.proto` (`ObjectKind`,

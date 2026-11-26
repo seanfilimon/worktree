@@ -28,6 +28,7 @@ pub struct MergeArgs {
     pub action: Option<MergeCommand>,
 
     /// Branch or revision to merge into the current branch
+    #[arg(add = crate::complete::rev())]
     pub source: Option<String>,
 
     /// Message for the merge snapshot
@@ -59,6 +60,10 @@ pub struct MergeArgs {
     /// Abandon a conflicted merge and restore the pre-merge state
     #[arg(long)]
     pub abort: bool,
+
+    /// Skip the pre-merge and post-merge hooks
+    #[arg(long, conflicts_with_all = ["resume", "abort"])]
+    pub no_verify: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -113,7 +118,7 @@ pub enum MergeCommand {
 #[derive(Debug, Args)]
 pub struct RevertArgs {
     /// Snapshot whose changes to undo
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub rev: String,
 
     /// Message for the revert snapshot (default: `Revert "<subject>"`)
@@ -133,7 +138,7 @@ pub struct RestoreArgs {
     pub paths: Vec<PathBuf>,
 
     /// Revision to restore from (default: HEAD)
-    #[arg(long, value_name = "REV")]
+    #[arg(long, value_name = "REV", add = crate::complete::rev())]
     pub from: Option<String>,
 }
 
@@ -178,6 +183,7 @@ pub fn run(ctx: &Context, args: MergeArgs) -> Result<()> {
         message: args.message,
         no_fast_forward: args.no_ff,
         strategy: args.strategy.into(),
+        skip_hooks: args.no_verify,
         ..MergeOptions::default()
     };
     let outcome = repo.merge(&tree.name, &source, opts)?;
@@ -385,6 +391,7 @@ pub fn conflict_label(kind: ConflictKind) -> &'static str {
         ConflictKind::ModifyDelete => "modify/delete",
         ConflictKind::AddAdd => "add/add",
         ConflictKind::Binary => "binary",
+        ConflictKind::Symlink => "symlink",
     }
 }
 
@@ -540,6 +547,7 @@ mod tests {
     fn labels() {
         assert_eq!(conflict_label(ConflictKind::Content), "content");
         assert_eq!(conflict_label(ConflictKind::AddAdd), "add/add");
+        assert_eq!(conflict_label(ConflictKind::Symlink), "symlink");
     }
 
     #[derive(Debug, Parser)]

@@ -174,8 +174,19 @@ func (s *Service) pushOnce(ctx context.Context, req *syncpb.PushRequest) (*syncp
 	for _, snap := range pl.newSnaps {
 		snap.PushedBy = p.AccountID
 		snap.PushedAt = now
-		if err := s.putSnapshot(ctx, snap); err != nil {
-			return nil, err
+	}
+	// One metadata transaction for all of them when the store can (a push
+	// of N snapshots otherwise commits, and fsyncs, N times). Any refusal
+	// falls back to one at a time, which reports the exact conflict.
+	batched := false
+	if bs, ok := s.d.Store.(snapshotBatchStore); ok && len(pl.newSnaps) > 1 {
+		batched = bs.PutSnapshots(ctx, pl.newSnaps) == nil
+	}
+	if !batched {
+		for _, snap := range pl.newSnaps {
+			if err := s.putSnapshot(ctx, snap); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := s.d.Store.CompareAndSwapBranchTip(ctx, t.ID, branch, serverTip, newTip); err != nil {
@@ -261,6 +272,9 @@ type pushPlan struct {
 	manifests map[hash.Hash]*syncpb.ManifestRecord
 	// chunkObjects are the chunks of chunked entries found by checkObjects.
 	chunkObjects []hash.Hash
+	// trustedLinks maps the target blob of each symbolic link in a trusted
+	// branch-tip manifest to its recorded size (see trustedBlobs).
+	trustedLinks map[hash.Hash]uint64
 }
 
 // planPush validates the snapshot records of req (step 4 of Push).
@@ -429,6 +443,14 @@ func (s *Service) checkObjects(ctx context.Context, pl *pushPlan) error {
 	}
 	checked := make(map[hash.Hash]struct{})
 	trusted := s.trustedBlobs(ctx, pl) // hardening (§15.10)
+	// Symbolic-link targets are validated once per (blob, recorded size);
+	// links already present in a trusted branch tip were validated when
+	// that tip was pushed.
+	type linkKey struct {
+		h    hash.Hash
+		size uint64
+	}
+	linksChecked := make(map[linkKey]struct{})
 	for _, snap := range pl.newSnaps {
 		mh := snap.ManifestHash
 		if _, ok := pl.manifests[mh]; ok {
@@ -451,6 +473,27 @@ func (s *Service) checkObjects(ctx context.Context, pl *pushPlan) error {
 		pl.manifests[mh] = m
 		for _, e := range m.GetEntries() {
 			bh := hash.Hash(e.GetBlobHash().GetValue())
+			if e.GetSymlink() {
+				key := linkKey{bh, e.GetSize()}
+				_, seen := linksChecked[key]
+				size, known := pl.trustedLinks[bh]
+				if !seen && !(known && size == e.GetSize()) {
+					linksChecked[key] = struct{}{}
+					// The target is only length- and NUL-checked: it is
+					// stored as opaque bytes and never resolved here.
+					target, err := s.d.Objects.Get(ctx, bh)
+					switch {
+					case errors.Is(err, objstore.ErrNotFound):
+						// reported as a missing object below
+					case err != nil:
+						return s.toStatus(ctx, err, "object store")
+					default:
+						if verr := validateSymlinkTarget(e, target); verr != nil {
+							return status.Errorf(codes.FailedPrecondition, "symbolic link %s of snapshot %s is invalid: %v", e.GetPath(), snap.ID, verr)
+						}
+					}
+				}
+			}
 			if _, seen := checked[bh]; seen {
 				continue
 			}
@@ -540,6 +583,12 @@ func (s *Service) trustedBlobs(ctx context.Context, pl *pushPlan) map[hash.Hash]
 		for _, e := range m.GetEntries() {
 			if !e.GetChunked() {
 				trusted[hash.Hash(e.GetBlobHash().GetValue())] = struct{}{}
+			}
+			if e.GetSymlink() {
+				if pl.trustedLinks == nil {
+					pl.trustedLinks = make(map[hash.Hash]uint64)
+				}
+				pl.trustedLinks[hash.Hash(e.GetBlobHash().GetValue())] = e.GetSize()
 			}
 		}
 	}
@@ -659,7 +708,7 @@ func diffManifests(a, b *syncpb.ManifestRecord) []string {
 			j++
 		default:
 			x, y := ae[i], be[j]
-			if string(x.GetBlobHash().GetValue()) != string(y.GetBlobHash().GetValue()) || x.GetExecutable() != y.GetExecutable() {
+			if string(x.GetBlobHash().GetValue()) != string(y.GetBlobHash().GetValue()) || x.GetExecutable() != y.GetExecutable() || x.GetSymlink() != y.GetSymlink() {
 				out = append(out, x.GetPath())
 			}
 			i++
@@ -671,6 +720,12 @@ func diffManifests(a, b *syncpb.ManifestRecord) []string {
 
 // putSnapshot stores snap, treating a concurrent identical write (which
 // differs only in push metadata) as success.
+// snapshotBatchStore is implemented by metadata stores that can persist
+// several snapshots atomically (meta.Bolt).
+type snapshotBatchStore interface {
+	PutSnapshots(ctx context.Context, snaps []*domain.Snapshot) error
+}
+
 func (s *Service) putSnapshot(ctx context.Context, snap *domain.Snapshot) error {
 	err := s.d.Store.PutSnapshot(ctx, snap)
 	if err == nil {

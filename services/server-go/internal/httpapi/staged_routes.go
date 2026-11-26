@@ -121,7 +121,7 @@ func (a *api) handleStagedFiles(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		files = append(files, fileEntry{Path: e.GetPath(), Hash: h, Size: e.GetSize(), Executable: e.GetExecutable()})
+		files = append(files, fileEntry{Path: e.GetPath(), Hash: h, Size: e.GetSize(), Executable: e.GetExecutable(), Symlink: e.GetSymlink()})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	st.FilesChanged = nonNil(st.FilesChanged)

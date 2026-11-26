@@ -95,6 +95,24 @@ pub(crate) async fn push_with(
         .filter(|s| !known.contains(&s.id))
         .collect();
 
+    // hooks: `pre-push` may veto the push before anything is uploaded.
+    let chain_ids: Vec<String> = chain.iter().map(|s| s.id.clone()).collect();
+    let tree_rec = repo.load_tree(&tree_name)?;
+    let remote_url = session::remote_target(repo, remote)?.0;
+    let hook = crate::hooks::PushHook {
+        tree: &tree_rec,
+        remote,
+        remote_url: &remote_url,
+        branch: &branch,
+        old_tip: server_tip.as_deref(),
+        new_tip: &new_tip,
+        forced: report.forced,
+        snapshots: &chain_ids,
+    };
+    if !opts.skip_hooks {
+        hook.pre(repo)?;
+    }
+
     let objects = objects_for(repo, &chain, &known)?;
     let hashes: Vec<ObjectHash> = objects.iter().map(|(h, _)| *h).collect();
     let missing: HashSet<ObjectHash> = session
@@ -165,13 +183,31 @@ pub(crate) async fn push_with(
         tree: tree_name.clone(),
         branch: branch.clone(),
         action: if report.forced { "force-push" } else { "push" }.into(),
-        old: server_tip,
+        old: server_tip.clone(),
         new: Some(new_tip.clone()),
         message: format!(
             "push {branch} to {remote}/{branch} ({} snapshot(s))",
             chain.len()
         ),
     })?;
+    // `wt undo` of a push (specs/tree/Undo.md §2.2). Best effort: the push
+    // already succeeded on the server.
+    if let Err(err) = repo.record_push(
+        &tree_name,
+        remote,
+        &branch,
+        server_tip.as_deref(),
+        &new_tip,
+        report.forced,
+        chain.len(),
+    ) {
+        tracing::warn!(%err, "oplog: recording the push failed");
+    }
+
+    // hooks: the branch push is accepted and recorded.
+    if !opts.skip_hooks {
+        hook.post(repo);
+    }
 
     known.extend(chain.into_iter().map(|s| s.id));
     push_tags(repo, &tree_name, &mut session, &known).await?;

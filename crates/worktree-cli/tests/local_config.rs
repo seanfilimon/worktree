@@ -294,6 +294,106 @@ fn snapshot_no_verify_skips_failing_hook() {
     assert_eq!(snap["message"], "forced");
 }
 
+#[cfg(windows)]
+fn write_phase_hook(sb: &Sandbox, phase: &str, body: &str) {
+    sb.write(
+        &format!(".wt/hooks/{phase}.cmd"),
+        &format!("@echo off\r\n{body}\r\n"),
+    );
+}
+
+#[cfg(unix)]
+fn write_phase_hook(sb: &Sandbox, phase: &str, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    sb.write(
+        &format!(".wt/hooks/{phase}"),
+        &format!("#!/bin/sh\n{body}\n"),
+    );
+    let path = sb.path().join(format!(".wt/hooks/{phase}"));
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(windows)]
+const FAIL_BODY: &str = "echo hook says no 1>&2\r\nexit /b 1";
+#[cfg(unix)]
+const FAIL_BODY: &str = "echo hook says no >&2\nexit 1";
+
+#[test]
+fn merge_and_switch_hooks_through_the_cli() {
+    let sb = Sandbox::init();
+    sb.write("a.txt", "one\n");
+    sb.json(&["snapshot", "-m", "one"]);
+    sb.wt(&["switch", "-c", "feature"]).assert().success();
+    sb.write("a.txt", "two\n");
+    sb.json(&["snapshot", "-m", "two"]);
+    sb.wt(&["switch", "main"]).assert().success();
+
+    // A failing pre-merge aborts; --no-verify bypasses it.
+    write_phase_hook(&sb, "pre-merge", FAIL_BODY);
+    sb.wt(&["merge", "feature"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("pre-merge hook failed"))
+        .stderr(predicate::str::contains("hook says no"));
+    assert_eq!(
+        fs::read_to_string(sb.path().join("a.txt")).unwrap(),
+        "one\n"
+    );
+    sb.wt(&["merge", "feature", "--no-verify"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(sb.path().join("a.txt")).unwrap(),
+        "two\n"
+    );
+    sb.wt(&["merge", "--continue", "--no-verify"])
+        .assert()
+        .code(2);
+
+    // post-* failures are warnings; the operation stands.
+    write_phase_hook(&sb, "post-switch", FAIL_BODY);
+    sb.wt(&["switch", "feature"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning: post-switch hook failed"));
+    sb.write("a.txt", "three\n");
+    sb.json(&["snapshot", "-m", "three"]);
+    sb.wt(&["switch", "main"]).assert().success();
+    fs::remove_file(sb.path().join(".wt/hooks").join(if cfg!(windows) {
+        "pre-merge.cmd"
+    } else {
+        "pre-merge"
+    }))
+    .unwrap();
+    write_phase_hook(&sb, "post-merge", FAIL_BODY);
+    let merged = sb
+        .wt(&["--json", "merge", "feature"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning: post-merge hook failed"))
+        .get_output()
+        .stdout
+        .clone();
+    let merged: Value = serde_json::from_slice(&merged).expect("json on stdout only");
+    assert!(merged.get("FastForward").is_some(), "{merged}");
+    assert_eq!(
+        fs::read_to_string(sb.path().join("a.txt")).unwrap(),
+        "three\n"
+    );
+}
+
+#[test]
+fn push_and_pull_accept_no_verify() {
+    let sb = Sandbox::init();
+    for args in [
+        &["push", "--no-verify", "--help"][..],
+        &["pull", "--no-verify", "--help"][..],
+    ] {
+        sb.wt(args).assert().success();
+    }
+    sb.wt(&["push", "--no-verify", "--queue"]).assert().code(2);
+}
+
 #[test]
 fn warn_only_secret_scanning_snapshots_with_a_warning() {
     let sb = Sandbox::init();

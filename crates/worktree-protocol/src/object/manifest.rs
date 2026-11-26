@@ -54,7 +54,9 @@ impl ManifestEntry {
         }
     }
 
-    /// Create a new symlink entry.
+    /// Create a new symlink entry. `target_hash` is the hash of the blob
+    /// holding the link target; set the target's length with
+    /// [`ManifestEntry::with_size`] before encoding the entry on the wire.
     pub fn symlink(path: impl Into<PathBuf>, target_hash: ContentHash) -> Self {
         ManifestEntry {
             path: path.into(),
@@ -63,6 +65,13 @@ impl ManifestEntry {
             size: 0,
             executable: false,
         }
+    }
+
+    /// Return a copy of this entry with the given size (for a symlink, the
+    /// length of its target in bytes).
+    pub fn with_size(mut self, size: u64) -> Self {
+        self.size = size;
+        self
     }
 
     /// Return a copy of this entry with the executable flag set.

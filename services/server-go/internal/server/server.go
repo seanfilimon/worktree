@@ -332,6 +332,7 @@ func Run(ctx context.Context, cfg config.Config) (err error) {
 		// tenant-lifecycle (§16.4).
 		TenantLifecycle: lifecycle,
 		Retention:       retainer,  // server-ops (§16.11)
+		Reflog:          syncSvc,   // reflog restore (specs/tree/Undo.md §4.1)
 		Pprof:           cfg.Pprof, // hardening (§15.10): /debug/pprof
 	})
 

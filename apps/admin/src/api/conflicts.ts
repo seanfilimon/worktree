@@ -28,6 +28,7 @@ export type ConflictKind =
   | "chunked"
   | "executable"
   | "file_directory"
+  | "symlink"
   | (string & {});
 
 /** One side (base / ours / theirs) of a conflicting path. */
