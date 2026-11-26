@@ -848,12 +848,20 @@ See [Security.md](./security/Security.md).
 ## 20. Hooks and Secret Scanning
 
 **Hooks.** Executables `.wt/hooks/<phase>` (all trees) and
-`<tree>/.wt-tree/hooks/<phase>` run for `pre-snapshot` and `post-snapshot`
-(on Windows also `<phase>.cmd`, `.bat`, `.ps1`). Environment: `WT_HOOK`,
-`WT_TREE`, `WT_TREE_PATH`, `WT_BRANCH`, `WT_ROOT`, and `WT_SNAPSHOT` for post
-hooks; the working directory is the tree root; `[hooks] timeout_secs`
-(default 60). A failing pre hook aborts the snapshot; post hook failures are
-printed to stderr. `wt snapshot --no-verify` skips hooks.
+`<tree>/.wt-tree/hooks/<phase>` run for `pre-snapshot`, `post-snapshot`,
+`pre-push`, `post-push`, `pre-merge`, `post-merge` (also for the integration
+of `wt pull` and `wt sync`) and `post-switch` (on Windows also
+`<phase>.cmd`, `.bat`, `.ps1`). Environment: `WT_HOOK`, `WT_TREE`,
+`WT_TREE_PATH`, `WT_BRANCH`, `WT_ROOT`, `WT_USER`, `WT_SNAPSHOT` for
+`post-snapshot`, and `WT_REMOTE*` / `WT_PUSH_*` / `WT_MERGE_*` /
+`WT_SWITCH_*` for the other phases; push hooks read the pushed snapshot ids
+and `post-merge` the conflicted paths on stdin. The working directory is the
+tree root; `[hooks] timeout_secs` (default 60). A failing `pre-*` hook aborts
+the operation before anything changes (a failing `pre-push` before anything
+is uploaded); `post-*` failures are printed to stderr. `--no-verify` on
+`wt snapshot`, `wt push`, `wt merge` and `wt pull` skips that command's
+hooks. There is no `post-pull`: `post-merge` covers it. See
+[DotWt.md §8](./dot-wt/DotWt.md#8-hooks).
 
 **Secret scanning.** Before a snapshot, added and modified files are scanned
 with built-in rules (private keys, AWS keys, GitHub, GitLab, Slack, Stripe,
@@ -941,7 +949,7 @@ Global flags: `--json`, `-C <path>`, `--tree <name>`, `--no-color`,
 | Area | Commands |
 |---|---|
 | Local | `init [PATH] [--name N] [--branch B] [--watch]`, `status [--team]`, `snapshot -m MSG [--allow-empty] [--no-scan] [--no-verify] [--sign] [--depend ...]`, `log [-n N] [REV] [--oneline] [--show-signature]`, `show REV [--stat]`, `diff`, `branch list/create/archive/restore`, `switch NAME [-c] [--force]`, `merge`, `revert`, `restore [PATH...] [--from REV]`, `tag`, `tree list/add/remove/validate/init-config`, `reflog`, `ignore list/add/check`, `config list/get/set`, `archive` |
-| Sync | `remote list/add/remove`, `login/logout/whoami/register/password-reset`, `push [--remote R] [--branch B]`, `fetch [--depth N] [--deepen N]`, `pull [--depth N]`, `clone URL TENANT/TREE [DEST] [--depth N] [--watch]`, `stage [--discard]`, `unstage` |
+| Sync | `remote list/add/remove`, `login/logout/whoami/register/password-reset`, `push [--remote R] [--branch B] [--no-verify]`, `fetch [--depth N] [--deepen N]`, `pull [--depth N] [--no-verify]`, `clone URL TENANT/TREE [DEST] [--depth N] [--watch]`, `stage [--discard]`, `unstage` |
 | Daemon | `daemon start [--foreground] / stop / restart / status / watch / unwatch / pause / resume / snapshot / logs [-n N] [--follow]` |
 | Server | `tenant`, `trees`, `mr`, `protect`, `license`, `audit`, `admin`, `search`, `events`, `team`, `role`, `policy`, `grant`, `sa`, `token`, `session`, `mfa`, `invite`, `iam`, `sso` |
 | Coordination | `todo`, `deps`, `release`, `ci` |

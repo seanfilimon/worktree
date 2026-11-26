@@ -349,7 +349,7 @@ pub async fn pull(
     remote: &str,
     branch: Option<&str>,
 ) -> Result<PullReport> {
-    fetch::pull(repo, tree, remote, branch, FetchOptions::default()).await
+    fetch::pull(repo, tree, remote, branch, PullOptions::default()).await
 }
 
 /// [`pull`] with shallow-sync options for its fetch (`wt pull --depth N`).
@@ -359,6 +359,36 @@ pub async fn pull_with_options(
     remote: &str,
     branch: Option<&str>,
     opts: FetchOptions,
+) -> Result<PullReport> {
+    let opts = PullOptions {
+        fetch: opts,
+        ..PullOptions::default()
+    };
+    fetch::pull(repo, tree, remote, branch, opts).await
+}
+
+/// Options of [`pull_with`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullOptions {
+    /// Shallow-sync options for the fetch.
+    #[serde(default)]
+    pub fetch: FetchOptions,
+    /// Skip the `pre-merge` and `post-merge` hooks of the integration
+    /// (`wt pull --no-verify`).
+    #[serde(default)]
+    pub skip_hooks: bool,
+}
+
+/// [`pull`] with [`PullOptions`]. The integration runs the `pre-merge`
+/// hooks before it changes the branch or the working directory (a failing
+/// hook aborts the pull after the fetch, with the local branch untouched)
+/// and the `post-merge` hooks after it, with `WT_REMOTE` set.
+pub async fn pull_with(
+    repo: &Repository,
+    tree: &str,
+    remote: &str,
+    branch: Option<&str>,
+    opts: PullOptions,
 ) -> Result<PullReport> {
     fetch::pull(repo, tree, remote, branch, opts).await
 }

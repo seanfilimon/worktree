@@ -64,6 +64,7 @@ fn force() -> PushOptions {
     PushOptions {
         force: true,
         bypass_protection: false,
+        skip_hooks: false,
     }
 }
 
@@ -151,6 +152,7 @@ async fn bypass_metadata_and_remote_tag_deletion() {
         &PushOptions {
             force: false,
             bypass_protection: true,
+            skip_hooks: false,
         },
     )
     .await

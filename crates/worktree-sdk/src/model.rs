@@ -543,6 +543,9 @@ pub struct MergeOptions {
     /// How conflicting changes are resolved (default: conflict markers).
     #[serde(default)]
     pub strategy: MergeStrategy,
+    /// Skip the `pre-merge` and `post-merge` hooks (`--no-verify`).
+    #[serde(default)]
+    pub skip_hooks: bool,
 }
 
 /// How a three-way merge resolves changes that conflict

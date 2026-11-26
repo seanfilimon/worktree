@@ -9,7 +9,7 @@ use worktree_protocol::proto::sync as wire;
 use super::client::RemoteBranch;
 use super::convert::{branch_id, hash_from_wire, snapshot_id, tenant_id, tree_id};
 use super::session::{self, Access, RemoteSession};
-use super::{FetchOptions, FetchReport, PullReport};
+use super::{FetchOptions, FetchReport, PullOptions, PullReport};
 use crate::error::{Result, SdkError};
 use crate::model::{MergeOptions, MergeOutcome, ReflogEntry, Snapshot};
 use crate::repo::{Repository, SparseMatcher};
@@ -411,7 +411,7 @@ pub(crate) async fn pull(
     tree: &str,
     remote: &str,
     branch: Option<&str>,
-    opts: FetchOptions,
+    opts: PullOptions,
 ) -> Result<PullReport> {
     let tree_name = repo.tree(tree)?.name;
     if repo.merge_state(&tree_name)?.is_some() {
@@ -421,7 +421,8 @@ pub(crate) async fn pull(
     let branch = branch.map_or_else(|| current.clone(), str::to_string);
 
     let mut session = session::open(repo, &tree_name, remote, Access::Read).await?;
-    let (fetch, server_branches) = fetch_with(repo, &tree_name, remote, &mut session, opts).await?;
+    let (fetch, server_branches) =
+        fetch_with(repo, &tree_name, remote, &mut session, opts.fetch).await?;
     if !server_branches.iter().any(|b| b.name == branch) {
         return Err(SdkError::BranchNotFound(format!("{remote}/{branch}")));
     }
@@ -444,13 +445,34 @@ pub(crate) async fn pull(
     let outcome = match plan {
         Integration::UpToDate => MergeOutcome::UpToDate,
         Integration::FastForward(to) => {
+            // hooks: a fast-forward pull is a merge for the merge hooks.
+            let hook = if opts.skip_hooks {
+                None
+            } else {
+                Some(crate::hooks::MergeHook {
+                    tree: repo.load_tree(&tree_name)?,
+                    branch: branch.clone(),
+                    source: format!("{remote}/{branch}"),
+                    source_tip: to.clone(),
+                    old_tip: old.clone(),
+                    fast_forward: true,
+                    remote: Some(remote.to_string()),
+                })
+            };
+            if let Some(hook) = &hook {
+                hook.pre(repo)?;
+            }
             if is_current {
                 // Refuses (DirtyWorkingTree) before touching anything if
                 // there are uncommitted changes.
                 repo.checkout(&tree_name, &to, false)?;
             }
             repo.set_branch_tip(&tree_name, &branch, Some(&to))?;
-            MergeOutcome::FastForward { to }
+            let outcome = MergeOutcome::FastForward { to };
+            if let Some(hook) = &hook {
+                hook.post(repo, &outcome);
+            }
+            outcome
         }
         Integration::Diverged(to) => {
             if !is_current {
@@ -458,11 +480,16 @@ pub(crate) async fn pull(
                     "branch '{branch}' has diverged from {remote}/{branch}; switch to it and run `wt pull` to merge"
                 )));
             }
-            let opts = MergeOptions {
+            let merge = MergeOptions {
                 message: Some(format!("Merge {remote}/{branch} into {branch}")),
+                skip_hooks: opts.skip_hooks,
                 ..MergeOptions::default()
             };
-            repo.merge(&tree_name, &to, opts)?
+            let via = crate::hooks::MergeVia {
+                remote,
+                source: &format!("{remote}/{branch}"),
+            };
+            repo.merge_from(&tree_name, &to, merge, Some(via))?
         }
     };
 

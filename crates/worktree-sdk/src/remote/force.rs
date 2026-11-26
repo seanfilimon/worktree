@@ -34,6 +34,8 @@ pub struct PushOptions {
     /// Ask the server to bypass branch protection (`--bypass-protection`;
     /// needs `branch:bypass_protection`).
     pub bypass_protection: bool,
+    /// Skip the `pre-push` and `post-push` hooks (`wt push --no-verify`).
+    pub skip_hooks: bool,
 }
 
 /// [`super::push`] with [`PushOptions`].

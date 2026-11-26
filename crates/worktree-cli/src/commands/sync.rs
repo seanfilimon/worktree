@@ -48,6 +48,10 @@ pub struct PushArgs {
     /// same as WT_NO_PACK=1)
     #[arg(long)]
     pub no_pack: bool, // pack-delta (§16.1)
+    /// Skip the pre-push and post-push hooks (queued pushes always run
+    /// them when they are delivered)
+    #[arg(long, conflicts_with = "queue")]
+    pub no_verify: bool,
 }
 
 #[derive(Debug, Args)]
@@ -78,6 +82,10 @@ pub struct PullArgs {
     /// Fetch at most N new snapshots per branch (shallow history)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub depth: Option<u32>,
+
+    /// Skip the pre-merge and post-merge hooks of the integration
+    #[arg(long)]
+    pub no_verify: bool,
 }
 
 #[derive(Debug, Args)]
@@ -190,6 +198,7 @@ pub fn push(ctx: &Context, args: PushArgs) -> Result<()> {
     let opts = remote::PushOptions {
         force: args.force,
         bypass_protection: args.bypass_protection,
+        skip_hooks: args.no_verify,
     };
     let report = block_on(remote::push_with_options(
         &repo,
@@ -288,11 +297,14 @@ pub fn fetch(ctx: &Context, args: FetchArgs) -> Result<()> {
 pub fn pull(ctx: &Context, args: PullArgs) -> Result<()> {
     let (repo, tree) = ctx.open_tree()?;
     let remote = remote_name(&repo, args.remote);
-    let opts = FetchOptions {
-        depth: args.depth,
-        deepen: None,
+    let opts = remote::PullOptions {
+        fetch: FetchOptions {
+            depth: args.depth,
+            deepen: None,
+        },
+        skip_hooks: args.no_verify,
     };
-    let report = block_on(remote::pull_with_options(
+    let report = block_on(remote::pull_with(
         &repo,
         &tree.name,
         &remote,

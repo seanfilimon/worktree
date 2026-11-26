@@ -11,7 +11,7 @@
 //! - [`scan`] — secret scanning, license detection, content chunking
 //! - [`remote`] — gRPC/REST client for the W0rkTree server
 //! - [`ipc`] — CLI <-> background daemon protocol
-//! - [`hooks`] — pre/post snapshot hooks (v0.5, §13.9)
+//! - [`hooks`] — client hooks around snapshots (v0.5, §13.9), pushes, merges and switches
 //! - [`signing`] — Ed25519 snapshot signing (v0.5, §13.6)
 
 pub mod config;

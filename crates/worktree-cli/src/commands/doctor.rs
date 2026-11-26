@@ -27,6 +27,7 @@ use worktree_sdk::config::{
     effective_user, user_config_path, validate_config_file, ConfigLevel, UserSection,
     WorktreeConfig,
 };
+use worktree_sdk::hooks::Phase;
 use worktree_sdk::ipc::{self, DaemonStatus, IpcRequest, IpcResponse};
 use worktree_sdk::remote::{self, RestClient};
 use worktree_sdk::repo::{TREE_MARKER_DIR, WT_DIR};
@@ -896,9 +897,46 @@ fn registration_check(what: &str, key_id: &str, server: &str, keys: &[ServerKey]
 // ---------------------------------------------------------------------------
 // Hooks
 
-const PHASES: [&str; 2] = ["pre-snapshot", "post-snapshot"];
 /// Hook extensions recognized on Windows, in priority order ("" = bare).
 const WINDOWS_EXTENSIONS: [&str; 5] = ["exe", "cmd", "bat", "ps1", ""];
+
+/// Git hook names and the W0rkTree phase that plays their role.
+const GIT_HOOK_NAMES: [(&str, &str); 4] = [
+    ("pre-commit", "pre-snapshot"),
+    ("post-commit", "post-snapshot"),
+    ("post-checkout", "post-switch"),
+    ("pre-merge-commit", "pre-merge"),
+];
+
+/// The phase a misnamed hook file was probably meant for: the Git
+/// equivalent, else a phase name at most two edits away.
+fn suggest_phase(stem: &str) -> Option<&'static str> {
+    if let Some((_, phase)) = GIT_HOOK_NAMES.iter().find(|(git, _)| *git == stem) {
+        return Some(phase);
+    }
+    let stem = stem.to_ascii_lowercase();
+    Phase::ALL
+        .iter()
+        .map(|p| (edit_distance(&stem, p.file_name()), p.file_name()))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, name)| name)
+}
+
+/// Levenshtein distance (hook names are short ASCII).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
 
 /// Hooks and problems found in one hooks directory.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -933,22 +971,35 @@ pub fn scan_hook_dir(dir: &Path, windows: bool, has_sh: bool) -> HookScan {
             Some((s, e)) => (s.to_string(), e.to_ascii_lowercase()),
             None => (file.clone(), String::new()),
         };
-        let phase = PHASES.iter().find(|p| **p == stem);
+        let phase = Phase::from_file_name(&stem).map(Phase::file_name);
         let rank = if windows {
             WINDOWS_EXTENSIONS.iter().position(|e| *e == ext)
         } else {
             ext.is_empty().then_some(0)
         };
         let (Some(phase), Some(rank)) = (phase, rank) else {
-            let expected = if windows {
-                "pre-snapshot / post-snapshot (.exe, .cmd, .bat, .ps1 or no extension)"
+            let extensions = if windows {
+                "(.exe, .cmd, .bat, .ps1 or no extension)"
             } else {
-                "pre-snapshot / post-snapshot (no extension)"
+                "(no extension)"
             };
-            scan.problems.push((
-                format!("{} is not a hook name and never runs", path.display()),
-                format!("rename it to {expected}"),
-            ));
+            let (problem, fix) = match suggest_phase(&stem) {
+                Some(name) => (
+                    format!(
+                        "{} is not a hook name and never runs (did you mean {name}?)",
+                        path.display()
+                    ),
+                    format!("rename it to {name} {extensions}"),
+                ),
+                None => {
+                    let names: Vec<&str> = Phase::ALL.iter().map(|p| p.file_name()).collect();
+                    (
+                        format!("{} is not a hook name and never runs", path.display()),
+                        format!("rename it to one of {} {extensions}", names.join(", ")),
+                    )
+                }
+            };
+            scan.problems.push((problem, fix));
             continue;
         };
         if !windows && !is_executable(&path) {
@@ -1457,6 +1508,45 @@ mod tests {
                 .iter()
                 .any(|(_, fix)| fix.starts_with("chmod +x")));
         }
+    }
+
+    #[test]
+    fn misnamed_hooks_get_a_suggestion() {
+        assert_eq!(suggest_phase("pre-commit"), Some("pre-snapshot"));
+        assert_eq!(suggest_phase("post-checkout"), Some("post-switch"));
+        assert_eq!(suggest_phase("pre-psuh"), Some("pre-push"));
+        assert_eq!(suggest_phase("post-merg"), Some("post-merge"));
+        assert_eq!(suggest_phase("Pre-Push"), Some("pre-push"));
+        assert_eq!(suggest_phase("README"), None);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for f in ["pre-psuh", "post-switch", "notes"] {
+            std::fs::write(d.join(f), "exit 0\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(d.join(f), std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        }
+        let scan = scan_hook_dir(d, false, true);
+        assert_eq!(scan.hooks, [d.join("post-switch")], "new phases are hooks");
+        assert_eq!(scan.problems.len(), 2, "{:#?}", scan.problems);
+        let typo = scan
+            .problems
+            .iter()
+            .find(|(p, _)| p.contains("pre-psuh"))
+            .unwrap();
+        assert!(typo.0.contains("did you mean pre-push?"), "{typo:?}");
+        assert_eq!(typo.1, "rename it to pre-push (no extension)");
+        let other = scan
+            .problems
+            .iter()
+            .find(|(p, _)| p.contains("notes"))
+            .unwrap();
+        assert!(other.1.contains("post-switch"), "{other:?}");
     }
 
     #[test]
