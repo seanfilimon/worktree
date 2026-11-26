@@ -14,6 +14,9 @@ thiserror = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v5"] }
+globset = "0.4"
+sha2 = "0.10.9"
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -259,7 +259,7 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 | SDK — scanning | `crates/worktree-sdk/src/scan.rs` | v2 | Secret scanning (pre-snapshot), SPDX detection, FastCDC boundaries (used for files above 8 MiB) |
 | CLI `wt` | `crates/worktree-cli` | v2 | 29 top-level commands, `--json` output, exit codes 0/1/2/3 |
 | Daemon `worktree-bg` | `crates/worktree-bg` | v2 | File watching, debounced auto-snapshots, auto-stage, JSON/TCP IPC |
-| Git bridge | `crates/worktree-git` | v2 | `wt git import` / `wt git export` with deterministic, incremental mapping |
+| Git bridge | `crates/worktree-git` | v2 | `wt git import` / `wt git export` with deterministic, incremental mapping; Git LFS content imported (verified), submodule pins kept in `.wtsubmodules` and exported as gitlinks, optional nested-tree import of local submodules |
 | Server | `services/server-go` | v2 | bbolt metadata, CAS objects, IAM, sync, REST, SSE, staged, branch protection, merge requests, license rules, audit, metrics |
 | Admin panel | `apps/admin` | v2 | Dashboard, tenants, trees, file browser, merge requests, audit log, accounts, tokens |
 | End-to-end tests | `crates/worktree-e2e`, `scripts/e2e.sh` | v2 | Drives the real binaries against a live server |

@@ -2310,8 +2310,17 @@ Options:
   -C <PATH>
           Run as if wt was started in PATH
 
+      --lfs <MODE>
+          Git LFS files: `auto` imports their content when it is available (else the pointer file, with a warning), `require` fails when content is missing, `skip` imports pointer files as they are
+          
+          [default: auto]
+          [possible values: auto, require, skip]
+
       --tree <NAME>
           Operate on this tree instead of the one containing the current directory
+
+      --lfs-fetch
+          Download Git LFS content missing from the local LFS store with `git lfs fetch` (needs git-lfs)
 
       --no-color
           Disable colored output
@@ -2321,9 +2330,25 @@ Options:
           
           [env: WT_SERVER=]
 
+      --submodules <MODE>
+          Git submodules: `record` keeps each pin in .wtsubmodules, `nested` also imports a submodule's history into a nested tree when its repository is available locally (new worktrees only)
+          
+          [default: record]
+          [possible values: record, nested]
+
   -V, --version
           Print version
 ```
+
+Git LFS content comes from the source's local LFS store (`.git/lfs/objects`), and with `--lfs-fetch`
+from `git lfs fetch --all` / `git lfs smudge`; it is verified against the pointer's SHA-256 and size.
+Every LFS file imported as a pointer, every pointer-shaped file without `filter=lfs` and every
+submodule whose content was not imported is reported on stderr. `--lfs require` exits with code 1
+when content is missing (a new worktree is not created); `--lfs-fetch` with `--lfs skip` is a usage
+error (code 2). The JSON report adds `lfs` (`resolved`, `skipped`, `missing[]` with `path`, `oid`,
+`size`, `reason`, and `untracked[]`) and `submodules[]` (`path`, `commit`, `url`, `nested_tree`,
+`at_pin`, `note`). See [Git compatibility](./git-compatibility.md#git-lfs) for the detection rules and
+the re-import rule.
 
 #### `wt git export`
 
@@ -2346,6 +2371,12 @@ Options:
       --server <URL>        Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
   -V, --version             Print version
 ```
+
+A tracked `.wtsubmodules` file (written by `wt git import`) is not exported as a file: each entry
+becomes a gitlink. Pins that cannot be written (files at the pinned path, an unparsable file) are
+reported on stderr and in the JSON `warnings[]`; `gitlinks` counts the gitlinks written. Imported Git
+LFS content is exported as ordinary blobs. `wt git push` reports the same warnings. See
+[Git compatibility](./git-compatibility.md#submodules).
 
 #### `wt git push`
 

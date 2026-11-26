@@ -584,3 +584,101 @@ fn license_detect_and_apply() {
         .assert()
         .code(2);
 }
+
+/// Run `git` in `dir` without user configuration.
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "Git User")
+        .env("GIT_AUTHOR_EMAIL", "git@example.com")
+        .env("GIT_COMMITTER_NAME", "Git User")
+        .env("GIT_COMMITTER_EMAIL", "git@example.com")
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn git_import_reports_lfs_pointers_and_submodule_pins() {
+    let sb = Sandbox::new();
+    let src = sb.root().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    fs::write(src.join(".gitattributes"), "*.bin filter=lfs -text\n").unwrap();
+    let oid = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
+    let pointer =
+        format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 12\n");
+    fs::write(src.join("big.bin"), &pointer).unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "lfs"]);
+    // A gitlink pinned at a commit, without a .gitmodules entry.
+    git(
+        &src,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,vendor/lib",
+        ],
+    );
+    git(&src, &["commit", "-q", "-m", "pin"]);
+
+    // auto (default): imported with a pointer file, reported on stderr.
+    let out = sb.run(sb.root(), &["--json", "git", "import", "src", "auto"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["lfs"]["missing"][0]["path"], "big.bin");
+    assert_eq!(report["lfs"]["missing"][0]["oid"], oid);
+    assert_eq!(report["lfs"]["resolved"], 0);
+    assert_eq!(report["submodules"][0]["path"], "vendor/lib");
+    assert_eq!(
+        report["submodules"][0]["commit"],
+        "1111111111111111111111111111111111111111"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("big.bin: Git LFS content"), "{stderr}");
+    assert!(
+        stderr.contains("Git LFS content missing for 1 file"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("submodule vendor/lib"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(sb.root().join("auto/big.bin")).unwrap(),
+        pointer
+    );
+    let pins = fs::read_to_string(sb.root().join("auto/.wtsubmodules")).unwrap();
+    assert!(pins.contains("path = \"vendor/lib\""), "{pins}");
+
+    // The exported repository has the gitlink back and no .wtsubmodules.
+    let exported = sb.json(&sb.root().join("auto"), &["git", "export", "../out.git"]);
+    assert_eq!(exported["gitlinks"], 1);
+
+    // require: missing content fails the import.
+    sb.wt(
+        sb.root(),
+        &["git", "import", "src", "req", "--lfs", "require"],
+    )
+    .assert()
+    .code(1);
+    assert!(!sb.root().join("req").exists());
+    // skip: pointers kept without lookup.
+    let report = sb.json(
+        sb.root(),
+        &["git", "import", "src", "skip", "--lfs", "skip"],
+    );
+    assert_eq!(report["lfs"]["skipped"], 1);
+    // --lfs-fetch makes no sense with --lfs skip.
+    sb.wt(
+        sb.root(),
+        &["git", "import", "src", "x", "--lfs", "skip", "--lfs-fetch"],
+    )
+    .assert()
+    .code(2);
+}

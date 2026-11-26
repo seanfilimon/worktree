@@ -12,8 +12,12 @@
 //! * Snapshot ids of imported commits are UUID v5 of the commit SHA
 //!   ([`crate::ident::snapshot_id_for_commit`]), so re-imports are stable.
 //! * Regular files keep their executable bit (`100755`) and symbolic links
-//!   (`120000`) stay links, their target stored verbatim; submodule
-//!   gitlinks are skipped with a warning.
+//!   (`120000`) stay links, their target stored verbatim.
+//! * Git LFS pointer files are replaced by their verified content when it
+//!   is available ([`crate::lfs`]); export writes that content as ordinary
+//!   blobs.
+//! * Submodule gitlinks are recorded in a tracked `.wtsubmodules` file and
+//!   written back as gitlinks on export ([`crate::submodule`]).
 //! * Each commit is attributed to the first branch containing it, the
 //!   checked-out branch first, then the others by name.
 //! * Exported commits use the snapshot author as author and committer, the
@@ -27,9 +31,11 @@ use std::path::{Path, PathBuf};
 use worktree_sdk::Repository;
 
 use crate::error::{GitCompatError, Result};
+pub use crate::lfs::{LfsMode, LfsReport};
 use crate::license::LicensePolicy;
 use crate::remote::auth::GitAuth;
 use crate::remote::PushOptions;
+pub use crate::submodule::{SubmoduleMode, SubmoduleReport};
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
@@ -44,6 +50,13 @@ pub struct ImportOptions {
     pub name: Option<String>,
     /// Import tags.
     pub include_tags: bool,
+    /// What to do with Git LFS files (see [`crate::lfs`]).
+    pub lfs: LfsMode,
+    /// Download LFS content missing from the local LFS store with
+    /// `git lfs fetch` / `git lfs smudge` (needs `git-lfs`).
+    pub lfs_fetch: bool,
+    /// How to map submodules (see [`crate::submodule`]).
+    pub submodules: SubmoduleMode,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,6 +71,11 @@ pub struct ImportReport {
     pub tags: usize,
     /// Branch checked out in the working directory.
     pub checked_out: Option<String>,
+    /// Git LFS files of the converted commits.
+    pub lfs: LfsReport,
+    /// Submodules of the checked-out commit (pins of every commit are in
+    /// its snapshot's [`crate::submodule::PINS_FILE`]).
+    pub submodules: Vec<SubmoduleReport>,
 }
 
 /// Create a new worktree at `dest` from the Git repository at `git_path`.
@@ -105,6 +123,11 @@ pub struct ExportReport {
     pub tags: usize,
     /// Paths left out of at least one commit by the license policy (sorted).
     pub restricted: Vec<String>,
+    /// Gitlinks written from submodule pins into the Git trees this export
+    /// built (reused commits are not counted).
+    pub gitlinks: usize,
+    /// Pins that could not be exported as gitlinks (and why), deduplicated.
+    pub warnings: Vec<String>,
 }
 
 /// Export `repo` into the Git repository at `git_path` (created if missing).
@@ -139,6 +162,8 @@ pub struct PushRepoReport {
     pub refs: Vec<String>,
     /// See [`ExportReport::restricted`].
     pub restricted: Vec<String>,
+    /// See [`ExportReport::warnings`].
+    pub warnings: Vec<String>,
 }
 
 /// The bare "bridge" Git repository a tree is exported into before pushing:
@@ -210,6 +235,7 @@ pub fn push_repository(
         commits: export.commits,
         refs: pushed.refs,
         restricted: export.restricted,
+        warnings: export.warnings,
     })
 }
 
