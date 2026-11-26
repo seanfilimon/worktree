@@ -28,6 +28,7 @@ pub struct MergeArgs {
     pub action: Option<MergeCommand>,
 
     /// Branch or revision to merge into the current branch
+    #[arg(add = crate::complete::rev())]
     pub source: Option<String>,
 
     /// Message for the merge snapshot
@@ -113,7 +114,7 @@ pub enum MergeCommand {
 #[derive(Debug, Args)]
 pub struct RevertArgs {
     /// Snapshot whose changes to undo
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub rev: String,
 
     /// Message for the revert snapshot (default: `Revert "<subject>"`)
@@ -133,7 +134,7 @@ pub struct RestoreArgs {
     pub paths: Vec<PathBuf>,
 
     /// Revision to restore from (default: HEAD)
-    #[arg(long, value_name = "REV")]
+    #[arg(long, value_name = "REV", add = crate::complete::rev())]
     pub from: Option<String>,
 }
 

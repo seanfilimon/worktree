@@ -19,11 +19,11 @@ use crate::output::Text;
 #[derive(Debug, Args)]
 pub struct PushArgs {
     /// Remote to push to (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Branch to push (default: the current branch)
-    #[arg(long, value_name = "B")]
+    #[arg(long, value_name = "B", add = crate::complete::branch())]
     pub branch: Option<String>,
 
     /// If the server is unreachable, queue the push in the offline outbox
@@ -53,7 +53,7 @@ pub struct PushArgs {
 #[derive(Debug, Args)]
 pub struct FetchArgs {
     /// Remote to fetch from (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Download at most N new snapshots per branch (shallow history)
@@ -68,11 +68,11 @@ pub struct FetchArgs {
 #[derive(Debug, Args)]
 pub struct PullArgs {
     /// Remote to pull from (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Branch to integrate (default: the current branch)
-    #[arg(long, value_name = "B")]
+    #[arg(long, value_name = "B", add = crate::complete::branch())]
     pub branch: Option<String>,
 
     /// Fetch at most N new snapshots per branch (shallow history)
@@ -112,7 +112,7 @@ pub struct StageArgs {
     pub command: Option<staged::StageCommand>,
 
     /// Remote to stage on (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Remove your staged snapshot of the current branch instead (same as `wt unstage`)
@@ -128,11 +128,11 @@ pub struct StageArgs {
 #[derive(Debug, Args)]
 pub struct UnstageArgs {
     /// Remote to unstage from (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Branch whose staged snapshot to remove (default: the current branch)
-    #[arg(long, value_name = "B", conflicts_with = "all")]
+    #[arg(long, value_name = "B", conflicts_with = "all", add = crate::complete::branch())]
     pub branch: Option<String>,
 
     /// Remove your staged snapshots of every branch (and label) of the tree

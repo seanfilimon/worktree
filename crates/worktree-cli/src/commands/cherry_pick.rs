@@ -31,7 +31,7 @@ the cherry-pick)."
 )]
 pub struct CherryPickArgs {
     /// Snapshots to apply, in order (ids, branches, HEAD~N, ...)
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub revs: Vec<String>,
 
     /// Apply the changes to the working tree only; create no snapshots

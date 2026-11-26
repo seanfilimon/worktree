@@ -25,11 +25,11 @@ pub enum StageCommand {
 #[derive(Debug, Args)]
 pub struct StageListArgs {
     /// Remote to read from (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Only this branch (default: every branch)
-    #[arg(long, value_name = "B")]
+    #[arg(long, value_name = "B", add = crate::complete::branch())]
     pub branch: Option<String>,
 
     /// Only your own staged snapshots
@@ -48,11 +48,11 @@ pub struct StageShowArgs {
     pub label: Option<String>,
 
     /// Remote to read from (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Branch the snapshot is staged on (default: the current branch)
-    #[arg(long, value_name = "B")]
+    #[arg(long, value_name = "B", add = crate::complete::branch())]
     pub branch: Option<String>,
 
     /// Show this user's staged snapshot instead of yours
@@ -75,11 +75,11 @@ pub struct CheckoutArgs {
     pub name: Option<String>,
 
     /// Branch the work is staged on (default: wherever it is staged, if unique)
-    #[arg(long, value_name = "B")]
+    #[arg(long, value_name = "B", add = crate::complete::branch())]
     pub branch: Option<String>,
 
     /// Remote to read from (default: [sync].remote, usually origin)
-    #[arg(long, value_name = "R")]
+    #[arg(long, value_name = "R", add = crate::complete::remote())]
     pub remote: Option<String>,
 
     /// Discard uncommitted local changes when switching

@@ -87,6 +87,58 @@ pub struct WorktreeConfig {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub alias: std::collections::BTreeMap<String, String>,
     // --- end cli-ux
+    /// `[storage]`: how file content is stored (worktree layer only).
+    #[serde(default, skip_serializing_if = "StorageSection::is_default")]
+    pub storage: StorageSection,
+}
+
+/// `[storage]`: how file content is stored in the object store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageSection {
+    /// New or modified files larger than this many bytes are stored as
+    /// content-defined chunks (default [`crate::store::CHUNK_THRESHOLD`],
+    /// 8 MiB; accepted range
+    /// [`crate::store::MIN_CHUNK_THRESHOLD`]..=[`crate::store::MAX_CHUNK_THRESHOLD`]).
+    /// TOML also accepts sizes such as `"16MiB"`. Unchanged files keep the
+    /// form (chunked or one blob) they were recorded with.
+    #[serde(deserialize_with = "deserialize_chunk_threshold")]
+    pub chunk_threshold: u64,
+}
+
+impl Default for StorageSection {
+    fn default() -> Self {
+        Self {
+            chunk_threshold: crate::store::CHUNK_THRESHOLD,
+        }
+    }
+}
+
+impl StorageSection {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn deserialize_chunk_threshold<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<u64, D::Error> {
+    validate_chunk_threshold(deserialize_size(d)?).map_err(serde::de::Error::custom)
+}
+
+/// Check a `storage.chunk_threshold` in bytes against
+/// [`crate::store::MIN_CHUNK_THRESHOLD`]..=[`crate::store::MAX_CHUNK_THRESHOLD`];
+/// the error names the key and the accepted range.
+pub fn validate_chunk_threshold(bytes: u64) -> std::result::Result<u64, String> {
+    use crate::store::{MAX_CHUNK_THRESHOLD, MIN_CHUNK_THRESHOLD};
+    if (MIN_CHUNK_THRESHOLD..=MAX_CHUNK_THRESHOLD).contains(&bytes) {
+        Ok(bytes)
+    } else {
+        Err(format!(
+            "storage.chunk_threshold must be between 1MiB and 32MiB \
+             ({MIN_CHUNK_THRESHOLD} to {MAX_CHUNK_THRESHOLD} bytes), got {bytes}"
+        ))
+    }
 }
 
 // --- git-export (ENGINEERING_PLAN §13.8)
@@ -518,6 +570,7 @@ const SCALAR_KEYS: &[(&str, Kind)] = &[
     ("secret_scanning.exclude", Kind::List),
     ("signing.auto", Kind::Bool),
     ("signing.key", Kind::Str),
+    ("storage.chunk_threshold", Kind::Size),
     ("sync.auto_fetch", Kind::Bool),
     ("sync.auto_flush", Kind::Bool), // sync workstream (§15.5)
     ("sync.auto_stage", Kind::Bool),
@@ -561,6 +614,7 @@ const SECTION_ORDER: &[&str] = &[
     "auto_snapshot",
     "sync",
     "remote",
+    "storage",
     "secret_scanning",
     "hooks",
     "signing",
@@ -607,6 +661,7 @@ impl WorktreeConfig {
             signing: SigningSection::default(),
             git_remote: std::collections::BTreeMap::new(), // git-export (§13.8)
             alias: std::collections::BTreeMap::new(),      // cli-ux (§14.8)
+            storage: StorageSection::default(),
         }
     }
 
@@ -708,6 +763,7 @@ impl WorktreeConfig {
             "hooks.timeout_secs" => self.hooks.timeout_secs.to_string(),
             "signing.key" => self.signing.key.clone(),
             "signing.auto" => self.signing.auto.to_string(),
+            "storage.chunk_threshold" => self.storage.chunk_threshold.to_string(),
             _ => return None,
         };
         Some(value)
@@ -842,6 +898,12 @@ impl WorktreeConfig {
             "hooks.timeout_secs" => self.hooks.timeout_secs = parse_num(key, value)?,
             "signing.key" => self.signing.key = value.trim().to_string(),
             "signing.auto" => self.signing.auto = parse_bool(key, value)?,
+            "storage.chunk_threshold" => {
+                self.storage.chunk_threshold = parse_size(value)
+                    .map_err(|e| format!("{key}: {e}"))
+                    .and_then(validate_chunk_threshold)
+                    .map_err(SdkError::InvalidConfig)?;
+            }
             _ => {
                 return Err(SdkError::InvalidConfig(format!(
                     "unknown config key: {key}"
@@ -2227,6 +2289,86 @@ on_branch_switch = true
         );
         let c = WorktreeConfig::from_table(both.parse().unwrap()).unwrap();
         assert_eq!(c.auto_snapshot.inactivity_secs, 7);
+    }
+
+    #[test]
+    fn storage_chunk_threshold_defaults_parses_and_is_bounded() {
+        let mut c = cfg();
+        assert_eq!(c.storage.chunk_threshold, 8 * 1024 * 1024);
+        assert_eq!(c.storage.chunk_threshold, crate::store::CHUNK_THRESHOLD);
+        assert_eq!(c.get("storage.chunk_threshold").as_deref(), Some("8388608"));
+        c.set("storage.chunk_threshold", "16MiB").unwrap();
+        assert_eq!(c.storage.chunk_threshold, 16 << 20);
+        c.set("storage.chunk_threshold", "1MiB").unwrap();
+        assert_eq!(c.storage.chunk_threshold, 1 << 20);
+        c.set("storage.chunk_threshold", "33554432").unwrap();
+        assert_eq!(c.storage.chunk_threshold, 32 << 20);
+        for bad in ["1023KiB", "0", "33MiB", "1GiB", "lots", "-1"] {
+            let err = c.set("storage.chunk_threshold", bad).unwrap_err();
+            assert!(
+                matches!(&err, SdkError::InvalidConfig(m) if m.contains("storage.chunk_threshold")),
+                "{bad}: {err}"
+            );
+        }
+        let err = c.set("storage.chunk_threshold", "64MiB").unwrap_err();
+        assert!(err.to_string().contains("between 1MiB and 32MiB"), "{err}");
+        assert_eq!(c.storage.chunk_threshold, 32 << 20, "unchanged by errors");
+
+        let base = "[worktree]\nname = \"w\"\nid = \"i\"\ncreated_at = \"now\"\n";
+        let parse =
+            |storage: &str| WorktreeConfig::from_table(format!("{base}{storage}").parse().unwrap());
+        assert_eq!(
+            parse("").unwrap().storage.chunk_threshold,
+            crate::store::CHUNK_THRESHOLD
+        );
+        assert_eq!(
+            parse("[storage]\nchunk_threshold = \"4MiB\"\n")
+                .unwrap()
+                .storage
+                .chunk_threshold,
+            4 << 20
+        );
+        assert_eq!(
+            parse("[storage]\nchunk_threshold = 2097152\n")
+                .unwrap()
+                .storage
+                .chunk_threshold,
+            2 << 20
+        );
+        for bad in [
+            "[storage]\nchunk_threshold = \"100MiB\"\n",
+            "[storage]\nchunk_threshold = 4096\n",
+            "[storage]\nchunk_threshold = \"big\"\n",
+        ] {
+            let err = parse(bad).unwrap_err();
+            assert!(
+                err.contains("chunk_threshold") || err.contains("size"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_section_is_written_only_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut c = cfg();
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("[storage]"), "default omitted: {text}");
+        c.set("storage.chunk_threshold", "2MiB").unwrap();
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[storage]\nchunk_threshold = 2097152"),
+            "{text}"
+        );
+        assert_eq!(WorktreeConfig::load(&path).unwrap(), c);
+        std::fs::write(&path, text.replace("2097152", "\"40MiB\"")).unwrap();
+        assert!(matches!(
+            WorktreeConfig::load(&path),
+            Err(SdkError::InvalidConfig(m)) if m.contains("storage.chunk_threshold")
+        ));
     }
 
     #[test]

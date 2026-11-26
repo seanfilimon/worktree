@@ -44,7 +44,7 @@ pub struct GlobalArgs {
     pub dir: Option<PathBuf>,
 
     /// Operate on this tree instead of the one containing the current directory
-    #[arg(long, value_name = "NAME", global = true)]
+    #[arg(long, value_name = "NAME", global = true, add = crate::complete::tree())]
     pub tree: Option<String>,
 
     /// Disable colored output

@@ -28,13 +28,22 @@ pub enum TreeCommand {
         path: PathBuf,
     },
     /// Unregister a nested tree (its files are kept)
-    Remove { name: String },
+    Remove {
+        #[arg(add = crate::complete::tree())]
+        name: String,
+    },
     /// Check tree layout: .wt-tree/ marker, config and ignore files parse,
     /// no nested .wt/ (all trees when NAME is omitted; exit 1 on errors)
-    Validate { name: Option<String> },
+    Validate {
+        #[arg(add = crate::complete::tree())]
+        name: Option<String>,
+    },
     /// Scaffold .wt-tree/{config.toml,ignore,hooks/,access/} for a nested
     /// tree (default: the selected tree); existing files are kept
-    InitConfig { name: Option<String> },
+    InitConfig {
+        #[arg(add = crate::complete::tree())]
+        name: Option<String>,
+    },
 }
 
 #[derive(Serialize)]

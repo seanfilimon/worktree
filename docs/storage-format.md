@@ -66,12 +66,13 @@ A crash or power loss never leaves a branch pointing at data that did not reach 
 `WT_FSYNC=0` in the environment turns all syncing off (throw-away worktrees, benchmarks). On
 Windows only the commit point is flushed.
 
-There are two kinds of objects:
+There are three kinds of objects:
 
 | Kind | Content |
 |---|---|
-| **Blob** | The raw bytes of one file. |
+| **Blob** | The raw bytes of one file, or one chunk of a [large file](#large-files). |
 | **Manifest** | A protobuf-encoded `worktree.sync.v1.ManifestRecord`: the complete file list of a snapshot. |
+| **Chunk list** | A protobuf-encoded `worktree.sync.v1.ChunkList`: the chunks of one large file. |
 
 The same bytes and hashes are used on the wire and on the server, so push and pull copy objects
 without re-encoding. Hashes interoperate across Rust and Go: both use the 32-byte binary form on
@@ -84,10 +85,10 @@ A manifest lists every file of a tree at one point in time:
 | Field | Meaning |
 |---|---|
 | `path` | `/`-separated, relative to the tree's root directory |
-| `blob_hash` | Hash of the file's blob |
+| `blob_hash` | Hash of the file's blob (of its chunk list when `chunked`) |
 | `size` | Size in bytes |
 | `executable` | Executable bit (from the Unix file mode) |
-| `chunked` | `blob_hash` names a chunk list of a large file instead of a blob |
+| `chunked` | The file is stored as chunks ([large files](#large-files)) |
 | `symlink` | The entry is a symbolic link; `blob_hash` names a blob holding the link target and `size` is the target's length |
 
 Entries are sorted by `path` and unique, which makes the encoding canonical: the same set of files
@@ -122,10 +123,33 @@ next snapshot. A client older than this field ignores it and checks a link out a
 holding the target text; a server older than it stores and serves the manifest unchanged but does
 not validate or label links.
 
-Files larger than the chunking threshold are currently stored as single blobs. Content-defined
-chunking (FastCDC; `worktree_sdk::scan::chunk_boundaries`) is implemented as a function but not
-yet used by the storage format — chunked storage and lazy loading are *Roadmap*
-([Storage spec](../crates/worktree-protocol/specs/storage/Storage.md)).
+### Large files
+
+Files larger than the **chunk threshold** (8 MiB by default) are stored as content-defined chunks
+(ENGINEERING_PLAN §13.2):
+
+- The file is split with FastCDC (`worktree_sdk::scan::chunk_boundaries`: chunks of at least
+  256 KiB, about 1 MiB on average, at most 4 MiB). Each chunk is a blob.
+- A **chunk list** object (protobuf `worktree.sync.v1.ChunkList`: total size plus each chunk's hash
+  and size, in order) describes the file. The manifest entry has `chunked = true` and its
+  `blob_hash` is the hash of the chunk list.
+- Every reader reassembles chunked entries (`ObjectStore::read_entry`). Unchanged chunks are shared
+  between versions and files, so editing a large file stores and uploads only the chunks near the
+  edit.
+
+The threshold is set per worktree with `[storage] chunk_threshold` (1 MiB to 32 MiB; see
+[configuration](./configuration.md#storage)). It only decides how **new or modified** content is
+stored. The scanner (`build_working` in `repo/working.rs`) keeps the form of a file whose content
+equals its entry in the compared snapshot: an unchanged file recorded as one blob stays one blob
+after the threshold is lowered, and an unchanged chunked file stays chunked after it is raised.
+Changing the setting therefore never makes `wt status` or `wt diff` report a modification, and no
+existing snapshot is rewritten. The chunk boundaries themselves are fixed (they are part of the
+format), so unchanged content always re-chunks to the same chunk list. Whether a file holds an
+entry's content is decided in the entry's own form (`store::file_hash_as`).
+
+Identical content written under different thresholds (for example by two collaborators with
+different settings) gets different entry hashes; keep the setting the same across the clones of a
+tree.
 
 ## Snapshots
 

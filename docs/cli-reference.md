@@ -1702,16 +1702,41 @@ Options:
   -V, --version
           Print version
 
-Installing:
-  bash        wt completions bash > ~/.local/share/bash-completion/completions/wt
-  zsh         wt completions zsh > "${fpath[1]}/_wt"   (then restart zsh)
+Installing (load the hook when the shell starts):
+  bash        echo 'source <(wt completions bash)' >> ~/.bashrc
+  zsh         echo 'source <(wt completions zsh)' >> ~/.zshrc   (after compinit)
   fish        wt completions fish > ~/.config/fish/completions/wt.fish
-  powershell  wt completions powershell >> $PROFILE   (or dot-source a saved copy)
-  elvish      wt completions elvish >> ~/.config/elvish/rc.elv
+  powershell  Add-Content $PROFILE 'wt completions powershell | Out-String | Invoke-Expression'
+  elvish      echo 'eval (wt completions elvish | slurp)' >> ~/.config/elvish/rc.elv
 
-Aliases from [alias] are included as of generation time; regenerate the
-script after adding or removing aliases.
+The script calls back into wt on every completion, so branch, tag, remote
+and tree names and aliases are always current. Saving the script to a file
+(bash-completion directory, zsh $fpath as _wt) works too; regenerate it
+after upgrading wt.
 ```
+
+The script is a small hook: on every <kbd>Tab</kbd> the shell runs
+`WT_COMPLETE=<shell> wt -- <words typed so far>` and `wt` prints the candidates. Commands,
+subcommands, flags and enumerated values come from the command definition; aliases from `[alias]`
+are read at completion time (no regeneration needed). Arguments that name refs complete from the
+worktree:
+
+| Argument | Candidates |
+|---|---|
+| `wt switch`, `wt branch archive\|describe\|owner`, `--branch` of `push`, `pull`, `unstage`, `stage list/show`, `checkout`, `wt reflog --branch` | non-archived branches |
+| `wt branch restore` | archived branches only |
+| `wt tag delete\|verify\|push` | tags |
+| `wt merge`, `wt revert`, `wt restore --from`, `wt log`, `wt show`, `wt cherry-pick`, `wt rebase`, `wt archive`, `wt blame --rev`, `wt open snapshot`, `wt branch create --from`, `wt tag [create] NAME REV` | revisions: non-archived branches, tags, remote-tracking `REMOTE/BRANCH` |
+| `wt diff` | revisions as above, then paths |
+| `--remote` of `push`, `pull`, `fetch`, `stage`, `unstage`, `tag push`, `checkout`; `tag delete\|verify --from`; `wt remote remove` | remotes of `.wt/config.toml` |
+| `--tree` (any command), `wt tree remove\|validate\|init-config` | trees of the worktree |
+
+Names are listed straight from the ref directories (`.wt/trees/<tree>/refs/`), so completion stays
+fast on large worktrees: it never scans the working directory, reads snapshots, takes a lock, starts
+the daemon or contacts a server, and it prints nothing but candidates. The tree is the one
+containing the current directory, or the one named by a `--tree` already on the command line; a
+`-C PATH` on the command line is honoured. Outside a worktree, ref names simply do not complete.
+Server-side names (tenants, server trees, merge requests) are not completed.
 
 ## Servers and sync
 

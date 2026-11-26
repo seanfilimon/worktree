@@ -21,31 +21,78 @@ change nothing about the data model or the wire protocol:
 
 | Feature | Command | Network |
 |---|---|---|
-| Shell completion scripts | `wt completions SHELL` | none |
+| Shell completion (dynamic: commands, aliases, branch, tag, remote and tree names) | `wt completions SHELL` | none |
 | Command aliases | `[alias]` in config, `wt NAME args...` | none |
 | Setup diagnostics | `wt doctor [--offline] [--timeout SECS] [--json]` | optional, bounded |
 | Open the admin panel | `wt open [tree \| mr N \| snapshot REV \| file PATH] [--print] [--remote R]` | none (launches a browser) |
 
 ## 2. Shell completions
 
-`wt completions bash|zsh|fish|powershell|elvish` prints a static completion
-script generated from the clap command definition (`clap_complete`). It
-completes every command, subcommand, flag and enumerated value. Aliases
-configured when the script is generated (§3) are included as extra commands
-described as ``Alias for `wt ...` ``; an alias named like a built-in command
-is left out. Regenerate the script after changing aliases.
+`wt completions bash|zsh|fish|powershell|elvish` prints a small **dynamic**
+completion hook (clap_complete's `CompleteEnv` engine, `unstable-dynamic`
+feature, pinned to an exact version). On every completion the shell runs
 
-Installation (also in `wt completions --help`):
+```
+WT_COMPLETE=<shell> wt -- <words of the command line>
+```
+
+and `wt` prints the candidates before doing anything else (the request is
+intercepted at the very start of `main`; `WT_COMPLETE` empty or `0` means a
+normal run). The registration calls the program `wt` was started as when that
+is a bare name (looked up on `PATH` at completion time), else the absolute
+path of the running executable.
+
+Candidates:
+
+- Commands, subcommands, flags and enumerated values from the clap
+  definition.
+- Aliases (§3) as extra commands described as ``Alias for `wt ...` ``, read
+  from the `-C` directory (else the current one) **at completion time**; an
+  alias named like a built-in command is left out. No regeneration is needed
+  after changing aliases.
+- Ref names for the arguments that take them:
+
+| Kind | Candidates | Arguments |
+|---|---|---|
+| branch | non-archived local branches | `wt switch`, `wt branch archive\|describe\|owner`, `--branch` of `push`, `pull`, `unstage`, `stage list\|show`, `checkout`, `wt reflog --branch` |
+| archived branch | archived branches only | `wt branch restore` |
+| tag | tags | `wt tag delete\|verify\|push` |
+| revision | non-archived branches, tags, remote-tracking `REMOTE/BRANCH` (a name is offered once) | `wt merge`, `wt revert`, `wt restore --from`, `wt log`, `wt show`, `wt cherry-pick`, `wt rebase`, `wt archive`, `wt blame --rev`, `wt open snapshot`, `wt branch create --from`, the `REV` of `wt tag [create]` |
+| revision or path | revisions, then paths relative to the command's directory | `wt diff` |
+| remote | `[remote.*]` of `.wt/config.toml` (help: the URL) | `--remote` of `push`, `pull`, `fetch`, `stage`, `unstage`, `tag push`, `checkout`, `stage list\|show`; `--from` of `tag delete\|verify`; `wt remote remove` |
+| tree | trees of the worktree (help: root tree / its path) | global `--tree`, `wt tree remove\|validate\|init-config` |
+
+Ref completion rules:
+
+- The worktree is the one containing the current directory, or the `-C PATH`
+  (`-CPATH`, `-C=PATH`) already on the command line; the tree is the one
+  containing that directory, or the `--tree NAME` / `--tree=NAME` on the
+  command line. Options after `--` are ignored.
+- Names come from the SDK's name listings (`Repository::branch_names`,
+  `tag_names`, `remote_branch_names`, `trees`), which read only the ref
+  directories and `branches.meta.json`: no tips, snapshots, manifests or
+  working-directory scan, so completion stays fast on large worktrees.
+- Completion takes no lock, never contacts a server or the daemon, and writes
+  nothing but candidates to stdout (diagnostics are not initialised).
+  Outside a worktree, or when the worktree or tree cannot be read, ref
+  completion is empty and the request still succeeds.
+- Candidates are filtered by prefix; names with `/` (`feature/login`) are
+  ordinary values.
+
+Installation (also in `wt completions --help`); loading the hook when the
+shell starts keeps it in step with the installed `wt`:
 
 | Shell | Install |
 |---|---|
-| bash | `wt completions bash > ~/.local/share/bash-completion/completions/wt` |
-| zsh | `wt completions zsh > "${fpath[1]}/_wt"`, then restart zsh |
+| bash | `echo 'source <(wt completions bash)' >> ~/.bashrc` (a file in `~/.local/share/bash-completion/completions/wt` works too) |
+| zsh | `echo 'source <(wt completions zsh)' >> ~/.zshrc` after `compinit` (or the file `"${fpath[1]}/_wt"`: the script completes on its first autoloaded call) |
 | fish | `wt completions fish > ~/.config/fish/completions/wt.fish` |
-| PowerShell | `wt completions powershell >> $PROFILE` (or dot-source a saved copy) |
-| elvish | `wt completions elvish >> ~/.config/elvish/rc.elv` |
+| PowerShell | `Add-Content $PROFILE 'wt completions powershell \| Out-String \| Invoke-Expression'` |
+| elvish | `echo 'eval (wt completions elvish \| slurp)' >> ~/.config/elvish/rc.elv` |
 
-An unknown shell name is a usage error (exit 2).
+A saved script must be regenerated after an upgrade that changes the
+clap_complete version (the hook-to-binary protocol is not stable across
+versions). An unknown shell name is a usage error (exit 2).
 
 ## 3. Aliases
 
@@ -201,6 +248,7 @@ commands (`wt CMD --help`) is unchanged.
 | Feature | Status |
 |---|---|
 | `wt completions` for bash, zsh, fish, PowerShell, elvish, with configured aliases | Built (v0.6 §14.8) |
+| Dynamic completion (`WT_COMPLETE`): aliases at completion time; branch, archived-branch, tag, revision, remote and tree names (§2) | Built |
 | `[alias]` in user and worktree config; `wt config set/unset [--global] alias.NAME` (also outside a worktree with `--global`) | Built (v0.6 §14.8) |
 | Alias expansion before parsing: no shadowing of built-ins, 5-level limit, cycle report, clap suggestions kept | Built (v0.6 §14.8) |
 | `wt doctor` with every check in §4, `--offline`, `--timeout`, `--json`, exit 1 on errors | Built (v0.6 §14.8) |
@@ -210,7 +258,10 @@ commands (`wt CMD --help`) is unchanged.
 ## 8. Roadmap
 
 - Shell aliases (`!cmd`) and parameter substitution in aliases.
-- Dynamic (runtime) completion of branch, tag, tree and remote names.
+- Completion of server-side names (tenants, server trees, merge requests,
+  accounts) — needs a cached listing so completion never waits on the
+  network.
+- Completion of snapshot ids and `HEAD~N` / `BRANCH@{N}` forms.
 - `wt doctor --fix` applying the safe fixes (start/watch the daemon, set
   the executable bit).
 - `wt open` for releases, CI checks and staged snapshots, and outside a
@@ -223,7 +274,10 @@ commands (`wt CMD --help`) is unchanged.
 - `crates/worktree-cli/src/alias.rs` — alias expansion
 - `crates/worktree-cli/src/help.rs` — grouped root help
 - `crates/worktree-cli/src/main.rs` — expansion and parsing entry point
+- `crates/worktree-cli/src/complete.rs` — dynamic completion (candidates, hook scripts)
 - `crates/worktree-cli/src/commands/completions.rs`
+- `crates/worktree-sdk/src/repo/refs.rs` — `branch_names`, `tag_names`, `remote_branch_names`
+- `crates/worktree-cli/tests/completions.rs` — candidate and hook tests
 - `crates/worktree-cli/src/commands/doctor.rs`
 - `crates/worktree-cli/src/commands/open.rs`
 - `crates/worktree-sdk/src/config.rs` — `[alias]` section, `split_alias_command`,
