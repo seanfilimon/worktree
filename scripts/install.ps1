@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Install W0rkTree (wt + worktree-bg, optionally worktree-server).
+  Install W0rkTree (wt + worktree-bg + git-remote-wt, optionally worktree-server).
 
 .DESCRIPTION
   Downloads the release archive for this machine (Windows, or Linux/macOS
@@ -244,6 +244,10 @@ try {
         foreach ($b in $bins) {
             Install-Binary (Join-Path (Join-Path $extract $name) "$b$binExt") "$b$binExt"
         }
+        # The Git remote helper (git clone wt::https://...); releases before
+        # it existed do not ship it.
+        $helper = Join-Path (Join-Path $extract $name) "git-remote-wt$binExt"
+        if (Test-Path -LiteralPath $helper) { Install-Binary $helper "git-remote-wt$binExt" }
     } else {
         if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw 'cargo not found (install Rust from https://rustup.rs)' }
         $exe = if ($onWindows) { '.exe' } else { '' }
@@ -265,12 +269,13 @@ try {
         $cargoRoot = Join-Path $tmp 'cargo'
         $locked = @()
         if (Test-Path (Join-Path $src 'Cargo.lock')) { $locked = @('--locked') }
-        foreach ($crate in 'worktree-cli', 'worktree-bg') {
+        foreach ($crate in 'worktree-cli', 'worktree-bg', 'worktree-git') {
             & cargo install @locked --force --root $cargoRoot --path (Join-Path (Join-Path $src 'crates') $crate)
             if ($LASTEXITCODE -ne 0) { throw "cargo install $crate failed" }
         }
         Install-Binary (Join-Path (Join-Path $cargoRoot 'bin') "wt$exe") "wt$exe"
         Install-Binary (Join-Path (Join-Path $cargoRoot 'bin') "worktree-bg$exe") "worktree-bg$exe"
+        Install-Binary (Join-Path (Join-Path $cargoRoot 'bin') "git-remote-wt$exe") "git-remote-wt$exe"
         if ($WithServer) {
             if (-not (Get-Command go -ErrorAction SilentlyContinue)) { throw 'go not found (needed for -WithServer -FromSource)' }
             $out = Join-Path $tmp "worktree-server$exe"

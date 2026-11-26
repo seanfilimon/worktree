@@ -40,8 +40,8 @@ build-web: node_modules ## Build apps/web (Next.js)
 build-admin: node_modules ## Build apps/admin (Vite) into apps/admin/dist
 	npm run build --workspace=apps/admin
 
-release: ## Optimized binaries (wt, worktree-bg, worktree-server)
-	cargo build --release -p worktree-cli -p worktree-bg
+release: ## Optimized binaries (wt, worktree-bg, git-remote-wt, worktree-server)
+	cargo build --release -p worktree-cli -p worktree-bg -p worktree-git
 	cd $(SERVER_DIR) && CGO_ENABLED=0 go build -trimpath -ldflags "$(GO_LDFLAGS)" -o "$(CURDIR)/$(SERVER_BIN)" .
 
 node_modules:
