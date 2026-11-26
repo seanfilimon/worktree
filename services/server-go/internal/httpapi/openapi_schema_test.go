@@ -124,8 +124,10 @@ var openAPITypes = map[string]any{
 	"TenantDeletion":        iam.TenantDeletion{},
 
 	// history-v2 (§16.10): internal/syncsvc, httpapi/reflog.go
-	"ReflogEntry":    syncsvc.ReflogEntry{},
-	"ReflogResponse": reflogResponse{},
+	"ReflogEntry":          syncsvc.ReflogEntry{},
+	"ReflogResponse":       reflogResponse{},
+	"ReflogRestoreRequest": restoreRequest{},
+	"ReflogRestoreResult":  syncsvc.RestoreResult{},
 	// config-as-code (§16.3): internal/treeconfig, httpapi/treeconfig.go
 	"TreeConfigState":           treeconfig.State{},
 	"TreeConfigApplied":         treeconfig.Applied{},

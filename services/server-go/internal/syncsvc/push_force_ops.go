@@ -10,8 +10,8 @@ package syncsvc
 //     push by the same account returns it without doing anything.
 //   - branch_reflog — DocKey(treeID, branch, %020d unix-nano, random) →
 //     ReflogEntry: every accepted push that moved a branch (force pushes
-//     and protection bypasses flagged), kept 90 days (ReflogTTL). Served by
-//     GET {tree}/reflog.
+//     and protection bypasses flagged) and every reflog restore
+//     (restore.go), kept 90 days (ReflogTTL). Served by GET {tree}/reflog.
 //
 // Both are deleted with their tree (tree.deleted) by Start.
 
@@ -66,9 +66,11 @@ type ReflogEntry struct {
 	// OldTip is the tip before the push ("" = the branch was created).
 	OldTip string `json:"old_tip"`
 	NewTip string `json:"new_tip"`
-	// Kind is "push" or "force_push".
+	// Kind is "push", "force_push" or "restore" (POST {tree}/reflog/restore,
+	// restore.go).
 	Kind string `json:"kind"`
-	// Forced is set for force pushes (the old tip is no longer an ancestor).
+	// Forced is set for force pushes and restores that rewound the branch
+	// (the old tip is no longer an ancestor).
 	Forced bool `json:"forced"`
 	// Bypass is set when branch protection was bypassed; Bypassed lists
 	// the refusals that were lifted.
@@ -155,14 +157,17 @@ func (s *Service) storePushOp(ctx context.Context, p *domain.Principal, treeID, 
 	}
 }
 
-// recordReflog appends e to the server reflog (best effort: a failure is
-// logged and never fails the push, which already moved the branch).
-func (s *Service) recordReflog(ctx context.Context, p *domain.Principal, t *domain.Tree, e ReflogEntry) {
+// recordReflog appends e to the server reflog and returns the stored entry
+// (best effort: a failure is logged and never fails the push or restore,
+// which already moved the branch). An empty Kind is derived from Forced.
+func (s *Service) recordReflog(ctx context.Context, p *domain.Principal, t *domain.Tree, e ReflogEntry) ReflogEntry {
 	e.TreeID = t.ID
 	e.At = s.now()
-	e.Kind = "push"
-	if e.Forced {
-		e.Kind = "force_push"
+	if e.Kind == "" {
+		e.Kind = ReflogKindPush
+		if e.Forced {
+			e.Kind = ReflogKindForcePush
+		}
 	}
 	if e.Bypassed == nil {
 		e.Bypassed = []string{}
@@ -176,6 +181,7 @@ func (s *Service) recordReflog(ctx context.Context, p *domain.Principal, t *doma
 	if err := s.d.Store.PutDoc(ctx, ReflogCollection, key, &e); err != nil {
 		s.log.WarnContext(ctx, "push: recording the reflog failed", "tree", t.ID, "branch", e.Branch, "err", err)
 	}
+	return e
 }
 
 // ListReflog returns the server reflog of a tree, newest first: every

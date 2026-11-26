@@ -15,6 +15,7 @@ const (
 const (
 	EventTreeForked      = "tree.forked"
 	EventBranchForced    = "branch.force_pushed"
+	EventBranchRestored  = "branch.restored" // moved to a reflog tip (POST {tree}/reflog/restore)
 	EventTenantRenamed   = "tenant.renamed"
 	EventTenantDeleted   = "tenant.deleted"
 	EventConfigApplied   = "config.applied" // .wt-tree config-as-code applied on push
