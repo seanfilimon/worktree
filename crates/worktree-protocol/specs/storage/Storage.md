@@ -60,7 +60,8 @@ The following are **not** objects:
 
 ## Large files
 
-Files larger than **8 MiB** are stored chunked:
+Files larger than the **chunk threshold** (default **8 MiB**, see
+*Threshold* below) are stored chunked:
 
 - **Algorithm.** FastCDC with a Gear rolling hash (`worktree_sdk::scan::cdc`).
   Chunks are at least 256 KiB, average 1 MiB, and at most 4 MiB.
@@ -77,6 +78,33 @@ Files larger than **8 MiB** are stored chunked:
   endpoints; at most 4 GiB in memory).
 - **Bounds.** No single object, chunk or not, may exceed 64 MiB (the gRPC
   message limit).
+- **Threshold.** `[storage] chunk_threshold` in `.wt/config.toml` (worktree
+  layer only; a size such as `"16MiB"`, accepted range 1 MiB to 32 MiB so a
+  single-blob file stays well below the object limit) sets the threshold of
+  the clients of that worktree. It decides the form of **new or modified**
+  content only. When the scanner hashes a file whose content equals its entry
+  in the compared manifest (same size, and the same hash in that entry's
+  form), it keeps that entry — a one-blob entry stays a blob after the
+  threshold is lowered, a chunked entry stays chunked after it is raised — so
+  a configuration change never shows up as a modification and never rewrites
+  history. A stat-cached file that differs from its entry is re-read once if
+  its cached form no longer matches the threshold. Entry/content comparisons
+  elsewhere use the entry's form (`store::file_hash_as`).
+- **Chunk sizes are not configurable.** The 256 KiB / 1 MiB / 4 MiB FastCDC
+  parameters and the gear table are part of the format: a chunk list does
+  not record the parameters it was cut with, so other parameters would
+  re-chunk every modified large file (no deduplication against earlier
+  versions) and give identical content different entry hashes in different
+  clones. Fixed boundaries also guarantee that unchanged content always
+  re-chunks to the same list.
+- **Mixed thresholds.** Identical content written under different thresholds
+  has different entry hashes (blob vs chunk list), so clones of a tree should
+  share one value. The server accepts any valid chunk list and any blob up to
+  the object limit and does not look at the threshold; it does treat chunked
+  entries specially (merge-request merges report a both-sides change to a
+  chunked file as a `chunked` conflict, code search skips chunked files, and
+  files it writes itself — conflict resolutions, at most 8 MiB — are single
+  blobs).
 
 ## Local storage (`.wt/`)
 
@@ -303,7 +331,8 @@ There are no built-in plan tiers with fixed sizes. `Tenant.plan`
 |---|---|
 | BLAKE3 content-addressed store, local (`.wt/objects`) and server (`<data>/objects`), atomic writes, Windows-safe | Built |
 | Flat manifests, snapshot records as metadata, tags, releases with assets in the CAS | Built |
-| FastCDC chunked large files (> 8 MiB) with entry readers on both sides | Built |
+| FastCDC chunked large files (> 8 MiB by default) with entry readers on both sides | Built |
+| Configurable large-file threshold (`[storage] chunk_threshold`, 1-32 MiB) that never changes the form of unchanged files | Built |
 | bbolt metadata store (buckets above) and DocStore collections | Built |
 | Fast-forward-only branch updates with compare-and-swap | Built |
 | Mark-and-sweep GC with grace period, staged and audit retention | Built |
@@ -339,13 +368,19 @@ Described in earlier versions of this spec but not built:
 - **Reflog sync to the server** for disaster recovery.
 - **Automatic re-fetch of corrupt local objects** (`wt fsck` and the server
   `POST /admin/fsck` detect them; see Compression.md).
-- **A configurable large-file threshold and chunk sizes.** Today they are
-  constants: 8 MiB threshold and 256 KiB / 1 MiB / 4 MiB chunks.
+- **Configurable chunk sizes.** The threshold is configurable (see Large
+  files); the 256 KiB / 1 MiB / 4 MiB FastCDC parameters stay constants
+  because they are part of the format. Making them configurable would need
+  the parameters recorded per chunk list and a migration story for
+  deduplication.
+- **A tree-level (shared) threshold**, so every clone of a tree uses the
+  same value; today it is per worktree.
 - **Plan-based default quotas** (fixed tiers per plan).
 
 ## References
 
-- SDK: `crates/worktree-sdk/src/store.rs`, `src/scan/cdc.rs`,
+- SDK: `crates/worktree-sdk/src/store.rs` (`prepare_entry`, threshold),
+  `src/config.rs` (`[storage]`), `src/scan/cdc.rs`,
   `src/repo/mod.rs` (layout), `src/repo/{working,history,refs,reflog,lock}.rs`,
   `src/model.rs`
 - Protocol: `crates/worktree-protocol/proto/sync.proto` (`ObjectKind`,

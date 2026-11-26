@@ -129,11 +129,24 @@ pub struct StoredObject {
 
 // --- end storage ---
 
-/// Files larger than this (8 MiB) are stored as content-defined chunks
-/// (ENGINEERING_PLAN §13.2).
+/// Default large-file threshold (8 MiB): larger files are stored as
+/// content-defined chunks (ENGINEERING_PLAN §13.2). A worktree can choose
+/// another value with `[storage] chunk_threshold` (see
+/// [`ObjectStore::with_chunk_threshold`]).
 pub const CHUNK_THRESHOLD: u64 = 8 * 1024 * 1024;
 
-/// Whether a file of `len` bytes is stored chunked.
+/// Smallest accepted `[storage] chunk_threshold` (1 MiB, the average chunk
+/// size: below it chunking mostly yields single-chunk lists).
+pub const MIN_CHUNK_THRESHOLD: u64 = 1024 * 1024;
+
+/// Largest accepted `[storage] chunk_threshold` (32 MiB): a file at the
+/// threshold is one blob, and blobs must stay well below the 64 MiB
+/// per-object limit of the sync protocol.
+pub const MAX_CHUNK_THRESHOLD: u64 = 32 * 1024 * 1024;
+
+/// Whether a file of `len` bytes is stored chunked under the default
+/// [`CHUNK_THRESHOLD`] (see [`ObjectStore::stores_chunked`] for a store's
+/// configured threshold).
 pub fn is_chunked_size(len: u64) -> bool {
     len > CHUNK_THRESHOLD
 }
@@ -222,16 +235,23 @@ pub(crate) struct PreparedFile {
 /// Encoded chunk list, the list, and each chunk's `(offset, len)`.
 type SplitFile = (Vec<u8>, ChunkList, Vec<(usize, usize)>);
 
-/// Hash `data` as a file: a blob, or (above [`CHUNK_THRESHOLD`]) FastCDC
+/// Hash `data` as a file: a blob, or (above `threshold` bytes) FastCDC
 /// chunks plus a chunk list.
-pub(crate) fn prepare_file(data: &[u8]) -> PreparedFile {
-    if !is_chunked_size(data.len() as u64) {
+fn prepare_file(data: &[u8], threshold: u64) -> PreparedFile {
+    prepare_as(data, data.len() as u64 > threshold)
+}
+
+/// Hash `data` as a file in the given form, whatever its size.
+fn prepare_as(data: &[u8], chunked: bool) -> PreparedFile {
+    if !chunked {
         return PreparedFile {
             hash: hash_bytes(data),
             chunked: false,
             chunks: None,
         };
     }
+    // The chunk boundaries (FastCDC parameters and gear table) are fixed:
+    // unchanged content always re-chunks to the same list and hash.
     let ranges = crate::scan::chunk_boundaries(data);
     let list = ChunkList {
         size: data.len() as u64,
@@ -252,10 +272,19 @@ pub(crate) fn prepare_file(data: &[u8]) -> PreparedFile {
 }
 
 /// The entry hash and `chunked` flag `data` would get from
-/// [`ObjectStore::put_file`], without storing anything.
+/// [`ObjectStore::put_file`] under the default [`CHUNK_THRESHOLD`], without
+/// storing anything.
 pub fn file_hash(data: &[u8]) -> (ObjectHash, bool) {
-    let prepared = prepare_file(data);
+    let prepared = prepare_file(data, CHUNK_THRESHOLD);
     (prepared.hash, prepared.chunked)
+}
+
+/// The hash a manifest entry for `data` has in the given form: the blob
+/// hash, or (`chunked`) the hash of its chunk list. Whether a file holds an
+/// entry's content is `file_hash_as(data, entry.chunked) == entry.hash`,
+/// whatever threshold the entry was written with.
+pub fn file_hash_as(data: &[u8], chunked: bool) -> ObjectHash {
+    prepare_as(data, chunked).hash
 }
 
 // --- sparse (ENGINEERING_PLAN §15.4): lazy remote fetcher hook ---
@@ -293,6 +322,8 @@ pub struct ObjectStore {
     compress: bool,
     /// sparse (§15.4): downloads missing objects on demand (partial clones).
     fetcher: Option<std::sync::Arc<dyn ObjectFetcher>>,
+    /// New or modified files larger than this are stored chunked.
+    chunk_threshold: u64,
 }
 
 impl ObjectStore {
@@ -303,6 +334,7 @@ impl ObjectStore {
             root: root.into(),
             compress: true,
             fetcher: None,
+            chunk_threshold: CHUNK_THRESHOLD,
         }
     }
 
@@ -481,17 +513,63 @@ impl ObjectStore {
     }
 
     /// Store file content the way a manifest entry references it: files of
-    /// at most [`CHUNK_THRESHOLD`] bytes as one blob, larger files as
-    /// FastCDC chunks plus a [`ChunkList`]. Returns the entry hash and
-    /// whether the entry is chunked.
+    /// at most [`Self::chunk_threshold`] bytes (default [`CHUNK_THRESHOLD`])
+    /// as one blob, larger files as FastCDC chunks plus a [`ChunkList`].
+    /// Returns the entry hash and whether the entry is chunked.
     pub fn put_file(&self, data: &[u8]) -> Result<(ObjectHash, bool)> {
-        let prepared = prepare_file(data);
+        let prepared = prepare_file(data, self.chunk_threshold);
         self.put_prepared(&prepared, data)?;
         Ok((prepared.hash, prepared.chunked))
     }
 
-    /// Store `data` as hashed by [`prepare_file`] (chunks before the chunk
-    /// list, so a stored list always has its chunks).
+    /// The same store with another large-file threshold (`[storage]
+    /// chunk_threshold`): new or modified files larger than `threshold`
+    /// bytes are stored chunked. The value is not validated here (the
+    /// config enforces [`MIN_CHUNK_THRESHOLD`]..=[`MAX_CHUNK_THRESHOLD`]).
+    /// Chunk boundaries do not depend on it, and entries already written
+    /// keep their form (see [`Self::prepare_entry`]).
+    pub fn with_chunk_threshold(mut self, threshold: u64) -> Self {
+        self.chunk_threshold = threshold;
+        self
+    }
+
+    /// The large-file threshold of new or modified files.
+    pub fn chunk_threshold(&self) -> u64 {
+        self.chunk_threshold
+    }
+
+    /// Whether new content of `len` bytes is stored chunked by this store.
+    pub fn stores_chunked(&self, len: u64) -> bool {
+        len > self.chunk_threshold
+    }
+
+    /// Hash working-file content for a manifest entry whose previous
+    /// version (in the snapshot it is compared with) is `previous`.
+    ///
+    /// Content identical to `previous` keeps that entry's form — chunked or
+    /// single blob — whatever the threshold says now, so changing
+    /// `[storage] chunk_threshold` (or a large file recorded as one blob
+    /// before chunking existed, or by an importer) never makes an unchanged
+    /// file look modified. New and modified content uses the threshold.
+    pub(crate) fn prepare_entry(
+        &self,
+        data: &[u8],
+        previous: Option<&crate::model::ManifestEntry>,
+    ) -> PreparedFile {
+        let prepared = prepare_file(data, self.chunk_threshold);
+        if let Some(prev) = previous {
+            if prev.chunked != prepared.chunked && prev.size == data.len() as u64 {
+                let kept = prepare_as(data, prev.chunked);
+                if kept.hash == prev.hash {
+                    return kept;
+                }
+            }
+        }
+        prepared
+    }
+
+    /// Store `data` as hashed by [`Self::prepare_entry`] (chunks before the
+    /// chunk list, so a stored list always has its chunks).
     pub(crate) fn put_prepared(&self, prepared: &PreparedFile, data: &[u8]) -> Result<()> {
         match &prepared.chunks {
             None => self.write_object(&prepared.hash, data),
@@ -998,6 +1076,79 @@ mod tests {
                 (state >> 24) as u8
             })
             .collect()
+    }
+
+    #[test]
+    fn default_chunk_threshold_is_unchanged() {
+        assert_eq!(CHUNK_THRESHOLD, 8 * 1024 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path());
+        assert_eq!(store.chunk_threshold(), CHUNK_THRESHOLD);
+        assert!(!store.stores_chunked(CHUNK_THRESHOLD));
+        assert!(store.stores_chunked(CHUNK_THRESHOLD + 1));
+        const {
+            assert!(
+                MIN_CHUNK_THRESHOLD <= CHUNK_THRESHOLD && CHUNK_THRESHOLD <= MAX_CHUNK_THRESHOLD
+            )
+        };
+    }
+
+    #[test]
+    fn configured_chunk_threshold_decides_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(dir.path()).with_chunk_threshold(MIN_CHUNK_THRESHOLD);
+        let at = noise(MIN_CHUNK_THRESHOLD as usize);
+        assert_eq!(store.put_file(&at).unwrap(), (hash_bytes(&at), false));
+        let above = noise(3 * 1024 * 1024);
+        let (h, chunked) = store.put_file(&above).unwrap();
+        assert!(chunked, "3 MiB > 1 MiB threshold");
+        assert_eq!(h, file_hash_as(&above, true));
+        assert_eq!(
+            store
+                .read_entry(&entry("f", h, above.len() as u64, true))
+                .unwrap(),
+            above
+        );
+        // The default threshold stores the same content as one blob.
+        assert_eq!(file_hash(&above), (hash_bytes(&above), false));
+        assert_eq!(file_hash_as(&above, false), hash_bytes(&above));
+    }
+
+    #[test]
+    fn prepare_entry_keeps_the_form_of_unchanged_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = noise(3 * 1024 * 1024);
+        let mut modified = data.clone();
+        modified[100] ^= 1;
+        let len = data.len() as u64;
+        let blob = entry("f", hash_bytes(&data), len, false);
+        let chunks = entry("f", file_hash_as(&data, true), len, true);
+
+        // Threshold lowered below the file: the one-blob entry stays a blob
+        // while the content is unchanged; changed or new content is chunked.
+        let low = ObjectStore::open(dir.path()).with_chunk_threshold(MIN_CHUNK_THRESHOLD);
+        let p = low.prepare_entry(&data, Some(&blob));
+        assert_eq!((p.hash, p.chunked), (blob.hash, false));
+        let p = low.prepare_entry(&modified, Some(&blob));
+        assert_eq!((p.hash, p.chunked), (file_hash_as(&modified, true), true));
+        let p = low.prepare_entry(&data, None);
+        assert_eq!((p.hash, p.chunked), (chunks.hash, true));
+
+        // Threshold raised above the file: the chunked entry stays chunked
+        // while the content is unchanged; changed or new content is a blob.
+        let high = ObjectStore::open(dir.path()).with_chunk_threshold(MAX_CHUNK_THRESHOLD);
+        let p = high.prepare_entry(&data, Some(&chunks));
+        assert_eq!((p.hash, p.chunked), (chunks.hash, true));
+        high.put_prepared(&p, &data).unwrap();
+        assert_eq!(high.read_entry(&chunks).unwrap(), data);
+        let p = high.prepare_entry(&modified, Some(&chunks));
+        assert_eq!((p.hash, p.chunked), (hash_bytes(&modified), false));
+        let p = high.prepare_entry(&data, None);
+        assert_eq!((p.hash, p.chunked), (blob.hash, false));
+
+        // An entry of another size is never matched.
+        let other = entry("f", chunks.hash, len + 1, true);
+        assert!(!high.prepare_entry(&data, Some(&other)).chunked);
     }
 
     #[test]

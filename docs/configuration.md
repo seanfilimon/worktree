@@ -59,11 +59,47 @@ Dotted keys are what `wt config get|set` accept.
 | `sync.remote` | string | `origin` | Remote used by the daemon. |
 | `remote.<name>.url` | string | — | Server base URL, e.g. `http://localhost:7420`. gRPC and REST share it. |
 | `remote.<name>.tenant` | string | — | Tenant slug that owns this worktree's trees on the server. |
+| `storage.chunk_threshold` | size | `8MiB` (8388608) | New or modified files larger than this are stored as content-defined chunks. 1 MiB to 32 MiB; see [storage](#storage). |
 
 **Snapshot author.** New snapshots use `user.name <user.email>` when set, else the username logged in
 to the default remote's server, else the operating-system user.
 
 Remotes are normally managed with `wt remote add|remove`.
+
+### Storage
+
+```toml
+[storage]
+chunk_threshold = "16MiB"
+```
+
+`storage.chunk_threshold` is the large-file threshold: a new or modified file larger than this many
+bytes is stored as content-defined chunks instead of one blob (see
+[storage format](./storage-format.md#large-files)). Sizes are a number of bytes or a number with a
+unit (`KB`/`MB`/`GB` = powers of 1000, `KiB`/`MiB`/`GiB` = powers of 1024). Values outside
+**1 MiB to 32 MiB** are rejected — by `wt config set` with an error naming the key and the range,
+and in a hand-edited file when the worktree is opened (`wt doctor` reports it). The upper bound
+keeps every single-blob file well below the 64 MiB per-object limit of the sync protocol. The
+key exists only in `.wt/config.toml`: `--global` and `--tree` of a nested tree refuse it.
+
+```bash
+wt config set storage.chunk_threshold 16MiB    # stored as 16777216
+wt config get storage.chunk_threshold          # 16777216
+wt config unset storage.chunk_threshold        # back to 8 MiB
+```
+
+Changing the threshold never rewrites history and never makes an unchanged file look modified:
+a file whose content equals its last snapshotted version keeps the form it was recorded in
+(chunked or one blob), so `wt status` and `wt diff` stay clean. Only files you add or change
+afterwards use the new value. Chunk sizes (256 KiB minimum, ~1 MiB average, 4 MiB maximum) are
+fixed: they are part of the storage format, and changing them would re-chunk every modified large
+file and stop deduplication against earlier versions.
+
+Keep the setting the same in every clone of a tree: the same content stored under different
+thresholds has different entry hashes, so two clones adding the same file would see different
+versions of it. Lowering the threshold below 8 MiB makes more files chunked; the server's
+merge-request merge reports a both-sides change to a chunked file as a conflict instead of merging
+it as text, and server code search skips chunked files.
 
 ### Per-tree configuration
 

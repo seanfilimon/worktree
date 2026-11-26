@@ -189,10 +189,12 @@ impl Repository {
             let wt = dir.join(WT_DIR);
             if wt.is_dir() {
                 let config = WorktreeConfig::load(&wt.join("config.toml"))?;
+                let store = ObjectStore::open(wt.join("objects"))
+                    .with_chunk_threshold(config.storage.chunk_threshold);
                 let mut repo = Repository {
                     root: dir.to_path_buf(),
                     config,
-                    store: ObjectStore::open(wt.join("objects")),
+                    store,
                 };
                 // sparse (§15.4): partial clones download missing content on demand.
                 repo.install_lazy_fetcher();
@@ -221,6 +223,10 @@ impl Repository {
     /// Replace and persist the config.
     pub fn set_config(&mut self, config: WorktreeConfig) -> Result<()> {
         config.save(&self.wt_dir().join("config.toml"))?;
+        self.store = self
+            .store
+            .clone()
+            .with_chunk_threshold(config.storage.chunk_threshold);
         self.config = config;
         Ok(())
     }

@@ -14,7 +14,7 @@ use super::{fsutil, names, Repository, TREE_MARKER_DIR};
 use crate::error::{Result, SdkError};
 use crate::model::{is_shared_tree_config_path, validate_manifest_path, Manifest, ManifestEntry};
 use crate::scan::SecretFinding;
-use crate::store::{hash_bytes, prepare_file, ObjectHash};
+use crate::store::ObjectHash;
 
 /// Version 2 added `chunked` (large files hash to a chunk list).
 const INDEX_VERSION: u32 = 2;
@@ -202,7 +202,12 @@ impl Repository {
                 .filter(|(h, _)| !store || self.store.has(h));
             let needs_read = match cached {
                 None => true,
-                Some((h, _)) => scan && head_entry.is_none_or(|e| e.hash != h),
+                // A changed file is re-read for the secret scan, and when its
+                // cached form no longer matches `[storage] chunk_threshold`.
+                Some((h, chunked)) => {
+                    head_entry.is_none_or(|e| e.hash != h)
+                        && (scan || chunked != self.store.stores_chunked(file.size))
+                }
             };
             let (hash, size, chunked) = match (cached, needs_read) {
                 (Some((h, chunked)), false) => (h, file.size, chunked),
@@ -214,18 +219,10 @@ impl Repository {
                         Err(e) => return Err(e.into()),
                     };
                     // Large files hash to a chunk list (ENGINEERING_PLAN
-                    // §13.2). A large file recorded as a single blob (before
-                    // chunking existed, or by an importer) keeps that form
-                    // while its content is unchanged.
-                    let prepared = prepare_file(&data);
-                    let legacy = prepared.chunked
-                        && head_entry.is_some_and(|e| {
-                            !e.chunked && e.size == data.len() as u64 && e.hash == hash_bytes(&data)
-                        });
-                    let (hash, chunked) = match head_entry {
-                        Some(e) if legacy => (e.hash, false),
-                        _ => (prepared.hash, prepared.chunked),
-                    };
+                    // §13.2). Unchanged content keeps its head entry's form
+                    // (chunked or one blob) whatever the threshold says now.
+                    let prepared = self.store.prepare_entry(&data, head_entry);
+                    let (hash, chunked) = (prepared.hash, prepared.chunked);
                     let changed = head_entry.is_none_or(|e| e.hash != hash);
                     let mut clean = true;
                     if let Some(scanner) = scanner.as_ref().filter(|_| changed) {
@@ -245,11 +242,7 @@ impl Repository {
                         }
                     }
                     if store && clean {
-                        if legacy {
-                            self.store.put_hashed(&hash, &data)?;
-                        } else {
-                            self.store.put_prepared(&prepared, &data)?;
-                        }
+                        self.store.put_prepared(&prepared, &data)?;
                     }
                     (hash, data.len() as u64, chunked)
                 }
@@ -619,6 +612,7 @@ impl Walker<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::hash_bytes;
 
     #[test]
     fn tree_relative_paths() {

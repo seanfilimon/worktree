@@ -32,7 +32,7 @@ use super::trees::TreeRecord;
 use super::{fsutil, names, Repository};
 use crate::error::{Result, SdkError};
 use crate::model::ManifestEntry;
-use crate::store::{file_hash, hash_bytes, ObjectFetcher};
+use crate::store::{file_hash_as, ObjectFetcher};
 
 const SPARSE_FILE: &str = "sparse";
 const PARTIAL_FILE: &str = "partial";
@@ -526,8 +526,9 @@ fn unmodified(abs: &Path, entry: &ManifestEntry) -> Result<bool> {
     if data.len() as u64 != entry.size {
         return Ok(false);
     }
-    // A large file may be recorded either chunked or (legacy) as one blob.
-    Ok(file_hash(&data).0 == entry.hash || hash_bytes(&data) == entry.hash)
+    // Compare in the entry's own form: it may be chunked or one blob
+    // whatever the size (`[storage] chunk_threshold`, legacy entries).
+    Ok(file_hash_as(&data, entry.chunked) == entry.hash)
 }
 
 /// `rel` (root-relative) relative to the tree directory `tree_path`.
