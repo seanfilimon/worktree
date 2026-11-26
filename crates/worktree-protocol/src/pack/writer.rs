@@ -106,25 +106,52 @@ impl<W: Write> PackWriter<W> {
         if self.depths.contains_key(&hash) {
             return Ok(false);
         }
-        self.stats.entries += 1;
-        self.stats.object_bytes += data.len() as u64;
-        if let Some((base_hash, base_data)) = base.filter(|(b, _)| self.opts.deltas && **b != hash)
-        {
-            let depth = self.depths.get(base_hash).copied().unwrap_or(0);
-            if depth < MAX_DELTA_DEPTH
-                && data.len() >= delta::BLOCK
-                && base_data.len() <= MAX_DELTA_BASE
-            {
-                let d = delta::encode(base_data, data);
-                if delta_pays_off(d.len(), data.len()) {
-                    self.entry(TYPE_DELTA, kind, &hash, Some(base_hash), data.len(), &d)?;
-                    self.depths.insert(hash, depth + 1);
-                    self.stats.deltas += 1;
-                    return Ok(true);
-                }
+        let opts = self.opts;
+        let delta = match base {
+            Some((base_hash, base_data)) if self.depth_allows(base_hash) => {
+                delta_candidate(&opts, &hash, data, base_hash, base_data)?.map(|p| (base_hash, p))
             }
+            _ => None,
+        };
+        self.add_encoded(hash, kind, data.len(), delta, || {
+            Payload::encode(&opts, data)
+        })
+    }
+
+    /// Whether a delta against `base` keeps the chain within
+    /// [`MAX_DELTA_DEPTH`].
+    fn depth_allows(&self, base: &Hash) -> bool {
+        self.depths.get(base).copied().unwrap_or(0) < MAX_DELTA_DEPTH
+    }
+
+    /// [`PackWriter::add`] with payloads prepared ahead of time (for
+    /// example on worker threads, see [`delta_candidate`] and
+    /// [`Payload::encode`]). `size` is the object's size; `delta` is the
+    /// candidate delta against a base (written when the chain depth allows
+    /// it), `whole` produces the whole payload otherwise. The output is
+    /// byte-identical to [`PackWriter::add`] given the same inputs.
+    pub fn add_encoded(
+        &mut self,
+        hash: Hash,
+        kind: u8,
+        size: usize,
+        delta: Option<(&Hash, Payload)>,
+        whole: impl FnOnce() -> io::Result<Payload>,
+    ) -> io::Result<bool> {
+        if self.depths.contains_key(&hash) {
+            return Ok(false);
         }
-        self.entry(TYPE_WHOLE, kind, &hash, None, data.len(), data)?;
+        self.stats.entries += 1;
+        self.stats.object_bytes += size as u64;
+        if let Some((base_hash, payload)) = delta.filter(|(b, _)| self.depth_allows(b)) {
+            let depth = self.depths.get(base_hash).copied().unwrap_or(0);
+            self.entry(TYPE_DELTA, kind, &hash, Some(base_hash), size, &payload)?;
+            self.depths.insert(hash, depth + 1);
+            self.stats.deltas += 1;
+            return Ok(true);
+        }
+        let payload = whole()?;
+        self.entry(TYPE_WHOLE, kind, &hash, None, size, &payload)?;
         self.depths.insert(hash, 0);
         Ok(false)
     }
@@ -136,29 +163,19 @@ impl<W: Write> PackWriter<W> {
         hash: &Hash,
         base: Option<&Hash>,
         size: usize,
-        raw: &[u8],
+        payload: &Payload,
     ) -> io::Result<()> {
-        let compressed = if self.opts.compress && raw.len() >= MIN_COMPRESS {
-            let z = zstd::bulk::compress(raw, self.opts.level)?;
-            (z.len() < raw.len()).then_some(z)
-        } else {
-            None
-        };
-        let (codec, payload) = match &compressed {
-            Some(z) => (CODEC_ZSTD, z.as_slice()),
-            None => (CODEC_RAW, raw),
-        };
         let mut head = Vec::with_capacity(3 + 64 + 30);
-        head.extend_from_slice(&[typ, kind, codec]);
+        head.extend_from_slice(&[typ, kind, payload.codec]);
         head.extend_from_slice(hash);
         if let Some(b) = base {
             head.extend_from_slice(b);
         }
         put_uvarint(&mut head, size as u64);
-        put_uvarint(&mut head, raw.len() as u64);
-        put_uvarint(&mut head, payload.len() as u64);
+        put_uvarint(&mut head, payload.raw_len as u64);
+        put_uvarint(&mut head, payload.bytes.len() as u64);
         self.emit(&head)?;
-        self.emit(payload)
+        self.emit(&payload.bytes)
     }
 
     /// Write the end marker and trailer; returns the sink and the stats.
@@ -170,4 +187,56 @@ impl<W: Write> PackWriter<W> {
         self.out.flush()?;
         Ok((self.out, self.stats))
     }
+}
+
+/// An entry payload as a [`PackWriter`] writes it: zstd-compressed when the
+/// options ask for it and that makes it smaller, raw otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Payload {
+    codec: u8,
+    raw_len: usize,
+    bytes: Vec<u8>,
+}
+
+impl Payload {
+    /// Encode `raw` (an object, or a delta) under `opts`.
+    pub fn encode(opts: &WriterOptions, raw: &[u8]) -> io::Result<Self> {
+        if opts.compress && raw.len() >= MIN_COMPRESS {
+            let z = zstd::bulk::compress(raw, opts.level)?;
+            if z.len() < raw.len() {
+                return Ok(Self {
+                    codec: CODEC_ZSTD,
+                    raw_len: raw.len(),
+                    bytes: z,
+                });
+            }
+        }
+        Ok(Self {
+            codec: CODEC_RAW,
+            raw_len: raw.len(),
+            bytes: raw.to_vec(),
+        })
+    }
+}
+
+/// The encoded delta of `data` against `base` if the writer would send it
+/// as a delta, chain depth aside (that is checked when the entry is added):
+/// deltas enabled, a distinct base within [`MAX_DELTA_BASE`], and a delta
+/// saving at least 25 %. Pure, so it can run on worker threads.
+pub fn delta_candidate(
+    opts: &WriterOptions,
+    hash: &Hash,
+    data: &[u8],
+    base_hash: &Hash,
+    base: &[u8],
+) -> io::Result<Option<Payload>> {
+    if !opts.deltas || base_hash == hash || data.len() < delta::BLOCK || base.len() > MAX_DELTA_BASE
+    {
+        return Ok(None);
+    }
+    let d = delta::encode(base, data);
+    if !delta_pays_off(d.len(), data.len()) {
+        return Ok(None);
+    }
+    Payload::encode(opts, &d).map(Some)
 }

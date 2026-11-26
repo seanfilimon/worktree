@@ -24,7 +24,20 @@ impl ContentHash {
 
     /// Encode the hash as a lowercase hexadecimal string.
     pub fn to_hex(&self) -> String {
-        self.to_string()
+        let buf = self.hex_bytes();
+        // Every byte is an ASCII hex digit.
+        String::from_utf8(buf.to_vec()).expect("hex is ASCII")
+    }
+
+    /// The 64 lowercase hex digits, without allocating.
+    fn hex_bytes(&self) -> [u8; 64] {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut out = [0u8; 64];
+        for (pair, byte) in out.as_chunks_mut::<2>().0.iter_mut().zip(&self.0) {
+            pair[0] = DIGITS[(byte >> 4) as usize];
+            pair[1] = DIGITS[(byte & 0x0f) as usize];
+        }
+        out
     }
 
     /// Parse a 64-character hex string (case-insensitive).
@@ -87,10 +100,8 @@ impl Default for ContentHash {
 
 impl fmt::Display for ContentHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in &self.0 {
-            write!(f, "{:02x}", byte)?;
-        }
-        Ok(())
+        let buf = self.hex_bytes();
+        f.write_str(std::str::from_utf8(&buf).expect("hex is ASCII"))
     }
 }
 
@@ -148,8 +159,23 @@ impl<'de> Deserialize<'de> for ContentHash {
         D: Deserializer<'de>,
     {
         if deserializer.is_human_readable() {
-            let s = String::deserialize(deserializer)?;
-            ContentHash::from_str(&s).map_err(serde::de::Error::custom)
+            // Borrow the string when the format allows it (no allocation
+            // per hash when loading large JSON documents such as the index).
+            struct HexVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for HexVisitor {
+                type Value = ContentHash;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a 64-character hex string")
+                }
+
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ContentHash, E> {
+                    ContentHash::from_str(v).map_err(E::custom)
+                }
+            }
+
+            deserializer.deserialize_str(HexVisitor)
         } else {
             struct BytesVisitor;
 
