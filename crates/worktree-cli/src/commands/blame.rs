@@ -28,7 +28,7 @@ pub struct BlameArgs {
     pub path: PathBuf,
 
     /// Blame the file as of this revision (default: HEAD)
-    #[arg(long, value_name = "REV")]
+    #[arg(long, value_name = "REV", add = crate::complete::rev())]
     pub rev: Option<String>,
 
     /// Only these lines: `START,END`, `START,+COUNT`, `START,` or `START`

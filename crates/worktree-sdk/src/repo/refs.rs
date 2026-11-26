@@ -60,6 +60,23 @@ impl Repository {
         Ok(out)
     }
 
+    /// Every branch name of `tree` with its archived flag, sorted by name.
+    ///
+    /// Reads only the ref directory and `branches.meta.json` — no tips, no
+    /// lock — so it stays fast on trees with many branches (shell
+    /// completion). `TreeNotFound` if the tree does not exist.
+    pub fn branch_names(&self, tree: &str) -> Result<Vec<(String, bool)>> {
+        self.load_tree(tree)?;
+        let meta = self.branch_meta(tree)?;
+        Ok(list_ref_files(&self.branches_dir(tree), "")?
+            .into_iter()
+            .map(|name| {
+                let archived = meta.get(&name).is_some_and(|m| m.archived);
+                (name, archived)
+            })
+            .collect())
+    }
+
     /// The branch `HEAD` points at.
     pub fn current_branch(&self, tree: &str) -> Result<String> {
         self.load_tree(tree)?;
@@ -246,6 +263,13 @@ impl Repository {
         Ok(out)
     }
 
+    /// Every remote-tracking ref of `tree` as `REMOTE/BRANCH` (the revision
+    /// spelling), sorted. Reads only the ref directories (no tips, no lock).
+    pub fn remote_branch_names(&self, tree: &str) -> Result<Vec<String>> {
+        self.load_tree(tree)?;
+        list_ref_files(&self.remotes_dir(tree), "")
+    }
+
     // ----------------------------------------------------------------
     // Tags
     // ----------------------------------------------------------------
@@ -298,6 +322,13 @@ impl Repository {
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+
+    /// Every tag name of a tree, sorted. Reads only the tag directory (no
+    /// tag records, no lock), for fast listings such as shell completion.
+    pub fn tag_names(&self, tree: &str) -> Result<Vec<String>> {
+        self.load_tree(tree)?;
+        list_ref_files(&self.tags_dir(tree), ".json")
     }
 
     /// Delete a tag; `TagNotFound` if absent. The tagged snapshot is kept.

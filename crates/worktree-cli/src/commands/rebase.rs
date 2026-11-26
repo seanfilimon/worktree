@@ -29,7 +29,7 @@ and working tree to their state before the rebase)."
 )]
 pub struct RebaseArgs {
     /// Revision to replay the branch onto (branch, origin/BRANCH, id, ...)
-    #[arg(value_name = "ONTO")]
+    #[arg(value_name = "ONTO", add = crate::complete::rev())]
     pub onto: Option<String>,
 
     /// Rewrite snapshots even if they were already pushed

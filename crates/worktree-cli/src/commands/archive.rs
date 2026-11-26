@@ -24,7 +24,7 @@ use crate::output::format::plural;
 #[derive(Debug, Args)]
 pub struct ArchiveArgs {
     /// Snapshot to archive (default: HEAD)
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub rev: Option<String>,
 
     /// Archive file to write

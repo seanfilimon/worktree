@@ -24,7 +24,7 @@ pub struct LogArgs {
     pub max_count: Option<usize>,
 
     /// Start from this revision (default: HEAD)
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub rev: Option<String>,
 
     /// One snapshot per line
@@ -39,7 +39,7 @@ pub struct LogArgs {
 #[derive(Debug, Args)]
 pub struct ShowArgs {
     /// Snapshot to show
-    #[arg(value_name = "REV")]
+    #[arg(value_name = "REV", add = crate::complete::rev())]
     pub rev: String,
 
     /// Show a diffstat instead of the patch
@@ -58,7 +58,7 @@ pub struct ReflogArgs {
     pub max_count: Option<usize>,
 
     /// Only entries of this branch (numbered as `BRANCH@{N}`)
-    #[arg(short, long, value_name = "BRANCH")]
+    #[arg(short, long, value_name = "BRANCH", add = crate::complete::branch())]
     pub branch: Option<String>,
 }
 

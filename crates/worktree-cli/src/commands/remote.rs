@@ -30,7 +30,10 @@ pub enum RemoteCommand {
         tenant: String,
     },
     /// Remove a remote
-    Remove { name: String },
+    Remove {
+        #[arg(add = crate::complete::remote())]
+        name: String,
+    },
 }
 
 #[derive(Serialize)]
