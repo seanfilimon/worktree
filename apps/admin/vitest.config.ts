@@ -14,5 +14,7 @@ export default defineConfig({
     restoreMocks: true,
     unstubGlobals: true,
     css: false,
+    // Whole-app renders under load: see asyncUtilTimeout in src/test/setup.ts.
+    testTimeout: 30_000,
   },
 });

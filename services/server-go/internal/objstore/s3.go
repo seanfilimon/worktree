@@ -221,14 +221,23 @@ func (s *S3Store) Put(ctx context.Context, h hash.Hash, data []byte) error {
 	if hash.Sum(data) != h {
 		return ErrHashMismatch
 	}
+	_, err := s.PutVerified(ctx, h, data)
+	return err
+}
+
+// PutVerified implements VerifiedPutter: Put without re-hashing data.
+func (s *S3Store) PutVerified(ctx context.Context, h hash.Hash, data []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if exists, err := s.Has(ctx, h); err != nil {
-		return err
+		return false, err
 	} else if exists {
-		return nil
+		return false, nil
 	}
 	stored, err := EncodeObject(data, s.compress)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Single PUT (objects are at most 64 MiB on the wire); a plain body
 	// with a Content-MD5 works with every S3 implementation. Concurrent
@@ -241,11 +250,11 @@ func (s *S3Store) Put(ctx context.Context, h hash.Hash, data []byte) error {
 	})
 	if err != nil {
 		if cerr := ctxErr(ctx, err); cerr != nil {
-			return cerr
+			return false, cerr
 		}
-		return fmt.Errorf("objstore: s3: put %s: %w", h, err)
+		return false, fmt.Errorf("objstore: s3: put %s: %w", h, err)
 	}
-	return nil
+	return true, nil
 }
 
 // Get implements Store.Get.

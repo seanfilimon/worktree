@@ -23,6 +23,7 @@ import (
 	"github.com/seanfilimon/worktree/services/server-go/internal/domain"
 	"github.com/seanfilimon/worktree/services/server-go/internal/hash"
 	"github.com/seanfilimon/worktree/services/server-go/internal/limits"
+	"github.com/seanfilimon/worktree/services/server-go/internal/objstore"
 	"github.com/seanfilimon/worktree/services/server-go/internal/opsmetrics"
 	"github.com/seanfilimon/worktree/services/server-go/internal/proto/syncpb"
 )
@@ -506,7 +507,8 @@ func (s *Service) ingestPack(ctx context.Context, p *domain.Principal, tree *dom
 		go func() {
 			defer wg.Done()
 			for obj := range jobs {
-				stored, ok, err := s.storeObject(ctx, &syncpb.ObjectData{Hash: hashToPB(obj.Hash), Kind: syncpb.ObjectKind(obj.Kind), Data: obj.Data})
+				// The pack reader verified obj.Data against obj.Hash.
+				stored, ok, err := s.storeVerified(ctx, obj.Hash, syncpb.ObjectKind(obj.Kind), obj.Data)
 				mu.Lock()
 				delete(pending, obj.Hash)
 				switch {
@@ -584,6 +586,10 @@ func (s *Service) ingestPack(ctx context.Context, p *domain.Principal, tree *dom
 	if storeErr != nil {
 		return nil, storeErr
 	}
+	// One durability flush for the whole pack (objstore.BatchPutter).
+	if err := objstore.Flush(ctx, s.d.Objects); err != nil {
+		return nil, s.toStatus(ctx, err, "object store")
+	}
 	countPack("upload", pr.consumed, objectBytes, deltas)
 	return resp, nil
 }
@@ -592,7 +598,7 @@ func (s *Service) ingestPack(ctx context.Context, p *domain.Principal, tree *dom
 const packStoreWorkers = 8
 
 // scanPackBases reads the whole pack once (framing, depth and trailer
-// checks) and returns the delta bases that are not entries of the pack.
+// checks, without decoding payloads) and returns the delta bases that are not entries of the pack.
 func scanPackBases(path string) ([]hash.Hash, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -603,6 +609,9 @@ func scanPackBases(path string) ([]hash.Hash, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Only the bases are needed here: payloads are decoded and object
+	// hashes verified once, by the ingest pass that stores them.
+	pr.framingOnly = true
 	seen := make(map[hash.Hash]struct{})
 	ext := make(map[hash.Hash]struct{})
 	var out []hash.Hash

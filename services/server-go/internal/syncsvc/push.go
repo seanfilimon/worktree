@@ -174,8 +174,19 @@ func (s *Service) pushOnce(ctx context.Context, req *syncpb.PushRequest) (*syncp
 	for _, snap := range pl.newSnaps {
 		snap.PushedBy = p.AccountID
 		snap.PushedAt = now
-		if err := s.putSnapshot(ctx, snap); err != nil {
-			return nil, err
+	}
+	// One metadata transaction for all of them when the store can (a push
+	// of N snapshots otherwise commits, and fsyncs, N times). Any refusal
+	// falls back to one at a time, which reports the exact conflict.
+	batched := false
+	if bs, ok := s.d.Store.(snapshotBatchStore); ok && len(pl.newSnaps) > 1 {
+		batched = bs.PutSnapshots(ctx, pl.newSnaps) == nil
+	}
+	if !batched {
+		for _, snap := range pl.newSnaps {
+			if err := s.putSnapshot(ctx, snap); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := s.d.Store.CompareAndSwapBranchTip(ctx, t.ID, branch, serverTip, newTip); err != nil {
@@ -671,6 +682,12 @@ func diffManifests(a, b *syncpb.ManifestRecord) []string {
 
 // putSnapshot stores snap, treating a concurrent identical write (which
 // differs only in push metadata) as success.
+// snapshotBatchStore is implemented by metadata stores that can persist
+// several snapshots atomically (meta.Bolt).
+type snapshotBatchStore interface {
+	PutSnapshots(ctx context.Context, snaps []*domain.Snapshot) error
+}
+
 func (s *Service) putSnapshot(ctx context.Context, snap *domain.Snapshot) error {
 	err := s.d.Store.PutSnapshot(ctx, snap)
 	if err == nil {

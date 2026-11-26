@@ -54,14 +54,14 @@ Rows marked *Roadmap* are specified in [`crates/worktree-protocol/specs/`](./cra
 | Collaboration | Invisible until push | Staged snapshots (`wt stage`, `wt status --team`), live server events over SSE |
 | Identity | Unverified name + email | Server accounts, argon2id passwords, `wt_` bearer tokens |
 | Access control | None | Built-in role matrix (viewer → owner), visibility, branch protection, merge requests |
-| Declarative policies (RBAC + ABAC in TOML) | None | *Roadmap* (access-config documents are stored but not evaluated) |
+| Declarative policies (RBAC + ABAC) | None | Policies with allow/deny statements, attribute conditions, custom roles and an access simulator, evaluated by the server |
 | License tracking | None | Per-path SPDX rules enforced on push |
-| Large files | Git LFS | Stored as whole blobs today; FastCDC chunking and lazy loading are *Roadmap* |
+| Large files | Git LFS | Files above 8 MiB are stored as content-defined chunks (FastCDC); partial clones fetch content on demand. A virtual file system (FUSE/ProjFS) is *Roadmap* |
 | Auto-snapshots | None | `worktree-bg` daemon snapshots on inactivity and stages work automatically |
 | Submodules | Separate system | Nested trees with independent branches |
-| Recovery | Local reflog that expires | Local append-only reflog; server-synced reflog is *Roadmap* |
+| Recovery | Local reflog that expires | Local append-only reflog and `wt undo`; the server keeps a branch reflog (restoring from it with the CLI is *Roadmap*) |
 | Monitoring | None | `/healthz`, Prometheus `/metrics`, append-only audit log, admin panel |
-| Transport security | SSH/HTTPS | Cleartext h2c on one port — terminate TLS in front of the server; native TLS/QUIC and Ed25519 signing are *Roadmap* |
+| Transport security | SSH/HTTPS | Cleartext h2c by default, or native TLS / mutual TLS (`--tls-cert`, `--tls-key`, `--tls-client-ca`); Ed25519 snapshot signing. QUIC is *Roadmap* |
 
 ---
 
@@ -255,7 +255,7 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 | Wire protocol | `crates/worktree-protocol/proto/sync.proto` | v2 | `SyncService` (13 RPCs), object/snapshot records, push rejections |
 | SDK — local engine | `crates/worktree-sdk` | v2 | `.wt/` layout, object store, snapshots, branches, tags, merge (diff3), revert, restore, reflog, ignore, nested trees |
 | SDK — remote client | `crates/worktree-sdk/src/remote` | v2 | login/register, push, fetch, pull, clone, stage, list staged |
-| SDK — scanning | `crates/worktree-sdk/src/scan.rs` | v2 | Secret scanning (pre-snapshot), SPDX detection, FastCDC boundaries (not yet used for storage) |
+| SDK — scanning | `crates/worktree-sdk/src/scan.rs` | v2 | Secret scanning (pre-snapshot), SPDX detection, FastCDC boundaries (used for files above 8 MiB) |
 | CLI `wt` | `crates/worktree-cli` | v2 | 29 top-level commands, `--json` output, exit codes 0/1/2/3 |
 | Daemon `worktree-bg` | `crates/worktree-bg` | v2 | File watching, debounced auto-snapshots, auto-stage, JSON/TCP IPC |
 | Git bridge | `crates/worktree-git` | v2 | `wt git import` / `wt git export` with deterministic, incremental mapping |
@@ -266,15 +266,16 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 
 ### Roadmap (specified, not implemented)
 
-- Declarative TOML access policies (RBAC + ABAC), custom roles and `.wt-tree/` permission ceilings
-  ([IAM spec](./crates/worktree-protocol/specs/iam/IAM.md)).
-- Large-file chunked storage and lazy loading via FUSE/ProjFS ([Storage spec](./crates/worktree-protocol/specs/storage/Storage.md)).
-- QUIC transport, native TLS, Ed25519 snapshot signing, encryption at rest ([Security spec](./crates/worktree-protocol/specs/security/Security.md)).
-- Tree/branch/snapshot dependencies and auto-generated TODO branches ([Tree spec](./crates/worktree-protocol/specs/tree/Tree.md)).
-- Releases, CI check gates and tenant quotas (the `CiChecksFailed` / `QuotaExceeded` rejections are
-  reserved in the protocol).
-- Live Git mirroring and a Git remote helper.
-- Server-synced reflog and offline sync queue.
+- Symbolic links (manifests carry regular files only; `wt git import` skips symlinks with a warning).
+- Git submodule mapping, Git LFS content import and Git signature preservation
+  ([Git compatibility](./docs/git-compatibility.md)).
+- A Git remote helper / serving the Git protocol, and pull mirrors (push mirrors exist).
+- Lazy loading through a virtual file system (FUSE/ProjFS) ([Storage spec](./crates/worktree-protocol/specs/storage/Storage.md)).
+- Restoring from the server reflog with the CLI, and undoing a push.
+- QUIC transport, encryption at rest and OS keychain credential storage
+  ([Security spec](./crates/worktree-protocol/specs/security/Security.md)).
+- Interactive rebase and more client hook phases (only `pre-snapshot` / `post-snapshot` exist).
+- A CI runner (CI status reporting and merge gates exist).
 
 ---
 

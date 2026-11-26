@@ -45,6 +45,59 @@ type Store interface {
 	Delete(ctx context.Context, h hash.Hash) error
 }
 
+// VerifiedPutter is an optional interface implemented by stores that can
+// persist data whose hash the caller has already verified, skipping the
+// re-hash and reporting whether the object was newly stored.
+type VerifiedPutter interface {
+	// PutVerified stores data under h, which the caller guarantees is
+	// hash.Sum(data). stored is false when the object already existed.
+	PutVerified(ctx context.Context, h hash.Hash, data []byte) (stored bool, err error)
+}
+
+// PutVerified stores data (already verified to hash to h) in s with one
+// existence check, through [VerifiedPutter] when s implements it. stored
+// reports whether the object was newly written.
+func PutVerified(ctx context.Context, s Store, h hash.Hash, data []byte) (stored bool, err error) {
+	if vp, ok := s.(VerifiedPutter); ok {
+		return vp.PutVerified(ctx, h, data)
+	}
+	exists, err := s.Has(ctx, h)
+	if err != nil || exists {
+		return false, err
+	}
+	return true, s.Put(ctx, h, data)
+}
+
+// BatchPutter is an optional interface implemented by stores that can
+// share the expensive part of durability between many objects: a caller
+// stores a batch with PutDeferred and calls Flush once before it tells
+// anyone the objects are stored.
+type BatchPutter interface {
+	// PutDeferred is PutVerified, except that the object is only
+	// guaranteed to survive a crash after the next successful Flush.
+	PutDeferred(ctx context.Context, h hash.Hash, data []byte) (stored bool, err error)
+	// Flush makes every object stored before the call durable.
+	Flush(ctx context.Context) error
+}
+
+// PutDeferred stores verified data through [BatchPutter] when s implements
+// it, else durably with [PutVerified]. Callers must call [Flush] before
+// acknowledging the objects.
+func PutDeferred(ctx context.Context, s Store, h hash.Hash, data []byte) (stored bool, err error) {
+	if bp, ok := s.(BatchPutter); ok {
+		return bp.PutDeferred(ctx, h, data)
+	}
+	return PutVerified(ctx, s, h, data)
+}
+
+// Flush completes the durability of objects stored with [PutDeferred].
+func Flush(ctx context.Context, s Store) error {
+	if bp, ok := s.(BatchPutter); ok {
+		return bp.Flush(ctx)
+	}
+	return nil
+}
+
 // StatStore is an optional interface implemented by stores that can report
 // aggregate usage (e.g. for the admin stats endpoint). Callers should
 // type-assert a [Store] to StatStore and degrade gracefully if it is not

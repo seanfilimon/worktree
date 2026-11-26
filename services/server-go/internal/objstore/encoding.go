@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
@@ -48,7 +49,11 @@ func codec() (*zstd.Encoder, *zstd.Decoder, error) {
 	codecOnce.Do(func() {
 		encoder, codecErr = zstd.NewWriter(nil,
 			zstd.WithEncoderLevel(zstd.SpeedDefault),
-			zstd.WithEncoderConcurrency(1))
+			// EncodeAll borrows one of `concurrency` encoders and blocks
+			// while all are busy: with 1, every object compression in the
+			// process (upload streams, pack ingest workers, downloads)
+			// ran one at a time.
+			zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
 		if codecErr != nil {
 			return
 		}

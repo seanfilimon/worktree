@@ -6,10 +6,14 @@ import { createApi } from "@/api/endpoints";
 import { createPersistentValue, TOKEN_STORAGE_KEY } from "@/api/storage";
 import { AppProviders } from "@/app/AppProviders";
 import { createQueryClient } from "@/app/queryClient";
-import { routes } from "@/app/routes";
+import { preloadRoutes, routes } from "@/app/routes";
 import { createToastStore } from "@/toast/store";
 import * as fx from "./fixtures";
 import { mockFetch, type MockRoute } from "./mockFetch";
+
+// Pages are code-split (app/routes.tsx); load them all up front, as the app
+// does in the background, so navigation in tests is not waiting on imports.
+await preloadRoutes();
 
 interface RenderAppOptions {
   /** Initial URL. */

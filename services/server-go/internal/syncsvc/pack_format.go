@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/zeebo/blake3"
@@ -230,7 +231,9 @@ func applyDelta(base, delta []byte, maxOut uint64) ([]byte, error) {
 // ---- zstd ----
 
 var (
-	packEncoder, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
+	// Concurrency: EncodeAll blocks while all encoders are busy, so with 1
+	// concurrent pack downloads compressed their entries one at a time.
+	packEncoder, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
 	packDecoder, _ = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(packMaxPayload))
 )
 
@@ -370,6 +373,10 @@ type packReader struct {
 	consumed int64
 	depth    map[hash.Hash]uint8
 	done     bool
+	// framingOnly skips decoding payloads and verifying object hashes:
+	// entries come back with Hash, Kind and Base only. Framing, sizes,
+	// delta depth and the trailer are still checked.
+	framingOnly bool
 }
 
 func packReadErr(err error) error {
@@ -493,9 +500,20 @@ func (pr *packReader) next(lookup func(hash.Hash) ([]byte, bool)) (*packObject, 
 	case codec == packCodecRaw && payLen != rawLen:
 		return nil, packCorrupt("raw payload length mismatch")
 	}
+	var depth uint8
+	if obj.Base != nil {
+		depth = pr.depth[*obj.Base] + 1
+	}
+	if depth > PackMaxDeltaDepth {
+		return nil, packCorrupt("delta chain deeper than %d", PackMaxDeltaDepth)
+	}
 	payload := make([]byte, payLen)
 	if err := pr.fill(payload); err != nil {
 		return nil, err
+	}
+	pr.depth[obj.Hash] = depth
+	if pr.framingOnly {
+		return obj, nil
 	}
 	raw := payload
 	if codec == packCodecZstd {
@@ -508,15 +526,6 @@ func (pr *packReader) next(lookup func(hash.Hash) ([]byte, bool)) (*packObject, 
 		}
 		raw = out
 	}
-
-	var depth uint8
-	if obj.Base != nil {
-		depth = pr.depth[*obj.Base] + 1
-	}
-	if depth > PackMaxDeltaDepth {
-		return nil, packCorrupt("delta chain deeper than %d", PackMaxDeltaDepth)
-	}
-	pr.depth[obj.Hash] = depth
 
 	data := raw
 	if obj.Base != nil {
