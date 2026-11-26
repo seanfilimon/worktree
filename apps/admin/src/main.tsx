@@ -6,7 +6,7 @@ import { createApi } from "@/api/endpoints";
 import { createPersistentValue, REFRESH_STORAGE_KEY, TOKEN_STORAGE_KEY } from "@/api/storage";
 import { AppProviders } from "@/app/AppProviders";
 import { createQueryClient } from "@/app/queryClient";
-import { routes } from "@/app/routes";
+import { preloadRoutes, routes } from "@/app/routes";
 import { createToastStore } from "@/toast/store";
 import "./index.css";
 
@@ -32,3 +32,13 @@ createRoot(root).render(
     </AppProviders>
   </StrictMode>,
 );
+
+// Fetch the lazily split pages in the background once the first screen is
+// up, so navigating never waits for a chunk (the initial load stays small).
+const prefetch = () => {
+  void preloadRoutes().catch(() => {
+    // A failed prefetch is retried by the router when the page is visited.
+  });
+};
+if ("requestIdleCallback" in window) window.requestIdleCallback(prefetch, { timeout: 5000 });
+else setTimeout(prefetch, 1500);

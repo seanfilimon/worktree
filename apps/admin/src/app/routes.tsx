@@ -1,50 +1,32 @@
 import { Navigate, type RouteObject } from "react-router";
+import type { ComponentType } from "react";
 import { RequireAuth } from "@/auth/RequireAuth";
 import { AppLayout } from "@/components/AppLayout";
-import { AccountsPage } from "@/pages/AccountsPage";
-import { AuditPage } from "@/pages/AuditPage";
-import { SsoSettingsPage } from "@/pages/admin/SsoSettingsPage";
 import { InvitePage } from "@/pages/auth/InvitePage";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { RegisterPage } from "@/pages/auth/RegisterPage";
 import { ResetPasswordPage } from "@/pages/auth/ResetPasswordPage";
 import { DashboardPage } from "@/pages/DashboardPage";
-import { AccessSimulatorPage } from "@/pages/iam/AccessSimulatorPage";
-import { TreeAccessTab } from "@/pages/iam/TreeAccessTab";
 import { NotFoundPage } from "@/pages/NotFoundPage";
-import { OperationsPage } from "@/pages/OperationsPage";
-import { BackupsPage } from "@/pages/BackupsPage";
-import { CompliancePage } from "@/pages/CompliancePage";
-import { DevicePage } from "@/pages/DevicePage";
-import { ComplianceTab } from "@/pages/tree/ComplianceTab";
-import { ForksTab } from "@/pages/tree/ForksTab";
-import { ResolveConflictsPage } from "@/pages/tree/ResolveConflictsPage";
-import { TreeConfigTab } from "@/pages/tree/TreeConfigTab";
-import { NotificationsPage } from "@/pages/notifications/NotificationsPage";
-import { MirrorsTab } from "@/pages/tree/MirrorsTab";
-import { OwnersTab } from "@/pages/tree/OwnersTab";
-import { CodeSearchPage } from "@/pages/search/CodeSearchPage";
-import { SettingsPage } from "@/pages/SettingsPage";
-import { SystemPage } from "@/pages/SystemPage";
-import { TenantDetailPage } from "@/pages/tenants/TenantDetailPage";
-import { TenantsPage } from "@/pages/tenants/TenantsPage";
-import { BranchesTab } from "@/pages/tree/BranchesTab";
-import { CompareView } from "@/pages/tree/CompareView";
-import { FilesTab } from "@/pages/tree/FilesTab";
-import { HistoryTab } from "@/pages/tree/HistoryTab";
-import { LicensesTab } from "@/pages/tree/LicensesTab";
-import { MergeRequestDetail } from "@/pages/tree/MergeRequestDetail";
-import { MergeRequestsTab } from "@/pages/tree/MergeRequestsTab";
-import { OverviewTab } from "@/pages/tree/OverviewTab";
-import { ReleasesTab } from "@/pages/tree/ReleasesTab";
-import { ProtectionsTab } from "@/pages/tree/ProtectionsTab";
-import { SnapshotDetail } from "@/pages/tree/SnapshotDetail";
-import { StagedTab } from "@/pages/tree/StagedTab";
-import { TagsTab } from "@/pages/tree/TagsTab";
-import { TodosTab } from "@/pages/tree/TodosTab";
 import { TreeLayout } from "@/pages/tree/TreeLayout";
-import { TreeSettingsTab } from "@/pages/tree/TreeSettingsTab";
-import { TreesPage } from "@/pages/trees/TreesPage";
+
+/**
+ * Route-level code splitting: each page below has its own chunk, so the
+ * initial bundle only carries the shell, the auth pages and the dashboard.
+ * `preloadRoutes` fetches the rest once the app is idle (main.tsx), so
+ * later navigations do not wait for a download.
+ */
+const loaders: Array<() => Promise<unknown>> = [];
+
+function page<M extends Record<string, unknown>>(load: () => Promise<M>, name: keyof M & string) {
+  loaders.push(load);
+  return async () => ({ Component: (await load())[name] as ComponentType });
+}
+
+/** Load every lazily split page (resolves when all chunks are loaded). */
+export function preloadRoutes(): Promise<unknown[]> {
+  return Promise.all(loaders.map((load) => load()));
+}
 
 export const routes: RouteObject[] = [
   { path: "/login", element: <LoginPage /> },
@@ -59,50 +41,50 @@ export const routes: RouteObject[] = [
         element: <AppLayout />,
         children: [
           { index: true, element: <DashboardPage /> },
-          { path: "tenants", element: <TenantsPage /> },
-          { path: "tenants/:tenant", element: <TenantDetailPage /> },
-          { path: "trees", element: <TreesPage /> },
+          { path: "tenants", lazy: page(() => import("@/pages/tenants/TenantsPage"), "TenantsPage") },
+          { path: "tenants/:tenant", lazy: page(() => import("@/pages/tenants/TenantDetailPage"), "TenantDetailPage") },
+          { path: "trees", lazy: page(() => import("@/pages/trees/TreesPage"), "TreesPage") },
           {
             path: "trees/:tenant/:tree",
             element: <TreeLayout />,
             children: [
               { index: true, element: <Navigate to="overview" replace /> },
-              { path: "overview", element: <OverviewTab /> },
-              { path: "branches", element: <BranchesTab /> },
-              { path: "history", element: <HistoryTab /> },
-              { path: "snapshots/:id", element: <SnapshotDetail /> },
-              { path: "compare", element: <CompareView /> },
-              { path: "files", element: <FilesTab /> },
-              { path: "staged", element: <StagedTab /> },
-              { path: "tags", element: <TagsTab /> },
-              { path: "releases", element: <ReleasesTab /> },
-              { path: "todos", element: <TodosTab /> },
-              { path: "merge-requests", element: <MergeRequestsTab /> },
-              { path: "merge-requests/:number", element: <MergeRequestDetail /> },
-              { path: "merge-requests/:number/resolve", element: <ResolveConflictsPage /> },
-              { path: "protections", element: <ProtectionsTab /> },
-              { path: "licenses", element: <LicensesTab /> },
-              { path: "access", element: <TreeAccessTab /> },
-              { path: "owners", element: <OwnersTab /> },
-              { path: "mirrors", element: <MirrorsTab /> },
-              { path: "forks", element: <ForksTab /> },
-              { path: "config", element: <TreeConfigTab /> },
-              { path: "compliance", element: <ComplianceTab /> },
-              { path: "settings", element: <TreeSettingsTab /> },
+              { path: "overview", lazy: page(() => import("@/pages/tree/OverviewTab"), "OverviewTab") },
+              { path: "branches", lazy: page(() => import("@/pages/tree/BranchesTab"), "BranchesTab") },
+              { path: "history", lazy: page(() => import("@/pages/tree/HistoryTab"), "HistoryTab") },
+              { path: "snapshots/:id", lazy: page(() => import("@/pages/tree/SnapshotDetail"), "SnapshotDetail") },
+              { path: "compare", lazy: page(() => import("@/pages/tree/CompareView"), "CompareView") },
+              { path: "files", lazy: page(() => import("@/pages/tree/FilesTab"), "FilesTab") },
+              { path: "staged", lazy: page(() => import("@/pages/tree/StagedTab"), "StagedTab") },
+              { path: "tags", lazy: page(() => import("@/pages/tree/TagsTab"), "TagsTab") },
+              { path: "releases", lazy: page(() => import("@/pages/tree/ReleasesTab"), "ReleasesTab") },
+              { path: "todos", lazy: page(() => import("@/pages/tree/TodosTab"), "TodosTab") },
+              { path: "merge-requests", lazy: page(() => import("@/pages/tree/MergeRequestsTab"), "MergeRequestsTab") },
+              { path: "merge-requests/:number", lazy: page(() => import("@/pages/tree/MergeRequestDetail"), "MergeRequestDetail") },
+              { path: "merge-requests/:number/resolve", lazy: page(() => import("@/pages/tree/ResolveConflictsPage"), "ResolveConflictsPage") },
+              { path: "protections", lazy: page(() => import("@/pages/tree/ProtectionsTab"), "ProtectionsTab") },
+              { path: "licenses", lazy: page(() => import("@/pages/tree/LicensesTab"), "LicensesTab") },
+              { path: "access", lazy: page(() => import("@/pages/iam/TreeAccessTab"), "TreeAccessTab") },
+              { path: "owners", lazy: page(() => import("@/pages/tree/OwnersTab"), "OwnersTab") },
+              { path: "mirrors", lazy: page(() => import("@/pages/tree/MirrorsTab"), "MirrorsTab") },
+              { path: "forks", lazy: page(() => import("@/pages/tree/ForksTab"), "ForksTab") },
+              { path: "config", lazy: page(() => import("@/pages/tree/TreeConfigTab"), "TreeConfigTab") },
+              { path: "compliance", lazy: page(() => import("@/pages/tree/ComplianceTab"), "ComplianceTab") },
+              { path: "settings", lazy: page(() => import("@/pages/tree/TreeSettingsTab"), "TreeSettingsTab") },
             ],
           },
-          { path: "search/code", element: <CodeSearchPage /> },
-          { path: "audit", element: <AuditPage /> },
-          { path: "iam/simulator", element: <AccessSimulatorPage /> },
-          { path: "accounts", element: <AccountsPage /> },
-          { path: "system", element: <SystemPage /> },
-          { path: "operations", element: <OperationsPage /> },
-          { path: "backups", element: <BackupsPage /> },
-          { path: "notifications", element: <NotificationsPage /> },
-          { path: "device", element: <DevicePage /> },
-          { path: "compliance", element: <CompliancePage /> },
-          { path: "sso", element: <SsoSettingsPage /> },
-          { path: "settings", element: <SettingsPage /> },
+          { path: "search/code", lazy: page(() => import("@/pages/search/CodeSearchPage"), "CodeSearchPage") },
+          { path: "audit", lazy: page(() => import("@/pages/AuditPage"), "AuditPage") },
+          { path: "iam/simulator", lazy: page(() => import("@/pages/iam/AccessSimulatorPage"), "AccessSimulatorPage") },
+          { path: "accounts", lazy: page(() => import("@/pages/AccountsPage"), "AccountsPage") },
+          { path: "system", lazy: page(() => import("@/pages/SystemPage"), "SystemPage") },
+          { path: "operations", lazy: page(() => import("@/pages/OperationsPage"), "OperationsPage") },
+          { path: "backups", lazy: page(() => import("@/pages/BackupsPage"), "BackupsPage") },
+          { path: "notifications", lazy: page(() => import("@/pages/notifications/NotificationsPage"), "NotificationsPage") },
+          { path: "device", lazy: page(() => import("@/pages/DevicePage"), "DevicePage") },
+          { path: "compliance", lazy: page(() => import("@/pages/CompliancePage"), "CompliancePage") },
+          { path: "sso", lazy: page(() => import("@/pages/admin/SsoSettingsPage"), "SsoSettingsPage") },
+          { path: "settings", lazy: page(() => import("@/pages/SettingsPage"), "SettingsPage") },
           { path: "*", element: <NotFoundPage /> },
         ],
       },
