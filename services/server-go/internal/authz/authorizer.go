@@ -726,9 +726,22 @@ func (a *Authorizer) policies(ctx context.Context, c *requestCache, tenantID str
 		return compilePolicies(cand), nil
 	}
 	pols, err := cached(c, "policies:"+tenantID, func() ([]compiledPolicy, error) {
+		// The generation is read before listing: a write that lands in
+		// between only makes the cached entry look older than it is.
+		pg, hasGen := a.store.(policyGenerationer)
+		var gen uint64
+		if hasGen {
+			gen = pg.PolicyGeneration()
+			if pols, ok := a.pcache.byGeneration(tenantID, gen); ok {
+				return pols, nil
+			}
+		}
 		ps, err := a.store.ListPolicies(ctx, tenantID)
 		if err != nil {
 			return nil, err
+		}
+		if hasGen {
+			return a.pcache.compileAt(tenantID, ps, gen), nil
 		}
 		return a.pcache.compile(tenantID, ps), nil // hardening (§15.10)
 	})

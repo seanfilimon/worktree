@@ -364,6 +364,7 @@ func getPolicyTx(tx *bolt.Tx, tenantID, id string) (*domain.Policy, error) {
 
 // CreatePolicy implements domain.IAMStore. Version is set to 1.
 func (b *Bolt) CreatePolicy(ctx context.Context, p *domain.Policy) error {
+	defer b.policyGen.Add(1) // after the commit (PolicyGeneration)
 	if p == nil {
 		return errNil("policy")
 	}
@@ -391,6 +392,13 @@ func (b *Bolt) GetPolicy(ctx context.Context, tenantID, id string) (*domain.Poli
 	return out, err
 }
 
+// PolicyGeneration returns a number that changes after every committed
+// policy create, update or delete in this process (the database is opened
+// by one process only). A caller that reads the generation before listing
+// policies can reuse what it derived from that listing for as long as the
+// generation is unchanged.
+func (b *Bolt) PolicyGeneration() uint64 { return b.policyGen.Load() }
+
 // ListPolicies implements domain.IAMStore (ordered by name, then id).
 func (b *Bolt) ListPolicies(ctx context.Context, tenantID string) ([]domain.Policy, error) {
 	out, err := listPrefix[domain.Policy](ctx, b, bktPolicies, tenantID)
@@ -407,6 +415,7 @@ func (b *Bolt) ListPolicies(ctx context.Context, tenantID string) ([]domain.Poli
 // UpdatePolicy implements domain.IAMStore. The policy is located by
 // (TenantID, ID); Version becomes the stored version + 1 and UpdatedAt now.
 func (b *Bolt) UpdatePolicy(ctx context.Context, p *domain.Policy) error {
+	defer b.policyGen.Add(1) // after the commit (PolicyGeneration)
 	if p == nil {
 		return errNil("policy")
 	}
@@ -427,6 +436,7 @@ func (b *Bolt) UpdatePolicy(ctx context.Context, p *domain.Policy) error {
 
 // DeletePolicy implements domain.IAMStore.
 func (b *Bolt) DeletePolicy(ctx context.Context, tenantID, id string) error {
+	defer b.policyGen.Add(1) // after the commit (PolicyGeneration)
 	return b.update(ctx, func(tx *bolt.Tx) error {
 		bk := tx.Bucket(bktPolicies)
 		k := []byte(key(tenantID, id))
