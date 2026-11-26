@@ -12,6 +12,7 @@ hotspots were fixed. Limits and tuning flags are specified in
 - [5. Hotspots fixed](#5-hotspots-fixed)
 - [6. Known hotspots not fixed yet](#6-known-hotspots-not-fixed-yet)
 - [7. v0.8: pack and delta transfer](#7-v08-pack-and-delta-transfer)
+- [8. v0.8 performance and durability pass](#8-v08-performance-and-durability-pass)
 
 ---
 
@@ -370,3 +371,62 @@ Server counters (`GET /metrics`, Packs.md §4) report the same numbers in
 production: `worktree_pack_bytes_total`, `worktree_pack_object_bytes_total`,
 `worktree_pack_bytes_saved_total` and `worktree_pack_deltas_total` per
 direction, and `worktree_pack_upload_resumes_total`.
+
+## 8. v0.8 performance and durability pass
+
+Measured on an Apple M5 Pro (15 cores, APFS), original v0.8.0 against the
+pass, back to back; other software was using several cores, so differences
+under about 10 % are noise. Several items of §6 are closed by it.
+
+| What | Before | After |
+|---|---:|---:|
+| `wt snapshot`, first, 100 × 1 MiB | 587 ms | 87 ms |
+| `wt snapshot`, first, 10,000 × 2 KiB | 1,847 ms | 1,053 ms |
+| `wt switch`, 10,000 files, 10 % differ | 511 ms | 367 ms |
+| `wt diff`, 10 edited 1 MiB files | 62 ms | 43 ms |
+| push, 1 client, 2,000 × 4 KiB (p50) | 5,305 ms | 341 ms |
+| push, 8 clients × 200 × 4 KiB (p50) | 3,677 ms | 624 ms |
+| initial push, 500 × 100 KiB (p50) | 1,995 ms | 437 ms |
+| clone, 1 client, 2,000 files (p50) | 683 ms | 459 ms |
+| clone, 8 clients at once (p50) | 372 ms | 463 ms ¹ |
+| code search, 300 policies (p50) | 16.6 ms | 10.0 ms |
+| `IngestPack/store=disk` (500 × 100 KiB) | 1.53 s | 0.25 s |
+| `Push/store=disk` (10k-entry manifests) | 6.0 ms | 1.9 ms |
+| `Negotiate/store=disk` (10k hashes) | 25.9 ms | 11.0 ms |
+
+¹ The client now syncs every object it stores (it synced nothing before);
+eight clones on one machine queue on the disk.
+
+Client (`worktree-sdk`, `worktree-protocol`):
+
+- Scanning, storing and checking out files run on all cores above 64
+  files with I/O (`repo/working.rs`); results are folded in walk order.
+- Packs are built in parallel windows and downloaded packs are stored by
+  four workers (`remote/pack.rs`); the bytes of a pack are unchanged.
+- Durability (`repo/fsutil.rs`, [storage format](./storage-format.md#durability)):
+  objects and metadata are synced before the rename, a branch move is a
+  full-flush commit point. `WT_FSYNC=0` disables it.
+- Diff matches lines once per file and skips hashing common leading and
+  trailing lines (`diff/`); the index is saved compactly and only when it
+  changed; snapshot records are cached per repository handle; the release
+  profile uses fat LTO.
+
+Server (`services/server-go`):
+
+- `objstore.BatchPutter`: each object is synced before it is visible, and
+  one `Flush` per upload syncs the fan-out directories and (macOS) the
+  drive cache. This closes "per-object fsync and rename" and the missing
+  directory sync that could lose an acknowledged object on power loss.
+- zstd encoders are no longer limited to one compression at a time;
+  uploads are hashed and stat'ed once (`objstore.PutVerified`); the pack
+  pre-scan reads framing only.
+- Decoded manifests are cached (64 MiB LRU, existence re-checked on a
+  hit); compiled policies are reused while `meta.Bolt.PolicyGeneration`
+  is unchanged; the snapshots of a push are stored in one transaction;
+  `Negotiate` checks objects with 16 workers.
+
+Still open: the remaining metadata transactions of a push (branch move,
+staged clear, reflog, push record, audit) each commit and fsync on their
+own; `reachable` loads the whole history log per download request; object
+downloads decompress and recompress; code search rebuilds every file's
+trigrams per push.
