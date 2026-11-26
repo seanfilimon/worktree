@@ -1138,6 +1138,7 @@ mod tests {
             size,
             executable: false,
             chunked,
+            symlink: false,
         };
         assert_eq!(
             entry_upload_objects(&store, &entry(h, 5, chunked)).unwrap(),

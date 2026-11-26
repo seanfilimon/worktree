@@ -857,6 +857,7 @@ mod tests {
             size,
             executable: false,
             chunked,
+            symlink: false,
         }
     }
 

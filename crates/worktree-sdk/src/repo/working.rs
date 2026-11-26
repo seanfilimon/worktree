@@ -12,7 +12,10 @@ use super::ignore_rules::{is_reserved_name, IgnoreStack};
 use super::trees::TreeRecord;
 use super::{fsutil, names, Repository, TREE_MARKER_DIR};
 use crate::error::{Result, SdkError};
-use crate::model::{is_shared_tree_config_path, validate_manifest_path, Manifest, ManifestEntry};
+use crate::model::{
+    is_shared_tree_config_path, validate_manifest_path, validate_symlink_target, Manifest,
+    ManifestEntry,
+};
 use crate::scan::SecretFinding;
 use crate::store::{hash_bytes, prepare_file, ObjectHash};
 
@@ -42,15 +45,21 @@ pub(crate) struct IndexEntry {
     /// `hash` names a chunk list (ENGINEERING_PLAN §13.2).
     #[serde(default)]
     chunked: bool,
+    /// The entry is a symbolic link and `hash` is its target's blob. Where
+    /// links cannot be created the working copy is a regular file holding
+    /// the target text, and this flag is what keeps the entry a symlink.
+    #[serde(default)]
+    symlink: bool,
 }
 
 impl Index {
     /// The cached entry for `path` if it is still trustworthy for a file
-    /// with this size and mtime.
-    fn fresh(&self, path: &str, size: u64, mtime_ns: u64) -> Option<&IndexEntry> {
+    /// (or, with `symlink`, a link) with this size and mtime.
+    fn fresh(&self, path: &str, size: u64, mtime_ns: u64, symlink: bool) -> Option<&IndexEntry> {
         self.entries.get(path).filter(|e| {
             e.size == size
                 && e.mtime_ns == mtime_ns
+                && e.symlink == symlink
                 && mtime_ns.saturating_add(RACY_WINDOW_NS) < self.saved_at_ns
         })
     }
@@ -81,6 +90,20 @@ struct FoundFile {
     size: u64,
     mtime_ns: u64,
     exec_bit: Option<bool>,
+    /// The path is a symbolic link on disk (`size`/`mtime_ns` are the
+    /// link's own).
+    symlink: bool,
+}
+
+/// What scanning a path that is (or is recorded as) a symlink found.
+enum LinkScan {
+    /// A symlink with this target blob and target length.
+    Link(ObjectHash, u64),
+    /// A link whose target cannot be recorded; the path is left out.
+    Skip,
+    /// A regular file after all (a link placeholder that was overwritten
+    /// with ordinary content).
+    Regular,
 }
 
 #[cfg(unix)]
@@ -107,7 +130,9 @@ impl Repository {
     /// applying ignore rules, skipping `skip_dirs` (root-relative) and, if
     /// `skip_marked`, any directory containing a `.wt-tree/` marker.
     /// `visit` receives (root-relative path, absolute path, metadata).
-    /// Directory symlinks are not followed; file symlinks are read through.
+    /// Symbolic links are never followed: a link — to a file, to a
+    /// directory, or dangling — is visited as itself, with its own
+    /// (`symlink_metadata`) metadata, and nothing below it is walked.
     /// With `skip_marked` (a tree scan), the shared files of the tree's own
     /// `<start>/.wt-tree/` are visited too (hardening §15.10).
     pub(crate) fn walk_files(
@@ -170,6 +195,7 @@ impl Repository {
                 size: meta.len(),
                 mtime_ns: fsutil::mtime_ns(meta),
                 exec_bit: exec_bit(meta),
+                symlink: meta.file_type().is_symlink(),
             });
             Ok(())
         })?;
@@ -196,10 +222,47 @@ impl Repository {
                     && head_entry.is_none()
                     && crate::model::is_shared_tree_hook_path(&file.path));
             let executable = file.exec_bit.unwrap_or(fallback_exec);
+            // Where links cannot always be created (not Unix), a link is
+            // checked out as a regular file holding its target; the index
+            // (or, without one, head) keeps such a file a symlink — the
+            // same way the executable bit is carried above.
+            let recorded_link = old_index
+                .entries
+                .get(&file.path)
+                .map(|e| e.symlink)
+                .or(head_entry.map(|e| e.symlink))
+                .unwrap_or(false);
+            let expect_link = file.symlink || (cfg!(not(unix)) && recorded_link);
             let cached = old_index
-                .fresh(&file.path, file.size, file.mtime_ns)
+                .fresh(&file.path, file.size, file.mtime_ns, expect_link)
                 .map(|e| (e.hash, e.chunked))
                 .filter(|(h, _)| !store || self.store.has(h));
+            if expect_link {
+                match self.scan_link(&file, cached.map(|(h, _)| h), store)? {
+                    LinkScan::Link(hash, size) => {
+                        index.entries.insert(
+                            file.path.clone(),
+                            // `size` is the target's length: a cache hit
+                            // needs the link's own size to equal it (always
+                            // on Unix; elsewhere the link is simply re-read).
+                            IndexEntry {
+                                size,
+                                mtime_ns: file.mtime_ns,
+                                hash,
+                                executable: false,
+                                chunked: false,
+                                symlink: true,
+                            },
+                        );
+                        entries.push(ManifestEntry::symlink(file.path, hash, size));
+                        continue;
+                    }
+                    LinkScan::Skip => continue,
+                    LinkScan::Regular => {}
+                }
+            }
+            // A cache hit for a link placeholder never reaches this point.
+            let cached = cached.filter(|_| !expect_link);
             let needs_read = match cached {
                 None => true,
                 Some((h, _)) => scan && head_entry.is_none_or(|e| e.hash != h),
@@ -262,6 +325,7 @@ impl Repository {
                     hash,
                     executable,
                     chunked,
+                    symlink: false,
                 },
             );
             entries.push(ManifestEntry {
@@ -270,6 +334,7 @@ impl Repository {
                 size,
                 executable,
                 chunked,
+                symlink: false,
             });
         }
         // sparse (§15.4): head files outside the sparse set keep their head
@@ -369,18 +434,94 @@ impl Repository {
             .collect())
     }
 
-    /// Write one manifest entry's blob into the working directory.
+    /// Scan one path that is a symlink on disk or is recorded as one
+    /// (`cached` = its target blob when the stat cache is fresh). The link
+    /// is read, never followed; its target is stored as a plain blob.
+    fn scan_link(
+        &self,
+        file: &FoundFile,
+        cached: Option<ObjectHash>,
+        store: bool,
+    ) -> Result<LinkScan> {
+        if let Some(hash) = cached {
+            return Ok(LinkScan::Link(hash, file.size));
+        }
+        let read = if file.symlink {
+            fsutil::read_link_target(&file.abs)
+        } else {
+            fs::read(&file.abs)
+        };
+        let target = match read {
+            Ok(t) => t,
+            // Deleted or replaced while we were scanning.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(LinkScan::Skip),
+            Err(e) => return Err(e.into()),
+        };
+        if let Err(err) = validate_symlink_target(&file.path, &target) {
+            if file.symlink {
+                tracing::warn!(path = %file.path, %err, "skipping symbolic link");
+                return Ok(LinkScan::Skip);
+            }
+            // Not link text any more: an ordinary file took its place.
+            return Ok(LinkScan::Regular);
+        }
+        let hash = hash_bytes(&target);
+        if store {
+            self.store.put(&target)?;
+        }
+        Ok(LinkScan::Link(hash, target.len() as u64))
+    }
+
+    /// Write one manifest entry into the working directory: a file with the
+    /// entry's content, or — for a symlink entry — a symbolic link with the
+    /// stored target.
+    ///
+    /// Nothing is ever written *through* a link: the call fails if a parent
+    /// directory of the path is a symbolic link, and a link already at the
+    /// path is replaced, not followed. A symlink's target is recreated
+    /// verbatim (it may be absolute or lead outside the tree — it is only
+    /// stored, never dereferenced here). Where the link cannot be created
+    /// (Windows without the privilege) a regular file holding the target
+    /// text is written instead and the index keeps the entry a symlink.
     pub(crate) fn materialize(&self, tree_dir: &Path, entry: &ManifestEntry) -> Result<IndexEntry> {
         validate_manifest_path(&entry.path)?;
+        fsutil::ensure_no_symlink_parents(tree_dir, &entry.path)?;
         let data = self.store.read_entry(entry)?;
         let abs = tree_dir.join(&entry.path);
-        if abs.is_dir() {
+        let existing = fsutil::symlink_meta(&abs)?;
+        if existing.as_ref().is_some_and(|m| m.is_dir()) {
             return Err(SdkError::InvalidArgument(format!(
                 "cannot write {}: a directory is in the way",
                 entry.path
             )));
         }
-        fsutil::write_atomic(&abs, &data)?;
+        if entry.symlink {
+            if entry.executable || entry.chunked || is_in_tree_marker(&entry.path) {
+                return Err(SdkError::InvalidArgument(format!(
+                    "invalid symbolic link entry {}",
+                    entry.path
+                )));
+            }
+            validate_symlink_target(&entry.path, &data)?;
+            if !fsutil::write_symlink(&abs, &data)? {
+                tracing::warn!(
+                    path = %entry.path,
+                    "cannot create a symbolic link here; wrote its target as a regular file"
+                );
+                fsutil::remove_file_or_link(&abs)?;
+                fsutil::write_atomic(&abs, &data)?;
+            }
+            let meta = fs::symlink_metadata(&abs)?;
+            return Ok(IndexEntry {
+                size: data.len() as u64,
+                mtime_ns: fsutil::mtime_ns(&meta),
+                hash: entry.hash,
+                executable: false,
+                chunked: false,
+                symlink: true,
+            });
+        }
+        self.write_regular(&abs, existing.as_ref(), &data)?;
         fsutil::set_executable(&abs, entry.executable)?;
         let meta = fs::metadata(&abs)?;
         Ok(IndexEntry {
@@ -389,14 +530,49 @@ impl Repository {
             hash: entry.hash,
             executable: entry.executable,
             chunked: entry.chunked,
+            symlink: false,
         })
     }
 
-    /// Delete a working file and prune directories it leaves empty.
+    /// Atomically write a regular file at `abs`; a symlink already there
+    /// (`existing` = the path's own metadata) is removed first so the write
+    /// replaces the link instead of landing on its target.
+    fn write_regular(
+        &self,
+        abs: &Path,
+        existing: Option<&fs::Metadata>,
+        data: &[u8],
+    ) -> Result<()> {
+        if existing.is_some_and(|m| m.file_type().is_symlink()) {
+            fsutil::remove_file_or_link(abs)?;
+        }
+        fsutil::write_atomic(abs, data)
+    }
+
+    /// Write `data` as a regular file at the tree-relative `path` (conflict
+    /// markers, resolved content). Like [`Repository::materialize`] it
+    /// never writes through a symbolic link.
+    pub(crate) fn write_working_file(
+        &self,
+        tree_dir: &Path,
+        path: &str,
+        data: &[u8],
+    ) -> Result<()> {
+        validate_manifest_path(path)?;
+        fsutil::ensure_no_symlink_parents(tree_dir, path)?;
+        let abs = tree_dir.join(path);
+        let existing = fsutil::symlink_meta(&abs)?;
+        self.write_regular(&abs, existing.as_ref(), data)
+    }
+
+    /// Delete a working file (or the link itself, for a symlink) and prune
+    /// directories it leaves empty. Fails, deleting nothing, if a parent
+    /// directory of the path is a symbolic link.
     pub(crate) fn remove_working_file(&self, tree_dir: &Path, path: &str) -> Result<()> {
         validate_manifest_path(path)?;
+        fsutil::ensure_no_symlink_parents(tree_dir, path)?;
         let abs = tree_dir.join(path);
-        fsutil::remove_file_if_exists(&abs)?;
+        fsutil::remove_file_or_link(&abs)?;
         if let Some(parent) = abs.parent() {
             fsutil::prune_empty_dirs(parent, tree_dir);
         }
@@ -426,6 +602,11 @@ impl Repository {
         index.saved_at_ns = fsutil::now_ns();
         fsutil::write_json(&self.index_path(tree), &index)
     }
+}
+
+/// Whether a tree-relative path is the tree's `.wt-tree/` marker or inside it.
+fn is_in_tree_marker(path: &str) -> bool {
+    path.split('/').next() == Some(TREE_MARKER_DIR)
 }
 
 /// Strip a tree's root-relative directory prefix from a root-relative path.
@@ -515,16 +696,12 @@ impl Walker<'_> {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
-            let (is_dir, followed) = if ft.is_symlink() {
-                match fs::metadata(entry.path()) {
-                    Ok(m) if m.is_file() => (false, Some(m)),
-                    // Directory symlinks are not followed; dangling links skipped.
-                    _ => continue,
-                }
+            // A symlink is a leaf whatever it points at: it is recorded as
+            // a link and never followed.
+            let is_dir = if ft.is_symlink() || ft.is_file() {
+                false
             } else if ft.is_dir() {
-                (true, None)
-            } else if ft.is_file() {
-                (false, None)
+                true
             } else {
                 continue;
             };
@@ -540,13 +717,11 @@ impl Walker<'_> {
                 }
                 self.walk_dir(stack, &rel, visit)?;
             } else {
-                let meta = match followed {
-                    Some(m) => m,
-                    None => match entry.metadata() {
-                        Ok(m) => m,
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                        Err(e) => return Err(e.into()),
-                    },
+                // `DirEntry::metadata` does not follow symlinks.
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e.into()),
                 };
                 visit(&rel, &path, &meta)?;
             }
@@ -559,7 +734,8 @@ impl Walker<'_> {
     /// regular file below `hooks/` and `access/`
     /// ([`is_shared_tree_config_path`]). `sub` is the path of `abs` below
     /// `.wt-tree/` ("" for the marker itself). Ignore rules do not apply
-    /// here; directory symlinks are not followed.
+    /// here. Shared files are always regular files: symbolic links in
+    /// `.wt-tree/` are neither followed nor recorded.
     fn walk_marker(
         &self,
         marker_rel: &str,
@@ -604,6 +780,13 @@ impl Walker<'_> {
             if !is_shared_tree_config_path(&format!("{TREE_MARKER_DIR}/{child}")) {
                 continue;
             }
+            if ft.is_symlink() {
+                tracing::warn!(
+                    path = %path.display(),
+                    "symbolic links in .wt-tree/ are not shared; skipping"
+                );
+                continue;
+            }
             let meta = match fs::metadata(&path) {
                 Ok(m) if m.is_file() => m,
                 Ok(_) => continue,
@@ -643,6 +826,7 @@ mod tests {
                 hash: h,
                 executable: false,
                 chunked: false,
+                symlink: false,
             },
         );
         index.entries.insert(
@@ -653,18 +837,25 @@ mod tests {
                 hash: h,
                 executable: false,
                 chunked: false,
+                symlink: false,
             },
         );
-        assert!(index.fresh("old", 1, RACY_WINDOW_NS).is_some());
+        assert!(index.fresh("old", 1, RACY_WINDOW_NS, false).is_some());
         assert!(
-            index.fresh("old", 2, RACY_WINDOW_NS).is_none(),
+            index.fresh("old", 2, RACY_WINDOW_NS, false).is_none(),
             "size changed"
         );
         assert!(
-            index.fresh("old", 1, RACY_WINDOW_NS + 1).is_none(),
+            index.fresh("old", 1, RACY_WINDOW_NS + 1, false).is_none(),
             "mtime changed"
         );
-        assert!(index.fresh("racy", 1, 9 * RACY_WINDOW_NS + 1).is_none());
-        assert!(index.fresh("missing", 1, 0).is_none());
+        assert!(
+            index.fresh("old", 1, RACY_WINDOW_NS, true).is_none(),
+            "a file became a link"
+        );
+        assert!(index
+            .fresh("racy", 1, 9 * RACY_WINDOW_NS + 1, false)
+            .is_none());
+        assert!(index.fresh("missing", 1, 0, false).is_none());
     }
 }

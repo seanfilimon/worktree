@@ -61,8 +61,9 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
     }
 
     /// Manifest of `tree` (entries sorted by path). Regular and executable
-    /// files are converted; symlinks, submodules and non-UTF-8 names are
-    /// skipped with a warning.
+    /// files and symbolic links (mode 120000) are converted; submodules,
+    /// non-UTF-8 names and links with an unusable target are skipped with a
+    /// warning.
     pub fn manifest(&mut self, tree: &git2::Tree<'_>) -> Result<Manifest> {
         let mut entries = Vec::new();
         self.collect(tree, "", &mut entries)?;
@@ -97,7 +98,14 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
             } else if mode == i32::from(FileMode::BlobExecutable) {
                 out.push(self.file(path, entry.id(), true)?);
             } else if mode == i32::from(FileMode::Link) {
-                self.warn_once(&path, "skipping symbolic link (not supported by W0rkTree)");
+                match self.symlink(&path, entry.id())? {
+                    Some(link) => out.push(link),
+                    None => self.warn_once(
+                        &path,
+                        "skipping symbolic link that cannot be recorded (empty, over-long \
+                         or NUL target, or inside .wt-tree/)",
+                    ),
+                }
             } else if mode == i32::from(FileMode::Commit) {
                 self.warn_once(&path, "skipping submodule (gitlink)");
             } else {
@@ -124,7 +132,28 @@ impl<'a, S: BlobSink + ?Sized> TreeConverter<'a, S> {
             size,
             executable,
             chunked,
+            symlink: false,
         })
+    }
+
+    /// A symlink entry for the Git link blob `oid` (its content is the
+    /// target, stored verbatim as a plain blob); `None` when the target
+    /// cannot be recorded.
+    fn symlink(&mut self, path: &str, oid: Oid) -> Result<Option<ManifestEntry>> {
+        let blob = self.git.find_blob(oid)?;
+        let target = blob.content();
+        // Links are never recorded inside the shared `.wt-tree/` directory.
+        if path.starts_with(".wt-tree/")
+            || worktree_sdk::validate_symlink_target(path, target).is_err()
+        {
+            return Ok(None);
+        }
+        let hash = self.sink.put_blob(target)?;
+        Ok(Some(ManifestEntry::symlink(
+            path,
+            hash,
+            target.len() as u64,
+        )))
     }
 
     fn warn_once(&mut self, path: &str, what: &str) {
@@ -638,7 +667,7 @@ mod tests {
     use crate::test_support::{GitFixture, MemStore, Spec};
 
     #[test]
-    fn manifest_converts_files_and_skips_links_and_submodules() {
+    fn manifest_converts_files_and_links_and_skips_submodules() {
         let fx = GitFixture::new();
         let other = fx.commit(None, &[Spec::File("x", b"x")], &[], "other", 1);
         let tree_oid = fx.tree(&[
@@ -647,6 +676,7 @@ mod tests {
             Spec::File("src/lib/deep/mod.rs", b"pub fn f() {}\n"),
             Spec::File("src/a.rs", b"a"),
             Spec::Link("link", "README.md"),
+            Spec::Link("bad-link", "nul\0target"),
             Spec::Gitlink("vendor/sub", other),
         ]);
         let store = MemStore::default();
@@ -658,8 +688,21 @@ mod tests {
         let paths: Vec<_> = manifest.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(
             paths,
-            vec!["README.md", "bin/run.sh", "src/a.rs", "src/lib/deep/mod.rs"]
+            vec![
+                "README.md",
+                "bin/run.sh",
+                "link",
+                "src/a.rs",
+                "src/lib/deep/mod.rs"
+            ]
         );
+        // A Git link (120000) becomes a symlink entry: the blob is the
+        // target text. A link whose target holds a NUL is skipped.
+        let link = &manifest.entries[2];
+        assert!(link.symlink && !link.executable && !link.chunked);
+        assert_eq!(link.size, 9);
+        assert_eq!(store.get(&link.hash).as_deref(), Some(&b"README.md"[..]));
+        assert!(manifest.entries.iter().filter(|e| e.symlink).count() == 1);
         let run = &manifest.entries[1];
         assert!(run.executable);
         assert_eq!(run.size, 18);
@@ -669,7 +712,7 @@ mod tests {
             Some(&b"hello\n"[..])
         );
         assert_eq!(conv.blob_count(), 4);
-        assert_eq!(store.len(), 4);
+        assert_eq!(store.len(), 5, "four files and one link target");
     }
 
     #[test]

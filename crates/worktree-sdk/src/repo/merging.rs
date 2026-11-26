@@ -187,7 +187,7 @@ impl Repository {
 
         let tree_dir = self.tree_dir_of(&rec);
         for (path, content) in &result.marker_files {
-            fsutil::write_atomic(&tree_dir.join(path), content)?;
+            self.write_working_file(&tree_dir, path, content)?;
             // Drop the cache entry so the marker content is hashed fresh.
             working.index.remove(path);
         }
@@ -656,8 +656,7 @@ impl Repository {
         let path = conflict.path.as_str();
         let strategy = match resolution {
             ConflictResolution::Content(data) => {
-                validate_manifest_path(path)?;
-                fsutil::write_atomic(&tree_dir.join(path), data)?;
+                self.write_working_file(&tree_dir, path, data)?;
                 index.remove(path);
                 return Ok(());
             }
@@ -688,7 +687,7 @@ impl Repository {
                     | TextMergeResult::Conflicted { merged: text, .. } => text,
                 };
                 let abs = tree_dir.join(path);
-                fsutil::write_atomic(&abs, merged.as_bytes())?;
+                self.write_working_file(&tree_dir, path, merged.as_bytes())?;
                 fsutil::set_executable(&abs, merge_executable(base, o, t))?;
                 index.remove(path);
                 return Ok(());
@@ -813,6 +812,7 @@ impl Repository {
                                 size: text.len() as u64,
                                 executable,
                                 chunked,
+                                symlink: false,
                             });
                         }
                         TextMergeResult::Conflicted { merged, conflicts } => {
@@ -944,6 +944,7 @@ mod tests {
                     size: c.len() as u64,
                     executable: false,
                     chunked: false,
+                    symlink: false,
                 })
                 .collect(),
         )

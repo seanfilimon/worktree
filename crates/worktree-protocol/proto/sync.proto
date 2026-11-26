@@ -566,6 +566,13 @@ message ManifestEntry {
   bool executable = 4;
   // When true, blob_hash names a CHUNK_LIST object instead of a BLOB.
   bool chunked = 5;
+  // When true, the entry is a symbolic link: blob_hash names a BLOB holding
+  // the link target as raw bytes (1..=4096 bytes, no NUL; never interpreted
+  // or dereferenced by the server) and size is the target's length. Mutually
+  // exclusive with executable and chunked. False (the default) is not
+  // encoded, so manifests without symlinks are byte-identical to those
+  // written before this field existed.
+  bool symlink = 6;
 
   reserved 100 to 199;
 }

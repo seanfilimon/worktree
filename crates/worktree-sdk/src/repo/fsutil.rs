@@ -190,6 +190,147 @@ pub(crate) fn set_executable(_path: &Path, _executable: bool) -> Result<()> {
     Ok(())
 }
 
+// ---- symbolic links ----
+//
+// Links are data: their target text is read and written, never followed.
+
+/// Metadata of whatever is at `path` itself (a symlink is not followed);
+/// `None` if nothing is there.
+pub(crate) fn symlink_meta(path: &Path) -> io::Result<Option<fs::Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The target of the symlink at `path` as the bytes a manifest stores: raw
+/// bytes on Unix; elsewhere the target's text with `\` turned into `/`, so
+/// a link created on Windows resolves on other platforms too.
+pub(crate) fn read_link_target(path: &Path) -> io::Result<Vec<u8>> {
+    let target = fs::read_link(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Ok(target.into_os_string().into_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(target.to_string_lossy().replace('\\', "/").into_bytes())
+    }
+}
+
+/// Fail if a directory on the way from `base` to `base/rel` is a symbolic
+/// link. `rel` is a validated, '/'-separated manifest path; `base` itself
+/// is trusted. Writing or deleting `base/rel` would otherwise act on
+/// whatever the link points at — possibly outside the working tree.
+pub(crate) fn ensure_no_symlink_parents(base: &Path, rel: &str) -> Result<()> {
+    let mut dir = base.to_path_buf();
+    let mut components = rel.split('/').peekable();
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            break; // the leaf itself is handled by the caller
+        }
+        dir.push(component);
+        match symlink_meta(&dir)? {
+            // Nothing below exists yet; directories are created fresh.
+            None => break,
+            Some(meta) if meta.file_type().is_symlink() => {
+                return Err(crate::error::SdkError::InvalidArgument(format!(
+                    "refusing to touch {rel}: {} is a symbolic link",
+                    dir.strip_prefix(base).unwrap_or(&dir).display()
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Remove the file or symlink at `path` itself (never what a link points
+/// at), treating "already gone" as success.
+pub(crate) fn remove_file_or_link(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            // A directory symlink on Windows is removed like a directory.
+            let is_link =
+                symlink_meta(path).is_ok_and(|m| m.is_some_and(|m| m.file_type().is_symlink()));
+            if is_link && fs::remove_dir(path).is_ok() {
+                return Ok(());
+            }
+            Err(e.into())
+        }
+    }
+}
+
+/// Put a symlink with the given `target` bytes at `path`, replacing a file
+/// or link already there and creating parent directories. Returns `false`
+/// when this platform (or this user) cannot create the link; the caller
+/// then stores the target text in a regular file instead.
+#[cfg(unix)]
+pub(crate) fn write_symlink(path: &Path, target: &[u8]) -> io::Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Link under a temp name, then rename: `rename` replaces the entry at
+    // `path` itself and never follows a link that is already there.
+    let tmp = temp_path_for(path);
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), &tmp)?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(true)
+}
+
+/// Put a symlink with the given `target` bytes at `path` (see the Unix
+/// variant). Windows needs Developer Mode or the "create symbolic links"
+/// privilege, and distinguishes file links from directory links: the kind
+/// is chosen by what the target is right now (a file link if it does not
+/// exist yet). Any failure reports `false`.
+#[cfg(windows)]
+pub(crate) fn write_symlink(path: &Path, target: &[u8]) -> io::Result<bool> {
+    let Ok(text) = std::str::from_utf8(target) else {
+        return Ok(false);
+    };
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
+    fs::create_dir_all(parent)?;
+    let native = text.replace('/', "\\");
+    let to_dir = parent.join(&native).is_dir();
+    let tmp = temp_path_for(path);
+    let made = if to_dir {
+        std::os::windows::fs::symlink_dir(&native, &tmp)
+    } else {
+        std::os::windows::fs::symlink_file(&native, &tmp)
+    };
+    if made.is_err() {
+        return Ok(false);
+    }
+    let remove_tmp = |tmp: &Path| {
+        let _ = fs::remove_file(tmp).or_else(|_| fs::remove_dir(tmp));
+    };
+    if let Err(e) = remove_file_or_link(path) {
+        remove_tmp(&tmp);
+        return Err(io::Error::other(e.to_string()));
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        remove_tmp(&tmp);
+        return Err(e);
+    }
+    Ok(true)
+}
+
+/// Symlinks cannot be created on this platform.
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn write_symlink(_path: &Path, _target: &[u8]) -> io::Result<bool> {
+    Ok(false)
+}
+
 /// Append one line to a file in a single write (creating it if needed).
 pub(crate) fn append_line(path: &Path, line: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -237,6 +378,47 @@ mod tests {
         prune_empty_dirs(&deep, dir.path());
         assert!(!dir.path().join("a/b").exists());
         assert!(dir.path().join("a").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_helpers_act_on_the_link_itself() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("tree");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(base.join("real/sub")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("victim"), b"keep").unwrap();
+        symlink("../outside", base.join("out")).unwrap();
+
+        // Parents: real directories and not-yet-existing ones pass; a
+        // linked directory anywhere on the way fails. The leaf is not checked.
+        ensure_no_symlink_parents(&base, "real/sub/file").unwrap();
+        ensure_no_symlink_parents(&base, "new/dir/file").unwrap();
+        ensure_no_symlink_parents(&base, "out").unwrap();
+        assert!(ensure_no_symlink_parents(&base, "out/victim").is_err());
+        assert!(ensure_no_symlink_parents(&base, "out/deeper/file").is_err());
+
+        // write_symlink replaces a file or a link in place, verbatim.
+        let link = base.join("real/link");
+        fs::write(&link, b"was a file").unwrap();
+        assert!(write_symlink(&link, b"../../outside/victim").unwrap());
+        assert_eq!(read_link_target(&link).unwrap(), b"../../outside/victim");
+        assert!(write_symlink(&link, b"/absolute/elsewhere").unwrap());
+        assert_eq!(read_link_target(&link).unwrap(), b"/absolute/elsewhere");
+        assert_eq!(fs::read(outside.join("victim")).unwrap(), b"keep");
+        assert!(symlink_meta(&link)
+            .unwrap()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        // Removing a link removes the link, not what it points at.
+        remove_file_or_link(&base.join("out")).unwrap();
+        assert!(symlink_meta(&base.join("out")).unwrap().is_none());
+        assert_eq!(fs::read(outside.join("victim")).unwrap(), b"keep");
+        remove_file_or_link(&base.join("out")).unwrap();
     }
 
     #[test]

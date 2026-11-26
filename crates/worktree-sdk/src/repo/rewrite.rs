@@ -879,7 +879,7 @@ impl Repository {
         self.apply_manifest(rec, target, &tracked, &working.manifest, &mut working.index)?;
         let tree_dir = self.tree_dir_of(rec);
         for (path, content) in markers {
-            fsutil::write_atomic(&tree_dir.join(path), content)?;
+            self.write_working_file(&tree_dir, path, content)?;
             working.index.remove(path);
         }
         self.save_index(&rec.name, &working.index)
