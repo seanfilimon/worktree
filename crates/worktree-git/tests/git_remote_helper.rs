@@ -401,7 +401,7 @@ async fn force_push_and_deletion_are_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "integration: needs git on PATH"]
-async fn symlinks_are_refused_not_dropped() {
+async fn symlinks_are_pushed_as_links() {
     let world = World::new().await;
     let git = &world.git;
     world.wt_repo("wt").await;
@@ -420,9 +420,8 @@ async fn symlinks_are_refused_not_dropped() {
         ],
     );
     git.ok(&work, &["commit", "-q", "-m", "add a link"]);
-    let err = git.fails(&work, &["push", "origin", "main"]);
-    assert!(err.contains("docs/link (symbolic link)"), "{err}");
-    assert_eq!(world.server_tip("proj", "main"), tip);
+    git.ok(&work, &["push", "origin", "main"]);
+    assert_ne!(world.server_tip("proj", "main"), tip);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

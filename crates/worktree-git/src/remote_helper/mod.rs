@@ -31,7 +31,7 @@
 //!   `wt git import`), then the SDK pushes the branch. History is
 //!   append-only: a push that is not a fast-forward is refused, with or
 //!   without `--force`, and so are deleting refs and moving tags. Commits
-//!   containing symbolic links, submodules or non-UTF-8 file names are
+//!   containing submodules or non-UTF-8 file names are
 //!   refused rather than pushed without that content.
 //! * **Authentication** is the SDK's: the login saved by `wt login` in
 //!   `$WT_HOME`, or `WT_TOKEN`. Public trees can be read anonymously.

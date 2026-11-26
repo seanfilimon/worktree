@@ -64,7 +64,7 @@ impl<'a> CommitConverter<'a> {
     /// commit; the caller saves it.
     ///
     /// Errors with `ImportError` when a commit holds content W0rkTree
-    /// cannot store (symbolic links, submodules, non-UTF-8 names, a `.wt`
+    /// cannot store (submodules, non-UTF-8 names, a `.wt`
     /// path) or when history is missing (shallow clone).
     pub fn convert(
         &mut self,
@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_symlinks_and_submodules_without_writing_the_snapshot() {
+    fn refuses_submodules_without_writing_the_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let repo = repo(dir.path());
         let fx = GitFixture::new();
@@ -376,7 +376,8 @@ mod tests {
             .expect_err("must refuse");
         let message = err.to_string();
         assert!(matches!(err, GitCompatError::ImportError(_)), "{message}");
-        assert!(message.contains("docs/link (symbolic link)"), "{message}");
+        // Symbolic links are stored as links; only the submodule is refused.
+        assert!(!message.contains("docs/link"), "{message}");
         assert!(message.contains("vendor/sub (submodule)"), "{message}");
         assert!(message.contains(&bad.to_string()[..10]), "{message}");
         // The clean parent was converted; the refused commit was not.
@@ -409,8 +410,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = repo(dir.path());
         let fx = GitFixture::new();
+        let base = fx.commit(None, &[Spec::File("a", b"1")], &[], "base", 5);
         let names: Vec<String> = (0..8).map(|i| format!("l{i}")).collect();
-        let specs: Vec<Spec<'_>> = names.iter().map(|n| Spec::Link(n, "x")).collect();
+        let specs: Vec<Spec<'_>> = names.iter().map(|n| Spec::Gitlink(n, base)).collect();
         let bad = fx.commit(None, &specs, &[], "links", 10);
         let mut map = GitMap::default();
         let err = CommitConverter::new(&repo, &fx.repo, "t")
@@ -418,7 +420,7 @@ mod tests {
             .expect_err("must refuse");
         let message = err.to_string();
         assert!(
-            message.contains("l0 (symbolic link)") && message.contains("and 3 more"),
+            message.contains("l0 (submodule)") && message.contains("and 3 more"),
             "{message}"
         );
     }

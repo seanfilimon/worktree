@@ -181,7 +181,7 @@ fn git_remote_helper() {
     // ------------------------------------------------ refusals
     let tip = server_tip(&api, "alice", TREE, "main");
 
-    // A symbolic link is refused, not dropped.
+    // A symbolic link is pushed as a link (its blob is the target text).
     let blob = out(&git, &alice, &work, &["rev-parse", "HEAD:README.md"]);
     git_as(&git, &alice, &work)
         .args(["update-index", "--add", "--cacheinfo"])
@@ -190,11 +190,12 @@ fn git_remote_helper() {
     git_as(&git, &alice, &work)
         .args(["commit", "-q", "-m", "add a link"])
         .ok();
-    let refused = git_as(&git, &alice, &work)
+    git_as(&git, &alice, &work)
         .args(["push", "origin", "main"])
-        .fails();
-    assert!(refused.mentions("docs/link (symbolic link)"), "{refused}");
-    assert_eq!(server_tip(&api, "alice", TREE, "main"), tip);
+        .ok();
+    let with_link = server_tip(&api, "alice", TREE, "main");
+    assert_ne!(with_link, tip, "the commit with the link was pushed");
+    let tip = with_link;
 
     // Rewritten history is refused, with and without --force.
     git_as(&git, &alice, &work)

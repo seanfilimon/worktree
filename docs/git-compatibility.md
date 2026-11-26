@@ -311,7 +311,7 @@ ref (Git prints `! [remote rejected]` with the reason) when:
 | Deleting a branch or tag (`git push origin :name`) | Refused: use `wt branch archive` / `wt tag delete NAME --remote`. |
 | Moving an existing tag | Refused. |
 | A tag whose commit is on no server branch | Refused: push the branch first (or in the same `git push`). |
-| A commit with symbolic links, submodules, non-UTF-8 file names or a `.wt` path | Refused before anything reaches the server; the message names the commit and the paths. |
+| A commit with submodules, non-UTF-8 file names or a `.wt` path (symbolic links are pushed as links) | Refused before anything reaches the server; the message names the commit and the paths. |
 | Refs other than `refs/heads/*` and `refs/tags/*` | Refused. |
 
 Server-side rules (branch protection, secret scanning, permissions) apply as for `wt push`, and their
