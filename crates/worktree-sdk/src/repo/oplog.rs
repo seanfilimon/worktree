@@ -21,6 +21,15 @@
 //! log stays append-only. Snapshots are never deleted, so every state the
 //! log mentions stays reachable (objects of stash entries only until a
 //! `wt gc` after they were dropped).
+//!
+//! Pushes change no local ref, so the push flow records them explicitly
+//! (`record_push`): an `op` entry named `push` / `force-push` with one
+//! [`RefChange::Remote`] (the server branch before and after). A push is
+//! not undone here because it changed the server: when it is the newest
+//! operation, [`Repository::push_to_undo`] returns it and
+//! `remote::undo_push` moves the server branch back through the server
+//! reflog (`POST {tree}/reflog/restore`), then records the undo
+//! (specs/tree/Undo.md §2.2).
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -87,6 +96,14 @@ pub enum RefChange {
     },
     /// The raw content of `stash.jsonl`.
     Stash { old: String, new: String },
+    /// A branch on the server (a push), as `remote`/`name`: its tip before
+    /// and after. Recorded by the push flow; undone through the server.
+    Remote {
+        remote: String,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    },
 }
 
 impl RefChange {
@@ -105,6 +122,17 @@ impl RefChange {
                 new: old,
             },
             RefChange::Stash { old, new } => RefChange::Stash { old: new, new: old },
+            RefChange::Remote {
+                remote,
+                name,
+                old,
+                new,
+            } => RefChange::Remote {
+                remote,
+                name,
+                old: new,
+                new: old,
+            },
         }
     }
 
@@ -143,6 +171,16 @@ impl RefChange {
                 stash_len(new),
                 if stash_len(new) == 1 { "y" } else { "ies" }
             ),
+            RefChange::Remote {
+                remote,
+                name,
+                old,
+                new,
+            } => format!(
+                "{remote}/{name}: {} -> {}",
+                old.as_deref().map(short).unwrap_or("(none)"),
+                new.as_deref().map(short).unwrap_or("(none)")
+            ),
         }
     }
 }
@@ -163,6 +201,43 @@ pub struct OpLogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub changes: Vec<RefChange>,
+}
+
+impl OpLogEntry {
+    /// The server branch this operation moved, if it is a push:
+    /// `(remote, branch, old tip, new tip)`.
+    pub fn remote_change(&self) -> Option<(&str, &str, Option<&str>, Option<&str>)> {
+        self.changes.iter().find_map(|c| match c {
+            RefChange::Remote {
+                remote,
+                name,
+                old,
+                new,
+            } => Some((
+                remote.as_str(),
+                name.as_str(),
+                old.as_deref(),
+                new.as_deref(),
+            )),
+            _ => None,
+        })
+    }
+}
+
+/// A push that `wt undo` would undo next: the newest operation of its tree
+/// ([`Repository::push_to_undo`]). It is undone on the server by
+/// `remote::undo_push`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushUndo {
+    /// The oplog entry of the push.
+    pub op: OpLogEntry,
+    pub tree: String,
+    pub remote: String,
+    pub branch: String,
+    /// Server tip before the push (`None`: the push created the branch).
+    pub old_tip: Option<String>,
+    /// Server tip the push left.
+    pub new_tip: String,
 }
 
 /// Options of [`Repository::undo`] and [`Repository::redo`].
@@ -432,6 +507,26 @@ impl Repository {
             )));
         }
         let targets: Vec<OpLogEntry> = stack.into_iter().rev().take(count).collect();
+        // Pushes changed the server: they are undone by `remote::undo_push`
+        // (one at a time, when newest) and published again by `wt push`.
+        if let Some((op, (remote, branch, _, _))) = targets
+            .iter()
+            .find_map(|op| op.remote_change().map(|c| (op, c)))
+        {
+            return Err(SdkError::InvalidArgument(if kind == OpKind::Undo {
+                format!(
+                    "cannot undo \"{}\" locally: it moved {remote}/{branch} on the server; \
+                     undo it on its own with `wt undo` (no count) while it is the newest operation",
+                    op.description
+                )
+            } else {
+                format!(
+                    "cannot redo \"{}\": it moved {remote}/{branch} on the server; \
+                     run `wt push` to publish the snapshots again",
+                    op.description
+                )
+            }));
+        }
         // The changes to apply, in order: undo applies `old`, redo `new`.
         let steps: Vec<Vec<RefChange>> = targets
             .iter()
@@ -546,6 +641,89 @@ impl Repository {
         })
     }
 
+    /// The push `wt undo` would undo next: the newest operation of `tree`
+    /// when it is a push (`None` otherwise, or when nothing can be undone).
+    pub fn push_to_undo(&self, tree: &str) -> Result<Option<PushUndo>> {
+        let Some(op) = self.oplog(tree)?.into_iter().next() else {
+            return Ok(None);
+        };
+        let Some((remote, branch, old, Some(new))) = op.remote_change() else {
+            return Ok(None);
+        };
+        let undo = PushUndo {
+            tree: op.tree.clone(),
+            remote: remote.to_string(),
+            branch: branch.to_string(),
+            old_tip: old.map(str::to_string),
+            new_tip: new.to_string(),
+            op: op.clone(),
+        };
+        Ok(Some(undo))
+    }
+
+    /// Record an accepted push that moved `remote`/`branch` from `old` to
+    /// `new` (called by the push flow; `forced` names it `force-push`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_push(
+        &self,
+        tree: &str,
+        remote: &str,
+        branch: &str,
+        old: Option<&str>,
+        new: &str,
+        forced: bool,
+        snapshots: usize,
+    ) -> Result<()> {
+        self.append_oplog(&OpLogEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            at: Utc::now(),
+            tree: tree.to_string(),
+            kind: OpKind::Op,
+            op: if forced { "force-push" } else { "push" }.into(),
+            description: format!(
+                "push {branch} to {remote}/{branch} ({snapshots} snapshot{})",
+                if snapshots == 1 { "" } else { "s" }
+            ),
+            target: None,
+            changes: vec![RefChange::Remote {
+                remote: remote.to_string(),
+                name: branch.to_string(),
+                old: old.map(str::to_string),
+                new: Some(new.to_string()),
+            }],
+        })
+    }
+
+    /// Record that `undo` was undone on the server: the remote-tracking ref
+    /// follows the server branch back, the reflog gets an `undo-push`
+    /// entry and the oplog an `undo` entry for the push.
+    pub(crate) fn record_push_undo(&self, undo: &PushUndo) -> Result<()> {
+        let restored = undo.old_tip.as_deref();
+        self.set_remote_tip(&undo.tree, &undo.remote, &undo.branch, restored)?;
+        self.append_reflog(&ReflogEntry {
+            at: Utc::now(),
+            tree: undo.tree.clone(),
+            branch: undo.branch.clone(),
+            action: "undo-push".into(),
+            old: Some(undo.new_tip.clone()),
+            new: restored.map(str::to_string),
+            message: format!(
+                "undo push: {}/{} moved back on the server",
+                undo.remote, undo.branch
+            ),
+        })?;
+        self.append_oplog(&OpLogEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            at: Utc::now(),
+            tree: undo.tree.clone(),
+            kind: OpKind::Undo,
+            op: "undo".into(),
+            description: format!("undo {}: {}", undo.op.op, undo.op.description),
+            target: Some(undo.op.id.clone()),
+            changes: undo.op.changes.iter().map(RefChange::inverted).collect(),
+        })
+    }
+
     // ----------------------------------------------------------------
     // Internal helpers
     // ----------------------------------------------------------------
@@ -617,6 +795,9 @@ impl Repository {
                     fsutil::write_atomic(&path, new.as_bytes())
                 }
             }
+            // Server branches move through the server (undo_redo refuses
+            // operations with remote changes).
+            RefChange::Remote { .. } => Ok(()),
         }
     }
 
@@ -663,6 +844,8 @@ impl RefState {
             RefChange::Branch { name, old, .. } => self.branches.get(name) == old.as_ref(),
             RefChange::Tag { name, old, .. } => self.tags.get(name) == old.as_deref(),
             RefChange::Stash { old, .. } => &self.stash == old,
+            // Server branches are not part of the local ref state.
+            RefChange::Remote { .. } => true,
         }
     }
 
@@ -686,6 +869,7 @@ impl RefState {
                 }
             },
             RefChange::Stash { new, .. } => self.stash = new.clone(),
+            RefChange::Remote { .. } => {}
         }
     }
 }

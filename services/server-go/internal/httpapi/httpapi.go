@@ -118,6 +118,9 @@ type Deps struct {
 	TenantLifecycle *iam.TenantLifecycle
 	// server-ops (§16.11): background retention (GET/POST /admin/retention).
 	Retention *retention.Service
+	// Reflog restores branches from the server reflog (POST
+	// {tree}/reflog/restore; *syncsvc.Service). nil = 501.
+	Reflog BranchRestorer
 
 	// hardening (§15.10): Pprof serves the Go runtime profiles at
 	// /debug/pprof to server admins; false = those routes answer 404.

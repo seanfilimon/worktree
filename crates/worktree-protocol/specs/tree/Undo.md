@@ -4,7 +4,8 @@
 > and `wt redo`, force pushes with lease semantics, push idempotency, the
 > server reflog, protection bypass and the `DeleteTag` RPC, as built
 > (`crates/worktree-sdk/src/repo/oplog.rs`, `crates/worktree-sdk/src/remote/force.rs`,
-> `services/server-go/internal/syncsvc/{push_force,push_force_ops,tags_delete}.go`,
+> `services/server-go/internal/syncsvc/{push_force,push_force_ops,restore,tags_delete}.go`,
+> `crates/worktree-sdk/src/remote/server_reflog.rs`,
 > `docs/ENGINEERING_PLAN.md` §16.10). Features that are described but not built
 > are listed under [Roadmap](#roadmap).
 
@@ -23,11 +24,12 @@ log. `wt undo` restores the refs an operation changed, and `wt redo`
 re-applies it. For the second, an administrator can **force-push** a
 rewritten branch. The lease makes sure nobody's work is lost by accident,
 the protection rules decide who may do it, and the server keeps the rewound
-tip in its reflog.
+tip in its reflog. A branch can be restored to any tip of its server reflog
+(§4.1), and `wt undo` undoes your newest push that way (§2.2).
 
-Snapshots are never deleted by any of these operations. Undo and force push
-only move refs, so every state stays reachable through the oplog, the local
-reflog or the server reflog until garbage collection.
+Snapshots are never deleted by any of these operations. Undo, force push and
+restore only move refs, so every state stays reachable through the oplog,
+the local reflog or the server reflog until garbage collection.
 
 ---
 
@@ -61,9 +63,13 @@ A ref change has one of these forms:
 | `branch` | `{tip, archived}` of a local branch. |
 | `tag` | The full local tag record. |
 | `stash` | The raw content of `trees/<tree>/stash.jsonl`. |
+| `remote` | `{remote, name, old, new}`: a server branch moved by a push (tips before and after). |
 
 Remote-tracking refs, the reflog, the index and the working tree are not
-recorded.
+recorded. Pushes change no local ref, so the push flow records each
+accepted push that moved a server branch explicitly: an `op` entry named
+`push` or `force-push` (`push main to origin/main (2 snapshots)`) with one
+`remote` change. Recording is best effort; the push has already succeeded.
 
 ### 1.1 Recording
 
@@ -126,6 +132,12 @@ recently undone operations. Both commands follow the same procedure:
 The result names the processed operations, the current branch and its
 tip.
 
+Operations with a `remote` change (pushes) are never undone or redone by
+this procedure: `wt undo N` refuses when they are among the targets
+(`cannot undo "…" locally: it moved origin/main on the server`), and `wt
+redo` refuses an undone push (`run wt push to publish the snapshots
+again`). A push is undone on its own, as described next.
+
 ### 2.1 Stash semantics
 
 The stash holds working changes, so undoing stash operations also moves
@@ -143,6 +155,37 @@ manifest. In that case the clean-tree check of step 3 passes. This makes
 `push → undo → redo` and `pop → undo` work without `--force`.
 
 `wt stash apply` changes only the working tree, so it is not recorded.
+
+### 2.2 Undoing a push
+
+When the newest operation of the tree is a push, `wt undo [--yes]
+[--bypass-protection]` undoes it on the server:
+
+1. A count other than 1 is refused (`undo it on its own`). A push that
+   created the branch has no earlier tip and is refused (`the push created
+   origin/B`; delete the branch instead).
+2. The server tip of the branch must still be the pushed tip (`GET
+   {tree}/branches`). Otherwise someone pushed on top, and undoing would
+   discard their snapshots: `origin/B has moved since your push … Run wt
+   pull and take your changes back with wt revert instead`.
+3. The command shows the server branch, the move (`pushed -> previous`)
+   and the snapshots that leave the server branch (and, for a force push,
+   that the overwritten tip comes back), then asks for confirmation.
+   `--yes` skips the question; without a terminal it is required.
+4. It calls `POST {tree}/reflog/restore` (§4.1) with `tip` = the server tip
+   before the push and `expected_tip` = the pushed tip (lease), and
+   `bypass` with `--bypass-protection`. Refusals keep their meaning:
+   `permission denied` without `branch:force_push` (hint: `wt revert` and
+   `wt push`), `branch protection violation` for protection, and a lost
+   lease as in step 2.
+5. On success the remote-tracking ref moves back to the restored tip, the
+   local reflog records `undo-push` and the oplog an `undo` entry for the
+   push. Local branches keep their snapshots, so `wt push` publishes them
+   again; `wt redo` refers to it.
+
+`--force` does not lift any of these checks. `wt revert` remains the
+append-only way to take pushed changes back for everyone without
+`branch:force_push`.
 
 ## 3. Force Push
 
@@ -205,10 +248,67 @@ random)`:
 bypassed[], actor, actor_id, count, at}`
 
 `GET {tree}/reflog?branch=&limit=50` (`tree:read`, at most 500 entries)
-returns the entries newest first. The admin History tab lists the force
-pushes of the selected branch with who rewound it and from which tip, and
-marks the snapshots they made the tip. Entries are kept for 90 days and
-are deleted with their tree. Merge-request merges are not recorded yet.
+returns the entries newest first; `wt reflog --remote [--from R] [-b B]
+[-n N]` prints it. The admin History tab lists the force pushes (and
+rewinding restores) of the selected branch with who rewound it and from
+which tip, and marks the snapshots they made the tip. Entries are kept for
+90 days and are deleted with their tree. Merge-request merges are not
+recorded yet. Restores (§4.1) add entries of kind `restore`.
+
+### 4.1 Restore
+
+`POST {tree}/reflog/restore {branch, tip, expected_tip, bypass?}` moves a
+branch to `tip`, which must be the `old_tip` or `new_tip` of one of the
+branch's reflog entries:
+
+1. **Semantics**: the branch ref moves; no snapshot is created. The
+   replaced tip is kept in a new reflog entry (`kind: restore`, `forced`
+   when it rewinds), so a restore can itself be restored. A tip that is not
+   in the reflog or is the current tip answers `400`; a tip whose snapshot
+   or manifest is no longer stored `404`.
+2. **Lease**: `expected_tip` (required) must equal the current tip, and the
+   branch moves with compare-and-swap from it; otherwise `409 conflict`
+   with `error.details.current_tip` and `error.details.expected_tip`.
+3. **Permission**: `tree:write` (access policies denying `branch:push`
+   apply), then `branch:force_push` (admin role and up), whichever way the
+   branch moves. A restore is a server-side force push to a recorded tip,
+   so it reuses that permission instead of adding a new action.
+4. **Protection**: a restore that rewinds (the target does not descend from
+   the current tip) follows the force-push rules of §3.2: `no_force_push`
+   refuses it absolutely, `require_linear` and required approvals unless
+   the caller bypasses protection. A restore that moves forward (bringing
+   back a rewound tip) follows the direct-push rules (`no_direct_push`,
+   allowed pushers), which can be bypassed. `bypass: true` needs
+   `branch:bypass_protection` (`403 forbidden` otherwise, like the merge
+   bypass). Protection refusals answer `403 branch_protection`.
+5. **Records**: publishes `branch.pushed` (payload `restored: true`,
+   `forced` for rewinds, so watchers, mirrors and indexes follow) and
+   `branch.restored {branch, old_tip, new_tip, forced, bypass}`; audited as
+   `branch.restore` (refusals as `branch.restore_rejected`), bypasses also
+   as `branch.protection_bypassed` with operation `restore`.
+
+The admin History tab offers "Restore" (with a confirmation) on each force
+push or restore entry to the tip it replaced, for admins and owners.
+
+**Why move the ref instead of writing a new snapshot.** A restore could
+also be "a new snapshot whose content equals the old tip", which keeps the
+branch append-only. It is deliberately not, because:
+
+- the point of the reflog is recovering *history*: after a bad force push
+  the rewound snapshots (ids, authors, signatures, merge-request
+  references) only come back if the branch points at them again; a
+  content copy would leave them unreachable and add an unsigned
+  server-authored snapshot;
+- the server does not author snapshots on its own (README: only on
+  explicit merge-request merges and conflict resolutions);
+- rewinding a shared branch already exists as the force push, an audited,
+  admin-only exception to append-only history with lease semantics and
+  protection rules (`no_force_push`). Restore reuses exactly those rules,
+  and nothing is lost: snapshots are never deleted and the replaced tip is
+  in the reflog.
+
+Users without `branch:force_push` take pushed changes back the append-only
+way, with `wt revert` and a push.
 
 ## 5. Protection Bypass
 
@@ -263,6 +363,8 @@ create it again.
 |---|---|
 | `wt undo [N] [--force]` | Undo the newest N operations of the tree. |
 | `wt undo --list` | Operations that can be undone, newest first. |
+| `wt undo [--yes] [--bypass-protection]` | Newest operation is a push: move the server branch back (§2.2). |
+| `wt reflog --remote [--from R] [-b B] [-n N]` | The server reflog of the tree. |
 | `wt redo [N] [--force]` / `wt redo --list` | Re-apply undone operations / list them. |
 | `wt push --force` (`--force-with-lease`) | Force push with lease. |
 | `wt push --bypass-protection` | Ask the server to bypass branch protection. |
@@ -283,6 +385,9 @@ create it again.
 | `operation_id` idempotency (`push_ops`, 24 h), one SDK retry | Built (v0.8 §16.10) |
 | `DeleteTag` RPC, `wt tag delete --remote` | Built (v0.8 §16.10) |
 | Admin: `no_force_push` toggle, force-push markers in branch history | Built (v0.8 §16.10) |
+| Pushes recorded in the oplog (`remote` changes), `wt undo` of a push through the server | Built |
+| `POST {tree}/reflog/restore` (lease, `branch:force_push`, protections, `branch.restored`, audit) | Built |
+| `wt reflog --remote`; admin "Restore" on reflog entries | Built |
 
 ## Roadmap
 
@@ -292,9 +397,13 @@ create it again.
   auto-stash records stash push, switch and stash pop separately).
 - An oplog-aware `wt gc` that keeps the objects of dropped stash entries
   for as long as the log mentions them.
-- `wt undo` of a push (a force push back to the previous server tip).
-- Merge-request merges and REST branch moves in the server reflog, and a
-  REST endpoint to restore a branch from a reflog entry.
+- Merge-request merges and REST branch moves (including branch creation
+  and deletion) in the server reflog, so they can be restored too.
+- Keeping reflog tips as garbage-collection roots: today a restore of a tip
+  whose objects were collected (rewound more than the GC grace period ago)
+  is refused with `404`.
+- A `wt` command to restore any reflog entry (today: REST and the admin
+  panel; `wt undo` covers your newest push).
 - A CLI flag for bypassing protection on `wt mr merge` (the REST body
   supports it).
 
@@ -303,8 +412,9 @@ create it again.
 - `crates/worktree-sdk/src/repo/oplog.rs` — `OpGuard`, `OpLogEntry`, `undo`, `redo`
 - `crates/worktree-sdk/src/repo/{trees,refs,stash}.rs` — lock hook, ref restoration, stash hooks
 - `crates/worktree-sdk/src/remote/{force,push,client}.rs` — lease, operation ids, bypass metadata, `delete_tag`
-- `crates/worktree-cli/src/commands/{undo,tag,protect,sync}.rs`
-- `services/server-go/internal/syncsvc/push_force.go`, `push_force_ops.go`, `tags_delete.go`, `push.go`
+- `crates/worktree-cli/src/commands/{undo,history,tag,protect,sync}.rs`
+- `services/server-go/internal/syncsvc/push_force.go`, `push_force_ops.go`, `restore.go`, `tags_delete.go`, `push.go`
+- `crates/worktree-sdk/src/remote/server_reflog.rs` — `server_reflog`, `restore_branch`, `plan_push_undo`, `undo_push`
 - `services/server-go/internal/review/protection.go` (`CheckForcePush`), `bypass.go`
 - `services/server-go/internal/httpapi/reflog.go`, `openapi.yaml`
 - `apps/admin/src/pages/tree/ProtectionsTab.tsx`, `HistoryTab.tsx`, `history/ForcePushes.tsx`, `api/historyV2.ts`

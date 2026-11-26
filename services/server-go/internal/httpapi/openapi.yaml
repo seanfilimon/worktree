@@ -9719,6 +9719,67 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/trees/{tenant}/{tree}/reflog/restore:
+    parameters:
+      - $ref: "#/components/parameters/Tenant"
+      - $ref: "#/components/parameters/Tree"
+    post:
+      operationId: restoreFromReflog
+      summary: Restore a branch to a tip of its reflog
+      description: |
+        Moves `branch` to `tip`, which must be the `old_tip` or `new_tip` of
+        one of the branch's reflog entries (the last 90 days). The branch
+        ref moves; no snapshot is created, and the replaced tip is kept in a
+        new reflog entry (`kind: restore`), so a restore can be restored.
+        `wt undo` of a push uses this endpoint.
+
+        `expected_tip` is the lease: the branch must still be there, and it
+        moves with compare-and-swap from it; otherwise the answer is `409
+        conflict` with `error.details.current_tip` and
+        `error.details.expected_tip`. Needs `branch:force_push` (and
+        `tree:write`; access policies denying `branch:push` apply). A
+        restore that rewinds the branch follows the force-push protections:
+        `no_force_push` refuses it (`403 branch_protection`, even with
+        `bypass`), `require_linear` and required approvals refuse it unless
+        `bypass` is set. A restore that moves forward follows the
+        direct-push protections (`no_direct_push`, allowed pushers), which
+        `bypass` lifts. `bypass` needs `branch:bypass_protection` (`403
+        forbidden` otherwise) and is audited (`branch.protection_bypassed`,
+        operation `restore`). A tip that is not in the reflog or the current
+        tip answers `400`; a tip whose snapshot or content is no longer
+        stored `404`.
+
+        Publishes `branch.pushed` (payload `restored: true`, `forced` for
+        rewinds) and `branch.restored` `{branch, old_tip, new_tip, forced,
+        bypass}`; audited as `branch.restore` (refusals as
+        `branch.restore_rejected`).
+      tags: [Trees]
+      x-wt-action: branch:force_push
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReflogRestoreRequest"
+      responses:
+        "200":
+          description: The branch moved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReflogRestoreResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
 components:
   securitySchemes:
     bearerAuth:
@@ -15449,10 +15510,11 @@ components:
           type: string
         kind:
           type: string
-          enum: [push, force_push]
+          enum: [push, force_push, restore]
+          description: "`restore`: POST {tree}/reflog/restore moved the branch to new_tip."
         forced:
           type: boolean
-          description: "A force push: old_tip is no longer an ancestor of new_tip."
+          description: "A force push or a restore that rewound the branch: old_tip is no longer an ancestor of new_tip."
         bypass:
           type: boolean
           description: "Branch protection was bypassed (branch:bypass_protection)."
@@ -15479,4 +15541,44 @@ components:
           type: [array, "null"]
           items:
             $ref: "#/components/schemas/ReflogEntry"
+    ReflogRestoreRequest:
+      type: object
+      description: "Body of POST {tree}/reflog/restore. branch, tip and expected_tip are required."
+      properties:
+        branch:
+          type: string
+        tip:
+          type: string
+          description: "Snapshot to restore: old_tip or new_tip of a reflog entry of the branch."
+        expected_tip:
+          type: string
+          description: "The branch tip the caller saw (lease)."
+        bypass:
+          type: boolean
+          description: "Bypass branch protection (branch:bypass_protection)."
+    ReflogRestoreResult:
+      type: object
+      description: "Outcome of POST {tree}/reflog/restore (syncsvc.RestoreResult)."
+      required: [branch, old_tip, new_tip, forced, bypass, bypassed, entry]
+      properties:
+        branch:
+          type: string
+        old_tip:
+          type: string
+          description: "The tip the restore replaced."
+        new_tip:
+          type: string
+          description: "The restored tip."
+        forced:
+          type: boolean
+          description: "The restore rewound the branch."
+        bypass:
+          type: boolean
+        bypassed:
+          type: [array, "null"]
+          items:
+            type: string
+          description: "The protection refusals that were bypassed."
+        entry:
+          $ref: "#/components/schemas/ReflogEntry"
     # ---- end history-v2 ----

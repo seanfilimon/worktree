@@ -84,7 +84,7 @@ mod outbox;
 pub use outbox::OutboxEntry;
 // history-v2 (§16.10): the local operation log (`.wt/oplog.jsonl`), undo/redo.
 mod oplog;
-pub use oplog::{BranchRef, OpKind, OpLogEntry, RefChange, UndoOptions, UndoReport};
+pub use oplog::{BranchRef, OpKind, OpLogEntry, PushUndo, RefChange, UndoOptions, UndoReport};
 
 pub(crate) use trees::TreeRecord;
 // hardening (§15.10): shared `.wt-tree/` files; identity in `local.toml`.

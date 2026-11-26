@@ -190,6 +190,19 @@ pub(crate) async fn push_with(
             chain.len()
         ),
     })?;
+    // `wt undo` of a push (specs/tree/Undo.md §2.2). Best effort: the push
+    // already succeeded on the server.
+    if let Err(err) = repo.record_push(
+        &tree_name,
+        remote,
+        &branch,
+        server_tip.as_deref(),
+        &new_tip,
+        report.forced,
+        chain.len(),
+    ) {
+        tracing::warn!(%err, "oplog: recording the push failed");
+    }
 
     // hooks: the branch push is accepted and recorded.
     if !opts.skip_hooks {

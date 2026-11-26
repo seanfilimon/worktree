@@ -109,6 +109,13 @@ pub struct FakeState {
     pub last_upload_deltas: usize,
     pub last_download_deltas: usize,
     // ---- end pack-delta ----
+    // ---- reflog restore (specs/tree/Undo.md §4.1) ----
+    /// Bodies of every `POST {tree}/reflog/restore`, in order.
+    pub restore_calls: Vec<Value>,
+    /// When set, restores are answered with this (status, code, message).
+    pub restore_refusal: Option<(u16, String, String)>,
+    /// Entries served by `GET {tree}/reflog` (restores append theirs).
+    pub reflog: Vec<Value>,
 }
 
 /// storage workstream (§14.6): message compression seen on one gRPC call.
@@ -321,6 +328,18 @@ impl FakeServer {
         let rest = Router::new()
             .route("/api/v1/auth/login", post(rest_login))
             .route("/api/v1/auth/register", post(rest_register))
+            .route(
+                "/api/v1/trees/:tenant/:tree/branches",
+                axum::routing::get(rest_branches),
+            )
+            .route(
+                "/api/v1/trees/:tenant/:tree/reflog",
+                axum::routing::get(rest_reflog),
+            )
+            .route(
+                "/api/v1/trees/:tenant/:tree/reflog/restore",
+                post(rest_restore),
+            )
             .with_state(state.clone());
         let app = tonic::service::Routes::new(grpc)
             .into_axum_router()
@@ -1302,6 +1321,116 @@ fn api_error(status: StatusCode, code: &str, message: &str) -> (StatusCode, Json
     (
         status,
         Json(json!({ "error": { "code": code, "message": message } })),
+    )
+}
+
+// ---- reflog restore (specs/tree/Undo.md §4.1) ----
+
+type TreePath = axum::extract::Path<(String, String)>;
+
+fn rest_tree_id(st: &FakeState, tenant: &str, tree: &str) -> Option<String> {
+    st.trees
+        .iter()
+        .find(|t| t.tenant_slug == tenant && t.name == tree)
+        .map(|t| t.id.clone())
+}
+
+fn rest_caller(st: &FakeState, headers: &axum::http::HeaderMap) -> Option<String> {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())?
+        .strip_prefix("Bearer ")?;
+    st.account_by_token(token).map(|a| a.username.clone())
+}
+
+async fn rest_branches(
+    State(state): State<Shared>,
+    axum::extract::Path((tenant, tree)): TreePath,
+) -> (StatusCode, Json<Value>) {
+    let st = lock(&state);
+    let Some(id) = rest_tree_id(&st, &tenant, &tree) else {
+        return api_error(StatusCode::NOT_FOUND, "not_found", "tree not found");
+    };
+    let list: Vec<Value> = st
+        .branches
+        .get(&id)
+        .map(|b| {
+            b.iter()
+                .map(|(name, tip)| json!({"tree_id": id, "name": name, "tip": tip.clone().unwrap_or_default()}))
+                .collect()
+        })
+        .unwrap_or_default();
+    (StatusCode::OK, Json(Value::Array(list)))
+}
+
+async fn rest_reflog(
+    State(state): State<Shared>,
+    axum::extract::Path((tenant, tree)): TreePath,
+) -> (StatusCode, Json<Value>) {
+    let st = lock(&state);
+    if rest_tree_id(&st, &tenant, &tree).is_none() {
+        return api_error(StatusCode::NOT_FOUND, "not_found", "tree not found");
+    }
+    (StatusCode::OK, Json(json!({ "entries": st.reflog })))
+}
+
+/// Lease check and tip move only; the Go server enforces the rest.
+async fn rest_restore(
+    State(state): State<Shared>,
+    axum::extract::Path((tenant, tree)): TreePath,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    let mut st = lock(&state);
+    let Some(actor) = rest_caller(&st, &headers) else {
+        return api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "authentication required",
+        );
+    };
+    let Some(id) = rest_tree_id(&st, &tenant, &tree) else {
+        return api_error(StatusCode::NOT_FOUND, "not_found", "tree not found");
+    };
+    st.restore_calls.push(body.clone());
+    if let Some((status, code, message)) = st.restore_refusal.clone() {
+        let status = StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN);
+        return api_error(status, &code, &message);
+    }
+    let (branch, tip, expected) = (
+        field(&body, "branch").to_string(),
+        field(&body, "tip").to_string(),
+        field(&body, "expected_tip").to_string(),
+    );
+    let current = st
+        .branches
+        .get(&id)
+        .and_then(|b| b.get(&branch))
+        .cloned()
+        .flatten()
+        .unwrap_or_default();
+    if current != expected {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": {"code": "conflict",
+                "message": format!("branch '{branch}' moved: its tip is now {current}"),
+                "details": {"current_tip": current, "expected_tip": expected}}})),
+        );
+    }
+    st.branches
+        .entry(id.clone())
+        .or_default()
+        .insert(branch.clone(), Some(tip.clone()));
+    let entry = json!({"tree_id": id, "branch": branch, "old_tip": current, "new_tip": tip,
+        "kind": "restore", "forced": true, "bypass": false, "bypassed": [], "actor": actor,
+        "actor_id": "", "count": 0, "at": "2026-11-01T10:00:00Z"});
+    st.reflog.insert(0, entry.clone());
+    (
+        StatusCode::OK,
+        Json(
+            json!({"branch": branch, "old_tip": current, "new_tip": tip, "forced": true,
+            "bypass": false, "bypassed": [], "entry": entry}),
+        ),
     )
 }
 

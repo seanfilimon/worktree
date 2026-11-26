@@ -307,6 +307,22 @@ impl RestClient {
         query: &[(&str, String)],
         body: Option<&B>,
     ) -> Result<Vec<u8>> {
+        self.request_raw(method, path, query, body)
+            .await?
+            .map_err(|f| map_api_error(&self.server, f.status, &f.body))
+    }
+
+    /// Like `request`, but an HTTP error status is returned as
+    /// [`HttpFailure`] (status and body) instead of being mapped, for
+    /// callers that interpret the error envelope themselves. The outer
+    /// error is a transport failure.
+    pub(crate) async fn request_raw<B: Serialize + ?Sized>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&B>,
+    ) -> Result<std::result::Result<Vec<u8>, HttpFailure>> {
         self.token.ensure_fresh().await;
         let mut retried = false;
         let (status, bytes) = loop {
@@ -339,13 +355,12 @@ impl RestClient {
             break (status, bytes);
         };
         if status.is_success() || status == StatusCode::NOT_MODIFIED {
-            return Ok(bytes.to_vec());
+            return Ok(Ok(bytes.to_vec()));
         }
-        Err(map_api_error(
-            &self.server,
-            status.as_u16(),
-            &String::from_utf8_lossy(&bytes),
-        ))
+        Ok(Err(HttpFailure {
+            status: status.as_u16(),
+            body: String::from_utf8_lossy(&bytes).into_owned(),
+        }))
     }
 
     fn url(&self, path: &str) -> String {
@@ -378,6 +393,13 @@ fn parse_sse_frame(frame: &str) -> Option<(String, String)> {
         }
     }
     (!data.is_empty()).then(|| (kind, data.join("\n")))
+}
+
+/// An HTTP error answer of [`RestClient::request_raw`].
+#[derive(Debug, Clone)]
+pub(crate) struct HttpFailure {
+    pub status: u16,
+    pub body: String,
 }
 
 /// The `{"error":{"code","message"}}` envelope, for callers that need the

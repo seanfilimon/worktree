@@ -1,9 +1,10 @@
 import { GitCompareArrows, History, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { useSnapshots } from "@/api/queries";
+import { useBranches, useSnapshots } from "@/api/queries";
 import { useForcePushes, type ReflogEntry } from "@/api/historyV2";
 import type { Snapshot } from "@/api/types";
+import { canManage, useAuth } from "@/auth/context";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -43,6 +44,11 @@ export function HistoryTab() {
   const branch = params.get("branch") || summary.tree.default_branch;
   const snapshots = useSnapshots(tenant, tree, branch);
   const forced = useForcePushes(tenant, tree, branch); // history-v2 (§16.10)
+  // Reflog restore needs branch:force_push (admins and owners); the server decides.
+  const { roleIn, isAdmin } = useAuth();
+  const canRestore = canManage(roleIn(summary.tree.tenant_id), isAdmin);
+  const branches = useBranches(tenant, tree);
+  const currentTip = branches.data?.find((b) => b.name === branch)?.tip;
   const [selected, setSelected] = useState<string[]>([]);
 
   const groups = useMemo(() => groupByDay(snapshots.data ?? []), [snapshots.data]);
@@ -109,7 +115,13 @@ export function HistoryTab() {
           </EmptyState>
         ) : (
           <section aria-label={`Snapshots on ${branch}`} className="flex flex-col gap-5">
-            <ForcePushHistory tenant={tenant} tree={tree} branch={branch} entries={forced.list} />
+            <ForcePushHistory
+              tenant={tenant}
+              tree={tree}
+              branch={branch}
+              entries={forced.list}
+              currentTip={canRestore ? currentTip : undefined}
+            />
             {groups.map((g) => (
               <section key={g.key} aria-label={g.label}>
                 <h3 className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">

@@ -60,7 +60,7 @@ Rows marked *Roadmap* are specified in [`crates/worktree-protocol/specs/`](./cra
 | Auto-snapshots | None | `worktree-bg` daemon snapshots on inactivity and stages work automatically |
 | Submodules | Separate system | Nested trees with independent branches |
 | Symbolic links | Mode `120000` entries | Recorded as links (target stored as text, never followed); round-trip through `wt git import` / `export` |
-| Recovery | Local reflog that expires | Local append-only reflog and `wt undo`; the server keeps a branch reflog (restoring from it with the CLI is *Roadmap*) |
+| Recovery | Local reflog that expires | Local append-only reflog and `wt undo`; server reflog of every branch move (`wt reflog --remote`), branches restorable from it and `wt undo` of a push |
 | Monitoring | None | `/healthz`, Prometheus `/metrics`, append-only audit log, admin panel |
 | Transport security | SSH/HTTPS | Cleartext h2c by default, or native TLS / mutual TLS (`--tls-cert`, `--tls-key`, `--tls-client-ca`); Ed25519 snapshot signing. QUIC is *Roadmap* |
 

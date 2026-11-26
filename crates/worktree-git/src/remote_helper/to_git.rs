@@ -305,6 +305,7 @@ mod tests {
                 size: content.len() as u64,
                 executable: false,
                 chunked: false,
+                symlink: false,
             }],
         };
         let id = uuid::Uuid::from_u128(n).to_string();

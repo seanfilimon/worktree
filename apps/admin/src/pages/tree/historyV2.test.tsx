@@ -90,6 +90,68 @@ describe("history tab force-push markers", () => {
     expect(fetchMock.find(`GET ${T}/reflog`)[0]?.url.searchParams.get("branch")).toBe("main");
   });
 
+  it("restores the tip a force push replaced after confirmation", async () => {
+    const restored: ReflogEntry = { ...forcePush, kind: "restore", old_tip: "snap-3", new_tip: "old-tip-1234567", actor: "alice" };
+    const { user, fetchMock } = renderApp({
+      route: "/trees/acme/web/history",
+      api: treeRoutes({
+        [`GET ${T}/snapshots`]: fx.snapshots,
+        [`GET ${T}/reflog`]: { entries: [forcePush, plainPush] },
+        [`POST ${T}/reflog/restore`]: (req) =>
+          json({ branch: "main", old_tip: "snap-3", new_tip: "old-tip-1234567", forced: true, bypass: false, bypassed: [], entry: restored, req: req.body }),
+      }),
+    });
+    const pushes = await screen.findByRole("region", { name: "Force pushes on main" });
+    await user.click(await within(pushes).findByRole("button", { name: "Restore main to oldtip12" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Restore main to oldtip12?");
+    expect(dialog).toHaveTextContent("main moves from snap3 back to oldtip12");
+    expect(fetchMock.find(`POST ${T}/reflog/restore`)).toHaveLength(0);
+    await user.click(within(dialog).getByRole("button", { name: "Restore main" }));
+    await waitFor(() => expect(fetchMock.find(`POST ${T}/reflog/restore`)).toHaveLength(1));
+    expect(fetchMock.find(`POST ${T}/reflog/restore`)[0]?.body).toEqual({ branch: "main", tip: "old-tip-1234567", expected_tip: "snap-3" });
+    expect(await screen.findByText("Branch restored")).toBeInTheDocument();
+  });
+
+  it("reports a refused restore", async () => {
+    const { user } = renderApp({
+      route: "/trees/acme/web/history",
+      api: treeRoutes({
+        [`GET ${T}/snapshots`]: fx.snapshots,
+        [`GET ${T}/reflog`]: { entries: [forcePush] },
+        [`POST ${T}/reflog/restore`]: () =>
+          json({ error: { code: "branch_protection", message: "branch 'main' is protected against force pushes (no_force_push)" } }, 403),
+      }),
+    });
+    await user.click(await screen.findByRole("button", { name: "Restore main to oldtip12" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Restore main" }));
+    expect(await screen.findByText(/protected against force pushes/)).toBeInTheDocument();
+  });
+
+  it("offers no restore without admin rights or for the current tip", async () => {
+    renderApp({
+      route: "/trees/acme/web/history",
+      api: treeRoutes({
+        "GET /api/v1/auth/me": fx.memberMe,
+        [`GET ${T}/snapshots`]: fx.snapshots,
+        [`GET ${T}/reflog`]: { entries: [forcePush] },
+      }),
+    });
+    const pushes = await screen.findByRole("region", { name: "Force pushes on main" });
+    expect(within(pushes).queryByRole("button", { name: /Restore/ })).not.toBeInTheDocument();
+  });
+
+  it("labels restores and hides restoring to the current tip", async () => {
+    const restore: ReflogEntry = { ...forcePush, kind: "restore", old_tip: "snap-3", bypass: false };
+    renderApp({
+      route: "/trees/acme/web/history",
+      api: treeRoutes({ [`GET ${T}/snapshots`]: fx.snapshots, [`GET ${T}/reflog`]: { entries: [restore] } }),
+    });
+    const pushes = await screen.findByRole("region", { name: "Force pushes on main" });
+    expect(await within(pushes).findByText("restored")).toBeInTheDocument();
+    expect(within(pushes).queryByRole("button", { name: /Restore/ })).not.toBeInTheDocument();
+  });
+
   it("shows no markers when the server has no reflog", async () => {
     renderApp({ route: "/trees/acme/web/history", api: treeRoutes({ [`GET ${T}/snapshots`]: fx.snapshots }) });
     expect(await screen.findByRole("region", { name: "Snapshots on main" })).toBeInTheDocument();
