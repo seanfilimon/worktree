@@ -6,6 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::ignore_rules::{is_reserved_name, IgnoreStack};
@@ -24,6 +25,10 @@ const INDEX_VERSION: u32 = 2;
 /// read would otherwise go unnoticed ("racy" entries, as in Git).
 const RACY_WINDOW_NS: u64 = 2_000_000_000;
 
+/// Below this many files with I/O to do, scans and checkouts stay on the
+/// calling thread (starting the worker pool costs more than it saves).
+const PARALLEL_MIN_FILES: usize = 64;
+
 /// Stat cache: lets `status` skip re-hashing files whose size and mtime are
 /// unchanged since they were last hashed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -31,6 +36,19 @@ pub(crate) struct Index {
     version: u32,
     saved_at_ns: u64,
     entries: BTreeMap<String, IndexEntry>,
+    /// Set by a scan that found exactly the loaded entries, all of them
+    /// already trusted: saving would only bump `saved_at_ns`, which changes
+    /// nothing, so [`Repository::save_index`] skips the write.
+    #[serde(skip)]
+    unchanged: bool,
+}
+
+/// Borrowed view of an [`Index`] for saving (no copy of the entries).
+#[derive(Serialize)]
+struct IndexRef<'a> {
+    version: u32,
+    saved_at_ns: u64,
+    entries: &'a BTreeMap<String, IndexEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,10 +74,12 @@ impl Index {
     }
 
     pub(crate) fn remove(&mut self, path: &str) {
+        self.unchanged = false;
         self.entries.remove(path);
     }
 
     pub(crate) fn insert(&mut self, path: String, entry: IndexEntry) {
+        self.unchanged = false;
         self.entries.insert(path, entry);
     }
 }
@@ -81,6 +101,28 @@ struct FoundFile {
     size: u64,
     mtime_ns: u64,
     exec_bit: Option<bool>,
+}
+
+/// Shared, read-only inputs of [`Repository::scan_found_file`].
+#[derive(Clone, Copy)]
+struct ScanCtx<'a> {
+    rec: &'a TreeRecord,
+    head: &'a Manifest,
+    old_index: &'a Index,
+    scanner: Option<&'a crate::scan::SecretScanner>,
+    store: bool,
+    scan: bool,
+}
+
+/// One hashed file (`entry.path` is unset; the path is `path`).
+struct ScannedFile {
+    path: String,
+    mtime_ns: u64,
+    entry: ManifestEntry,
+    /// Blocking secret findings (the blob was not stored).
+    findings: Vec<SecretFinding>,
+    /// Non-blocking findings, printed in walk order by the caller.
+    warnings: Vec<SecretFinding>,
 }
 
 #[cfg(unix)]
@@ -174,103 +216,78 @@ impl Repository {
             Ok(())
         })?;
 
-        let mut entries = Vec::with_capacity(found.len());
+        // Files are read, hashed, scanned and stored in parallel (each one is
+        // independent and the store is safe for concurrent writers); the
+        // results are then folded in walk order, so the manifest, index and
+        // findings are exactly what a sequential pass produces.
+        let ctx = ScanCtx {
+            rec,
+            head,
+            old_index: &old_index,
+            scanner: scanner.as_ref(),
+            store,
+            scan,
+        };
+        // Threads only pay off with real I/O to overlap: files to read, or
+        // (when storing) an object check per cached file. A clean `status`
+        // is a few map lookups per file and stays on this thread.
+        let io_files = if store {
+            found.len()
+        } else {
+            found
+                .iter()
+                .filter(|f| old_index.fresh(&f.path, f.size, f.mtime_ns).is_none())
+                .count()
+        };
+        let results: Vec<Result<Option<ScannedFile>>> = if io_files >= PARALLEL_MIN_FILES {
+            found
+                .into_par_iter()
+                .map(|file| self.scan_found_file(&ctx, file))
+                .collect()
+        } else {
+            found
+                .into_iter()
+                .map(|file| self.scan_found_file(&ctx, file))
+                .collect()
+        };
+
+        let mut entries = Vec::with_capacity(results.len());
         let mut index = Index {
             version: INDEX_VERSION,
             saved_at_ns: 0,
             entries: BTreeMap::new(),
+            unchanged: false,
         };
         let mut findings = Vec::new();
-        for file in found {
-            let head_entry = head.get(&file.path);
-            let fallback_exec = old_index
-                .entries
-                .get(&file.path)
-                .map(|e| e.executable)
-                .or(head_entry.map(|e| e.executable))
-                .unwrap_or(false);
-            // hardening (§15.10): without an exec bit (Windows), new shared
-            // hook scripts are recorded executable so they run elsewhere.
-            let fallback_exec = fallback_exec
-                || (!old_index.entries.contains_key(&file.path)
-                    && head_entry.is_none()
-                    && crate::model::is_shared_tree_hook_path(&file.path));
-            let executable = file.exec_bit.unwrap_or(fallback_exec);
-            let cached = old_index
-                .fresh(&file.path, file.size, file.mtime_ns)
-                .map(|e| (e.hash, e.chunked))
-                .filter(|(h, _)| !store || self.store.has(h));
-            let needs_read = match cached {
-                None => true,
-                Some((h, _)) => scan && head_entry.is_none_or(|e| e.hash != h),
-            };
-            let (hash, size, chunked) = match (cached, needs_read) {
-                (Some((h, chunked)), false) => (h, file.size, chunked),
-                _ => {
-                    let data = match fs::read(&file.abs) {
-                        Ok(d) => d,
-                        // Deleted while we were scanning.
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                        Err(e) => return Err(e.into()),
-                    };
-                    // Large files hash to a chunk list (ENGINEERING_PLAN
-                    // §13.2). A large file recorded as a single blob (before
-                    // chunking existed, or by an importer) keeps that form
-                    // while its content is unchanged.
-                    let prepared = prepare_file(&data);
-                    let legacy = prepared.chunked
-                        && head_entry.is_some_and(|e| {
-                            !e.chunked && e.size == data.len() as u64 && e.hash == hash_bytes(&data)
-                        });
-                    let (hash, chunked) = match head_entry {
-                        Some(e) if legacy => (e.hash, false),
-                        _ => (prepared.hash, prepared.chunked),
-                    };
-                    let changed = head_entry.is_none_or(|e| e.hash != hash);
-                    let mut clean = true;
-                    if let Some(scanner) = scanner.as_ref().filter(|_| changed) {
-                        let root_rel = if rec.path.is_empty() {
-                            file.path.clone()
-                        } else {
-                            format!("{}/{}", rec.path, file.path)
-                        };
-                        if !scanner.is_excluded(&[&file.path, &root_rel]) {
-                            let hits = scanner.scan(&file.path, &data);
-                            if scanner.blocks() {
-                                clean = hits.is_empty();
-                                findings.extend(hits);
-                            } else {
-                                crate::scan::warn_findings(&hits);
-                            }
-                        }
-                    }
-                    if store && clean {
-                        if legacy {
-                            self.store.put_hashed(&hash, &data)?;
-                        } else {
-                            self.store.put_prepared(&prepared, &data)?;
-                        }
-                    }
-                    (hash, data.len() as u64, chunked)
-                }
-            };
+        for result in results {
+            let Some(file) = result? else { continue };
+            crate::scan::warn_findings(&file.warnings);
+            findings.extend(file.findings);
+            let entry = file.entry;
             index.entries.insert(
                 file.path.clone(),
                 IndexEntry {
-                    size,
+                    size: entry.size,
                     mtime_ns: file.mtime_ns,
-                    hash,
-                    executable,
-                    chunked,
+                    hash: entry.hash,
+                    executable: entry.executable,
+                    chunked: entry.chunked,
                 },
             );
             entries.push(ManifestEntry {
                 path: file.path,
-                hash,
-                size,
-                executable,
-                chunked,
+                ..entry
             });
+        }
+        if old_index.version == INDEX_VERSION
+            && index.entries == old_index.entries
+            && index
+                .entries
+                .values()
+                .all(|e| e.mtime_ns.saturating_add(RACY_WINDOW_NS) < old_index.saved_at_ns)
+        {
+            index.saved_at_ns = old_index.saved_at_ns;
+            index.unchanged = true;
         }
         // sparse (§15.4): head files outside the sparse set keep their head
         // entries — never reported as deleted, kept by the next snapshot.
@@ -302,6 +319,110 @@ impl Repository {
             index,
             findings,
         })
+    }
+
+    /// Hash (and, per `ctx`, scan and store) one walked file. `None` when
+    /// the file disappeared during the scan. Runs on a worker thread.
+    fn scan_found_file(&self, ctx: &ScanCtx<'_>, file: FoundFile) -> Result<Option<ScannedFile>> {
+        let ScanCtx {
+            rec,
+            head,
+            old_index,
+            scanner,
+            store,
+            scan,
+        } = *ctx;
+        let head_entry = head.get(&file.path);
+        let fallback_exec = old_index
+            .entries
+            .get(&file.path)
+            .map(|e| e.executable)
+            .or(head_entry.map(|e| e.executable))
+            .unwrap_or(false);
+        // hardening (§15.10): without an exec bit (Windows), new shared
+        // hook scripts are recorded executable so they run elsewhere.
+        let fallback_exec = fallback_exec
+            || (!old_index.entries.contains_key(&file.path)
+                && head_entry.is_none()
+                && crate::model::is_shared_tree_hook_path(&file.path));
+        // Shared hook scripts exist to be run by everyone who checks the
+        // tree out, so they are executable whatever the mode of the file
+        // they were first written as.
+        let executable = file.exec_bit.unwrap_or(fallback_exec)
+            || crate::model::is_shared_tree_hook_path(&file.path);
+        let cached = old_index
+            .fresh(&file.path, file.size, file.mtime_ns)
+            .map(|e| (e.hash, e.chunked))
+            .filter(|(h, _)| !store || self.store.has(h));
+        let needs_read = match cached {
+            None => true,
+            Some((h, _)) => scan && head_entry.is_none_or(|e| e.hash != h),
+        };
+        let mut findings = Vec::new();
+        let mut warnings = Vec::new();
+        let (hash, size, chunked) = match (cached, needs_read) {
+            (Some((h, chunked)), false) => (h, file.size, chunked),
+            _ => {
+                let data = match fs::read(&file.abs) {
+                    Ok(d) => d,
+                    // Deleted while we were scanning.
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                };
+                // Large files hash to a chunk list (ENGINEERING_PLAN
+                // §13.2). A large file recorded as a single blob (before
+                // chunking existed, or by an importer) keeps that form
+                // while its content is unchanged.
+                let prepared = prepare_file(&data);
+                let legacy = prepared.chunked
+                    && head_entry.is_some_and(|e| {
+                        !e.chunked && e.size == data.len() as u64 && e.hash == hash_bytes(&data)
+                    });
+                let (hash, chunked) = match head_entry {
+                    Some(e) if legacy => (e.hash, false),
+                    _ => (prepared.hash, prepared.chunked),
+                };
+                let changed = head_entry.is_none_or(|e| e.hash != hash);
+                let mut clean = true;
+                if let Some(scanner) = scanner.filter(|_| changed) {
+                    let root_rel = if rec.path.is_empty() {
+                        file.path.clone()
+                    } else {
+                        format!("{}/{}", rec.path, file.path)
+                    };
+                    if !scanner.is_excluded(&[&file.path, &root_rel]) {
+                        let hits = scanner.scan(&file.path, &data);
+                        if scanner.blocks() {
+                            clean = hits.is_empty();
+                            findings = hits;
+                        } else {
+                            warnings = hits;
+                        }
+                    }
+                }
+                if store && clean {
+                    if legacy {
+                        self.store.put_hashed(&hash, &data)?;
+                    } else {
+                        self.store.put_prepared(&prepared, &data)?;
+                    }
+                }
+                (hash, data.len() as u64, chunked)
+            }
+        };
+        Ok(Some(ScannedFile {
+            entry: ManifestEntry {
+                path: String::new(),
+                hash,
+                size,
+                executable,
+                chunked,
+            },
+            path: file.path,
+            mtime_ns: file.mtime_ns,
+            findings,
+            warnings,
+        }))
     }
 
     /// Make the working directory of `rec` match `target`: delete files in
@@ -353,9 +474,22 @@ impl Repository {
         }
         // sparse (§15.4): one batched download for a partial clone.
         self.store.prefetch_entries(to_write.iter().copied())?;
-        for entry in to_write {
-            let cached = self.materialize(&tree_dir, entry)?;
-            index.insert(entry.path.clone(), cached);
+        // Each entry writes a distinct path; temp names are unique per
+        // writer and directory creation tolerates races, so files are
+        // written in parallel and the index updated in order afterwards.
+        let written: Vec<Result<IndexEntry>> = if to_write.len() >= PARALLEL_MIN_FILES {
+            to_write
+                .par_iter()
+                .map(|entry| self.materialize(&tree_dir, entry))
+                .collect()
+        } else {
+            to_write
+                .iter()
+                .map(|entry| self.materialize(&tree_dir, entry))
+                .collect()
+        };
+        for (entry, cached) in to_write.into_iter().zip(written) {
+            index.insert(entry.path.clone(), cached?);
         }
         Ok(())
     }
@@ -380,7 +514,7 @@ impl Repository {
                 entry.path
             )));
         }
-        fsutil::write_atomic(&abs, &data)?;
+        fsutil::write_atomic_volatile(&abs, &data)?;
         fsutil::set_executable(&abs, entry.executable)?;
         let meta = fs::metadata(&abs)?;
         Ok(IndexEntry {
@@ -421,10 +555,17 @@ impl Repository {
     }
 
     pub(crate) fn save_index(&self, tree: &str, index: &Index) -> Result<()> {
-        let mut index = index.clone();
-        index.version = INDEX_VERSION;
-        index.saved_at_ns = fsutil::now_ns();
-        fsutil::write_json(&self.index_path(tree), &index)
+        if index.unchanged {
+            return Ok(());
+        }
+        // Compact JSON: the index is a cache read by every command and can
+        // hold hundreds of thousands of entries.
+        let data = serde_json::to_vec(&IndexRef {
+            version: INDEX_VERSION,
+            saved_at_ns: fsutil::now_ns(),
+            entries: &index.entries,
+        })?;
+        fsutil::write_atomic_volatile(&self.index_path(tree), &data)
     }
 }
 
@@ -634,6 +775,7 @@ mod tests {
             version: INDEX_VERSION,
             saved_at_ns: 10 * RACY_WINDOW_NS,
             entries: BTreeMap::new(),
+            unchanged: false,
         };
         index.entries.insert(
             "old".into(),

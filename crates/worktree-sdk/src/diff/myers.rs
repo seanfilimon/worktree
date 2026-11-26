@@ -24,6 +24,36 @@ const COST_LIMIT: isize = 1024;
 /// increasing in both coordinates, forming a longest common subsequence
 /// (optimal unless the cost limit is hit).
 pub(crate) fn match_lines<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<(usize, usize)> {
+    // Lines shared at the start and at the end always belong to a longest
+    // common subsequence. Matching them directly keeps the usual case (a
+    // small edit in a large file) from hashing every line of both files.
+    let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let (a_rest, b_rest) = (&a[prefix..], &b[prefix..]);
+    let suffix = a_rest
+        .iter()
+        .rev()
+        .zip(b_rest.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let a_mid = &a_rest[..a_rest.len() - suffix];
+    let b_mid = &b_rest[..b_rest.len() - suffix];
+
+    let mut out = Vec::with_capacity(prefix + suffix + a_mid.len().min(b_mid.len()));
+    out.extend((0..prefix).map(|i| (i, i)));
+    if !a_mid.is_empty() && !b_mid.is_empty() {
+        out.extend(
+            match_middle(a_mid, b_mid)
+                .into_iter()
+                .map(|(i, j)| (i + prefix, j + prefix)),
+        );
+    }
+    let (a_tail, b_tail) = (a.len() - suffix, b.len() - suffix);
+    out.extend((0..suffix).map(|i| (a_tail + i, b_tail + i)));
+    out
+}
+
+/// [`match_lines`] for sequences without a common first or last line.
+fn match_middle<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<(usize, usize)> {
     let mut ids: HashMap<&str, usize> = HashMap::with_capacity(a.len() + b.len());
     let mut intern = |lines: &[&'a str]| -> Vec<usize> {
         lines

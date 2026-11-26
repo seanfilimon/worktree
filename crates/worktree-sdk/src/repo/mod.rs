@@ -91,6 +91,7 @@ pub(crate) use trees::TreeRecord;
 pub(crate) use trees::read_marker_identity;
 pub use trees::TREE_IDENTITY_FILE;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -128,6 +129,10 @@ pub struct Repository {
     root: PathBuf,
     config: WorktreeConfig,
     store: ObjectStore,
+    /// Snapshot records read so far (history.rs). Records are immutable,
+    /// and history walks (push, pull, merge, log) visit the same ones
+    /// several times per command.
+    snapshots: std::sync::Mutex<HashMap<String, std::sync::Arc<Snapshot>>>,
 }
 
 impl Repository {
@@ -170,6 +175,7 @@ impl Repository {
                 store: ObjectStore::open(wt.join("objects")),
                 root: root.clone(),
                 config,
+                snapshots: Default::default(),
             };
             repo.create_tree_record(&name, "", &default_branch)?;
             Ok(repo)
@@ -193,6 +199,7 @@ impl Repository {
                     root: dir.to_path_buf(),
                     config,
                     store: ObjectStore::open(wt.join("objects")),
+                    snapshots: Default::default(),
                 };
                 // sparse (§15.4): partial clones download missing content on demand.
                 repo.install_lazy_fetcher();

@@ -46,9 +46,25 @@ exits, so a crash never leaves a stale lock.
 |---|---|
 | Hash | BLAKE3-256 of the exact stored bytes |
 | Path | `objects/<first 2 hex chars>/<remaining 62 hex chars>` |
-| Encoding | Raw and uncompressed |
-| Writes | Atomic (temporary file + rename), idempotent, safe under concurrent writers |
+| Encoding | zstd-compressed (`WTZ1` magic + one zstd frame) when that is smaller, raw otherwise; readers accept both |
+| Writes | Atomic (temporary file + rename), idempotent, safe under concurrent writers; synced to disk before the rename (see [Durability](#durability)) |
 | Reads | Hash is verified; a mismatch is a `CorruptObject` error |
+
+### Durability
+
+A crash or power loss never leaves a branch pointing at data that did not reach the disk:
+
+- Every object is `fsync`ed as it is written (by the worker that wrote it); the object
+  directories are synced together before a branch ref moves.
+- Snapshot records, refs, tags and configuration are synced before they are renamed into place,
+  and their directory entry after.
+- Moving a branch ref is the commit point: it is written with a full flush of the drive's write
+  cache (`F_FULLFSYNC` on macOS), which also covers the cheaper syncs before it.
+- The stat cache (`index.json`) and files checked out into the working directory are not synced:
+  the first is rebuilt when missing, the second is what any editor would have left.
+
+`WT_FSYNC=0` in the environment turns all syncing off (throw-away worktrees, benchmarks). On
+Windows only the commit point is flushed.
 
 There are two kinds of objects:
 

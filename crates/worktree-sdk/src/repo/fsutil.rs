@@ -3,10 +3,12 @@
 //! All metadata writes go through [`write_atomic`] so that a crash or a
 //! concurrent reader never observes a half-written file.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
@@ -40,14 +42,148 @@ pub(crate) fn temp_path_for(target: &Path) -> PathBuf {
     target.with_file_name(tmp)
 }
 
-/// Write a fresh temp file containing `data` next to `target`.
-pub(crate) fn write_temp(target: &Path, data: &[u8]) -> io::Result<PathBuf> {
+// ---------------------------------------------------------------------
+// Durability
+//
+// A crash or power loss must never leave a ref pointing at data that did
+// not reach the disk, or a ref file that was renamed into place but is
+// empty (an empty branch file *means* "branch without snapshots").
+//
+// * Every file written atomically is synced before it is renamed
+//   ([`Sync::Data`]), and its directory entry is synced after.
+// * Objects are written by many threads at once: each file is synced as it
+//   is written, and the fan-out directories are remembered and synced
+//   together ([`sync_dirty_dirs`]) before a branch ref moves.
+// * A branch ref is the commit point ([`write_atomic_commit`]): it is
+//   written with a full flush of the drive's write cache, which on macOS
+//   also makes the cheaper syncs before it durable.
+//
+// `WT_FSYNC=0` turns all of it off (throw-away worktrees, benchmarks).
+// ---------------------------------------------------------------------
+
+/// How hard a write is pushed to stable storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sync {
+    /// Not synced: caches that are rebuilt when missing or corrupt.
+    None,
+    /// The file's data reaches the drive (`fsync`; `fdatasync` on Linux).
+    Data,
+    /// As `Data`, plus a flush of the drive's write cache (`F_FULLFSYNC`
+    /// on macOS).
+    Full,
+}
+
+fn fsync_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("WT_FSYNC").as_deref(),
+            Ok("0" | "off" | "false" | "no")
+        )
+    })
+}
+
+/// Sync `file` at the given level (a no-op for [`Sync::None`]).
+fn sync_file(file: &File, level: Sync) -> io::Result<()> {
+    if !fsync_enabled() {
+        return Ok(());
+    }
+    match level {
+        Sync::None => Ok(()),
+        Sync::Full => file.sync_all(),
+        Sync::Data => sync_data_light(file),
+    }
+}
+
+/// `fsync(2)` without the drive-cache flush that `File::sync_data` implies
+/// on macOS (about ten times cheaper there; the commit point pays for the
+/// flush once).
+#[cfg(target_os = "macos")]
+fn sync_data_light(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `fsync` only reads the descriptor, which `file` keeps open.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn sync_data_light(file: &File) -> io::Result<()> {
+    file.sync_data()
+}
+
+/// Windows: `FlushFileBuffers` per file costs milliseconds, so only the
+/// commit point is flushed there.
+#[cfg(not(unix))]
+fn sync_data_light(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
+/// Sync a directory so that renames into it (and files created in it)
+/// survive a crash. Best effort: not every platform can open a directory.
+pub(crate) fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    if fsync_enabled() {
+        if let Ok(d) = File::open(dir) {
+            let _ = sync_data_light(&d);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+static DIRTY_DIRS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
+/// Remember that `dir` gained an entry that is not synced yet (see
+/// [`sync_dirty_dirs`]).
+pub(crate) fn mark_dirty_dir(dir: &Path) {
+    if !fsync_enabled() {
+        return;
+    }
+    let mut dirty = DIRTY_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+    let set = dirty.get_or_insert_with(HashSet::new);
+    if !set.contains(dir) {
+        set.insert(dir.to_path_buf());
+    }
+}
+
+/// Sync every directory recorded by [`mark_dirty_dir`], and their parents
+/// (a directory created for the entry is itself a new entry).
+pub(crate) fn sync_dirty_dirs() {
+    let dirs = DIRTY_DIRS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .unwrap_or_default();
+    let mut parents = HashSet::new();
+    for dir in &dirs {
+        sync_dir(dir);
+        if let Some(parent) = dir.parent() {
+            if !dirs.contains(parent) {
+                parents.insert(parent.to_path_buf());
+            }
+        }
+    }
+    for parent in parents {
+        sync_dir(&parent);
+    }
+}
+
+/// Write a fresh temp file containing `data` next to `target`, synced at
+/// `level` before it returns.
+pub(crate) fn write_temp_synced(target: &Path, data: &[u8], level: Sync) -> io::Result<PathBuf> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = temp_path_for(target);
     let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-    if let Err(e) = file.write_all(data).and_then(|()| file.flush()) {
+    if let Err(e) = file
+        .write_all(data)
+        .and_then(|()| file.flush())
+        .and_then(|()| sync_file(&file, level))
+    {
         drop(file);
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -75,10 +211,33 @@ pub(crate) fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
 /// Atomically replace `path` with `data` (temp file + rename), creating
 /// parent directories as needed.
 pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
-    let tmp = write_temp(path, data)?;
+    write_atomic_at(path, data, Sync::Data)
+}
+
+/// [`write_atomic`] for caches: not synced (a lost or torn cache is
+/// rebuilt).
+pub(crate) fn write_atomic_volatile(path: &Path, data: &[u8]) -> Result<()> {
+    write_atomic_at(path, data, Sync::None)
+}
+
+/// [`write_atomic`] for a commit point (a branch ref): everything written
+/// before it — objects, snapshot records — is made durable first, then the
+/// file itself with a full flush.
+pub(crate) fn write_atomic_commit(path: &Path, data: &[u8]) -> Result<()> {
+    sync_dirty_dirs();
+    write_atomic_at(path, data, Sync::Full)
+}
+
+fn write_atomic_at(path: &Path, data: &[u8], level: Sync) -> Result<()> {
+    let tmp = write_temp_synced(path, data, level)?;
     if let Err(e) = rename_with_retry(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e.into());
+    }
+    if level != Sync::None {
+        if let Some(parent) = path.parent() {
+            sync_dir(parent);
+        }
     }
     Ok(())
 }

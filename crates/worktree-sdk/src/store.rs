@@ -635,10 +635,15 @@ impl ObjectStore {
             return Ok(None);
         }
         let target = self.path_of(hash);
-        let tmp = fsutil::write_temp(&target, &encoded)?;
+        // This replaces an object that is already durable: the new bytes
+        // must be on disk before the rename, or a crash loses the object.
+        let tmp = fsutil::write_temp_synced(&target, &encoded, fsutil::Sync::Full)?;
         if let Err(e) = fsutil::rename_with_retry(&tmp, &target) {
             let _ = fs::remove_file(&tmp);
             return Err(e.into());
+        }
+        if let Some(dir) = target.parent() {
+            fsutil::sync_dir(dir);
         }
         Ok(Some((old, encoded.len() as u64)))
     }
@@ -708,9 +713,16 @@ impl ObjectStore {
         } else {
             encode_object_uncompressed(data)?
         };
-        let tmp = fsutil::write_temp(&target, &encoded)?;
+        // Synced here, on the (possibly parallel) writer; the directory
+        // entry is synced with the others before a ref moves.
+        let tmp = fsutil::write_temp_synced(&target, &encoded, fsutil::Sync::Data)?;
         match fsutil::rename_with_retry(&tmp, &target) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some(dir) = target.parent() {
+                    fsutil::mark_dirty_dir(dir);
+                }
+                Ok(())
+            }
             // Another writer stored the same object first (Windows refuses
             // to rename onto an existing, possibly open, file).
             Err(_) if target.is_file() => {

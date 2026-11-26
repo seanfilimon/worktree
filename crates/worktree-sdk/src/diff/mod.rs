@@ -90,12 +90,28 @@ pub fn unified_diff(
     new: &str,
     context: usize,
 ) -> String {
+    unified_diff_with_stat(old_path, new_path, old, new, context).0
+}
+
+/// [`unified_diff`] together with [`diff_stat`] of the same texts, matching
+/// the lines once instead of once per result.
+pub fn unified_diff_with_stat(
+    old_path: &str,
+    new_path: &str,
+    old: &str,
+    new: &str,
+    context: usize,
+) -> (String, DiffStat) {
     if old == new {
-        return String::new();
+        return (String::new(), DiffStat::default());
     }
     let old_lines = split_lines(old);
     let new_lines = split_lines(new);
     let matches = match_lines(&old_lines, &new_lines);
+    let stat = DiffStat {
+        added: new_lines.len() - matches.len(),
+        removed: old_lines.len() - matches.len(),
+    };
     let hunks = build_hunks(
         &old_lines,
         &new_lines,
@@ -106,7 +122,14 @@ pub fn unified_diff(
     let old_missing_eol = !old.is_empty() && !old.ends_with('\n');
     let new_missing_eol = !new.is_empty() && !new.ends_with('\n');
 
-    let mut out = String::with_capacity(old.len() + new.len() + 64);
+    let hunk_bytes: usize = hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .map(|l| match l {
+            DiffLine::Context(t) | DiffLine::Added(t) | DiffLine::Removed(t) => t.len() + 2,
+        })
+        .sum();
+    let mut out = String::with_capacity(hunk_bytes + hunks.len() * 32 + 128);
     out.push_str("--- ");
     out.push_str(&header_path("a/", old_path, old.is_empty()));
     out.push_str("\n+++ ");
@@ -147,7 +170,7 @@ pub fn unified_diff(
             }
         }
     }
-    out
+    (out, stat)
 }
 
 /// Count added/removed lines.
@@ -202,7 +225,14 @@ pub fn word_diff(old_path: &str, new_path: &str, old: &str, new: &str, context: 
         context,
     );
 
-    let mut out = String::with_capacity(old.len() + new.len() + 64);
+    let hunk_bytes: usize = hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .map(|l| match l {
+            DiffLine::Context(t) | DiffLine::Added(t) | DiffLine::Removed(t) => t.len() + 2,
+        })
+        .sum();
+    let mut out = String::with_capacity(hunk_bytes + hunks.len() * 32 + 128);
     out.push_str("--- ");
     out.push_str(&header_path("a/", old_path, old.is_empty()));
     out.push_str("\n+++ ");
