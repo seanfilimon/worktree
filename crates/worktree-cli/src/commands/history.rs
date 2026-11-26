@@ -6,13 +6,15 @@ use clap::{Args, Subcommand};
 use colored::{ColoredString, Colorize};
 use serde::Serialize;
 use worktree_sdk::diff as textdiff;
+use worktree_sdk::remote::{self, ServerReflogEntry};
 use worktree_sdk::signing::{self, SignatureStatus};
 use worktree_sdk::{
     ChangeKind, Dependency, DiffOptions, FileDiff, ReflogEntry, Repository, Snapshot, SnapshotId,
 };
 
 use crate::commands::diff;
-use crate::context::Context;
+use crate::commands::remote::remote_name;
+use crate::context::{block_on, Context};
 use crate::error::{CliError, Result};
 use crate::output::format::{ago, date, plural, short, short_or, subject};
 use crate::output::Text;
@@ -48,7 +50,15 @@ pub struct ShowArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(args_conflicts_with_subcommands = true)]
+#[command(
+    args_conflicts_with_subcommands = true,
+    after_long_help = "\
+`--remote` shows the server reflog of the tree instead: every branch move
+the server accepted in the last 90 days (pushes, force pushes and
+restores), newest first, with who made it. Tips listed there can be
+restored on the server (admin panel History tab, POST
+{tree}/reflog/restore); `wt undo` uses it to undo your newest push."
+)]
 pub struct ReflogArgs {
     #[command(subcommand)]
     pub action: Option<ReflogCommand>,
@@ -60,6 +70,14 @@ pub struct ReflogArgs {
     /// Only entries of this branch (numbered as `BRANCH@{N}`)
     #[arg(short, long, value_name = "BRANCH")]
     pub branch: Option<String>,
+
+    /// Show the server reflog of the tree (pushes, force pushes, restores)
+    #[arg(long)]
+    pub remote: bool,
+
+    /// Remote for --remote (default: [sync].remote, usually origin)
+    #[arg(long = "from", value_name = "R", requires = "remote")]
+    pub from: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -333,6 +351,19 @@ pub fn reflog(ctx: &Context, args: ReflogArgs) -> Result<()> {
             ))
         });
     }
+    if args.remote {
+        let remote = remote_name(&repo, args.from);
+        let entries = block_on(remote::remote_reflog(
+            &repo,
+            &tree.name,
+            &remote,
+            args.branch.as_deref(),
+            args.max_count,
+        ))??;
+        return ctx
+            .out
+            .emit(&entries, |t| render_remote_reflog(t, &remote, &entries));
+    }
     if let Some(branch) = &args.branch {
         if !repo
             .branches(&tree.name, true)?
@@ -355,6 +386,47 @@ pub fn reflog(ctx: &Context, args: ReflogArgs) -> Result<()> {
             ));
         }
     })
+}
+
+/// One line per server reflog entry, e.g. `5e6f7a8b origin/main:
+/// force_push by alice: 1a2b3c4d -> 5e6f7a8b [forced] (2 hours ago)`.
+fn render_remote_reflog(t: &mut Text, remote: &str, entries: &[ServerReflogEntry]) {
+    if entries.is_empty() {
+        t.line(format!("No server reflog entries on {remote}.").dimmed());
+        return;
+    }
+    for e in entries {
+        let mut flags = Vec::new();
+        if e.forced {
+            flags.push("forced");
+        }
+        if e.bypass {
+            flags.push("bypassed protection");
+        }
+        let flags = if flags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", flags.join(", "))
+        };
+        let old = if e.old_tip.is_empty() {
+            "(new)"
+        } else {
+            short(&e.old_tip)
+        };
+        let actor = if e.actor.is_empty() {
+            "unknown"
+        } else {
+            e.actor.as_str()
+        };
+        t.line(format_args!(
+            "{} {}: {} by {actor}: {old} -> {}{flags} ({})",
+            short(&e.new_tip).yellow(),
+            format!("{remote}/{}", e.branch).green(),
+            e.kind.bold(),
+            short(&e.new_tip),
+            ago(e.at)
+        ));
+    }
 }
 
 /// `BRANCH@{N}` for each entry (newest first), numbering each branch's
@@ -491,6 +563,47 @@ mod tests {
             new: None,
             message: String::new(),
         }
+    }
+
+    #[test]
+    fn remote_reflog_lines() {
+        colored::control::set_override(false);
+        let entry = ServerReflogEntry {
+            tree_id: "t".into(),
+            branch: "main".into(),
+            old_tip: "1a2b3c4d5e".into(),
+            new_tip: "5e6f7a8b9c".into(),
+            kind: "force_push".into(),
+            forced: true,
+            bypass: true,
+            bypassed: vec!["force push past require_linear".into()],
+            actor: "alice".into(),
+            actor_id: "a1".into(),
+            count: 1,
+            at: Utc::now(),
+        };
+        let created = ServerReflogEntry {
+            old_tip: String::new(),
+            kind: "push".into(),
+            forced: false,
+            bypass: false,
+            actor: String::new(),
+            ..entry.clone()
+        };
+        let mut t = Text::default();
+        render_remote_reflog(&mut t, "origin", &[entry, created]);
+        let out = t.as_str();
+        assert!(
+            out.contains("5e6f7a8b origin/main: force_push by alice: 1a2b3c4d -> 5e6f7a8b [forced, bypassed protection]"),
+            "{out}"
+        );
+        assert!(
+            out.contains("push by unknown: (new) -> 5e6f7a8b ("),
+            "{out}"
+        );
+        let mut t = Text::default();
+        render_remote_reflog(&mut t, "origin", &[]);
+        assert!(t.as_str().contains("No server reflog entries on origin."));
     }
 
     #[test]

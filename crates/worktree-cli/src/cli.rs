@@ -210,7 +210,7 @@ pub enum Command {
     Owners(owners::OwnersArgs),
     /// Fork a server tree into another tenant; list forks; sync a fork with its upstream
     Fork(fork::ForkArgs),
-    /// Undo the last local operations (snapshot, merge, rebase, branch moves) from the operation log
+    /// Undo the last operations (snapshot, merge, rebase, branch moves, pushes) from the operation log
     Undo(undo::UndoArgs),
     /// Re-apply operations undone with `wt undo`
     Redo(undo::RedoArgs),
@@ -566,6 +566,18 @@ mod tests {
             panic!()
         };
         assert_eq!(a.max_count, Some(3));
+        assert!(!a.remote);
+        let Command::Reflog(a) =
+            parse(&["reflog", "--remote", "--from", "up", "-b", "main"]).command
+        else {
+            panic!()
+        };
+        assert!(a.remote);
+        assert_eq!(
+            (a.from.as_deref(), a.branch.as_deref()),
+            (Some("up"), Some("main"))
+        );
+        assert!(Cli::try_parse_from(["wt", "reflog", "--from", "up"]).is_err());
     }
 
     #[test]
