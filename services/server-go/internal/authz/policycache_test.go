@@ -172,3 +172,65 @@ func TestPolicyUpdatesApplyImmediately(t *testing.T) {
 		t.Fatalf("deleted: %v", err)
 	}
 }
+
+// genStore is the fake store with a policy generation (like meta.Bolt).
+type genStore struct {
+	*fakeStore
+	gen uint64
+}
+
+func (s *genStore) PolicyGeneration() uint64 { return s.gen }
+
+// countingGenStore counts ListPolicies calls.
+type countingGenStore struct {
+	*genStore
+	lists int
+}
+
+func (s *countingGenStore) ListPolicies(ctx context.Context, tenantID string) ([]domain.Policy, error) {
+	s.lists++
+	return s.genStore.ListPolicies(ctx, tenantID)
+}
+
+// TestPolicyGenerationSkipsListing: with a store that reports a policy
+// generation, policies are listed again only after the generation moves,
+// and every change behind a new generation applies on the next check.
+func TestPolicyGenerationSkipsListing(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	st := &countingGenStore{genStore: &genStore{fakeStore: e.store}}
+	az := New(st, Options{})
+	acme := e.tenant("t-acme", "acme")
+	bob := e.user("bob")
+	e.member(acme.ID, bob, domain.RoleDeveloper)
+	repo := tree("tree-repo", acme.ID, "repo", domain.VisibilityPrivate)
+	e.policy(acme.ID, "freeze", true, stmt(domain.EffectDeny, strs("tree:write"), strs("wt:tree/acme/repo"), strs("user:bob")))
+
+	for i := 0; i < 3; i++ {
+		if err := az.Authorize(ctx, bob, domain.ActTreeWrite, acme.ID, repo); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("frozen #%d: %v", i, err)
+		}
+	}
+	if st.lists != 1 {
+		t.Fatalf("ListPolicies calls = %d, want 1 (generation unchanged)", st.lists)
+	}
+	// A committed write moves the generation: the next check sees it.
+	e.store.policies[acme.ID][0].Enabled = false
+	st.gen++
+	if err := az.Authorize(ctx, bob, domain.ActTreeWrite, acme.ID, repo); err != nil {
+		t.Fatalf("disabled: %v", err)
+	}
+	e.store.policies[acme.ID] = nil
+	st.gen++
+	if err := az.Authorize(ctx, bob, domain.ActTreeWrite, acme.ID, repo); err != nil {
+		t.Fatalf("deleted: %v", err)
+	}
+	e.policy(acme.ID, "freeze2", true, stmt(domain.EffectDeny, strs("tree:write"), strs("wt:tree/acme/repo"), strs("user:bob")))
+	st.gen++
+	if err := az.Authorize(ctx, bob, domain.ActTreeWrite, acme.ID, repo); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("re-created: %v", err)
+	}
+	if st.lists != 4 {
+		t.Fatalf("ListPolicies calls = %d, want 4", st.lists)
+	}
+}

@@ -7,6 +7,8 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -48,6 +50,11 @@ func (s *Service) UploadObjects(stream grpc.ClientStreamingServer[syncpb.ObjectD
 	for {
 		obj, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			// One durability flush for the whole upload, before the
+			// client is told its objects are stored.
+			if err := objstore.Flush(ctx, s.d.Objects); err != nil {
+				return s.toStatus(ctx, err, "object store")
+			}
 			return stream.SendAndClose(resp)
 		}
 		if err != nil {
@@ -85,12 +92,26 @@ func (s *Service) storeObject(ctx context.Context, obj *syncpb.ObjectData) (stor
 	if hash.Sum(data) != h {
 		return false, false, nil
 	}
-	switch obj.GetKind() {
+	return s.storeVerified(ctx, h, obj.GetKind(), data)
+}
+
+// storeVerified validates and persists an object whose content the caller
+// has checked against h (and the size limit). Same results as storeObject.
+// The caller must objstore.Flush before acknowledging the object.
+func (s *Service) storeVerified(ctx context.Context, h hash.Hash, kind syncpb.ObjectKind, data []byte) (stored, ok bool, err error) {
+	switch kind {
 	case syncpb.ObjectKind_OBJECT_KIND_MANIFEST:
-		if _, err := decodeManifest(data); err != nil {
+		m, err := decodeManifest(data)
+		if err != nil {
 			s.log.DebugContext(ctx, "rejecting invalid manifest", "hash", h.Hex(), "err", err)
 			return false, false, nil
 		}
+		// The push that follows the upload reads this manifest back.
+		defer func() {
+			if ok {
+				s.manifests.add(h, m, len(data))
+			}
+		}()
 	case syncpb.ObjectKind_OBJECT_KIND_CHUNK_LIST:
 		if _, err := content.DecodeChunkList(data); err != nil {
 			s.log.DebugContext(ctx, "rejecting invalid chunk list", "hash", h.Hex(), "err", err)
@@ -101,14 +122,11 @@ func (s *Service) storeObject(ctx context.Context, obj *syncpb.ObjectData) (stor
 	default:
 		return false, false, nil
 	}
-	exists, err := s.d.Objects.Has(ctx, h)
+	// One existence check and no second hash (the store's own Put would
+	// re-hash and re-check). Durability is completed by the caller's
+	// objstore.Flush before it replies.
+	stored, err = objstore.PutDeferred(ctx, s.d.Objects, h, data)
 	if err != nil {
-		return false, false, s.toStatus(ctx, err, "object store")
-	}
-	if exists {
-		return false, true, nil
-	}
-	if err := s.d.Objects.Put(ctx, h, data); err != nil {
 		if errors.Is(err, objstore.ErrHashMismatch) {
 			return false, false, nil
 		}
@@ -120,7 +138,7 @@ func (s *Service) storeObject(ctx context.Context, obj *syncpb.ObjectData) (stor
 		}
 		return false, false, s.toStatus(ctx, err, "object store")
 	}
-	return true, true, nil
+	return stored, true, nil
 }
 
 // errInvalidManifest wraps every decodeManifest failure.
@@ -170,13 +188,33 @@ func validateManifestPath(p string) error {
 	return validateReservedComponents(p)
 }
 
-// loadManifest reads and decodes the manifest stored under h.
+// loadManifest reads and decodes the manifest stored under h. The result
+// may be shared with other callers (manifestCache) and must not be
+// modified.
 func (s *Service) loadManifest(ctx context.Context, h hash.Hash) (*syncpb.ManifestRecord, error) {
+	if m, ok := s.manifests.get(h); ok {
+		// Still confirm the object exists (one stat instead of a read and
+		// a decode): callers rely on ErrNotFound for objects that garbage
+		// collection removed.
+		exists, err := s.d.Objects.Has(ctx, h)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return m, nil
+		}
+		return nil, objstore.ErrNotFound
+	}
 	data, err := s.d.Objects.Get(ctx, h)
 	if err != nil {
 		return nil, err
 	}
-	return decodeManifest(data)
+	m, err := decodeManifest(data)
+	if err != nil {
+		return nil, err
+	}
+	s.manifests.add(h, m, len(data))
+	return m, nil
 }
 
 // DownloadObjects streams the requested objects; unknown hashes are
@@ -471,17 +509,80 @@ func (s *Service) Negotiate(ctx context.Context, req *syncpb.NegotiateRequest) (
 	if err != nil {
 		return nil, err
 	}
+	present, err := s.hasAll(ctx, haves)
+	if err != nil {
+		return nil, s.toStatus(ctx, err, "object store")
+	}
 	plan := &syncpb.ObjectTransferPlan{ObjectsToSend: make([]*syncpb.ContentHash, 0)}
-	for _, h := range haves {
-		ok, err := s.d.Objects.Has(ctx, h)
-		if err != nil {
-			return nil, s.toStatus(ctx, err, "object store")
-		}
-		if !ok {
+	for i, h := range haves {
+		if !present[i] {
 			plan.ObjectsToSend = append(plan.ObjectsToSend, hashToPB(h))
 		}
 	}
 	return plan, nil
+}
+
+// hasWorkers bounds the concurrent existence checks of one request (a
+// stat on disk, a HEAD request on S3).
+const hasWorkers = 16
+
+// hasChunk is how many consecutive hashes a worker claims at once.
+const hasChunk = 32
+
+// hasAll reports, in order, which of hashes the object store holds. The
+// checks run concurrently: one at a time, ten thousand objects cost
+// seconds on disk and minutes on S3.
+func (s *Service) hasAll(ctx context.Context, hashes []hash.Hash) ([]bool, error) {
+	out := make([]bool, len(hashes))
+	if len(hashes) < 4*hasChunk {
+		for i, h := range hashes {
+			ok, err := s.d.Objects.Has(ctx, h)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = ok
+		}
+		return out, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		wg       sync.WaitGroup
+		next     atomic.Int64
+		errOnce  sync.Once
+		firstErr error
+	)
+	for w := 0; w < hasWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				// Claim a run of hashes at a time: per-hash hand-off
+				// costs more than a check against a fast store.
+				end := int(next.Add(hasChunk))
+				start := end - hasChunk
+				if start >= len(hashes) || ctx.Err() != nil {
+					return
+				}
+				for i := start; i < min(end, len(hashes)); i++ {
+					ok, err := s.d.Objects.Has(ctx, hashes[i])
+					if err != nil {
+						errOnce.Do(func() { firstErr = err; cancel() })
+						return
+					}
+					out[i] = ok
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // uniqueHashes decodes and dedups a hash list, preserving first-seen order.

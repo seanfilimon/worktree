@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -115,6 +116,9 @@ type Bolt struct {
 	db        *bolt.DB
 	closeOnce sync.Once
 	closeErr  error
+
+	// policyGen changes after every policy write (see PolicyGeneration).
+	policyGen atomic.Uint64
 }
 
 // NewBolt opens (creating if needed, along with its parent directory) the
@@ -1070,7 +1074,30 @@ func (b *Bolt) PutSnapshot(ctx context.Context, s *domain.Snapshot) error {
 	if s == nil {
 		return errNil("snapshot")
 	}
+	return b.update(ctx, func(tx *bolt.Tx) error { return putSnapshotTx(tx, s) })
+}
+
+// PutSnapshots stores several snapshots in one transaction (one commit and
+// one pair of fsyncs instead of one per snapshot): all of them or, on any
+// error, none. Each snapshot follows the rules of PutSnapshot.
+func (b *Bolt) PutSnapshots(ctx context.Context, snaps []*domain.Snapshot) error {
+	for _, s := range snaps {
+		if s == nil {
+			return errNil("snapshot")
+		}
+	}
 	return b.update(ctx, func(tx *bolt.Tx) error {
+		for _, s := range snaps {
+			if err := putSnapshotTx(tx, s); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func putSnapshotTx(tx *bolt.Tx, s *domain.Snapshot) error {
+	{
 		if err := prepareSnapshot(s); err != nil {
 			return err
 		}
@@ -1097,7 +1124,7 @@ func (b *Bolt) PutSnapshot(ctx context.Context, s *domain.Snapshot) error {
 			return err
 		}
 		return addCounter(cb, key(counterSnapshots, s.TreeID), 1)
-	})
+	}
 }
 
 // GetSnapshot implements domain.MetaStore.

@@ -95,6 +95,9 @@ type Service struct {
 	// pack-delta (§16.1): UploadPack / QueryUpload / DownloadPack
 	// (pack_upload.go, pack_download.go), configured by ConfigurePacks.
 	packs packState
+
+	// manifests caches decoded manifests (manifest_cache.go).
+	manifests *manifestCache
 }
 
 var _ syncpb.SyncServiceServer = (*Service)(nil)
@@ -105,6 +108,8 @@ func New(d Deps) *Service {
 		d:   d,
 		log: slog.Default().With("component", "syncsvc"),
 		now: func() time.Time { return time.Now().UTC() },
+
+		manifests: newManifestCache(manifestCacheBytes),
 	}
 }
 
