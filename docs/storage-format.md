@@ -71,10 +71,40 @@ A manifest lists every file of a tree at one point in time:
 | `blob_hash` | Hash of the file's blob |
 | `size` | Size in bytes |
 | `executable` | Executable bit (from the Unix file mode) |
+| `chunked` | `blob_hash` names a chunk list of a large file instead of a blob |
+| `symlink` | The entry is a symbolic link; `blob_hash` names a blob holding the link target and `size` is the target's length |
 
 Entries are sorted by `path` and unique, which makes the encoding canonical: the same set of files
 always produces the same manifest bytes and hash. Directories are implicit; empty directories are
 not recorded.
+
+### Symbolic links
+
+A symbolic link in the working directory is recorded as a link, not as the file it points at: the
+entry has `symlink = true` and its blob is the link's target text (`../lib/libfoo.so.1`). Links to
+files, links to directories and dangling links are all recorded the same way, and nothing below a
+linked directory is scanned. `symlink` was added after the format was in use; its default (`false`)
+is not encoded, so manifests without links keep the exact bytes and hashes they always had.
+
+- A symlink entry is never `executable` or `chunked`, its target is 1 to 4096 bytes without NUL,
+  and it cannot live in `.wt-tree/`. Malformed entries are rejected when the manifest is decoded.
+- Targets are stored verbatim. Absolute targets and targets that lead outside the tree are allowed,
+  as in Git; W0rkTree never resolves a target, it only stores and recreates it.
+- `wt switch`, `wt restore`, `wt merge` and clone recreate links with the stored target. They never
+  write or delete *through* a link: if a directory on the way to a tracked path is a symbolic link,
+  the operation stops with an error instead of touching whatever the link points at.
+- On Windows, creating links needs Developer Mode or the "create symbolic links" privilege. Without
+  it the target text is written to a regular file; the entry stays a symlink in status and in the
+  next snapshot until the file is given content that is not a valid target.
+- `wt diff` shows a link's target text. In a merge a link is one opaque value: if both sides changed
+  the path and either side (or the base) is a link, the result is a `symlink` conflict, resolved
+  with `wt merge resolve PATH --ours|--theirs` (or `--file` to put a regular file there).
+
+Compatibility: a working copy snapshotted by an earlier version, which read file links through and
+skipped directory links, shows those paths as modified (or added) once — they become links in the
+next snapshot. A client older than this field ignores it and checks a link out as a regular file
+holding the target text; a server older than it stores and serves the manifest unchanged but does
+not validate or label links.
 
 Files larger than the chunking threshold are currently stored as single blobs. Content-defined
 chunking (FastCDC; `worktree_sdk::scan::chunk_boundaries`) is implemented as a function but not
@@ -143,7 +173,7 @@ Archiving a branch sets `archived: true`; the ref file and its history remain.
 
 ## Index (stat cache)
 
-`trees/<tree>/index.json` caches `(size, mtime_ns, hash, executable)` per path so that `wt status`
+`trees/<tree>/index.json` caches `(size, mtime_ns, hash, executable, chunked, symlink)` per path so that `wt status`
 does not re-hash unchanged files. It is a cache, not a staging area: deleting it is safe and only
 costs a re-hash. Entries modified within a short window before the index was saved are re-hashed to
 avoid missing same-tick writes.

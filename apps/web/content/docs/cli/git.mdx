@@ -133,7 +133,7 @@ Check these limits before migrating.
 </Callout>
 
 - **Not a live mirror.** Import, export and push are explicit commands; there is no continuous mirror mode. Repeat `wt git import` or `wt git push` to sync (see the [roadmap](/roadmap)).
-- **Submodules and symlinks are skipped** with a warning. Git submodules are not turned into nested trees; set those up with [`wt tree add`](/docs/cli/repository#wt-tree).
+- **Submodules are skipped** with a warning; symbolic links are imported and exported as links (Git mode `120000`). Git submodules are not turned into nested trees; set those up with [`wt tree add`](/docs/cli/repository#wt-tree).
 - **Ids differ.** Git uses SHA-1 commit ids, W0rkTree uses UUID snapshot ids and BLAKE3 object hashes. Use `.wt/git-map.json` to correlate them.
 - **Commits, tags and ignore rules only.** Hooks, Git config, stashes, the Git index and Git reflogs are not imported. Commit signatures are not preserved.
 - **Git LFS.** `.gitattributes` filters are not applied, so LFS-tracked files arrive as their pointer files (the import warns). W0rkTree stores large files natively; see [Chunked large files](/docs/protocol/large-files#chunked-large-files).

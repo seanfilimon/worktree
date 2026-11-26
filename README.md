@@ -59,6 +59,7 @@ Rows marked *Roadmap* are specified in [`crates/worktree-protocol/specs/`](./cra
 | Large files | Git LFS | Stored as whole blobs today; FastCDC chunking and lazy loading are *Roadmap* |
 | Auto-snapshots | None | `worktree-bg` daemon snapshots on inactivity and stages work automatically |
 | Submodules | Separate system | Nested trees with independent branches |
+| Symbolic links | Mode `120000` entries | Recorded as links (target stored as text, never followed); round-trip through `wt git import` / `export` |
 | Recovery | Local reflog that expires | Local append-only reflog; server-synced reflog is *Roadmap* |
 | Monitoring | None | `/healthz`, Prometheus `/metrics`, append-only audit log, admin panel |
 | Transport security | SSH/HTTPS | Cleartext h2c on one port — terminate TLS in front of the server; native TLS/QUIC and Ed25519 signing are *Roadmap* |
