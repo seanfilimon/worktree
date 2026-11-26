@@ -14,6 +14,21 @@ thiserror = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v5"] }
+# --- git-remote-wt (remote helper): async SDK calls, scratch cache, WT_LOG ---
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "git-remote-wt"
+path = "src/bin/git-remote-wt.rs"
 
 [dev-dependencies]
-tempfile = "3"
+# --- tests/git_remote_helper.rs: the SDK's in-process fake server ---
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+axum = { version = "0.7", default-features = false, features = ["http1", "http2", "json", "tokio"] }
+tonic = { version = "0.12", features = ["gzip"] }
+prost = "0.13"
+prost-types = "0.13"
+blake3 = "1"

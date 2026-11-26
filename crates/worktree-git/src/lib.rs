@@ -5,6 +5,8 @@
 //! - [`bridge`]: `wt git import` / `wt git export` (commit DAG <-> snapshots).
 //! - [`map`]: the persistent snapshot-id <-> commit-sha mapping (`.wt/git-map.json`).
 //! - [`ident`]: deterministic snapshot ids and author/signature conversion.
+//! - [`remote_helper`]: the `git-remote-wt` Git remote helper, so stock Git
+//!   can clone, fetch and push `wt::https://host/tenant/tree`.
 //! - [`remote`]: push an exported Git repository to a URL / mirror-fetch one.
 //! - [`source`]: open an import source (local path, or a URL mirrored to a
 //!   temporary directory).
@@ -21,6 +23,7 @@ pub mod ident;
 pub mod license;
 pub mod map;
 pub mod remote;
+pub mod remote_helper;
 pub mod source;
 
 mod export;
