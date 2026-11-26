@@ -273,7 +273,9 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 - Tree/branch/snapshot dependencies and auto-generated TODO branches ([Tree spec](./crates/worktree-protocol/specs/tree/Tree.md)).
 - Releases, CI check gates and tenant quotas (the `CiChecksFailed` / `QuotaExceeded` rejections are
   reserved in the protocol).
-- Live Git mirroring and a Git remote helper.
+- Live bidirectional Git mirroring and serving trees over Git's own protocol (a Git remote helper,
+  `git clone wt::https://host/tenant/tree`, is built: see
+  [Git compatibility](./docs/git-compatibility.md#git-remote-helper-git-remote-wt)).
 - Server-synced reflog and offline sync queue.
 
 ---

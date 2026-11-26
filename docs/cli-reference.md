@@ -2443,6 +2443,19 @@ Options:
   -V, --version       Print version
 ```
 
+#### `git-remote-wt`
+
+Not a `wt` command: a separate binary that Git itself starts for remotes whose URL begins with
+`wt::`, so stock Git can clone, fetch and push a server tree.
+
+```bash
+git clone wt::https://wt.example.com/acme/web
+git push origin main
+```
+
+It takes no options; it uses the login saved by `wt login` (or `WT_TOKEN`) and honors `WT_HOME` and
+`WT_LOG`. Behavior, refusals and limits: [Git compatibility](./git-compatibility.md#git-remote-helper-git-remote-wt).
+
 ### `wt mirror`
 
 Live Git mirrors of a server tree: list, add, update, remove, sync now
