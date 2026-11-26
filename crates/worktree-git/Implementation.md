@@ -32,6 +32,14 @@ src/
 │   ├── mod.rs        push (local Git repo -> URL), fetch_mirror (URL -> bare mirror)
 │   ├── auth.rs       GitAuth (auto / SSH key / credential helper callbacks)
 │   └── transport.rs  GitTransport (HTTPS / SSH / local detection)
+├── remote_helper/    git-remote-wt: `git clone wt::https://host/tenant/tree`
+│   ├── mod.rs        Helper (list / fetch / push over the SDK), run()
+│   ├── protocol.rs   gitremote-helpers(7) line protocol: parse, serve a Backend
+│   ├── target.rs     remote URL -> server, tenant, tree
+│   ├── cache.rs      $GIT_DIR/wt/<remote>/ cache worktree, pushed tag objects
+│   ├── to_git.rs     server branches/tags -> Git objects (no refs touched)
+│   └── to_wt.rs      new commits -> snapshots; refuses unsupported content
+├── bin/git-remote-wt.rs   the helper binary (thin wrapper around run())
 └── test_support.rs   (tests only) Git fixtures and in-memory blob store
 ```
 

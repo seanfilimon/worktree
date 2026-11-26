@@ -1012,7 +1012,14 @@ of v0.5:
 - **Signed tags**, copy detection in diff, `[diff]` config section, `wt diff
   --patch` as a separate mode.
 - **Live bidirectional Git mirroring** and serving trees over the Git
-  protocol to Git clients.
+  protocol to Git clients. (Built instead, client-side: the Git remote
+  helper `git-remote-wt` lets stock Git clone, fetch and push
+  `wt::https://host/tenant/tree` through the sync protocol; see
+  `docs/git-compatibility.md`. It refuses non-fast-forward pushes, ref
+  deletion and content W0rkTree cannot store. Snapshots do not keep Git's
+  committer, time zone or signature, so a commit pushed with Git is
+  rebuilt with another SHA in clones that do not already have it; keeping
+  that metadata needs a protocol addition.)
 - **Verified e-mail addresses** for accounts.
 - **Environment-variable overrides for arbitrary config keys** (`WT_*` per
   key) and a system-wide config level.

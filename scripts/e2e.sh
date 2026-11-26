@@ -28,17 +28,18 @@ case "$TARGET_DIR" in
 esac
 BIN_DIR="$TARGET_DIR/debug"
 
-echo "==> cargo build -p worktree-cli -p worktree-bg"
-cargo build -p worktree-cli -p worktree-bg
+echo "==> cargo build -p worktree-cli -p worktree-bg -p worktree-git"
+cargo build -p worktree-cli -p worktree-bg -p worktree-git
 
 echo "==> go build services/server-go"
 mkdir -p "$BIN_DIR"
 SERVER_BIN="$BIN_DIR/worktree-server$EXE"
 (cd services/server-go && CGO_ENABLED=0 go build -o "$(native "$SERVER_BIN")" .)
 
-export WT_BIN WT_BG_BIN WT_SERVER_BIN
+export WT_BIN WT_BG_BIN WT_SERVER_BIN WT_GIT_REMOTE_BIN
 WT_BIN="$(native "$BIN_DIR/wt$EXE")"
 WT_BG_BIN="$(native "$BIN_DIR/worktree-bg$EXE")"
+WT_GIT_REMOTE_BIN="$(native "$BIN_DIR/git-remote-wt$EXE")"
 WT_SERVER_BIN="$(native "$SERVER_BIN")"
 export WT_E2E=1
 

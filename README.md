@@ -267,14 +267,16 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 
 ### Roadmap (specified, not implemented)
 
-- Git submodule mapping, Git LFS content import and Git signature preservation
-  ([Git compatibility](./docs/git-compatibility.md)).
-- A Git remote helper / serving the Git protocol, and pull mirrors (push mirrors exist).
+- Git signature preservation on import ([Git compatibility](./docs/git-compatibility.md)).
+- Serving trees over Git's own protocol and pull mirrors (push mirrors and a Git remote helper,
+  `git clone wt::https://host/tenant/tree`, exist: see
+  [Git compatibility](./docs/git-compatibility.md#git-remote-helper-git-remote-wt)).
 - Lazy loading through a virtual file system (FUSE/ProjFS) ([Storage spec](./crates/worktree-protocol/specs/storage/Storage.md)).
-- Restoring from the server reflog with the CLI, and undoing a push.
+- Restoring an arbitrary server reflog entry from the CLI (`wt undo` of your newest push and the
+  admin panel exist).
 - QUIC transport, encryption at rest and OS keychain credential storage
   ([Security spec](./crates/worktree-protocol/specs/security/Security.md)).
-- Interactive rebase and more client hook phases (only `pre-snapshot` / `post-snapshot` exist).
+- Interactive rebase.
 - A CI runner (CI status reporting and merge gates exist).
 
 ---

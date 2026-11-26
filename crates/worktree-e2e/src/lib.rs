@@ -5,6 +5,7 @@
 //! * `wt` (crate `worktree-cli`) — located via `WT_BIN`, else next to the
 //!   test executable / in `target/{debug,release}`.
 //! * `worktree-bg` (crate `worktree-bg`) — `WT_BG_BIN`, same search.
+//! * `git-remote-wt` (crate `worktree-git`) — `WT_GIT_REMOTE_BIN`, same search.
 //! * the Go server (`services/server-go`) — `WT_SERVER_BIN`, else built once
 //!   per test run with `go build` into the cargo profile directory.
 //!

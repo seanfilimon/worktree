@@ -81,3 +81,5 @@ mod tenant_lifecycle; // tenant-lifecycle (§16.4)
 
 #[cfg(unix)]
 mod symlinks;
+// Git remote helper (`git clone wt::https://...`).
+mod git_remote_helper;

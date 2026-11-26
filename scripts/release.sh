@@ -7,7 +7,7 @@
 #   bash scripts/release.sh --admin-only     # just the admin panel archive
 #
 # Per target the archive worktree-<version>-<target>.{tar.gz,zip} holds
-#   wt, worktree-bg     (cargo build --release --target <target>)
+#   wt, worktree-bg, git-remote-wt   (cargo build --release --target <target>)
 #   worktree-server     (go build, GOOS/GOARCH, CGO_ENABLED=0)
 #   LICENSE, README.md
 # plus worktree-admin-<version>.tar.gz (apps/admin/dist), a <file>.sha256 next
@@ -238,7 +238,7 @@ make_tgz() {
       local f
       for f in "$name"/*; do
         case "$(basename "$f")" in
-          wt|worktree-bg|worktree-server|*.exe) tar -rf "$tarfile" "${owner[@]}" --mode=0755 "$f" ;;
+          wt|worktree-bg|git-remote-wt|worktree-server|*.exe) tar -rf "$tarfile" "${owner[@]}" --mode=0755 "$f" ;;
           *) tar -rf "$tarfile" "${owner[@]}" --mode=u=rwX,go=rX "$f" ;;
         esac
       done
@@ -280,10 +280,10 @@ build_target() {
         fi
         ;;
     esac
-    say "cargo $cargo_sub --release --target $target (wt, worktree-bg)${cargo_env[*]:+ with ${cargo_env[*]}}"
+    say "cargo $cargo_sub --release --target $target (wt, worktree-bg, git-remote-wt)${cargo_env[*]:+ with ${cargo_env[*]}}"
     local locked=(); [ -f Cargo.lock ] && locked=(--locked)
     if ! env ${cargo_env[@]+"${cargo_env[@]}"} cargo "$cargo_sub" --release ${locked[@]+"${locked[@]}"} \
-      --target "$target" -p worktree-cli -p worktree-bg; then
+      --target "$target" -p worktree-cli -p worktree-bg -p worktree-git; then
       [ "$strict" = 1 ] && die "cargo build failed for $target"
       warn "cargo build failed for $target (missing cross linker?); skipping"
       return 0
@@ -301,14 +301,14 @@ build_target() {
   rm -rf "$stage"
   mkdir -p "$stage"
   local bin
-  for bin in wt worktree-bg; do
+  for bin in wt worktree-bg git-remote-wt; do
     [ -f "$rust_dir/$bin$ext" ] || die "missing $rust_dir/$bin$ext"
     cp "$rust_dir/$bin$ext" "$stage/"
   done
   [ -f "$go_out" ] || die "missing $go_out"
   cp "$go_out" "$stage/"
   cp LICENSE README.md "$stage/"
-  chmod 0755 "$stage"/wt"$ext" "$stage"/worktree-bg"$ext" "$stage"/worktree-server"$ext" 2>/dev/null || true
+  chmod 0755 "$stage"/wt"$ext" "$stage"/worktree-bg"$ext" "$stage"/git-remote-wt"$ext" "$stage"/worktree-server"$ext" 2>/dev/null || true
 
   local archive="$out/$name.$aext"
   say "package $(basename "$archive")"
