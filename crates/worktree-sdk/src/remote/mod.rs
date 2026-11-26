@@ -47,6 +47,13 @@ pub(crate) use fetch::lazy_fetcher;
 // history-v2 (§16.10): force push with lease, protection bypass, remote tag deletion.
 mod force;
 pub use force::{delete_remote_tag, push_with_options, PushOptions};
+// Server reflog: read it, restore a branch from it, undo a push
+// (specs/tree/Undo.md §2.2, §4).
+mod server_reflog;
+pub use server_reflog::{
+    plan_push_undo, remote_reflog, undo_push, BranchRestore, PushUndoPlan, PushUndoReport,
+    RestoreBranchRequest, ServerReflogEntry,
+};
 // v0.7 trust (§15.8): push one (signed) tag, list server tags.
 mod tags;
 pub use tags::{push_tag, remote_tags};

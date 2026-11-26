@@ -165,13 +165,26 @@ pub(crate) async fn push_with(
         tree: tree_name.clone(),
         branch: branch.clone(),
         action: if report.forced { "force-push" } else { "push" }.into(),
-        old: server_tip,
+        old: server_tip.clone(),
         new: Some(new_tip.clone()),
         message: format!(
             "push {branch} to {remote}/{branch} ({} snapshot(s))",
             chain.len()
         ),
     })?;
+    // `wt undo` of a push (specs/tree/Undo.md §2.2). Best effort: the push
+    // already succeeded on the server.
+    if let Err(err) = repo.record_push(
+        &tree_name,
+        remote,
+        &branch,
+        server_tip.as_deref(),
+        &new_tip,
+        report.forced,
+        chain.len(),
+    ) {
+        tracing::warn!(%err, "oplog: recording the push failed");
+    }
 
     known.extend(chain.into_iter().map(|s| s.id));
     push_tags(repo, &tree_name, &mut session, &known).await?;
