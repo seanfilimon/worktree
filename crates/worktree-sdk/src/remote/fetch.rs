@@ -287,6 +287,9 @@ async fn ensure_objects(
     // Blobs and chunk lists named by the manifests.
     let mut blobs = BTreeSet::new();
     let mut chunk_lists = BTreeSet::new();
+    // Successive manifests of a history share almost all of their entries:
+    // each distinct object is looked up on disk once, not once per snapshot.
+    let mut present: std::collections::HashSet<ObjectHash> = std::collections::HashSet::new();
     for hash in &manifests {
         for entry in repo.read_manifest(hash)?.entries {
             stubs.mentioned.insert(entry.path.clone());
@@ -306,7 +309,12 @@ async fn ensure_objects(
             if entry.chunked {
                 chunk_lists.insert(entry.hash);
             }
-            if !store.has(&entry.hash) {
+            if present.contains(&entry.hash) || blobs.contains(&entry.hash) {
+                continue;
+            }
+            if store.has(&entry.hash) {
+                present.insert(entry.hash);
+            } else {
                 blobs.insert(entry.hash);
             }
         }

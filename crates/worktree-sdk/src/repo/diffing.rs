@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::snapshotting::compute_changes;
 use super::{names, Repository};
-use crate::diff::{diff_stat, is_binary, similarity, unified_diff, word_diff};
+use crate::diff::{diff_stat, is_binary, similarity, unified_diff_with_stat, word_diff};
 use crate::error::Result;
 use crate::model::*;
 
@@ -150,12 +150,20 @@ impl Repository {
                     } else {
                         DEV_NULL
                     };
-                    let patch = if opts.word_diff {
-                        word_diff(old_name, new_name, &old_text, &new_text, opts.context)
+                    let (patch, stat) = if opts.word_diff {
+                        (
+                            word_diff(old_name, new_name, &old_text, &new_text, opts.context),
+                            diff_stat(&old_text, &new_text),
+                        )
                     } else {
-                        unified_diff(old_name, new_name, &old_text, &new_text, opts.context)
+                        unified_diff_with_stat(
+                            old_name,
+                            new_name,
+                            &old_text,
+                            &new_text,
+                            opts.context,
+                        )
                     };
-                    let stat = diff_stat(&old_text, &new_text);
                     diff.added = stat.added;
                     diff.removed = stat.removed;
                     diff.patch = (!patch.is_empty()).then_some(patch);

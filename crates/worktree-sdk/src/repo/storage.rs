@@ -250,6 +250,9 @@ impl Repository {
                 fsutil::remove_file_if_exists(path)?;
             }
         }
+        if !opts.dry_run {
+            self.forget_snapshots();
+        }
         for (path, _) in self.store.stale_temp_files(grace_cutoff)? {
             report.temp_files_deleted += 1;
             if !opts.dry_run {

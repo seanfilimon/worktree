@@ -300,10 +300,20 @@ impl Recorder<'_> {
             return hint.clone();
         }
         let path = self.repo.reflog_file(&self.tree);
-        let tail = fs::read(&path)
-            .ok()
-            .and_then(|data| data.get(self.reflog_len as usize..).map(<[u8]>::to_vec))
-            .unwrap_or_default();
+        // Only the bytes appended under the lock: the reflog is append-only
+        // and unbounded, so it is not read from the start.
+        let tail = (|| -> std::io::Result<Vec<u8>> {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut file = fs::File::open(&path)?;
+            if file.metadata()?.len() < self.reflog_len {
+                return Ok(Vec::new());
+            }
+            file.seek(SeekFrom::Start(self.reflog_len))?;
+            let mut tail = Vec::new();
+            file.read_to_end(&mut tail)?;
+            Ok(tail)
+        })()
+        .unwrap_or_default();
         let newest = String::from_utf8_lossy(&tail)
             .lines()
             .rev()

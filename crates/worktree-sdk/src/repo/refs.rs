@@ -430,7 +430,9 @@ impl Repository {
         if !path.is_file() {
             self.check_ref_layout(&self.branches_dir(tree), branch)?;
         }
-        fsutil::write_atomic(&path, tip.unwrap_or("").as_bytes())?;
+        // The commit point: objects and snapshot records written so far are
+        // made durable before the ref that makes them reachable.
+        fsutil::write_atomic_commit(&path, tip.unwrap_or("").as_bytes())?;
         let mut meta = self.branch_meta(tree)?;
         if !meta.contains_key(branch) {
             meta.insert(
