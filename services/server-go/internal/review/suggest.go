@@ -149,7 +149,7 @@ func (s *Service) resolveSuggestion(ctx context.Context, tree *domain.Tree, in *
 var errNoFile = errors.New("file not found")
 
 // fileAt returns the text content and manifest entry of path in snapshot
-// sn. Binary, chunked and oversized files are refused.
+// sn. Symbolic links and binary, chunked and oversized files are refused.
 func (s *Service) fileAt(ctx context.Context, sn *domain.Snapshot, path string) ([]byte, *syncpb.ManifestEntry, error) {
 	m, err := s.loadManifest(ctx, sn.ManifestHash)
 	if err != nil {
@@ -160,6 +160,8 @@ func (s *Service) fileAt(ctx context.Context, sn *domain.Snapshot, path string) 
 			continue
 		}
 		switch {
+		case e.GetSymlink():
+			return nil, e, fmt.Errorf("%s is a symbolic link; suggestions need a text file", path)
 		case e.GetChunked():
 			return nil, e, fmt.Errorf("%s is a chunked (large) file; suggestions need a text file", path)
 		case e.GetSize() > MaxSuggestionFileSize:

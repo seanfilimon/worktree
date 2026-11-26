@@ -1391,7 +1391,9 @@ paths:
         reassembled). Supports `Range` and conditional requests (`ETag` is
         the content hash); responses are immutable. Active content types
         (HTML, SVG, JavaScript, XML) are served as `text/plain`, with
-        `Content-Security-Policy: default-src 'none'; sandbox`.
+        `Content-Security-Policy: default-src 'none'; sandbox`. For a
+        symbolic link the bytes are the link's target path (the link is
+        never followed), served as `text/plain` with `X-Wt-Symlink: true`.
       tags: [Snapshots]
       x-wt-action: tree:read
       security:
@@ -8565,7 +8567,8 @@ paths:
         exports new snapshots into a local bare repository with `git
         fast-import` (deterministic commits: author and committer from the
         snapshot, its message, the manifest's files with chunked files
-        reassembled and mode 100755 for executables, merge parents) and runs
+        reassembled, mode 100755 for executables and 120000 for symbolic
+        links, merge parents) and runs
         `git push --force-with-lease` for the mirrored branches (`branches`
         globs, empty = all) and, unless `tags` is false, the tags. Files
         whose license rule does not permit redistribution are left out and a
@@ -10801,7 +10804,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [content, modify_delete, add_add, binary, chunked, executable, file_directory]
+          enum: [content, modify_delete, add_add, binary, chunked, executable, file_directory, symlink]
           description: "The conflict kind (see MergeConflict)."
         binary:
           type: boolean
@@ -11420,6 +11423,9 @@ components:
           format: int64
         executable:
           type: boolean
+        symlink:
+          type: boolean
+          description: "Symlink marks a symbolic link: the entry's content (see the blob endpoint) is the link's target path, not file data. The server never resolves the target."
     FileHistoryEntry:
       type: object
       description: "fileHistoryEntry is FileHistoryEntry of apps/admin/src/api/types.ts."
@@ -11924,8 +11930,8 @@ components:
           type: string
         kind:
           type: string
-          enum: [content, modify_delete, add_add, binary, chunked, executable, file_directory]
-          description: "content: both sides changed overlapping lines of a text file; modify_delete: one side modified, the other deleted; add_add: both sides added the path with different content; binary / chunked: a binary or chunked (large) file changed on both sides; executable: same content added with different executable bits; file_directory: the merged tree would hold a file and a directory at one path."
+          enum: [content, modify_delete, add_add, binary, chunked, executable, file_directory, symlink]
+          description: "content: both sides changed overlapping lines of a text file; modify_delete: one side modified, the other deleted; add_add: both sides added the path with different content; binary / chunked: a binary or chunked (large) file changed on both sides; executable: same content added with different executable bits; file_directory: the merged tree would hold a file and a directory at one path; symlink: both sides changed a path that is a symbolic link on one of them or in the base (links are never text-merged)."
     MergeConflictError:
       type: object
       description: "mergeConflictBody is the 409 merge_conflict response: the standard error envelope plus the conflicting paths, both at the top level and inside \"error\"."

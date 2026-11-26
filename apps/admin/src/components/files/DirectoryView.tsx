@@ -61,7 +61,7 @@ function Readme({
 /** Directory listing (folders first) plus its README, like a repository home page. */
 export function DirectoryView({ tenant, tree, snapshot, files, dir, hrefFor, resolveLink }: DirectoryViewProps) {
   const listing = useMemo(() => listDirectory(files, dir), [files, dir]);
-  const readme = listing.files.find((f) => README.test(baseName(f.path)) && f.size <= README_LIMIT);
+  const readme = listing.files.find((f) => !f.symlink && README.test(baseName(f.path)) && f.size <= README_LIMIT);
 
   if (listing.dirs.length === 0 && listing.files.length === 0) {
     return (
@@ -126,6 +126,11 @@ export function DirectoryView({ tenant, tree, snapshot, files, dir, hrefFor, res
                     {f.executable && (
                       <Badge variant="outline" className="px-1.5 font-mono" title="Executable">
                         x
+                      </Badge>
+                    )}
+                    {f.symlink && (
+                      <Badge variant="outline" className="px-1.5 font-mono" title="Symbolic link">
+                        link
                       </Badge>
                     )}
                   </Link>

@@ -399,7 +399,7 @@ func changedFiles(oldIdx, newIdx map[string]*syncpb.ManifestEntry) ([]fileDiff, 
 			if err != nil {
 				return nil, err
 			}
-			if oh == nh && oe.GetExecutable() == ne.GetExecutable() {
+			if oh == nh && oe.GetExecutable() == ne.GetExecutable() && oe.GetSymlink() == ne.GetSymlink() {
 				continue
 			}
 			fd.Status, fd.OldHash, fd.OldSize = changeModified, oh.Hex(), oe.GetSize()

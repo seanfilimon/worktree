@@ -225,7 +225,9 @@ func (s *Service) conflictFile(ctx context.Context, c merge3.Conflict, b, o, t *
 		side := sideOf(e)
 		switch {
 		case e == nil:
-		case e.GetChunked():
+		case e.GetChunked() || e.GetSymlink():
+			// A symbolic link is an opaque value like a binary file: no
+			// text, no markers; it is resolved by taking a side.
 			f.Binary = true
 		case e.GetSize() > MaxConflictText || int(e.GetSize()) > *budget:
 			f.TooLarge = true

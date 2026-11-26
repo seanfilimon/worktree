@@ -72,7 +72,9 @@ export function FileViewer({ tenant, tree, snapshot, branch, file, resolveLink }
   const language = detectLanguage(file.path);
   const imageType = imageMimeType(file.path);
   const markdown = isMarkdown(file.path);
-  const hasPreview = previewable && (imageType !== null || markdown);
+  /** A symbolic link's blob is its target path: shown as such, never rendered as the file it names. */
+  const symlink = file.symlink === true;
+  const hasPreview = !symlink && previewable && (imageType !== null || markdown);
   /** Images have no code view unless they are too large to preview. */
   const hasCode = !hasPreview || imageType === null;
   const [tab, setTab] = useState<TabId>(() => (hasPreview && (!hasCode || !parseLineHash(location.hash)) ? "preview" : "code"));
@@ -95,7 +97,7 @@ export function FileViewer({ tenant, tree, snapshot, branch, file, resolveLink }
 
   const empty = text !== null && lines.length === 1 && lines[0] === "";
   // v0.6 (§14.4): blame text files (binary files are an error on the server).
-  const canBlame = hasCode && text !== null && !empty;
+  const canBlame = !symlink && hasCode && text !== null && !empty;
 
   let content: ReactNode;
   if (!previewable) {
@@ -122,6 +124,13 @@ export function FileViewer({ tenant, tree, snapshot, branch, file, resolveLink }
       <EmptyState icon={Binary} title="Binary file">
         {formatBytes(file.size)} of binary data cannot be shown inline. Download it to inspect.
       </EmptyState>
+    );
+  } else if (symlink) {
+    content = (
+      <div className="space-y-2 p-4 text-sm">
+        <p className="text-muted-foreground">Symbolic link. Its target is stored as text and is not followed:</p>
+        <code className="block break-all rounded-md bg-muted px-3 py-2 font-mono">{text}</code>
+      </div>
     );
   } else if (empty) {
     content = <EmptyState title="Empty file" />;
@@ -184,6 +193,16 @@ export function FileViewer({ tenant, tree, snapshot, branch, file, resolveLink }
                   <dd>
                     <Badge variant="outline" className="font-mono">
                       executable
+                    </Badge>
+                  </dd>
+                </div>
+              )}
+              {symlink && (
+                <div>
+                  <dt className="sr-only">Type</dt>
+                  <dd>
+                    <Badge variant="outline" className="font-mono">
+                      symlink
                     </Badge>
                   </dd>
                 </div>
