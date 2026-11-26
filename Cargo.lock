@@ -3214,10 +3214,13 @@ version = "0.8.0"
 dependencies = [
  "chrono",
  "git2",
+ "globset",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "toml",
  "tracing",
  "uuid",
  "worktree-protocol",
