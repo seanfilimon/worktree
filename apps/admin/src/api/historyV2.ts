@@ -3,9 +3,10 @@
  * server reflog of branch moves and the `no_force_push` protection flag.
  *
  * Field names mirror services/server-go/internal/syncsvc/push_force_ops.go
- * (`ReflogEntry`) and domain.BranchProtection. Lists are normalised to `[]`.
+ * (`ReflogEntry`), restore.go (`RestoreResult`) and domain.BranchProtection.
+ * Lists are normalised to `[]`.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { ApiClient } from "./client";
 import { useApi } from "./context";
@@ -28,8 +29,9 @@ export interface ReflogEntry {
   /** Tip before the push; "" when the push created the branch. */
   old_tip: string;
   new_tip: string;
-  kind: "push" | "force_push";
-  /** A force push: old_tip is no longer an ancestor of new_tip. */
+  /** `restore`: POST {tree}/reflog/restore moved the branch to new_tip. */
+  kind: "push" | "force_push" | "restore";
+  /** A force push or rewinding restore: old_tip is no longer an ancestor of new_tip. */
   forced: boolean;
   /** Branch protection was bypassed (owners, branch:bypass_protection). */
   bypass: boolean;
@@ -57,6 +59,27 @@ export function normReflog(
   }));
 }
 
+/** Body of POST {tree}/reflog/restore. */
+export interface RestoreBranchRequest {
+  branch: string;
+  /** old_tip or new_tip of a reflog entry of the branch. */
+  tip: string;
+  /** The branch tip the caller saw (lease; 409 when it moved). */
+  expected_tip: string;
+  bypass?: boolean;
+}
+
+/** Response of POST {tree}/reflog/restore. */
+export interface RestoreBranchResult {
+  branch: string;
+  old_tip: string;
+  new_tip: string;
+  forced: boolean;
+  bypass: boolean;
+  bypassed: string[];
+  entry: ReflogEntry;
+}
+
 export function createHistoryV2Api(client: ApiClient) {
   const tree = (t: string, n: string) => `${V1}/trees/${seg(t)}/${seg(n)}`;
   return {
@@ -70,6 +93,9 @@ export function createHistoryV2Api(client: ApiClient) {
         ),
       );
     },
+    /** POST {tree}/reflog/restore: move a branch to a tip of its reflog (branch:force_push). */
+    restore: (t: string, n: string, body: RestoreBranchRequest) =>
+      client.request<RestoreBranchResult>(`${tree(t, n)}/reflog/restore`, { method: "POST", body }),
   };
 }
 
@@ -94,7 +120,19 @@ export function useReflog(t: string, n: string, branch: string) {
   });
 }
 
-/** The force pushes among reflog entries (newest first). */
+/** Restore a branch from its reflog; refreshes every tree query on success. */
+export function useRestoreBranch(t: string, n: string) {
+  const api = useHistoryV2Api();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RestoreBranchRequest) => api.restore(t, n, body),
+    // RestoreButton reports refusals (permissions, protection, a moved tip).
+    meta: { inlineError: true },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["tree", t, n] }),
+  });
+}
+
+/** The force pushes (and rewinding restores) among reflog entries (newest first). */
 export function forcePushes(entries: readonly ReflogEntry[]): ReflogEntry[] {
   return entries.filter((e) => e.forced || e.kind === "force_push");
 }
