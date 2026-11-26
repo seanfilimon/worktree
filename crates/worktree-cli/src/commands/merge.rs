@@ -385,6 +385,7 @@ pub fn conflict_label(kind: ConflictKind) -> &'static str {
         ConflictKind::ModifyDelete => "modify/delete",
         ConflictKind::AddAdd => "add/add",
         ConflictKind::Binary => "binary",
+        ConflictKind::Symlink => "symlink",
     }
 }
 
@@ -540,6 +541,7 @@ mod tests {
     fn labels() {
         assert_eq!(conflict_label(ConflictKind::Content), "content");
         assert_eq!(conflict_label(ConflictKind::AddAdd), "add/add");
+        assert_eq!(conflict_label(ConflictKind::Symlink), "symlink");
     }
 
     #[derive(Debug, Parser)]

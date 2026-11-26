@@ -41,7 +41,8 @@ src/
    commits converted once). Each commit is attributed to the first branch
    containing it (checked-out branch first, then by name).
 4. Per commit: blobs -> object store (each Git blob once), manifest (sorted
-   paths, `100755` = executable; symlinks/gitlinks skipped with a warning;
+   paths, `100755` = executable, `120000` = symlink entry whose blob is the
+   link target; gitlinks skipped with a warning;
    cached per Git tree), snapshot with id = UUID v5(commit sha), parents
    mapped, author `Name <email>`, committer time, message without trailing
    whitespace.

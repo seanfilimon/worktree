@@ -184,6 +184,7 @@ impl LicensePolicy {
             size: notice.len() as u64,
             executable: false,
             chunked: false,
+            symlink: false,
         });
         kept.sort_by(|a, b| a.path.cmp(&b.path));
         Licensed {
@@ -822,6 +823,7 @@ mod tests {
             size: path.len() as u64,
             executable: false,
             chunked: false,
+            symlink: false,
         }
     }
 

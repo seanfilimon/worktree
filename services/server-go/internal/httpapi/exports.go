@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"sort"
@@ -255,6 +256,10 @@ func fileMode(e *syncpb.ManifestEntry) int64 {
 	return 0o644
 }
 
+// Archives carry a symbolic link as a link member holding the stored target
+// (as `git archive` does). The target is copied, never resolved: what a
+// link points at is not looked up, in the snapshot or anywhere else.
+
 func writeTarGzArchive(w io.Writer, files []archiveFile, mtime time.Time, read func(archiveFile) ([]byte, error)) error {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
@@ -262,6 +267,19 @@ func writeTarGzArchive(w io.Writer, files []archiveFile, mtime time.Time, read f
 		data, err := read(f)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f.entry.GetPath(), err)
+		}
+		if f.entry.GetSymlink() {
+			h := &tar.Header{
+				Typeflag: tar.TypeSymlink,
+				Name:     f.entry.GetPath(),
+				Linkname: string(data),
+				Mode:     0o777,
+				ModTime:  mtime.UTC(),
+			}
+			if err := tw.WriteHeader(h); err != nil {
+				return err
+			}
+			continue
 		}
 		h := &tar.Header{
 			Typeflag: tar.TypeReg,
@@ -292,7 +310,12 @@ func writeZipArchive(w io.Writer, files []archiveFile, mtime time.Time, read fun
 		}
 		h := &zip.FileHeader{Name: f.entry.GetPath(), Method: zip.Deflate, Modified: mtime.UTC()}
 		h.SetMode(0o644)
-		if f.entry.GetExecutable() {
+		switch {
+		case f.entry.GetSymlink():
+			// A zip symlink is a member with the link mode whose content
+			// is the target.
+			h.SetMode(fs.ModeSymlink | 0o777)
+		case f.entry.GetExecutable():
 			h.SetMode(0o755)
 		}
 		fw, err := zw.CreateHeader(h)

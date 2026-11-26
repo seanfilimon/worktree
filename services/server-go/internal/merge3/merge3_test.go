@@ -36,6 +36,13 @@ func (o objects) chunked(path, data string) *syncpb.ManifestEntry {
 	return e
 }
 
+// link stores target and returns a symlink entry pointing at it.
+func (o objects) link(path, target string) *syncpb.ManifestEntry {
+	e := o.file(path, target, false)
+	e.Symlink = true
+	return e
+}
+
 func manifestOf(es ...*syncpb.ManifestEntry) *syncpb.ManifestRecord {
 	m := &syncpb.ManifestRecord{Entries: slices.Clone(es)}
 	slices.SortFunc(m.Entries, func(a, b *syncpb.ManifestEntry) int { return strings.Compare(a.Path, b.Path) })
@@ -125,6 +132,64 @@ func TestResolveTable(t *testing.T) {
 				t.Fatalf("kept %v, want %v", r.entry, tt.keep)
 			}
 		})
+	}
+}
+
+// Symbolic links are opaque values: taken whole when one side changed
+// them, a conflict (never a text merge) when both did.
+func TestResolveSymlinks(t *testing.T) {
+	o := objects{}
+	f1 := o.file("p", "one", false)
+	f1x := o.file("p", "one", true)
+	f2 := o.file("p", "two", false)
+	f3 := o.file("p", "three", false)
+	l1 := o.link("p", "one")
+	l2 := o.link("p", "two")
+	l3 := o.link("p", "three")
+	tests := []struct {
+		name          string
+		base, ou, the *syncpb.ManifestEntry
+		act           action
+		keep          *syncpb.ManifestEntry
+		kind          string
+	}{
+		{name: "retargeted theirs", base: l1, ou: l1, the: l2, act: actKeep, keep: l2},
+		{name: "retargeted ours", base: l1, ou: l2, the: l1, act: actKeep, keep: l2},
+		{name: "same retarget", base: l1, ou: l2, the: l2, act: actKeep, keep: l2},
+		{name: "added identically", ou: l2, the: l2, act: actKeep, keep: l2},
+		{name: "file became a link on one side", base: f1, ou: f1, the: l3, act: actKeep, keep: l3},
+		{name: "link deleted, other unchanged", base: l1, the: l1, act: actDelete},
+		{name: "both retargeted", base: l1, ou: l2, the: l3, act: actConflict, kind: KindSymlink},
+		{name: "add/add links", ou: l2, the: l3, act: actConflict, kind: KindSymlink},
+		{name: "link vs edited file", base: f1, ou: l2, the: f3, act: actConflict, kind: KindSymlink},
+		{name: "base link, two files", base: l1, ou: f2, the: f3, act: actConflict, kind: KindSymlink},
+		{name: "same bytes, link vs file", ou: l1, the: f1, act: actConflict, kind: KindSymlink},
+		{name: "same bytes as base, link vs edit", base: f1, ou: l1, the: f2, act: actConflict, kind: KindSymlink},
+		{name: "retarget vs delete", base: l1, ou: l2, act: actConflict, kind: KindModifyDelete},
+		{name: "link never takes the other side's exec bit", base: f1, ou: l2, the: f1x, act: actKeep, keep: l2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolve(tt.base, tt.ou, tt.the)
+			if r.action != tt.act || r.kind != tt.kind {
+				t.Fatalf("resolve = %+v, want action %d kind %q", r, tt.act, tt.kind)
+			}
+			if tt.keep != nil && (!entryEqual(r.entry, tt.keep) || r.entry.GetSymlink() != tt.keep.GetSymlink() || r.entry.GetExecutable()) {
+				t.Fatalf("kept %v, want %v", r.entry, tt.keep)
+			}
+		})
+	}
+
+	// End to end: the conflict is reported and no blob is synthesised.
+	base := manifestOf(o.link("cur", "v1"), o.link("ok", "v1"))
+	ours := manifestOf(o.link("cur", "v2"), o.link("ok", "v1"))
+	theirs := manifestOf(o.link("cur", "v3"), o.link("ok", "v9"))
+	r := run(t, o, base, ours, theirs)
+	if len(r.Conflicts) != 1 || r.Conflicts[0] != (Conflict{Path: "cur", Kind: KindSymlink}) {
+		t.Fatalf("conflicts = %+v", r.Conflicts)
+	}
+	if len(r.Blobs) != 0 {
+		t.Fatalf("a symlink merge must not create blobs: %d", len(r.Blobs))
 	}
 }
 

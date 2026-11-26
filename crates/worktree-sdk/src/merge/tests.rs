@@ -584,6 +584,7 @@ fn entry(path: &str, content: u8, executable: bool) -> ManifestEntry {
         size: u64::from(content),
         executable,
         chunked: false,
+        symlink: false,
     }
 }
 
@@ -770,6 +771,121 @@ fn manifest_executable_bit_merges_independently() {
         resolve_one(Some((1, false)), Some((2, true)), Some((3, false))),
         Some(MergeContent { .. })
     ));
+}
+
+/// A symlink entry whose target blob is `[content; 32]`.
+fn link(content: u8) -> ManifestEntry {
+    ManifestEntry::symlink("f", ObjectHash::from_bytes([content; 32]), 1)
+}
+
+fn resolve_entries(
+    base: Option<ManifestEntry>,
+    ours: Option<ManifestEntry>,
+    theirs: Option<ManifestEntry>,
+) -> Option<PathResolution> {
+    let side = |e: Option<ManifestEntry>| manifest(e.into_iter().collect());
+    merge_manifests(&side(base), &side(ours), &side(theirs))
+        .pop()
+        .map(|(_, resolution)| resolution)
+}
+
+#[test]
+fn symlinks_merge_as_opaque_values() {
+    use PathResolution::*;
+    let f = |c: u8, x: bool| entry("f", c, x);
+    let is_symlink_conflict = |r: Option<PathResolution>| {
+        matches!(
+            r,
+            Some(Conflict {
+                kind: ConflictKind::Symlink,
+                ..
+            })
+        )
+    };
+
+    // One side retargets: that side wins, as for any other value.
+    assert_eq!(
+        resolve_entries(Some(link(1)), Some(link(1)), Some(link(2))),
+        Some(TakeTheirs(link(2)))
+    );
+    assert_eq!(
+        resolve_entries(Some(link(1)), Some(link(2)), Some(link(1))),
+        Some(KeepOurs(link(2)))
+    );
+    // Both retarget identically / add the same link.
+    assert_eq!(
+        resolve_entries(Some(link(1)), Some(link(2)), Some(link(2))),
+        Some(KeepOurs(link(2)))
+    );
+    assert_eq!(
+        resolve_entries(None, Some(link(2)), Some(link(2))),
+        Some(KeepOurs(link(2)))
+    );
+    // A file replaced by a link on one side only.
+    assert_eq!(
+        resolve_entries(Some(f(1, false)), Some(f(1, false)), Some(link(9))),
+        Some(TakeTheirs(link(9)))
+    );
+    // Link deleted on one side, untouched on the other.
+    assert_eq!(
+        resolve_entries(Some(link(1)), None, Some(link(1))),
+        Some(Delete)
+    );
+
+    // Conflicts: never a text merge.
+    assert!(is_symlink_conflict(resolve_entries(
+        Some(link(1)),
+        Some(link(2)),
+        Some(link(3))
+    )));
+    assert!(is_symlink_conflict(resolve_entries(
+        None,
+        Some(link(2)),
+        Some(link(3))
+    )));
+    // Link on one side, edited file on the other.
+    assert!(is_symlink_conflict(resolve_entries(
+        Some(f(1, false)),
+        Some(link(2)),
+        Some(f(3, false))
+    )));
+    // Base was a link; both sides replaced it with different files.
+    assert!(is_symlink_conflict(resolve_entries(
+        Some(link(1)),
+        Some(f(2, false)),
+        Some(f(3, false))
+    )));
+    // Same bytes, different kind: a link and a file are not the same
+    // content, with or without a base.
+    assert!(is_symlink_conflict(resolve_entries(
+        None,
+        Some(link(5)),
+        Some(f(5, false))
+    )));
+    assert!(is_symlink_conflict(resolve_entries(
+        Some(f(5, false)),
+        Some(link(5)),
+        Some(f(6, false))
+    )));
+    // Retargeted vs deleted stays a modify/delete conflict.
+    assert!(matches!(
+        resolve_entries(Some(link(1)), Some(link(2)), None),
+        Some(Conflict {
+            kind: ConflictKind::ModifyDelete,
+            ..
+        })
+    ));
+
+    // A link never picks up the executable bit from the other side: ours
+    // became a link while theirs only toggled the bit.
+    assert_eq!(
+        resolve_entries(Some(f(1, false)), Some(link(2)), Some(f(1, true))),
+        Some(KeepOurs(link(2)))
+    );
+    assert_eq!(
+        resolve_entries(Some(f(1, false)), Some(f(1, true)), Some(link(2))),
+        Some(TakeTheirs(link(2)))
+    );
 }
 
 #[test]

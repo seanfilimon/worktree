@@ -59,6 +59,7 @@ Rows marked *Roadmap* are specified in [`crates/worktree-protocol/specs/`](./cra
 | Large files | Git LFS | Files above 8 MiB are stored as content-defined chunks (FastCDC); partial clones fetch content on demand. A virtual file system (FUSE/ProjFS) is *Roadmap* |
 | Auto-snapshots | None | `worktree-bg` daemon snapshots on inactivity and stages work automatically |
 | Submodules | Separate system | Nested trees with independent branches |
+| Symbolic links | Mode `120000` entries | Recorded as links (target stored as text, never followed); round-trip through `wt git import` / `export` |
 | Recovery | Local reflog that expires | Local append-only reflog and `wt undo`; the server keeps a branch reflog (restoring from it with the CLI is *Roadmap*) |
 | Monitoring | None | `/healthz`, Prometheus `/metrics`, append-only audit log, admin panel |
 | Transport security | SSH/HTTPS | Cleartext h2c by default, or native TLS / mutual TLS (`--tls-cert`, `--tls-key`, `--tls-client-ca`); Ed25519 snapshot signing. QUIC is *Roadmap* |
@@ -266,7 +267,6 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 
 ### Roadmap (specified, not implemented)
 
-- Symbolic links (manifests carry regular files only; `wt git import` skips symlinks with a warning).
 - Git submodule mapping, Git LFS content import and Git signature preservation
   ([Git compatibility](./docs/git-compatibility.md)).
 - A Git remote helper / serving the Git protocol, and pull mirrors (push mirrors exist).

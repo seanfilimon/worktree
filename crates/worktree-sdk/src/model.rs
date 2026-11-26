@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use worktree_protocol::proto::conversions;
 use worktree_protocol::proto::sync as wire;
 
 use crate::error::{Result, SdkError};
@@ -13,7 +14,11 @@ use crate::store::ObjectHash;
 /// Snapshot ids are UUID v4 strings (matches `SnapshotId.value` on the wire).
 pub type SnapshotId = String;
 
-/// One file in a manifest. `path` is '/'-separated and relative to the tree root.
+/// Longest symlink target, in bytes, that a manifest may record.
+pub const MAX_SYMLINK_TARGET_LEN: u64 = conversions::MAX_SYMLINK_TARGET_LEN;
+
+/// One file or symbolic link in a manifest. `path` is '/'-separated and
+/// relative to the tree root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestEntry {
     pub path: String,
@@ -24,6 +29,45 @@ pub struct ManifestEntry {
     /// content-defined chunks) instead of a blob. See ENGINEERING_PLAN §13.2.
     #[serde(default)]
     pub chunked: bool,
+    /// When true, the entry is a symbolic link: `hash` names a blob holding
+    /// the link target as raw bytes ([`validate_symlink_target`]) and `size`
+    /// is the target's length. A symlink is never `executable` or `chunked`.
+    /// The target is an opaque value: it is stored and recreated, never
+    /// followed.
+    #[serde(default)]
+    pub symlink: bool,
+}
+
+impl ManifestEntry {
+    /// A symbolic-link entry at `path` whose target blob is `hash` and whose
+    /// target is `size` bytes long.
+    pub fn symlink(path: impl Into<String>, hash: ObjectHash, size: u64) -> Self {
+        Self {
+            path: path.into(),
+            hash,
+            size,
+            executable: false,
+            chunked: false,
+            symlink: true,
+        }
+    }
+
+    /// Whether `other` names the same content of the same kind: equal hash
+    /// and both (or neither) symbolic links. The executable bit and the
+    /// storage form are not compared.
+    pub fn same_content(&self, other: &ManifestEntry) -> bool {
+        self.hash == other.hash && self.symlink == other.symlink
+    }
+}
+
+/// Check the bytes of a symlink target: non-empty, at most
+/// [`MAX_SYMLINK_TARGET_LEN`] bytes, no NUL. Anything else is allowed —
+/// including absolute targets and targets that point outside the tree — and
+/// is stored verbatim. `path` (the entry's path) is only used in the error.
+pub fn validate_symlink_target(path: &str, target: &[u8]) -> Result<()> {
+    conversions::validate_symlink_target(target).map_err(|reason| {
+        SdkError::InvalidArgument(format!("invalid symbolic link {path}: {reason}"))
+    })
 }
 
 /// The complete file listing of a snapshot. Entries are sorted by path and
@@ -72,6 +116,7 @@ impl Manifest {
                     size: e.size,
                     executable: e.executable,
                     chunked: e.chunked,
+                    symlink: e.symlink,
                 })
                 .collect(),
         };
@@ -79,7 +124,10 @@ impl Manifest {
     }
 
     /// Decode a protobuf `ManifestRecord`. Rejects unsorted or duplicate
-    /// entries, malformed hashes and unsafe paths (see [`validate_manifest_path`]).
+    /// entries, malformed hashes, unsafe paths (see [`validate_manifest_path`])
+    /// and malformed symlink entries (executable, chunked, inside
+    /// `.wt-tree/`, or with a target size outside
+    /// `1..=MAX_SYMLINK_TARGET_LEN`).
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         use prost::Message;
         let record = wire::ManifestRecord::decode(data)
@@ -87,6 +135,8 @@ impl Manifest {
         let mut entries = Vec::with_capacity(record.entries.len());
         for e in record.entries {
             validate_manifest_path(&e.path)?;
+            conversions::validate_symlink_entry(&e)
+                .map_err(|err| SdkError::Serialization(format!("invalid manifest: {err}")))?;
             let hash = e
                 .blob_hash
                 .as_ref()
@@ -100,6 +150,7 @@ impl Manifest {
                 size: e.size,
                 executable: e.executable,
                 chunked: e.chunked,
+                symlink: e.symlink,
             });
         }
         if entries.windows(2).any(|w| w[0].path >= w[1].path) {
@@ -620,6 +671,10 @@ pub enum ConflictKind {
     AddAdd,
     /// Binary file changed on both sides; "ours" kept in the working tree.
     Binary,
+    /// Both sides changed a path that is a symbolic link on at least one of
+    /// them (or was one in the base): links are never text-merged. "Ours"
+    /// is kept in the working tree.
+    Symlink,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -769,6 +824,7 @@ mod tests {
             size: content.len() as u64,
             executable: false,
             chunked: false,
+            symlink: false,
         }
     }
 
@@ -811,6 +867,7 @@ mod tests {
                         size: 1,
                         executable: false,
                         chunked: false,
+                        symlink: false,
                     })
                     .collect(),
             }
@@ -823,6 +880,69 @@ mod tests {
         assert!(Manifest::from_bytes(&mk(&["/abs"])).is_err());
         assert!(Manifest::from_bytes(b"\xff\xff\xff").is_err());
         assert!(Manifest::from_bytes(&mk(&["a", "b/c"])).is_ok());
+    }
+
+    #[test]
+    fn symlink_entries_roundtrip_and_old_bytes_are_stable() {
+        use prost::Message;
+        let target = b"../lib/libfoo.so.1";
+        let link = ManifestEntry::symlink("lib/libfoo.so", hash_bytes(target), target.len() as u64);
+        assert!(link.symlink && !link.executable && !link.chunked);
+        let m = Manifest::from_entries(vec![entry("a.txt", b"hello"), link.clone()]);
+        let back = Manifest::from_bytes(&m.to_bytes()).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.get("lib/libfoo.so"), Some(&link));
+
+        // A manifest without symlinks encodes exactly as it did before the
+        // field existed: the bytes carry no field 6, so hashes are stable.
+        let plain = Manifest::from_entries(vec![entry("a.txt", b"hello")]);
+        let h = hash_bytes(b"hello");
+        let mut old_entry = vec![0x0A, 0x05];
+        old_entry.extend_from_slice(b"a.txt");
+        old_entry.extend_from_slice(&[0x12, 0x22, 0x0A, 0x20]);
+        old_entry.extend_from_slice(h.as_bytes());
+        old_entry.extend_from_slice(&[0x18, 0x05]);
+        let mut old = vec![0x0A, old_entry.len() as u8];
+        old.extend_from_slice(&old_entry);
+        assert_eq!(plain.to_bytes(), old);
+        assert_eq!(Manifest::from_bytes(&old).unwrap(), plain);
+
+        // Malformed symlink entries are rejected on decode.
+        let bad = |f: fn(&mut wire::ManifestEntry)| {
+            let mut e = wire::ManifestEntry {
+                path: "ln".into(),
+                blob_hash: Some(hash_to_wire(&hash_bytes(b"t"))),
+                size: 1,
+                executable: false,
+                chunked: false,
+                symlink: true,
+            };
+            f(&mut e);
+            wire::ManifestRecord { entries: vec![e] }.encode_to_vec()
+        };
+        assert!(Manifest::from_bytes(&bad(|_| {})).is_ok());
+        assert!(Manifest::from_bytes(&bad(|e| e.executable = true)).is_err());
+        assert!(Manifest::from_bytes(&bad(|e| e.chunked = true)).is_err());
+        assert!(Manifest::from_bytes(&bad(|e| e.size = 0)).is_err());
+        assert!(Manifest::from_bytes(&bad(|e| e.size = MAX_SYMLINK_TARGET_LEN + 1)).is_err());
+        assert!(Manifest::from_bytes(&bad(|e| e.path = ".wt-tree/config.toml".into())).is_err());
+
+        // JSON written before the field existed still loads.
+        let json = format!(
+            r#"{{"path":"a","hash":"{}","size":1,"executable":false}}"#,
+            hash_bytes(b"x").to_hex()
+        );
+        let old_json: ManifestEntry = serde_json::from_str(&json).unwrap();
+        assert!(!old_json.symlink && !old_json.chunked);
+    }
+
+    #[test]
+    fn symlink_target_rules() {
+        assert!(validate_symlink_target("l", b"../x").is_ok());
+        assert!(validate_symlink_target("l", b"/etc/hosts").is_ok());
+        assert!(validate_symlink_target("l", b"").is_err());
+        assert!(validate_symlink_target("l", b"a\0b").is_err());
+        assert!(validate_symlink_target("l", &[b'a'; 4097]).is_err());
     }
 
     #[test]

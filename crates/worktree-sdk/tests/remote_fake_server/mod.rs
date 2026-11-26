@@ -510,6 +510,7 @@ pub fn seed_manifest(server: &FakeServer, files: &[(&str, &[u8])]) -> Vec<u8> {
             size: content.len() as u64,
             executable: false,
             chunked: false,
+            symlink: false,
         })
         .collect();
     entries.sort_by(|a, b| a.path.cmp(&b.path));

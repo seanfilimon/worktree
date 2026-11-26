@@ -195,7 +195,8 @@ impl Repository {
 }
 
 /// Path-sorted changes turning `old` into `new`. An executable-bit flip
-/// counts as a modification.
+/// counts as a modification, and so does a file becoming a symbolic link
+/// (or the reverse) even when the bytes are the same.
 pub(crate) fn compute_changes(old: &Manifest, new: &Manifest) -> Vec<FileChange> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
@@ -222,7 +223,7 @@ pub(crate) fn compute_changes(old: &Manifest, new: &Manifest) -> Vec<FileChange>
                 j += 1;
             }
             Ordering::Equal => {
-                if a[i].hash != b[j].hash || a[i].executable != b[j].executable {
+                if !a[i].same_content(&b[j]) || a[i].executable != b[j].executable {
                     out.push(FileChange {
                         path: a[i].path.clone(),
                         kind: ChangeKind::Modified,
@@ -270,6 +271,7 @@ mod tests {
                     size: c.len() as u64,
                     executable: *x,
                     chunked: false,
+                    symlink: false,
                 })
                 .collect(),
         )

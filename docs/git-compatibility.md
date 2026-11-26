@@ -21,6 +21,7 @@ exported repository.
 | Tree (recursive) | Manifest (flat, sorted list of files) |
 | Blob | Blob (re-hashed with BLAKE3) |
 | Mode `100644` / `100755` | `executable = false` / `true` |
+| Mode `120000` (symbolic link) | `symlink = true`; the blob is the link target, byte for byte |
 | Branch (`refs/heads/*`) | Branch of the root tree |
 | Lightweight / annotated tag | Tag (annotated tag message → tag message) |
 | `.gitignore` | `.wt/ignore` |
@@ -109,7 +110,7 @@ preserved but SHAs differ.
 | Git feature | Behavior |
 |---|---|
 | Submodules (gitlinks) | Skipped with a warning; use a nested tree instead. |
-| Symlinks | Skipped with a warning. |
+| Symlinks | Imported and exported as links (mode `120000`), target unchanged, including absolute targets and targets outside the repository. A link whose target is empty, longer than 4096 bytes or contains a NUL byte, or that lives in `.wt-tree/`, is skipped with a warning. |
 | Non-UTF-8 file names | Skipped with a warning. |
 | Committer distinct from author | Import keeps the author; export writes the author as committer. |
 | Commit and tag signatures (GPG/SSH) | Not preserved. |

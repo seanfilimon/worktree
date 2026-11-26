@@ -194,11 +194,18 @@ type file struct {
 	entry *syncpb.ManifestEntry // nil for the generated notice
 	h     hash.Hash
 	exec  bool
+	link  bool   // symbolic link: the content is the target
 	data  []byte // generated content
 }
 
+// mode is the Git file mode: 120000 for a symbolic link (its blob is the
+// target text, stored verbatim and never resolved), 100755 for an
+// executable, 100644 otherwise.
 func (f file) mode() string {
-	if f.exec {
+	switch {
+	case f.link:
+		return "120000"
+	case f.exec:
 		return "100755"
 	}
 	return "100644"
@@ -342,7 +349,7 @@ func (e *exporter) treeFiles(mh hash.Hash) (map[string]file, error) {
 		if err != nil {
 			return nil, err
 		}
-		out[p] = file{entry: ent, h: h, exec: ent.GetExecutable()}
+		out[p] = file{entry: ent, h: h, exec: ent.GetExecutable(), link: ent.GetSymlink()}
 		included = append(included, p)
 	}
 	footer := ""
@@ -442,7 +449,7 @@ func (e *exporter) commit(id string) error {
 		}
 	}
 	for p, f := range files {
-		if old, ok := base[p]; !ok || old.h != f.h || old.exec != f.exec {
+		if old, ok := base[p]; !ok || old.h != f.h || old.exec != f.exec || old.link != f.link {
 			writes = append(writes, p)
 		}
 	}

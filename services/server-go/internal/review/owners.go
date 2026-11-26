@@ -461,7 +461,7 @@ func (s *Service) changedPaths(ctx context.Context, sourceTip, targetTip string)
 // diffPaths lists the paths whose entries differ between a and b.
 func diffPaths(a, b *syncpb.ManifestRecord) []string {
 	key := func(e *syncpb.ManifestEntry) string {
-		return fmt.Sprintf("%x|%t|%t", e.GetBlobHash().GetValue(), e.GetExecutable(), e.GetChunked())
+		return fmt.Sprintf("%x|%t|%t|%t", e.GetBlobHash().GetValue(), e.GetExecutable(), e.GetChunked(), e.GetSymlink())
 	}
 	am := make(map[string]string, len(a.GetEntries()))
 	for _, e := range a.GetEntries() {

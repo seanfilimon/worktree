@@ -516,13 +516,31 @@ impl Repository {
     }
 }
 
-/// Whether the file at `abs` still holds `entry`'s content.
+/// Whether the file at `abs` still holds `entry`'s content. A symbolic
+/// link is compared by its target text and never followed; a link where a
+/// file is recorded counts as modified, and so does a file where a link is
+/// recorded (except where links are checked out as placeholder files).
 fn unmodified(abs: &Path, entry: &ManifestEntry) -> Result<bool> {
-    let data = match fs::read(abs) {
+    let Some(meta) = fsutil::symlink_meta(abs)? else {
+        return Ok(true);
+    };
+    let is_link = meta.file_type().is_symlink();
+    if is_link != entry.symlink && (is_link || cfg!(unix)) {
+        return Ok(false);
+    }
+    let read = if is_link {
+        fsutil::read_link_target(abs)
+    } else {
+        fs::read(abs)
+    };
+    let data = match read {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
         Err(e) => return Err(e.into()),
     };
+    if entry.symlink {
+        return Ok(hash_bytes(&data) == entry.hash);
+    }
     if data.len() as u64 != entry.size {
         return Ok(false);
     }

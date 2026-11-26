@@ -2405,7 +2405,14 @@ type ManifestEntry struct {
 	Size       uint64                 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
 	Executable bool                   `protobuf:"varint,4,opt,name=executable,proto3" json:"executable,omitempty"`
 	// When true, blob_hash names a CHUNK_LIST object instead of a BLOB.
-	Chunked       bool `protobuf:"varint,5,opt,name=chunked,proto3" json:"chunked,omitempty"`
+	Chunked bool `protobuf:"varint,5,opt,name=chunked,proto3" json:"chunked,omitempty"`
+	// When true, the entry is a symbolic link: blob_hash names a BLOB holding
+	// the link target as raw bytes (1..=4096 bytes, no NUL; never interpreted
+	// or dereferenced by the server) and size is the target's length. Mutually
+	// exclusive with executable and chunked. False (the default) is not
+	// encoded, so manifests without symlinks are byte-identical to those
+	// written before this field existed.
+	Symlink       bool `protobuf:"varint,6,opt,name=symlink,proto3" json:"symlink,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2471,6 +2478,13 @@ func (x *ManifestEntry) GetExecutable() bool {
 func (x *ManifestEntry) GetChunked() bool {
 	if x != nil {
 		return x.Chunked
+	}
+	return false
+}
+
+func (x *ManifestEntry) GetSymlink() bool {
+	if x != nil {
+		return x.Symlink
 	}
 	return false
 }
@@ -4619,7 +4633,7 @@ const file_sync_proto_rawDesc = "" +
 	"\x15UploadObjectsResponse\x12\x1a\n" +
 	"\breceived\x18\x01 \x01(\rR\breceived\x12\x16\n" +
 	"\x06stored\x18\x02 \x01(\rR\x06stored\x129\n" +
-	"\brejected\x18\x03 \x03(\v2\x1d.worktree.sync.v1.ContentHashR\brejectedJ\x05\bd\x10\xc8\x01\"\xb4\x01\n" +
+	"\brejected\x18\x03 \x03(\v2\x1d.worktree.sync.v1.ContentHashR\brejectedJ\x05\bd\x10\xc8\x01\"\xce\x01\n" +
 	"\rManifestEntry\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12:\n" +
 	"\tblob_hash\x18\x02 \x01(\v2\x1d.worktree.sync.v1.ContentHashR\bblobHash\x12\x12\n" +
@@ -4627,7 +4641,8 @@ const file_sync_proto_rawDesc = "" +
 	"\n" +
 	"executable\x18\x04 \x01(\bR\n" +
 	"executable\x12\x18\n" +
-	"\achunked\x18\x05 \x01(\bR\achunkedJ\x05\bd\x10\xc8\x01\"R\n" +
+	"\achunked\x18\x05 \x01(\bR\achunked\x12\x18\n" +
+	"\asymlink\x18\x06 \x01(\bR\asymlinkJ\x05\bd\x10\xc8\x01\"R\n" +
 	"\x0eManifestRecord\x129\n" +
 	"\aentries\x18\x01 \x03(\v2\x1f.worktree.sync.v1.ManifestEntryR\aentriesJ\x05\bd\x10\xc8\x01\"\xf8\x04\n" +
 	"\x0eSnapshotRecord\x12,\n" +

@@ -1,6 +1,7 @@
 package syncsvc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -144,9 +145,55 @@ func (s *Service) storeVerified(ctx context.Context, h hash.Hash, kind syncpb.Ob
 // errInvalidManifest wraps every decodeManifest failure.
 var errInvalidManifest = errors.New("invalid manifest")
 
+// maxSymlinkTarget is the longest symbolic-link target, in bytes, that a
+// manifest may record (the Rust client's MAX_SYMLINK_TARGET_LEN).
+const maxSymlinkTarget = 4096
+
+// validateSymlinkEntry checks the symlink rules of the wire contract: a
+// symbolic link is never executable or chunked, records a target of
+// 1..maxSymlinkTarget bytes, and never lives in the tree's shared
+// `.wt-tree/` directory (configuration, hooks and access rules are always
+// regular files). Entries that are not symlinks pass.
+func validateSymlinkEntry(e *syncpb.ManifestEntry) error {
+	if !e.GetSymlink() {
+		return nil
+	}
+	switch {
+	case e.GetExecutable():
+		return errors.New("a symlink cannot be executable")
+	case e.GetChunked():
+		return errors.New("a symlink cannot be chunked")
+	case e.GetSize() == 0:
+		return errors.New("empty symlink target")
+	case e.GetSize() > maxSymlinkTarget:
+		return fmt.Errorf("symlink target is longer than %d bytes", maxSymlinkTarget)
+	case e.GetPath() == treeMarkerDir || strings.HasPrefix(e.GetPath(), treeMarkerDir+"/"):
+		return errors.New("a symlink cannot be stored in " + treeMarkerDir + "/")
+	}
+	return nil
+}
+
+// validateSymlinkTarget checks the stored target of symlink entry e: it
+// must be exactly the recorded size and hold no NUL byte. The server never
+// interprets the target beyond that — it is not resolved, normalised or
+// followed, and may be absolute or lead out of the tree; clients decide
+// what to do with it on checkout.
+func validateSymlinkTarget(e *syncpb.ManifestEntry, target []byte) error {
+	switch {
+	case uint64(len(target)) != e.GetSize():
+		return fmt.Errorf("target is %d bytes, the entry records %d", len(target), e.GetSize())
+	case len(target) == 0 || len(target) > maxSymlinkTarget:
+		return fmt.Errorf("target must be 1..%d bytes", maxSymlinkTarget)
+	case bytes.IndexByte(target, 0) >= 0:
+		return errors.New("target contains a NUL byte")
+	}
+	return nil
+}
+
 // decodeManifest parses and validates a ManifestRecord: entries sorted by
-// path, unique, with clean relative '/'-separated paths and 32-byte blob
-// hashes. Errors wrap errInvalidManifest.
+// path, unique, with clean relative '/'-separated paths, 32-byte blob
+// hashes and well-formed symlink entries (validateSymlinkEntry). Errors
+// wrap errInvalidManifest.
 func decodeManifest(data []byte) (*syncpb.ManifestRecord, error) {
 	var m syncpb.ManifestRecord
 	if err := proto.Unmarshal(data, &m); err != nil {
@@ -164,6 +211,9 @@ func decodeManifest(data []byte) (*syncpb.ManifestRecord, error) {
 		prev = p
 		if len(e.GetBlobHash().GetValue()) != hash.Size {
 			return nil, fmt.Errorf("%w: entry %d (%s): blob hash must be %d bytes", errInvalidManifest, i, p, hash.Size)
+		}
+		if err := validateSymlinkEntry(e); err != nil {
+			return nil, fmt.Errorf("%w: entry %d (%s): %v", errInvalidManifest, i, p, err)
 		}
 	}
 	return &m, nil

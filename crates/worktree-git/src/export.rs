@@ -104,7 +104,11 @@ impl<'a, S: BlobSource + ?Sized> TreeWriter<'a, S> {
         for (name, node) in &dir.children {
             let (oid, mode) = match node {
                 Node::File(entry) => {
-                    let mode = if entry.executable {
+                    // A symlink is a Git link (120000) whose blob is the
+                    // target text.
+                    let mode = if entry.symlink {
+                        FileMode::Link
+                    } else if entry.executable {
                         FileMode::BlobExecutable
                     } else {
                         FileMode::Blob
@@ -515,6 +519,7 @@ mod tests {
             size: data.len() as u64,
             executable,
             chunked: false,
+            symlink: false,
         }
     }
 
@@ -568,9 +573,46 @@ mod tests {
     }
 
     #[test]
+    fn symlink_entries_are_written_as_git_links() {
+        let fx = GitFixture::new();
+        let expected = fx.tree(&[
+            Spec::File("README.md", b"hello\n"),
+            Spec::Link("docs/latest", "../README.md"),
+            Spec::Link("out", "/absolute/target"),
+        ]);
+
+        let store = MemStore::default();
+        let link = |path: &str, target: &str| {
+            ManifestEntry::symlink(
+                path,
+                store.put_blob(target.as_bytes()).unwrap(),
+                target.len() as u64,
+            )
+        };
+        let manifest = Manifest {
+            entries: vec![
+                entry(&store, "README.md", b"hello\n", false),
+                link("docs/latest", "../README.md"),
+                link("out", "/absolute/target"),
+            ],
+        };
+        let out = GitFixture::bare();
+        let tree = TreeWriter::new(&out.repo, &store).write(&manifest).unwrap();
+        assert_eq!(tree, expected);
+
+        let written = out.repo.find_tree(tree).unwrap();
+        let latest = written.get_path(Path::new("docs/latest")).unwrap();
+        assert_eq!(latest.filemode(), i32::from(FileMode::Link));
+        let blob = out.repo.find_blob(latest.id()).unwrap();
+        assert_eq!(blob.content(), b"../README.md");
+    }
+
+    #[test]
     fn tree_round_trip_through_manifest_is_identical() {
         let src = GitFixture::new();
         let tree_oid = src.tree(&[
+            Spec::Link("current", "docs/guide.md"),
+            Spec::Link("up", "../elsewhere"),
             Spec::File(".gitignore", b"target/\n"),
             Spec::Exec("scripts/build.sh", b"#!/bin/sh\nmake\n"),
             Spec::File("docs/guide/intro.md", b"# Intro\n"),
@@ -631,6 +673,7 @@ mod tests {
                 size: 12,
                 executable: false,
                 chunked: false,
+                symlink: false,
             }],
         };
         let err = TreeWriter::new(&out.repo, &store)
