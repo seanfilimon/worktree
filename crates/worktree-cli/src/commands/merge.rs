@@ -59,6 +59,10 @@ pub struct MergeArgs {
     /// Abandon a conflicted merge and restore the pre-merge state
     #[arg(long)]
     pub abort: bool,
+
+    /// Skip the pre-merge and post-merge hooks
+    #[arg(long, conflicts_with_all = ["resume", "abort"])]
+    pub no_verify: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -178,6 +182,7 @@ pub fn run(ctx: &Context, args: MergeArgs) -> Result<()> {
         message: args.message,
         no_fast_forward: args.no_ff,
         strategy: args.strategy.into(),
+        skip_hooks: args.no_verify,
         ..MergeOptions::default()
     };
     let outcome = repo.merge(&tree.name, &source, opts)?;
