@@ -262,7 +262,12 @@ pub async fn sync(
                 message: Some(format!("Merge {source} into {branch}")),
                 ..MergeOptions::default()
             };
-            report.integration = match repo.merge(&tree_name, &source, merge)? {
+            // hooks: the merge hooks see where the source comes from.
+            let via = crate::hooks::MergeVia {
+                remote,
+                source: &source,
+            };
+            report.integration = match repo.merge_from(&tree_name, &source, merge, Some(via))? {
                 MergeOutcome::UpToDate => SyncIntegration::UpToDate,
                 MergeOutcome::FastForward { .. } => SyncIntegration::FastForward,
                 MergeOutcome::Merged { .. } => SyncIntegration::Merged,

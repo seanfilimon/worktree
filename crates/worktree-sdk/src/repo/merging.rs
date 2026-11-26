@@ -72,7 +72,44 @@ impl Repository {
     /// `Ours` / `Theirs` resolve every conflict in favour of that side.
     /// Conflict markers are labelled with short ids:
     /// `<<<<<<< ours (main 1a2b3c4d)` / `>>>>>>> theirs (feature 5e6f7a8b)`.
+    ///
+    /// Runs the `pre-merge` hooks before anything changes (a failing hook
+    /// aborts with `SdkError::Other`) and the `post-merge` hooks afterwards,
+    /// also after a conflicted merge, unless `opts.skip_hooks`. No hook runs
+    /// when the branch is already up to date.
     pub fn merge(&self, tree: &str, source: &str, opts: MergeOptions) -> Result<MergeOutcome> {
+        self.merge_from(tree, source, opts, None)
+    }
+
+    /// [`Repository::merge`] that tells the merge hooks which remote (and
+    /// remote branch) the source comes from (`wt pull`, `wt sync`). The
+    /// `post-merge` hooks run after the tree lock is released, so they may
+    /// run `wt` themselves.
+    pub(crate) fn merge_from(
+        &self,
+        tree: &str,
+        source: &str,
+        opts: MergeOptions,
+        via: Option<crate::hooks::MergeVia<'_>>,
+    ) -> Result<MergeOutcome> {
+        let mut hook = None;
+        let outcome = self.merge_locked(tree, source, opts, via, &mut hook)?;
+        if let Some(hook) = hook {
+            hook.post(self, &outcome);
+        }
+        Ok(outcome)
+    }
+
+    /// The merge itself, under the tree lock. Sets `hook` once the
+    /// `pre-merge` hooks passed (when hooks are not skipped).
+    fn merge_locked(
+        &self,
+        tree: &str,
+        source: &str,
+        opts: MergeOptions,
+        via: Option<crate::hooks::MergeVia<'_>>,
+        hook: &mut Option<crate::hooks::MergeHook>,
+    ) -> Result<MergeOutcome> {
         let _lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         if self.merge_state(tree)?.is_some() {
@@ -92,11 +129,30 @@ impl Repository {
             .map(|e| e.path.clone())
             .collect();
 
-        let ours = match ours_tip {
-            Some(id) if id == theirs.id || self.is_ancestor(&theirs.id, &id)? => {
+        let fast_forward = match &ours_tip {
+            Some(id) if *id == theirs.id || self.is_ancestor(&theirs.id, id)? => {
                 return Ok(MergeOutcome::UpToDate)
             }
-            Some(id) if opts.no_fast_forward || !self.is_ancestor(&id, &theirs.id)? => id,
+            Some(id) => !opts.no_fast_forward && self.is_ancestor(id, &theirs.id)?,
+            // An empty branch always fast-forwards.
+            None => true,
+        };
+        if !opts.skip_hooks {
+            let ctx = crate::hooks::MergeHook {
+                tree: rec.clone(),
+                branch: branch.clone(),
+                source: via.map_or(source, |v| v.source).to_string(),
+                source_tip: theirs.id.clone(),
+                old_tip: ours_tip.clone(),
+                fast_forward,
+                remote: via.map(|v| v.remote.to_string()),
+            };
+            ctx.pre(self)?;
+            *hook = Some(ctx);
+        }
+
+        let ours = match ours_tip {
+            Some(id) if !fast_forward => id,
             old => {
                 // Fast-forward (an empty branch always fast-forwards).
                 let target = self.manifest_of(&theirs)?;

@@ -77,7 +77,26 @@ impl Repository {
     /// `DirtyWorkingTree` if there are uncommitted changes and not `force`.
     /// When both branches point at the same snapshot, uncommitted changes
     /// are carried over untouched (unless `force`).
+    ///
+    /// Afterwards the `post-switch` hooks run (failures are reported on
+    /// stderr only); not when `name` is already current and not `force`.
     pub fn switch_branch(&self, tree: &str, name: &str, opts: SwitchOptions) -> Result<()> {
+        if let Some(hook) = self.switch_branch_unhooked(tree, name, opts)? {
+            hook.post(self);
+        }
+        Ok(())
+    }
+
+    /// [`Repository::switch_branch`] without running the `post-switch`
+    /// hooks; returns their context when the switch did something. The
+    /// caller runs them once the switch is complete (after the tree lock
+    /// is released).
+    pub(crate) fn switch_branch_unhooked(
+        &self,
+        tree: &str,
+        name: &str,
+        opts: SwitchOptions,
+    ) -> Result<Option<crate::hooks::SwitchHook>> {
         let _lock = self.lock_tree(tree)?;
         let rec = self.load_tree(tree)?;
         if self.merge_state(tree)?.is_some() {
@@ -91,7 +110,7 @@ impl Repository {
             self.ensure_active_branch(tree, name)?;
         }
         if name == current && !opts.force {
-            return Ok(());
+            return Ok(None);
         }
         let target_tip = self.read_tip(tree, name)?;
         if target_tip != current_tip || opts.force {
@@ -118,10 +137,18 @@ impl Repository {
             tree: tree.to_string(),
             branch: name.to_string(),
             action: "switch".into(),
-            old: current_tip,
-            new: target_tip,
+            old: current_tip.clone(),
+            new: target_tip.clone(),
             message: format!("moving from {current} to {name}"),
-        })
+        })?;
+        Ok(Some(crate::hooks::SwitchHook {
+            tree: rec,
+            from: current,
+            to: name.to_string(),
+            old_tip: current_tip,
+            new_tip: target_tip,
+            created: opts.create,
+        }))
     }
 
     /// Soft-delete (archive) a branch. History stays reachable; the name can
