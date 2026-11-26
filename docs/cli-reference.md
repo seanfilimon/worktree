@@ -540,6 +540,7 @@ Options:
   -s, --strategy <STRATEGY>  How conflicting changes are resolved: `manual` writes conflict markers (labelled `ours (BRANCH ID)` / `theirs (SOURCE ID)`) and stops; `ours` / `theirs` resolve every conflicting hunk and file in favour of that side while still combining non-conflicting changes [default: manual] [possible values: manual, ours, theirs]
       --continue             Finish a conflicted merge after resolving the conflicts
       --abort                Abandon a conflicted merge and restore the pre-merge state
+      --no-verify            Skip the pre-merge and post-merge hooks
   -V, --version              Print version
 ```
 
@@ -1913,6 +1914,7 @@ Options:
       --bypass-protection  Push past branch protection (owners: branch:bypass_protection; always audited on the server)
       --server <URL>       Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
       --no-pack            Upload whole objects instead of a pack with deltas (for debugging; same as WT_NO_PACK=1)
+      --no-verify          Skip the pre-push and post-push hooks (queued pushes always run them when they are delivered)
   -V, --version            Print version
 ```
 
@@ -1951,6 +1953,7 @@ Options:
       --tree <NAME>   Operate on this tree instead of the one containing the current directory
       --no-color      Disable colored output
       --server <URL>  Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
+      --no-verify     Skip the pre-merge and post-merge hooks of the integration
   -V, --version       Print version
 ```
 

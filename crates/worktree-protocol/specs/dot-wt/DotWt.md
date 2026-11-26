@@ -39,7 +39,7 @@ are not shared by `wt push` / `wt clone`.
 │   ├── shallow                          shallow-boundary snapshot ids (shallow clones)
 │   └── stubbed                          paths withheld by the server (not checked out)
 ├── conflicts/<tree>.json                conflict list of the merge in progress (§7)
-├── hooks/<phase>                        worktree-wide snapshot hooks (§8)
+├── hooks/<phase>                        worktree-wide client hooks (§8)
 ├── access/roles.toml                    declarative custom roles (tenant scope)
 ├── access/policies.toml                 declarative policies (tenant scope)
 └── git-map.json                         snapshot id <-> Git commit sha (only after wt git import/export)
@@ -241,27 +241,73 @@ itself (source branch, tips, base, message) is in
 ## 8. `hooks/`
 
 Worktree-wide hooks run for every tree; tree hooks live in
-`<tree>/.wt-tree/hooks/`.
+`<tree>/.wt-tree/hooks/`. A `pre-*` hook vetoes the operation with a
+non-zero exit (or a timeout) before anything changes; `post-*` failures are
+printed to stderr as `warning: <phase> hook failed: ...` and the operation is
+kept.
 
 | File | When | Failure |
 |---|---|---|
-| `hooks/pre-snapshot` | Before the working state is read | Non-zero exit aborts the snapshot (`pre-snapshot hook failed: ...`) |
+| `hooks/pre-snapshot` | Before the working state is read | Aborts the snapshot (`pre-snapshot hook failed: ...`) |
 | `hooks/post-snapshot` | After the snapshot is written | Printed to stderr; snapshot kept |
+| `hooks/pre-push` | After the server's branch tip is known and the push is possible, before anything is negotiated or uploaded; not when the server is already up to date | Aborts the push; nothing uploaded, server tip unchanged |
+| `hooks/post-push` | After the server accepted the push and the remote-tracking tip was updated | Printed to stderr; push kept |
+| `hooks/pre-merge` | Before a merge (`wt merge`, the integration of `wt pull` and `wt sync`) changes the branch or the working directory; not when already up to date | Aborts the merge; branch, files and merge state unchanged |
+| `hooks/post-merge` | After a fast-forward, a merge snapshot, or a merge that stopped with conflicts | Printed to stderr; merge (or conflict state) kept |
+| `hooks/post-switch` | After a branch switch changed the branch (or `--force` rewrote the files); with an auto-stash, after it is restored | Printed to stderr; switch kept |
 
-On Windows `<phase>.cmd`, `<phase>.bat` and `<phase>.ps1` are also found.
-Order: `.wt/hooks/` first, then the tree's. Environment:
+On Windows `<phase>.exe`, `<phase>.cmd`, `<phase>.bat` and `<phase>.ps1` are
+also found. Order: `.wt/hooks/` first, then the hooks of each enclosing tree,
+then the tree's own. The working directory is the tree root. Environment:
 
-| Variable | Value |
-|---|---|
-| `WT_HOOK` | `pre-snapshot` or `post-snapshot` |
-| `WT_TREE` | Tree name |
-| `WT_TREE_PATH` | Absolute tree directory (also the working directory) |
-| `WT_BRANCH` | Current branch |
-| `WT_ROOT` | Worktree root |
-| `WT_SNAPSHOT` | New snapshot id (post only) |
+| Variable | Phases | Value |
+|---|---|---|
+| `WT_HOOK` (= `WT_HOOK_PHASE`) | all | Phase name |
+| `WT_TREE` (= `WT_TREE_NAME`) | all | Tree name |
+| `WT_TREE_PATH` | all | Absolute tree directory (also the working directory) |
+| `WT_BRANCH` | all | Current branch; the pushed branch for push hooks; the new branch for `post-switch` |
+| `WT_ROOT` | all | Worktree root |
+| `WT_USER` | all | Snapshot author |
+| `WT_SNAPSHOT` (= `WT_SNAPSHOT_ID`) | `post-snapshot` | New snapshot id |
+| `WT_REMOTE` | push hooks; merge hooks run by `wt pull` / `wt sync` | Remote name |
+| `WT_REMOTE_URL` | push hooks | Normalized server URL of the remote |
+| `WT_PUSH_OLD_TIP` | push hooks | Server tip before the push (empty for a new branch) |
+| `WT_PUSH_NEW_TIP` | push hooks | Tip being pushed |
+| `WT_PUSH_FORCE` | push hooks | `1` for `--force`, else `0` |
+| `WT_PUSH_SNAPSHOTS` | push hooks | Number of snapshots sent |
+| `WT_MERGE_SOURCE` | merge hooks | Source as given; `<remote>/<branch>` for a pull |
+| `WT_MERGE_SOURCE_TIP` | merge hooks | Snapshot being merged in |
+| `WT_MERGE_OLD_TIP` | merge hooks | Branch tip before the merge (empty for an empty branch) |
+| `WT_MERGE_KIND` | merge hooks | `fast-forward` or `merge` |
+| `WT_MERGE_RESULT` | `post-merge` | `fast-forward`, `merged` or `conflicts` |
+| `WT_MERGE_CONFLICTS` | `post-merge` | Number of conflicted paths (`0` without conflicts) |
+| `WT_MERGE_NEW_TIP` | `post-merge` | Branch tip afterwards (unchanged on conflicts) |
+| `WT_SWITCH_FROM`, `WT_SWITCH_TO` | `post-switch` | Previous and new branch |
+| `WT_SWITCH_OLD_TIP`, `WT_SWITCH_NEW_TIP` | `post-switch` | Their tips (empty for an empty branch) |
+| `WT_SWITCH_CREATED` | `post-switch` | `1` with `wt switch -c`, else `0` |
 
-`[hooks] timeout_secs` kills slow hooks; `[hooks] enabled = false` or
-`wt snapshot --no-verify` skips them. Hooks run for daemon auto-snapshots too.
+stdin is empty, except: the push hooks read the ids of the snapshots being
+pushed, oldest first, one per line; `post-merge` reads the conflicted paths,
+one per line. Output goes to stderr.
+
+`[hooks] timeout_secs` kills slow hooks; `[hooks] enabled = false` skips them
+all. `--no-verify` skips both hooks of one command: `wt snapshot`, `wt push`,
+`wt merge` and `wt pull` (there is no bypass for `post-switch`). Hooks run for
+the daemon's auto-snapshots, outbox deliveries and auto-sync too, since they
+are part of the SDK operations.
+
+Deliberate differences from Git: there is no `post-pull` (a pull's
+integration runs `pre-merge` / `post-merge` with `WT_REMOTE` set, the role of
+Git's `post-merge` after `git pull`; a pull that is already up to date runs no
+hook). `pre-merge` runs before every merge that changes something, fast-forwards
+included, not only before a merge snapshot like Git's `pre-merge-commit`.
+`post-merge` also runs when the merge stops with conflicts (Git's does not);
+completing it (`wt merge --continue` or a snapshot) runs the snapshot hooks.
+`pre-push` receives its context in environment variables and stdin instead
+of arguments, and is not run when there is nothing to push. `post-switch`
+(Git's `post-checkout`) does not run for a switch to the current branch or
+for `wt clone`. Rebases (`wt rebase`, `sync.strategy = "rebase"`) run no merge
+hooks.
 
 ## 9. Per-user state (`$WT_HOME`)
 
@@ -325,6 +371,7 @@ configures `[remote.origin]`, adopts the server tree id and fetches.
 | `[secret_scanning]`, `[hooks]`, `[signing]`, `sync.auto_fetch/interval_secs` | Built (v0.5) |
 | Config hierarchy with `--show-origin`, `--tree`, `--global` | Built (v0.5 §13.9) |
 | `hooks/`, `access/`, `shallow`, `stubbed`, conflict hunks, `[git_remote.*]` | Built (v0.5) |
+| Hook phases `pre-push`, `post-push`, `pre-merge`, `post-merge`, `post-switch`; `--no-verify` on `push`, `merge`, `pull` | Built (after v0.8.0) |
 | `git-map.json` | Built |
 
 ## Roadmap

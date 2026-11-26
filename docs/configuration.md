@@ -81,6 +81,27 @@ tree's name on the server). Nested trees are marked by a `<path>/.wt-tree/` dire
 
 `wt git import` converts `.gitignore` into `.wt/ignore`.
 
+### Hooks
+
+Executables in `.wt/hooks/<phase>` (every tree) and `<tree>/.wt-tree/hooks/<phase>` (shared with the
+tree) run around local and sync operations. `[hooks] enabled = false` turns them off and
+`[hooks] timeout_secs` (default 60, `0` = no limit) kills slow ones (both settable per tree).
+
+| Phase | Runs | A failure |
+|---|---|---|
+| `pre-snapshot` / `post-snapshot` | Around every snapshot, daemon auto-snapshots included | Aborts the snapshot / is a warning |
+| `pre-push` / `post-push` | Before anything is uploaded / after the server accepted the push | Aborts the push (nothing uploaded) / is a warning |
+| `pre-merge` / `post-merge` | Around `wt merge` and the integration of `wt pull` / `wt sync`; `post-merge` also after a merge that stopped with conflicts | Aborts the merge (nothing changed) / is a warning |
+| `post-switch` | After `wt switch` changed the branch | Is a warning |
+
+Hooks get their context in `WT_*` environment variables (`WT_HOOK`, `WT_TREE`, `WT_BRANCH`,
+`WT_ROOT`, plus `WT_PUSH_*`, `WT_MERGE_*`, `WT_SWITCH_*`, `WT_REMOTE`); push hooks read the pushed
+snapshot ids and `post-merge` the conflicted paths on stdin. `--no-verify` on `wt snapshot`,
+`wt push`, `wt merge` and `wt pull` skips that command's hooks. There is no `post-pull` hook:
+`post-merge` covers it. The full contract (every variable, order, Windows file names, differences
+from Git) is in [DotWt.md §8](../crates/worktree-protocol/specs/dot-wt/DotWt.md#8-hooks);
+`wt doctor` reports hook files that never run.
+
 ---
 
 ## Per-user state (`$WT_HOME`)

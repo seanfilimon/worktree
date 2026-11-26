@@ -253,7 +253,7 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 | Component | Path | Status | Scope |
 |---|---|---|---|
 | Wire protocol | `crates/worktree-protocol/proto/sync.proto` | v2 | `SyncService` (13 RPCs), object/snapshot records, push rejections |
-| SDK — local engine | `crates/worktree-sdk` | v2 | `.wt/` layout, object store, snapshots, branches, tags, merge (diff3), revert, restore, reflog, ignore, nested trees |
+| SDK — local engine | `crates/worktree-sdk` | v2 | `.wt/` layout, object store, snapshots, branches, tags, merge (diff3), revert, restore, reflog, ignore, nested trees, client hooks (snapshot, push, merge, switch) |
 | SDK — remote client | `crates/worktree-sdk/src/remote` | v2 | login/register, push, fetch, pull, clone, stage, list staged |
 | SDK — scanning | `crates/worktree-sdk/src/scan.rs` | v2 | Secret scanning (pre-snapshot), SPDX detection, FastCDC boundaries (not yet used for storage) |
 | CLI `wt` | `crates/worktree-cli` | v2 | 29 top-level commands, `--json` output, exit codes 0/1/2/3 |
