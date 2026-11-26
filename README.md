@@ -59,7 +59,7 @@ Rows marked *Roadmap* are specified in [`crates/worktree-protocol/specs/`](./cra
 | Large files | Git LFS | Stored as whole blobs today; FastCDC chunking and lazy loading are *Roadmap* |
 | Auto-snapshots | None | `worktree-bg` daemon snapshots on inactivity and stages work automatically |
 | Submodules | Separate system | Nested trees with independent branches |
-| Recovery | Local reflog that expires | Local append-only reflog; server-synced reflog is *Roadmap* |
+| Recovery | Local reflog that expires | Local append-only reflog and `wt undo`; server reflog of every branch move (`wt reflog --remote`), branches restorable from it and `wt undo` of a push |
 | Monitoring | None | `/healthz`, Prometheus `/metrics`, append-only audit log, admin panel |
 | Transport security | SSH/HTTPS | Cleartext h2c on one port — terminate TLS in front of the server; native TLS/QUIC and Ed25519 signing are *Roadmap* |
 
@@ -274,7 +274,7 @@ acceptance gate for integration. Items under *Roadmap* exist only as specificati
 - Releases, CI check gates and tenant quotas (the `CiChecksFailed` / `QuotaExceeded` rejections are
   reserved in the protocol).
 - Live Git mirroring and a Git remote helper.
-- Server-synced reflog and offline sync queue.
+- Syncing the local reflog to the server.
 
 ---
 

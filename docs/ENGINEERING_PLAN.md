@@ -1897,6 +1897,13 @@ slugs → tenant id), `tenant_deletions` (key tenantID), `email_tokens`,
 - Admin: force-push events in branch history, `no_force_push` toggle in
   `ProtectionsTab`.
 - Spec: `specs/tree/Undo.md`; HistoryRewriting.md and Sync.md updated.
+- Follow-up (reflog restore, Undo.md §2.2, §4.1): `POST
+  {tree}/reflog/restore {branch, tip, expected_tip, bypass}` moves a
+  branch to a tip of its server reflog (lease, `branch:force_push`,
+  force-push protections for rewinds, event `branch.restored`, audit
+  `branch.restore`, reflog kind `restore`); pushes are recorded in the
+  oplog and `wt undo` of a push restores the server branch; `wt reflog
+  --remote`; admin "Restore" on reflog entries.
 - Owns: `syncsvc/push_force*.go`, `syncsvc/tags_delete.go` (new) + small
   edits in `syncsvc/push.go`, `review/protection.go` (no_force_push),
   SDK `repo/oplog.rs` (new) + hooks into `repo/*` mutations,

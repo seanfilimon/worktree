@@ -278,9 +278,25 @@ Options:
   -b, --branch <BRANCH>  Only entries of this branch (numbered as `BRANCH@{N}`)
       --tree <NAME>      Operate on this tree instead of the one containing the current directory
       --no-color         Disable colored output
+      --remote           Show the server reflog of the tree (pushes, force pushes, restores)
+      --from <R>         Remote for --remote (default: [sync].remote, usually origin)
       --server <URL>     Server for server-side commands (default: this worktree's origin, else the only saved login) [env: WT_SERVER=]
   -V, --version          Print version
 ```
+
+`wt reflog --remote [--from R] [-b BRANCH] [-n N]` reads the server reflog
+(`GET {tree}/reflog`, needs read access): every branch move the server
+accepted in the last 90 days, newest first, one line each:
+
+```text
+5e6f7a8b origin/main: restore by alice: 9c0d1e2f -> 5e6f7a8b [forced] (2 minutes ago)
+9c0d1e2f origin/main: push by bob: 5e6f7a8b -> 9c0d1e2f (1 hour ago)
+```
+
+Kinds are `push`, `force_push` and `restore`. A tip listed there can be
+restored on the server with `POST {tree}/reflog/restore` (admin panel:
+History tab, "Restore"; needs `branch:force_push`); `wt undo` does this for
+your newest push.
 
 #### `wt reflog expire`
 
@@ -919,7 +935,7 @@ Options:
 
 ### `wt undo`
 
-Undo the last local operations (snapshot, merge, rebase, branch moves) from the operation log
+Undo the last operations (snapshot, merge, rebase, branch moves, pushes) from the operation log
 
 ```text
 Usage: wt undo [OPTIONS] [N]
@@ -944,6 +960,12 @@ Options:
       --tree <NAME>
           Operate on this tree instead of the one containing the current directory
 
+  -y, --yes
+          Undo a push without asking for confirmation
+
+      --bypass-protection
+          Undoing a push: ask the server to bypass branch protection (needs branch:bypass_protection)
+
       --no-color
           Disable colored output
 
@@ -964,8 +986,39 @@ operation (`wt undo 3`: the newest three) and checks the restored head out;
 Undoing a stash push gives the stashed changes back to the working tree.
 Both refuse while the working tree has uncommitted changes; --force
 discards them. Snapshots are never deleted, so nothing undone is lost.
-Pushes are not undone on the server (see `wt push --force`).
+
+Pushes are recorded too. When the newest operation is a push, `wt undo`
+moves the server branch back to the tip it had before the push (a restore
+from the server reflog): it shows what will change and asks first (--yes
+skips the question), refuses when someone pushed on top since, and needs
+branch:force_push on the server (admin role), like a force push. Your local
+branch keeps the snapshots: `wt push` publishes them again, and `wt revert`
+is the append-only way to take pushed changes back. Undo a push on its own
+(no N).
 ```
+
+Undoing a push looks like this (`--yes` skips the question; without a
+terminal it is required):
+
+```text
+$ wt undo
+Undoing push: "push main to origin/main (2 snapshots)"
+  origin/main on acme/web (http://localhost:7420) moves back: 9c0d1e2f -> 5e6f7a8b
+  2 snapshots leave the server branch:
+    9c0d1e2f fix typo
+    7a8b9c0d add login form
+  They stay recoverable from the server reflog (`wt reflog --remote`).
+Move origin/main on acme/web back from 9c0d1e2f to 5e6f7a8b? [y/N] y
+Undid push: origin/main moved back from 9c0d1e2f to 5e6f7a8b on acme/web.
+Your local main still has the snapshots: `wt push` publishes them again, `wt revert` takes them back.
+```
+
+Refusals: a push that created the branch (nothing to go back to), a
+server branch that moved since the push (`has moved since your push`: run
+`wt pull` and `wt revert` instead), missing `branch:force_push`
+(`permission denied`), and branch protection (`no_force_push` always;
+`require_linear` / required approvals unless `--bypass-protection` as
+owner). `wt redo` does not re-push an undone push; run `wt push`.
 
 ### `wt redo`
 
