@@ -108,6 +108,15 @@ pub fn bg_bin() -> PathBuf {
         .unwrap_or_else(|e| panic!("{e}\n(hint: cargo build -p worktree-bg)"))
 }
 
+/// Path to the Git remote helper `git-remote-wt` (crate `worktree-git`);
+/// panics with build instructions if missing.
+pub fn git_remote_bin() -> PathBuf {
+    static BIN: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    BIN.get_or_init(|| locate("WT_GIT_REMOTE_BIN", "git-remote-wt"))
+        .clone()
+        .unwrap_or_else(|e| panic!("{e}\n(hint: cargo build -p worktree-git)"))
+}
+
 /// Path to the Go server binary: `WT_SERVER_BIN`, else built once per test
 /// process (and serialized across processes with a file lock) via
 /// `go build -o <profile dir>/worktree-server(.exe) .`.
